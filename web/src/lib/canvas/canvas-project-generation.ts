@@ -7,7 +7,7 @@ import { resourceIdFromStorageKey } from "@/services/api/resources";
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { normalizeVideoDuration, normalizeVideoResolution } from "@/lib/video-generation-options";
 import { isSeedanceVideoConfig } from "@/lib/seedance-video";
-import { modelCapabilityConfigFor, normalizeImageValue } from "@/lib/model-capabilities";
+import { modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue } from "@/lib/model-capabilities";
 import { imageMetadata } from "@/lib/canvas/canvas-generation-task-sync";
 import { ensureMediaNodeMinimumSize } from "@/lib/canvas/canvas-node-size";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
@@ -282,14 +282,21 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
     const model = storedModel && configuredModelMatchesCapability(config, storedModel, mode) ? storedModel : defaultModel && configuredModelMatchesCapability(config, defaultModel, mode) ? defaultModel : fallbackModel;
     const imageProfile = mode === "image" ? modelCapabilityConfigFor(config, model).image! : undefined;
     const normalizedImage = imageProfile ? normalizeImageValue(imageProfile, { quality: node?.metadata?.quality || config.quality || defaultConfig.quality, size: node?.metadata?.size || config.size || defaultConfig.size, transparentBackground: node?.metadata?.transparentBackground || config.transparentBackground, count: String(node?.metadata?.count || config.canvasImageCount || config.count || defaultConfig.count) }) : undefined;
+    const isGlobalAiOpcVideo = mode === "video" && resolveModelRequestConfig(config, model).interfaceType === "globalaiopc-video";
+    const videoProfile = isGlobalAiOpcVideo ? modelCapabilityConfigFor(config, model).video! : undefined;
+    const normalizedVideo = videoProfile ? normalizeVideoValue(videoProfile, {
+        seconds: node?.metadata?.seconds || config.videoSeconds || defaultConfig.videoSeconds,
+        ratio: node?.metadata?.size || config.size || defaultConfig.size,
+        resolution: node?.metadata?.vquality || config.vquality || defaultConfig.vquality,
+    }) : undefined;
     return {
         ...config,
         model,
         quality: normalizedImage?.quality || node?.metadata?.quality || config.quality || defaultConfig.quality,
-        size: normalizedImage?.size || node?.metadata?.size || config.size || defaultConfig.size,
+        size: normalizedImage?.size || normalizedVideo?.ratio || node?.metadata?.size || config.size || defaultConfig.size,
         transparentBackground: normalizedImage?.transparentBackground || ((node?.metadata?.transparentBackground || config.transparentBackground) === "true" ? "true" : "false"),
-        videoSeconds: normalizeVideoDuration(node?.metadata?.seconds || config.videoSeconds || defaultConfig.videoSeconds),
-        vquality: normalizeVideoResolution(node?.metadata?.vquality || config.vquality || defaultConfig.vquality),
+        videoSeconds: normalizedVideo?.seconds || normalizeVideoDuration(node?.metadata?.seconds || config.videoSeconds || defaultConfig.videoSeconds),
+        vquality: normalizedVideo?.resolution || normalizeVideoResolution(node?.metadata?.vquality || config.vquality || defaultConfig.vquality),
         videoGenerateAudio: node?.metadata?.generateAudio || config.videoGenerateAudio || defaultConfig.videoGenerateAudio,
         videoWatermark: node?.metadata?.watermark || config.videoWatermark || defaultConfig.videoWatermark,
         audioVoice: node?.metadata?.audioVoice || config.audioVoice || defaultConfig.audioVoice,
@@ -302,7 +309,7 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
 
 export function supportsVideoReferenceAudio(config: AiConfig) {
     const interfaceType = resolveModelRequestConfig(config, config.model).interfaceType;
-    return interfaceType === "newapi-channel-1" || interfaceType === "newapi-channel-2" || isSeedanceVideoConfig(config);
+    return interfaceType === "globalaiopc-video" || interfaceType === "newapi-channel-1" || interfaceType === "newapi-channel-2" || isSeedanceVideoConfig(config);
 }
 
 export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {

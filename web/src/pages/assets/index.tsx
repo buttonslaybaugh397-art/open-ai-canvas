@@ -1,21 +1,26 @@
-import { CheckCheck, Copy, Download, FileUp, MoreHorizontal, PencilLine, Plus, Search, Trash2, Upload } from "lucide-react";
+import { CheckCheck, Copy, Download, FileUp, FolderInput, MoreHorizontal, PencilLine, Plus, Search, Share2, Trash2, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { App, Button, Drawer, Dropdown, Form, Input, Modal, Select, Space, Tag, Typography } from "antd";
+import { App, Button, Drawer, Dropdown, Form, Input, Modal, Segmented, Select, Space, Tag, Typography } from "antd";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { CollectionGrid, ListToolbar, PageHeader, PaginationBar, WorkspacePage } from "@/components/layout/workspace-page";
 import { WorkspaceState } from "@/components/layout/workspace-state";
 import { AssetMediaPreview } from "@/components/asset-media-preview";
 import { AssetLibraryCard, AssetLibraryCardMedia } from "@/components/assets/asset-library-card";
+import { AssetFolderBar, ASSET_FOLDER_ALL, ASSET_FOLDER_ROOT, type AssetFolderView } from "@/components/assets/asset-folder-bar";
+import { TeamAssetBrowser, useTeamAssetFolderQuery } from "@/components/assets/team-asset-library";
 import { saveAs } from "file-saver";
 
 import { useCopyText } from "@/hooks/use-copy-text";
 import { resourceStorageLabel, resourceStorageLocation, resourceStorageTitle } from "@/lib/canvas/resource-storage-status";
 import { formatBytes, readFileAsDataUrl } from "@/lib/image-utils";
+import { isAssetFolderEntity, newPersonalAssetFolder, personalAssetFolders, renamedPersonalAssetFolder, type PersonalAssetFolder } from "@/lib/asset-folders";
 import { uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
+import { upsertTeamAsset } from "@/services/api/team-assets";
 import { useAssetStore, type Asset, type AssetCategory, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
 import { exportAssets, readAssetPackage } from "./asset-transfer";
-import { deleteAssetWithRemoteSync } from "@/services/user-data-sync";
+import { deleteAssetWithRemoteSync, ensureRemoteResourceReferences } from "@/services/user-data-sync";
 
 type LibraryAsset = Exclude<Asset, { kind: "entity" }>;
 
@@ -54,6 +59,7 @@ const categoryOptions = [
 
 export default function AssetsPage() {
     const { message } = App.useApp();
+    const queryClient = useQueryClient();
     const copyText = useCopyText();
     const [form] = Form.useForm<AssetFormValues>();
     const coverInputRef = useRef<HTMLInputElement>(null);
@@ -63,6 +69,7 @@ export default function AssetsPage() {
     const assets = useAssetStore((state) => state.assets);
     const addAsset = useAssetStore((state) => state.addAsset);
     const updateAsset = useAssetStore((state) => state.updateAsset);
+    const [libraryView, setLibraryView] = useState<"personal" | "team">("personal");
     const [keyword, setKeyword] = useState("");
     const [kindFilter, setKindFilter] = useState<AssetKind | "all">("all");
     const [categoryFilter, setCategoryFilter] = useState<AssetCategory | "all">("all");
@@ -74,6 +81,15 @@ export default function AssetsPage() {
     const [deletingAsset, setDeletingAsset] = useState<LibraryAsset | null>(null);
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
     const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+    const [folderFilter, setFolderFilter] = useState(ASSET_FOLDER_ALL);
+    const [folderModalOpen, setFolderModalOpen] = useState(false);
+    const [editingFolder, setEditingFolder] = useState<PersonalAssetFolder | null>(null);
+    const [deletingFolder, setDeletingFolder] = useState<PersonalAssetFolder | null>(null);
+    const [folderName, setFolderName] = useState("");
+    const [sharingAssetId, setSharingAssetId] = useState("");
+    const [shareTargetAsset, setShareTargetAsset] = useState<LibraryAsset | null>(null);
+    const [shareFolderId, setShareFolderId] = useState("");
+    const teamFolderQuery = useTeamAssetFolderQuery();
     const [formKind, setFormKind] = useState<AssetKind>("text");
     const [imageDraft, setImageDraft] = useState<ImageDraft>(null);
     const coverUrl = Form.useWatch("coverUrl", form) || "";
@@ -81,6 +97,8 @@ export default function AssetsPage() {
     const tags = Form.useWatch("tags", form) || [];
     const content = Form.useWatch("content", form) || "";
     const validAssets = useMemo(() => assets.filter((asset): asset is LibraryAsset => asset.kind !== "entity"), [assets]);
+    const folders = useMemo(() => personalAssetFolders(assets), [assets]);
+    const folderViews = useMemo<AssetFolderView[]>(() => folders.map((folder) => ({ ...folder, count: validAssets.filter((asset) => asset.folderId === folder.id).length, canEdit: true })), [folders, validAssets]);
     const selectedAssets = useMemo(() => validAssets.filter((asset) => selectedIds.includes(asset.id)), [selectedIds, validAssets]);
     const kindCounts = useMemo(() => new Map(kindOptions.map((option) => [option.value, option.value === "all" ? validAssets.length : validAssets.filter((asset) => asset.kind === option.value).length])), [validAssets]);
     const categoryCounts = useMemo(() => new Map(categoryOptions.map((option) => [option.value, option.value === "all" ? validAssets.length : validAssets.filter((asset) => (asset.category || "other") === option.value).length])), [validAssets]);
@@ -89,12 +107,13 @@ export default function AssetsPage() {
     const filteredAssets = useMemo(() => {
         const query = keyword.trim().toLowerCase();
         return validAssets.filter((asset) => {
+            if (folderFilter !== ASSET_FOLDER_ALL && (folderFilter === ASSET_FOLDER_ROOT ? Boolean(asset.folderId) : asset.folderId !== folderFilter)) return false;
             if (kindFilter !== "all" && asset.kind !== kindFilter) return false;
             if (categoryFilter !== "all" && (asset.category || "other") !== categoryFilter) return false;
             if (!query) return true;
             return assetSearchText(asset).includes(query);
         });
-    }, [validAssets, keyword, kindFilter, categoryFilter]);
+    }, [validAssets, keyword, kindFilter, categoryFilter, folderFilter]);
     const filteredAssetIds = useMemo(() => filteredAssets.map((asset) => asset.id), [filteredAssets]);
     const allFilteredSelected = filteredAssetIds.length > 0 && filteredAssetIds.every((id) => selectedIds.includes(id));
 
@@ -149,6 +168,7 @@ export default function AssetsPage() {
             tags: values.tags || [],
             source: values.source?.trim(),
             note: values.note?.trim(),
+            folderId: editingAsset?.folderId || (folderFilter !== ASSET_FOLDER_ALL && folderFilter !== ASSET_FOLDER_ROOT ? folderFilter : undefined),
             metadata: editingAsset?.metadata || { source: "manual" },
         };
 
@@ -186,7 +206,7 @@ export default function AssetsPage() {
     const readModelFile = async (file?: File) => {
         if (!file || !/\.(glb|gltf)$/i.test(file.name)) return;
         const uploaded = await uploadMediaFile(file, "model");
-        addAsset({ kind: "model", title: file.name.replace(/\.(glb|gltf)$/i, ""), coverUrl: "", tags: ["3D模型"], source: "手动上传", data: { url: uploaded.url, storageKey: uploaded.storageKey, bytes: uploaded.bytes, mimeType: uploaded.mimeType, fileName: file.name }, metadata: { source: "manual" } });
+        addAsset({ kind: "model", title: file.name.replace(/\.(glb|gltf)$/i, ""), coverUrl: "", tags: ["3D模型"], source: "手动上传", folderId: folderFilter !== ASSET_FOLDER_ALL && folderFilter !== ASSET_FOLDER_ROOT ? folderFilter : undefined, data: { url: uploaded.url, storageKey: uploaded.storageKey, bytes: uploaded.bytes, mimeType: uploaded.mimeType, fileName: file.name }, metadata: { source: "manual" } });
         message.success("3D 模型已保存");
     };
 
@@ -257,31 +277,104 @@ export default function AssetsPage() {
         }
     };
 
+    const openShareToTeam = (asset: LibraryAsset) => {
+        setShareFolderId("");
+        setShareTargetAsset(asset);
+        void teamFolderQuery.refetch();
+    };
+
+    const shareToTeam = async (asset: LibraryAsset, folderId: string) => {
+        setSharingAssetId(asset.id);
+        try {
+            const preparedAsset = await ensureRemoteResourceReferences(asset);
+            const remoteAsset = { ...normalizeTeamAssetCover(preparedAsset), folderId: folderId || undefined };
+            await upsertTeamAsset(remoteAsset);
+            await queryClient.invalidateQueries({ queryKey: ["team-assets"] });
+            setShareTargetAsset(null);
+            message.success("已将「" + asset.title + "」共享到团队素材库");
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "共享团队素材失败");
+        } finally {
+            setSharingAssetId("");
+        }
+    };
+
+    const openCreateFolder = () => {
+        setEditingFolder(null);
+        setFolderName("");
+        setFolderModalOpen(true);
+    };
+
+    const openRenameFolder = (folder: AssetFolderView) => {
+        const target = folders.find((item) => item.id === folder.id);
+        if (!target) return;
+        setEditingFolder(target);
+        setFolderName(target.name);
+        setFolderModalOpen(true);
+    };
+
+    const saveFolder = () => {
+        const name = folderName.trim();
+        if (!name) return;
+        if (editingFolder) {
+            const entity = assets.find((asset) => asset.id === editingFolder.id && isAssetFolderEntity(asset));
+            if (!entity || !isAssetFolderEntity(entity)) return;
+            updateAsset(entity.id, renamedPersonalAssetFolder(entity, name));
+            message.success("文件夹已重命名");
+        } else {
+            const id = addAsset(newPersonalAssetFolder(name));
+            setFolderFilter(id);
+            message.success("文件夹已创建");
+        }
+        setFolderModalOpen(false);
+    };
+
+    const confirmDeleteFolder = () => {
+        if (!deletingFolder) return;
+        validAssets.filter((asset) => asset.folderId === deletingFolder.id).forEach((asset) => updateAsset(asset.id, { folderId: undefined }));
+        useAssetStore.getState().removeAsset(deletingFolder.id);
+        if (folderFilter === deletingFolder.id) setFolderFilter(ASSET_FOLDER_ROOT);
+        setDeletingFolder(null);
+        message.success("文件夹已删除，素材已移回根目录");
+    };
+
+    const movePersonalAsset = (asset: LibraryAsset, folderId: string) => {
+        updateAsset(asset.id, { folderId: folderId || undefined });
+        message.success("素材已移动");
+    };
+
     return (
         <>
             <WorkspacePage grid className="library-page assets-library-page">
                 <PageHeader
                     icon="assets"
                     title="素材库"
-                    description="管理文本、图片、视频、音频和 3D 模型素材。"
-                    meta={<span className="text-xs text-foreground/45">{filteredAssets.length} 个素材</span>}
-                    actions={(
+                    description={libraryView === "personal" ? "管理个人文本、图片、视频、音频和 3D 模型素材。" : "浏览当前部署内所有成员共享的团队素材。"}
+                    meta={libraryView === "personal" ? <span className="text-xs text-foreground/45">{filteredAssets.length} 个素材</span> : undefined}
+                    actions={libraryView === "personal" ? (
                         <>
                             <Button icon={<Download className="size-4" />} onClick={() => void exportAllAssets()}>导出全部</Button>
                             <Dropdown trigger={["click"]} menu={{ items: [{ key: "package", icon: <FileUp className="size-4" />, label: "导入素材包", onClick: () => assetInputRef.current?.click() }, { key: "model", icon: <Upload className="size-4" />, label: "上传 3D 模型", onClick: () => modelInputRef.current?.click() }] }}><Button icon={<FileUp className="size-4" />}>导入</Button></Dropdown>
                         </>
-                    )}
+                    ) : undefined}
                 />
-                <ListToolbar className="library-toolbar" active={Boolean(keyword || kindFilter !== "all" || categoryFilter !== "all")} onReset={() => { setKeyword(""); setKindFilter("all"); setCategoryFilter("all"); setPage(1); }}>
-                    <Input allowClear className="w-full sm:w-80" prefix={<Search className="size-4 text-foreground/40" />} value={keyword} placeholder="搜索标题、内容、标签或来源" onChange={(event) => { setPage(1); setKeyword(event.target.value); }} />
-                </ListToolbar>
+                <div className="mt-3 flex items-center border-b border-border/75 pb-3">
+                    <Segmented value={libraryView} options={[{ label: "个人素材", value: "personal" }, { label: "团队素材", value: "team" }]} onChange={(value) => setLibraryView(value as "personal" | "team")} />
+                </div>
 
-                <div className="grid min-h-0 gap-4 lg:grid-cols-[176px_minmax(0,1fr)]">
-                    <aside className="thin-scrollbar flex gap-2 overflow-x-auto border-b border-border/70 py-3 lg:sticky lg:top-0 lg:block lg:max-h-[calc(100vh-150px)] lg:overflow-y-auto lg:border-b-0 lg:border-r lg:pr-3">
-                        <AssetFilterGroup title="素材类型" options={kindOptions} value={kindFilter} counts={kindCounts} onChange={(value) => { setKindFilter(value as AssetKind | "all"); setPage(1); }} />
-                        <AssetFilterGroup title="业务分类" options={categoryOptions} value={categoryFilter} counts={categoryCounts} onChange={(value) => { setCategoryFilter(value as AssetCategory | "all"); setPage(1); }} className="lg:mt-5" />
-                    </aside>
-                    <section className="min-w-0">
+                {libraryView === "team" ? <div className="mt-4"><TeamAssetBrowser manageable pageSize={20} /></div> : (
+                    <>
+                        <ListToolbar className="library-toolbar" active={Boolean(keyword || kindFilter !== "all" || categoryFilter !== "all" || folderFilter !== ASSET_FOLDER_ALL)} onReset={() => { setKeyword(""); setKindFilter("all"); setCategoryFilter("all"); setFolderFilter(ASSET_FOLDER_ALL); setPage(1); }}>
+                            <Input allowClear className="w-full sm:w-80" prefix={<Search className="size-4 text-foreground/40" />} value={keyword} placeholder="搜索标题、内容、标签或来源" onChange={(event) => { setPage(1); setKeyword(event.target.value); }} />
+                        </ListToolbar>
+                        <AssetFolderBar folders={folderViews} value={folderFilter} rootCount={validAssets.filter((asset) => !asset.folderId).length} totalCount={validAssets.length} onChange={(value) => { setFolderFilter(value); setPage(1); }} onCreate={openCreateFolder} onRename={openRenameFolder} onDelete={(folder) => { const target = folders.find((item) => item.id === folder.id); if (target) setDeletingFolder(target); }} />
+
+                        <div className="grid min-h-0 gap-4 lg:grid-cols-[176px_minmax(0,1fr)]">
+                            <aside className="thin-scrollbar flex gap-2 overflow-x-auto border-b border-border/70 py-3 lg:sticky lg:top-0 lg:block lg:max-h-[calc(100vh-150px)] lg:overflow-y-auto lg:border-b-0 lg:border-r lg:pr-3">
+                                <AssetFilterGroup title="素材类型" options={kindOptions} value={kindFilter} counts={kindCounts} onChange={(value) => { setKindFilter(value as AssetKind | "all"); setPage(1); }} />
+                                <AssetFilterGroup title="业务分类" options={categoryOptions} value={categoryFilter} counts={categoryCounts} onChange={(value) => { setCategoryFilter(value as AssetCategory | "all"); setPage(1); }} className="lg:mt-5" />
+                            </aside>
+                            <section className="min-w-0">
                         {selectedAssets.length ? (
                             <div className="mt-3 flex min-h-10 flex-wrap items-center gap-2 border-y border-border/75 py-2 text-xs">
                                 <strong className="mr-auto font-medium">已选择 {selectedAssets.length} 个素材</strong>
@@ -298,15 +391,17 @@ export default function AssetsPage() {
                                 <span className="library-create-meta">文本、图片、音视频或模型</span>
                             </button> : null}
                             {visibleAssets.map((asset) => (
-                                <AssetCard key={asset.id} asset={asset} selected={selectedIds.includes(asset.id)} onSelect={(selected) => setSelectedIds((current) => selected ? [...new Set([...current, asset.id])] : current.filter((id) => id !== asset.id))} onOpen={() => setPreviewAsset(asset)} onEdit={() => openEdit(asset)} onCopy={copyAssetText} onDownload={downloadImage} onDelete={() => setDeletingAsset(asset)} />
+                                <AssetCard key={asset.id} asset={asset} folders={folders} selected={selectedIds.includes(asset.id)} sharing={sharingAssetId === asset.id} onMove={(folderId) => movePersonalAsset(asset, folderId)} onSelect={(selected) => setSelectedIds((current) => selected ? [...new Set([...current, asset.id])] : current.filter((id) => id !== asset.id))} onOpen={() => setPreviewAsset(asset)} onEdit={() => openEdit(asset)} onCopy={copyAssetText} onDownload={downloadImage} onShare={() => openShareToTeam(asset)} onDelete={() => setDeletingAsset(asset)} />
                             ))}
                         </CollectionGrid>
 
                         {!visibleAssets.length && (validAssets.length > 0 || !canCreateAsset) ? <WorkspaceState icon="assets" compact title={validAssets.length ? "没有匹配的素材" : "素材库还是空的"} description={validAssets.length ? "调整关键词或左侧分类后再试。" : "从画布保存结果，或导入已有素材包开始整理。"} action={!validAssets.length ? <Button type="primary" icon={<Plus className="size-4" />} onClick={openCreate}>新增素材</Button> : undefined} /> : null}
 
                         <PaginationBar current={page} pageSize={pageSize} total={filteredAssets.length} pageSizeOptions={[20, 40, 80]} onChange={(nextPage, nextPageSize) => { setPage(nextPageSize !== pageSize ? 1 : nextPage); setPageSize(nextPageSize); }} />
-                    </section>
-                </div>
+                            </section>
+                        </div>
+                    </>
+                )}
             </WorkspacePage>
 
             <Modal className="library-modal" title={editingAsset ? "编辑素材" : "新增素材"} open={isAssetOpen} width={980} onCancel={() => setIsAssetOpen(false)} onOk={() => void saveAsset()} okText="保存" cancelText="取消" destroyOnHidden>
@@ -419,6 +514,38 @@ export default function AssetsPage() {
             </Modal>
 
             <AssetDrawer asset={previewAsset} onClose={() => setPreviewAsset(null)} onCopy={copyAssetText} onDownload={downloadImage} />
+            <Modal
+                title="共享到团队素材库"
+                open={Boolean(shareTargetAsset)}
+                onCancel={() => setShareTargetAsset(null)}
+                onOk={() => { if (shareTargetAsset) void shareToTeam(shareTargetAsset, shareFolderId); }}
+                okText="确认共享"
+                cancelText="取消"
+                confirmLoading={sharingAssetId === shareTargetAsset?.id}
+                okButtonProps={{ disabled: teamFolderQuery.isLoading || Boolean(teamFolderQuery.error) }}
+            >
+                <div className="space-y-3">
+                    <div className="text-sm text-foreground/65">选择「{shareTargetAsset?.title}」要放入的团队文件夹。</div>
+                    <Select
+                        className="w-full"
+                        value={shareFolderId}
+                        loading={teamFolderQuery.isLoading}
+                        disabled={Boolean(teamFolderQuery.error)}
+                        options={[
+                            { value: "", label: "团队根目录" },
+                            ...(teamFolderQuery.data?.folders || []).map((folder) => ({ value: folder.id, label: folder.name })),
+                        ]}
+                        onChange={setShareFolderId}
+                    />
+                    {teamFolderQuery.error ? <div className="flex items-center justify-between gap-3 text-xs text-red-500"><span>{teamFolderQuery.error instanceof Error ? teamFolderQuery.error.message : "团队文件夹加载失败。"}</span><Button size="small" type="link" onClick={() => void teamFolderQuery.refetch()}>重试</Button></div> : <div className="text-xs text-foreground/45">未选择具体文件夹时，素材会共享到团队根目录。</div>}
+                </div>
+            </Modal>
+            <Modal title={editingFolder ? "重命名个人文件夹" : "新建个人文件夹"} open={folderModalOpen} onCancel={() => setFolderModalOpen(false)} onOk={saveFolder} okText="保存" okButtonProps={{ disabled: !folderName.trim() }}>
+                <Input value={folderName} maxLength={120} placeholder="输入文件夹名称" onChange={(event) => setFolderName(event.target.value)} />
+            </Modal>
+            <Modal title="删除个人文件夹" open={Boolean(deletingFolder)} onCancel={() => setDeletingFolder(null)} onOk={confirmDeleteFolder} okText="删除文件夹" okButtonProps={{ danger: true }}>
+                确定删除「{deletingFolder?.name}」吗？文件夹内素材会移回根目录。
+            </Modal>
 
             <input ref={assetInputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importAssetZip(event.target.files?.[0])} />
             <input ref={modelInputRef} type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" className="hidden" onChange={(event) => { void readModelFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
@@ -433,9 +560,21 @@ export default function AssetsPage() {
     );
 }
 
-function AssetCard({ asset, selected, onSelect, onOpen, onEdit, onCopy, onDownload, onDelete }: { asset: LibraryAsset; selected: boolean; onSelect: (selected: boolean) => void; onOpen: () => void; onEdit: () => void; onCopy: (asset: LibraryAsset) => void; onDownload: (asset: LibraryAsset) => void; onDelete: () => void }) {
+function AssetCard({ asset, folders, selected, sharing, onMove, onSelect, onOpen, onEdit, onCopy, onDownload, onShare, onDelete }: { asset: LibraryAsset; folders: PersonalAssetFolder[]; selected: boolean; sharing: boolean; onMove: (folderId: string) => void; onSelect: (selected: boolean) => void; onOpen: () => void; onEdit: () => void; onCopy: (asset: LibraryAsset) => void; onDownload: (asset: LibraryAsset) => void; onShare: () => void; onDelete: () => void }) {
     const summary = assetSummary(asset);
-    return (
+    const menuItems = [
+        ...(asset.kind !== "video" && asset.kind !== "audio" && asset.kind !== "model" ? [{ key: "edit", icon: <PencilLine className="size-3.5" />, label: "编辑", onClick: onEdit }] : []),
+        ...(asset.kind === "text" ? [{ key: "copy", icon: <Copy className="size-3.5" />, label: "复制文本", onClick: () => void onCopy(asset) }] : []),
+        ...(asset.kind === "image" || asset.kind === "video" || asset.kind === "audio" || asset.kind === "model" ? [{ key: "download", icon: <Download className="size-3.5" />, label: "下载", onClick: () => onDownload(asset) }] : []),
+        { key: "move", icon: <FolderInput className="size-3.5" />, label: "移动到", children: [
+            { key: "move-root", label: "根目录", onClick: () => onMove("") },
+            ...folders.map((folder) => ({ key: `move-${folder.id}`, label: folder.name, onClick: () => onMove(folder.id) })),
+        ] },
+        { key: "share", icon: <Share2 className="size-3.5" />, label: sharing ? "正在共享..." : "共享到团队", disabled: sharing, onClick: onShare },
+        { type: "divider" as const },
+        { key: "delete", danger: true, icon: <Trash2 className="size-3.5" />, label: "删除", onClick: onDelete },
+    ];
+    const card = (
         <AssetLibraryCard selected={selected}>
             <AssetLibraryCardMedia className="relative overflow-hidden bg-foreground/[.045]">
                 <button type="button" className="block w-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--workspace-accent)]" onClick={onOpen} aria-label={`查看素材：${asset.title}`}>
@@ -444,13 +583,7 @@ function AssetCard({ asset, selected, onSelect, onOpen, onEdit, onCopy, onDownlo
                 <input type="checkbox" checked={selected} onClick={(event) => event.stopPropagation()} onChange={(event) => onSelect(event.target.checked)} className={`absolute left-2 top-2 size-4 accent-[var(--workspace-accent)] drop-shadow-md transition-opacity ${selected ? "opacity-100" : "opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"}`} aria-label={`选择 ${asset.title}`} />
                 <Dropdown
                     trigger={["click"]}
-                    menu={{ items: [
-                        ...(asset.kind !== "video" && asset.kind !== "audio" && asset.kind !== "model" ? [{ key: "edit", icon: <PencilLine className="size-3.5" />, label: "编辑", onClick: onEdit }] : []),
-                        ...(asset.kind === "text" ? [{ key: "copy", icon: <Copy className="size-3.5" />, label: "复制文本", onClick: () => void onCopy(asset) }] : []),
-                        ...(asset.kind === "image" || asset.kind === "video" || asset.kind === "audio" || asset.kind === "model" ? [{ key: "download", icon: <Download className="size-3.5" />, label: "下载", onClick: () => onDownload(asset) }] : []),
-                        { type: "divider" as const },
-                        { key: "delete", danger: true, icon: <Trash2 className="size-3.5" />, label: "删除", onClick: onDelete },
-                    ] }}
+                    menu={{ items: menuItems }}
                 >
                     <button type="button" className="absolute right-2 top-2 grid size-8 place-items-center rounded-[var(--r-sm)] border border-white/20 bg-black/55 text-white/85 opacity-100 shadow-sm backdrop-blur transition-[opacity,background-color] hover:bg-black/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100" aria-label="更多素材操作" title="更多操作">
                         <MoreHorizontal className="size-4" />
@@ -475,6 +608,7 @@ function AssetCard({ asset, selected, onSelect, onOpen, onEdit, onCopy, onDownlo
             </button>
         </AssetLibraryCard>
     );
+    return <Dropdown trigger={["contextMenu"]} menu={{ items: menuItems }}><div>{card}</div></Dropdown>;
 }
 
 function AssetFilterGroup({ title, options, value, counts, onChange, className = "" }: { title: string; options: Array<{ label: string; value: string }>; value: string; counts: Map<string, number>; onChange: (value: string) => void; className?: string }) {
@@ -578,6 +712,12 @@ function StorageTag({ asset }: { asset: LibraryAsset }) {
 
 function assetSearchText(asset: LibraryAsset) {
     return [asset.title, asset.source || "", asset.note || "", assetCategoryLabel(asset.category), (asset.tags || []).join(" "), asset.kind === "text" ? asset.data.content : asset.data.mimeType].join(" ").toLowerCase();
+}
+
+function normalizeTeamAssetCover(asset: LibraryAsset): LibraryAsset {
+    if (!asset.coverUrl.startsWith("blob:") && !asset.coverUrl.startsWith("data:")) return asset;
+    if (asset.kind === "image") return { ...asset, coverUrl: asset.data.dataUrl };
+    return { ...asset, coverUrl: "" };
 }
 
 function assetCategoryLabel(category?: AssetCategory) {

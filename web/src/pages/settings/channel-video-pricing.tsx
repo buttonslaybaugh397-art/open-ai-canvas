@@ -46,6 +46,9 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
     const activeProtocol = activeModel ? activeModelCost?.protocol || defaultProtocolForModel(channel, activeModel) : undefined;
     const activeCapability = activeModel ? activeModelCost?.capability || modelProtocolCapability(activeProtocol) || "text" : undefined;
     const activeBillingMode = activeModelCost?.billingMode || "fixed_request";
+    const availableProtocols = channel.connectionType === "globalaiopc"
+        ? MODEL_PROTOCOLS.filter((item) => item.value === "globalaiopc-image" || item.value === "globalaiopc-video")
+        : MODEL_PROTOCOLS.filter((item) => item.value !== "globalaiopc-image" && item.value !== "globalaiopc-video");
 
     return (
         <div className="mt-3 border-t border-border/70 pt-3">
@@ -119,7 +122,7 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
                             <CapabilityCardPicker
                                 value={activeCapability}
                                 onChange={(nextCapability) => {
-                                    const nextProtocol = MODEL_PROTOCOLS.find((item) => item.value === activeProtocol && item.capability === nextCapability)?.value || MODEL_PROTOCOLS.find((item) => item.capability === nextCapability)?.value;
+                                    const nextProtocol = availableProtocols.find((item) => item.value === activeProtocol && item.capability === nextCapability)?.value || availableProtocols.find((item) => item.capability === nextCapability)?.value;
                                     if (!nextProtocol) return;
                                     updateCost(activeModel, {
                                         protocol: nextProtocol,
@@ -135,6 +138,7 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
                             <ProtocolCardPicker
                                 capability={activeCapability}
                                 value={activeProtocol}
+                                allowedProtocols={availableProtocols.map((item) => item.value)}
                                 onChange={(nextProtocol) => updateCost(activeModel, { protocol: nextProtocol, capabilityConfig: activeCapability === "image" || activeCapability === "video" ? defaultModelCapabilityConfig(nextProtocol, activeModel) : undefined })}
                             />
                         </section>

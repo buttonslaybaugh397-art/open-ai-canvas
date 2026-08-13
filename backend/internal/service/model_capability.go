@@ -115,6 +115,19 @@ func DefaultImageCapabilityConfig(protocol string, modelName string) *ImageCapab
 		image.ResponseFormat = ParameterSupport{Supported: true}
 		image.OutputFormat = ParameterSupport{Supported: false}
 		image.MaxOutputs = 1
+	case model.ChannelInterfaceGlobalAiOpcImage:
+		image.References.MaxImages = 10
+		image.References.MaskSupported = false
+		image.Size = ImageSizeConfig{Parameter: "aspect_ratio", Values: []string{"1:1", "3:4", "4:3", "16:9", "9:16", "3:2", "2:3", "21:9"}, Default: "1:1", AllowCustom: false}
+		if strings.EqualFold(strings.TrimSpace(modelName), "seedream_5.0Pro") {
+			image.Quality = ImageQualityConfig{Supported: true, Values: []string{"1K", "2K"}, Default: "1K"}
+		} else {
+			image.Quality = ImageQualityConfig{Supported: true, Values: []string{"2K", "3K", "4K"}, Default: "2K"}
+		}
+		image.TransparentBackground = VideoBooleanConfig{Supported: false, Default: false}
+		image.ResponseFormat = ParameterSupport{Supported: false}
+		image.OutputFormat = ParameterSupport{Supported: false}
+		image.MaxOutputs = 1
 	case model.ChannelInterfaceVolcengineArkImage:
 		image.References.MaskSupported = false
 		image.Quality.Supported = false
@@ -162,6 +175,78 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 	case model.ChannelInterfaceGeminiVeo:
 		video.Duration = VideoDurationConfig{Selection: "enum", Values: []int{4, 6, 8}, Default: 6}
 		video.Resolutions = []string{"720p", "1080p"}
+	case model.ChannelInterfaceGlobalAiOpcVideo:
+		globalAiOpcModel := strings.ToLower(strings.TrimSpace(modelName))
+		video.References.MaxImages, video.References.MaxVideos, video.References.MaxAudios = 9, 3, 3
+		video.References.MaxVideoBytes, video.References.MaxAudioBytes = 200*1024*1024, 15*1024*1024
+		video.References.MaxVideoDuration, video.References.MaxAudioDuration = 30, 30
+		video.Duration = VideoDurationConfig{Selection: "range", Min: 4, Max: 15, Step: 1, Default: 5}
+		video.Ratios = []string{"16:9", "9:16", "1:1", "4:3", "3:4", "21:9"}
+		video.DefaultRatio = "16:9"
+		video.Resolutions = []string{"720p"}
+		video.DefaultResolution = "720p"
+		switch globalAiOpcModel {
+		case "seedance-2.5-c1":
+			video.References.MaxImages, video.References.MaxVideos, video.References.MaxAudios = 30, 10, 10
+			video.Duration.Max, video.Duration.Default = 30, 4
+			video.Ratios = []string{"16:9", "9:16", "1:1"}
+			video.Resolutions = []string{"480p", "720p"}
+		case "seedance-2.5-c2":
+			video.References.MaxImages, video.References.MaxVideos, video.References.MaxAudios = 30, 0, 10
+			video.References.MaxAudioDuration = 15
+			video.Duration.Max, video.Duration.Default = 29, 5
+			video.Ratios = []string{"16:9", "9:16", "1:1"}
+		case "seedance-2.5-c3":
+			video.References.MaxImages, video.References.MaxVideos, video.References.MaxAudios = 30, 0, 10
+			video.Duration.Max, video.Duration.Default = 29, 4
+			video.Ratios = []string{"16:9", "9:16", "1:1"}
+			video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
+		case "sd_2.0_fast_special":
+			video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
+			video.Watermark = VideoBooleanConfig{Supported: true, Default: false}
+		case "sd_2.0_special":
+			video.Resolutions = []string{"720p", "1080p", "2160p"}
+			video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
+			video.Watermark = VideoBooleanConfig{Supported: true, Default: false}
+		case "sd_2.0_discount":
+			video.Resolutions = []string{"480p", "720p", "1080p"}
+			video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
+			video.Watermark = VideoBooleanConfig{Supported: true, Default: false}
+		case "sd_2.0_fast_discount":
+			video.Resolutions = []string{"480p", "720p"}
+			video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
+			video.Watermark = VideoBooleanConfig{Supported: true, Default: false}
+		case "minimax-h3-c4":
+			video.References.MaxImages, video.References.MaxVideos, video.References.MaxAudios = 5, 0, 3
+			video.Duration.Min = 5
+			video.Ratios = []string{"16:9", "9:16"}
+			video.Resolutions, video.DefaultResolution = []string{"1440p"}, "1440p"
+		case "videos_933_c1":
+			video.Duration.Default = 4
+			video.Resolutions, video.DefaultResolution = []string{"480p", "720p", "1080p"}, "480p"
+			video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: false}
+		case "videos_fast_933_c1":
+			video.Duration.Default = 4
+			video.Resolutions, video.DefaultResolution = []string{"480p", "720p"}, "480p"
+			video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
+		case "videos_stable", "videos_stable_fast":
+			video.References.MaxImages, video.References.MaxVideos, video.References.MaxAudios = 4, 3, 1
+			video.Duration.Default = 4
+			video.Ratios = []string{"16:9", "9:16", "1:1"}
+		default:
+			if strings.HasPrefix(globalAiOpcModel, "seedance_1_5_pro_") {
+				video.References.MaxImages, video.References.MaxVideos, video.References.MaxAudios = 2, 0, 0
+				video.Duration.Max, video.Duration.Default = 11, 4
+				video.Ratios = []string{"16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "keep_ratio", "adaptive"}
+				resolution := "720p"
+				if strings.Contains(globalAiOpcModel, "1080p") {
+					resolution = "1080p"
+				} else if strings.Contains(globalAiOpcModel, "480p") {
+					resolution = "480p"
+				}
+				video.Resolutions, video.DefaultResolution = []string{resolution}, resolution
+			}
+		}
 	case model.ChannelInterfaceVolcengineArkVideo:
 		video.References.MaxVideos, video.References.MaxAudios = 3, 3
 		video.References.MaxVideoBytes, video.References.MaxAudioBytes = 200*1024*1024, 15*1024*1024

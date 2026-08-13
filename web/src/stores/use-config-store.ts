@@ -20,6 +20,7 @@ export type ModelChannel = {
     secretKey?: string;
     headers?: ChannelHeader[];
     apiFormat: ApiCallFormat;
+    connectionType?: "openai" | "gemini" | "globalaiopc";
     interfaceType?: ChannelInterfaceType;
     models: string[];
     scope?: "system" | "user";
@@ -337,7 +338,8 @@ export function useEffectiveConfig() {
 }
 
 export function createModelChannel(channel?: Partial<ModelChannel>): ModelChannel {
-    const apiFormat = normalizeApiFormat(channel?.apiFormat);
+    const isGlobalAiOpc = channel?.connectionType === "globalaiopc";
+    const apiFormat = isGlobalAiOpc ? "openai" : normalizeApiFormat(channel?.apiFormat);
     const interfaceType = normalizeChannelInterfaceType(channel?.interfaceType);
     const providedBaseUrl = channel?.baseUrl?.trim();
     return {
@@ -348,6 +350,7 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
         secretKey: channel?.secretKey || "",
         headers: Array.isArray(channel?.headers) ? channel.headers.map((header) => ({ name: String(header.name || ""), value: String(header.value || "") })) : [],
         apiFormat,
+        ...(isGlobalAiOpc ? { connectionType: "globalaiopc" as const } : {}),
         interfaceType,
         models: uniqueRawModels(channel?.models || []),
         scope: channel?.scope === "system" ? "system" : "user",

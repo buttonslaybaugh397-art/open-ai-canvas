@@ -10,6 +10,8 @@ import { imageToDataUrl } from "@/services/image-storage";
 import type { ReferenceImage } from "@/types/image";
 import { withOpenAIPromptCacheKey } from "@/lib/openai-prompt-cache";
 import { imageSizeRequest, modelCapabilityConfigFor, normalizeImageValue, type ImageCapabilityConfig } from "@/lib/model-capabilities";
+import { globalAiOpcResponseCodeFailed, globalAiOpcTaskUrl, GLOBALAIOPC_IMAGE_MODELS, GLOBALAIOPC_VIDEO_MODELS } from "@/lib/globalaiopc-channel";
+import { getResourceOSSUrl } from "@/services/api/resources";
 
 export type AiTextMessage = {
     role: "system" | "user" | "assistant";
@@ -77,6 +79,17 @@ type ImageApiResponse = {
     code?: number;
     msg?: string;
 };
+type GlobalAiOpcTask = {
+    id?: string;
+    task_id?: string;
+    status?: string;
+    result_url?: string;
+    image_url?: string;
+    error?: string | { message?: string; code?: string } | null;
+    message?: string;
+    msg?: string;
+};
+type GlobalAiOpcTaskResponse = GlobalAiOpcTask | { code?: number | string; data?: GlobalAiOpcTask | null; msg?: string };
 type GeminiPart = {
     text?: string;
     inlineData?: { mimeType?: string; data?: string };
@@ -813,6 +826,9 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     validateImageCapability(imageProfile, []);
     const normalizedImage = normalizeImageValue(imageProfile, config);
     const n = Number(normalizedImage.count);
+    if (requestConfig.interfaceType === "globalaiopc-image") {
+        return requestGlobalAiOpcImages(requestConfig, prompt, [], normalizedImage, options);
+    }
     if (requestConfig.apiFormat === "gemini") {
         try {
             return await requestGeminiImages(requestConfig, prompt, [], n, options);
@@ -891,6 +907,95 @@ async function grokImageInputURL(image: ReferenceImage) {
     return imageToDataUrl(image);
 }
 
+async function requestGlobalAiOpcImages(config: ReturnType<typeof resolveModelRequestConfig>, prompt: string, references: ReferenceImage[], image: ReturnType<typeof normalizeImageValue>, options?: RequestOptions) {
+    if (Number(image.count) !== 1) throw new Error("GlobalAiOpc 图片任务当前每次只支持生成 1 张图片");
+    const referenceImages = await Promise.all(references.map(globalAiOpcImageURL));
+    try {
+        const created = unwrapGlobalAiOpcTask(await postChannelJSON<GlobalAiOpcTaskResponse>(
+            config,
+            globalAiOpcTaskUrl(config.baseUrl),
+            {
+                model: config.model,
+                prompt: withSystemPrompt(config, prompt),
+                ...(referenceImages.length ? { reference_images: referenceImages } : {}),
+                aspect_ratio: normalizeGlobalAiOpcImageRatio(image.size),
+                resolution: normalizeGlobalAiOpcImageResolution(config.model, image.quality),
+                watermark: false,
+            },
+            options,
+        ));
+        const taskId = created.id || created.task_id || "";
+        if (!taskId) throw new Error("GlobalAiOpc 接口没有返回任务 ID");
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+            const task = unwrapGlobalAiOpcTask(await getChannelJSON<GlobalAiOpcTaskResponse>(config, globalAiOpcTaskUrl(config.baseUrl, taskId), options));
+            const status = String(task.status || "").toLowerCase();
+            if (status === "completed" || status === "succeeded" || status === "success") {
+                const dataUrl = task.image_url || task.result_url || "";
+                if (!dataUrl) throw new Error("GlobalAiOpc 图片任务已完成但没有返回图片地址");
+                return [{ id: nanoid(), dataUrl }];
+            }
+            if (["failed", "cancelled", "canceled", "expired"].includes(status)) throw new Error(globalAiOpcTaskError(task));
+            if (attempt === 119) throw new Error("GlobalAiOpc 图片生成超时，请稍后重试");
+            await waitForGlobalAiOpcTask(options?.signal);
+        }
+        throw new Error("GlobalAiOpc 图片生成超时，请稍后重试");
+    } catch (error) {
+        throw new Error(readAxiosError(error, "GlobalAiOpc 图片生成失败"));
+    }
+}
+
+async function getChannelJSON<T>(config: ReturnType<typeof resolveModelRequestConfig>, upstreamUrl: string, options?: RequestOptions) {
+    const request = channelRequest(config, upstreamUrl);
+    return (await axios.get<T>(request.url, { headers: request.headers, withCredentials: request.credentials === "include", signal: options?.signal })).data;
+}
+
+async function globalAiOpcImageURL(image: ReferenceImage) {
+    if (image.storageKey?.startsWith("resource:")) return getResourceOSSUrl(image.storageKey);
+    const value = String(image.url || image.dataUrl || "").trim();
+    if (/^https?:\/\//i.test(value)) return value;
+    throw new Error("GlobalAiOpc 参考图片需要公网 URL，请先保存到 OSS");
+}
+
+function normalizeGlobalAiOpcImageRatio(value: string) {
+    return ["1:1", "3:4", "4:3", "16:9", "9:16", "3:2", "2:3", "21:9"].includes(value) ? value : "1:1";
+}
+
+function normalizeGlobalAiOpcImageResolution(model: string, value: string) {
+    const resolution = value.toUpperCase();
+    if (model.trim().toLowerCase() === "seedream_5.0pro") return resolution === "2K" ? "2K" : "1K";
+    return resolution === "3K" || resolution === "4K" ? resolution : "2K";
+}
+
+function globalAiOpcTaskError(task: GlobalAiOpcTask) {
+    if (typeof task.error === "string" && task.error.trim()) return task.error.trim();
+    if (task.error && typeof task.error === "object") return task.error.message || task.error.code || "GlobalAiOpc 任务失败";
+    return task.message || task.msg || "GlobalAiOpc 任务失败";
+}
+
+function unwrapGlobalAiOpcTask(payload: GlobalAiOpcTaskResponse): GlobalAiOpcTask {
+    if (payload && typeof payload === "object" && "data" in payload) {
+        const envelope = payload as { code?: number | string; data?: GlobalAiOpcTask | null; msg?: string };
+        if (globalAiOpcResponseCodeFailed(envelope.code)) throw new Error(envelope.msg || "GlobalAiOpc 请求失败");
+        if (!envelope.data) throw new Error("GlobalAiOpc 接口没有返回任务数据");
+        return envelope.data;
+    }
+    return payload as GlobalAiOpcTask;
+}
+
+function waitForGlobalAiOpcTask(signal?: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(new DOMException("Aborted", "AbortError"));
+            return;
+        }
+        const timer = window.setTimeout(resolve, 5000);
+        signal?.addEventListener("abort", () => {
+            window.clearTimeout(timer);
+            reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+    });
+}
+
 export async function requestEdit(config: AiConfig, prompt: string, references: ReferenceImage[], mask?: ReferenceImage, options?: RequestOptions) {
     const selectedModel = config.model || config.imageModel;
     const requestConfig = resolveModelRequestConfig(config, selectedModel);
@@ -899,6 +1004,10 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     const normalizedImage = normalizeImageValue(imageProfile, config);
     const n = Number(normalizedImage.count);
     const requestPrompt = buildImageReferencePromptText(prompt, references);
+    if (requestConfig.interfaceType === "globalaiopc-image") {
+        if (mask) throw new Error("GlobalAiOpc 图片任务不支持蒙版编辑，请移除蒙版后重试");
+        return requestGlobalAiOpcImages(requestConfig, requestPrompt, references, normalizedImage, options);
+    }
     if (requestConfig.apiFormat === "gemini") {
         if (mask) throw new Error("Gemini 调用格式暂不支持蒙版编辑");
         try {
@@ -1100,6 +1209,12 @@ export type ChannelModelCatalogItem = { id: string; supportedEndpointTypes?: str
 export type ChannelModelFetchResult = { models: string[]; catalog: ChannelModelCatalogItem[] };
 
 export async function fetchChannelModels(channel: ModelChannel, viaBackend = false): Promise<ChannelModelFetchResult> {
+    if (channel.connectionType === "globalaiopc") {
+        const imageModels = GLOBALAIOPC_IMAGE_MODELS.map((id) => ({ id, supportedEndpointTypes: ["globalaiopc-image"] }));
+        const videoModels = GLOBALAIOPC_VIDEO_MODELS.map((id) => ({ id, supportedEndpointTypes: ["globalaiopc-video"] }));
+        const catalog = [...imageModels, ...videoModels];
+        return { models: catalog.map((item) => item.id), catalog };
+    }
     if (!viaBackend) {
         const models = await fetchImageModels({ baseUrl: channel.baseUrl, apiKey: channel.apiKey, apiFormat: channel.apiFormat });
         return { models, catalog: models.map((id) => ({ id })) };

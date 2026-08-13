@@ -8,6 +8,7 @@ import { WorkspaceState } from "@/components/layout/workspace-state";
 import { WorkspaceSignalIcon } from "@/components/ui/aceternity/workspace-signal-icon";
 import { ChannelHeadersEditor, validateChannelHeaders } from "@/components/channel-headers-editor";
 import { refreshSystemChannels } from "@/lib/user-session";
+import { applyGlobalAiOpcPreset, GLOBALAIOPC_BASE_URL } from "@/lib/globalaiopc-channel";
 import { fetchChannelModels, type ChannelModelCatalogItem } from "@/services/api/image";
 import { defaultModelCapabilityConfig } from "@/lib/model-capabilities";
 import { modelProtocolCapability, protocolForModelCatalog } from "@/lib/model-protocols";
@@ -37,7 +38,7 @@ const configSections: Array<{ key: ConfigSectionKey; label: string; description:
     { key: "storage", label: "我的 OSS", description: "管理个人媒体存储", icon: <Cloud className="size-4" /> },
 ];
 
-type UserChannelConnection = "openai" | "gemini";
+type UserChannelConnection = "openai" | "gemini" | "globalaiopc";
 
 function isConfigSection(value: string | null): value is ConfigSectionKey {
     return configSections.some((section) => section.key === value);
@@ -125,11 +126,21 @@ export default function SettingsPage() {
     };
 
     const updateChannelConnection = (channel: ModelChannel, connection: UserChannelConnection) => {
+        if (connection === "globalaiopc") {
+            updateChannel(channel.id, applyGlobalAiOpcPreset(channel));
+            return;
+        }
         const apiFormat = connection;
         const defaultBaseUrl = defaultBaseUrlForApiFormat(apiFormat);
         const baseUrl = isKnownDefaultBaseUrl(channel.baseUrl) ? defaultBaseUrl : channel.baseUrl;
         // 渠道只负责连接类型；具体模型能力和请求协议由下方共享能力卡片维护。
-        updateChannel(channel.id, { apiFormat, interfaceType: undefined, baseUrl });
+        updateChannel(channel.id, {
+            connectionType: undefined,
+            apiFormat,
+            interfaceType: undefined,
+            baseUrl,
+            ...(channel.connectionType === "globalaiopc" ? { models: [], modelCosts: [] } : {}),
+        });
     };
 
     const addChannel = () => {
@@ -342,7 +353,7 @@ export default function SettingsPage() {
                                                                 disabled={loadingChannelIds.includes("all")}
                                                                 onClick={() => void refreshChannelModels(channel)}
                                                             >
-                                                                拉取模型
+                                                                {channelConnectionMode(channel) === "globalaiopc" ? "恢复预置" : "拉取模型"}
                                                             </Button>
                                                             <Tooltip title={collapsedChannelIds.has(channel.id) ? "\u5c55\u5f00\u6e20\u9053\u914d\u7f6e" : "\u6536\u8d77\u6e20\u9053\u914d\u7f6e"}>
                                                                 <Button
@@ -384,7 +395,7 @@ export default function SettingsPage() {
                                                             <Segmented<UserChannelConnection>
                                                                 block
                                                                 value={channelConnectionMode(channel)}
-                                                                options={[{ label: "OpenAI 兼容", value: "openai" }, { label: "Gemini 原生", value: "gemini" }]}
+                                                                options={[{ label: "OpenAI 兼容", value: "openai" }, { label: "Gemini 原生", value: "gemini" }, { label: "GlobalAiOpc", value: "globalaiopc" }]}
                                                                 onChange={(value) => updateChannelConnection(channel, value)}
                                                             />
                                                         </Form.Item>
@@ -393,7 +404,8 @@ export default function SettingsPage() {
                                                                 id={`channel-${channel.id}-base-url`}
                                                                 inputMode="url"
                                                                 value={channel.baseUrl}
-                                                                placeholder="填写渠道 Base URL"
+                                                                placeholder={channelConnectionMode(channel) === "globalaiopc" ? GLOBALAIOPC_BASE_URL : "填写渠道 Base URL"}
+                                                                disabled={channelConnectionMode(channel) === "globalaiopc"}
                                                                 onChange={(event) => updateChannel(channel.id, { baseUrl: event.target.value })}
                                                                 onBlur={(event) => updateChannel(channel.id, { baseUrl: event.target.value.trim().replace(/\/+$/, "") })}
                                                             />
@@ -639,6 +651,7 @@ function uniqueModels(models: string[]) {
 }
 
 function channelConnectionMode(channel: ModelChannel): UserChannelConnection {
+    if (channel.connectionType === "globalaiopc") return "globalaiopc";
     return channel.apiFormat === "gemini" ? "gemini" : "openai";
 }
 
@@ -657,7 +670,7 @@ function channelConnectionError(channel: ModelChannel) {
 }
 
 function channelConnectionSignature(channel: ModelChannel) {
-    return [channel.baseUrl.trim(), channel.apiKey.trim(), channel.secretKey?.trim() || "", channel.apiFormat, channel.interfaceType || "auto", JSON.stringify(channel.headers || [])].join("\n");
+    return [channel.baseUrl.trim(), channel.apiKey.trim(), channel.secretKey?.trim() || "", channel.apiFormat, channel.connectionType || "", channel.interfaceType || "auto", JSON.stringify(channel.headers || [])].join("\n");
 }
 
 function channelValidationError(channel: ModelChannel) {
@@ -679,13 +692,15 @@ function focusInvalidChannelField(channel: ModelChannel) {
 }
 
 function channelProtocolLabel(channel: ModelChannel) {
-    return channelConnectionMode(channel) === "gemini" ? "Gemini 原生" : "OpenAI 兼容";
+    const mode = channelConnectionMode(channel);
+    if (mode === "globalaiopc") return "GlobalAiOpc";
+    return mode === "gemini" ? "Gemini 原生" : "OpenAI 兼容";
 }
 
 function isKnownDefaultBaseUrl(value: string) {
     const normalized = value.trim().replace(/\/+$/, "");
     if (!normalized) return true;
-    return [defaultBaseUrlForApiFormat("openai"), defaultBaseUrlForApiFormat("gemini")].some((candidate) => candidate.replace(/\/+$/, "") === normalized);
+    return [defaultBaseUrlForApiFormat("openai"), defaultBaseUrlForApiFormat("gemini"), GLOBALAIOPC_BASE_URL].some((candidate) => candidate.replace(/\/+$/, "") === normalized);
 }
 
 function requiresSecretKey(channel: ModelChannel) {

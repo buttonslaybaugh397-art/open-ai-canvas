@@ -5,7 +5,7 @@ import { ImageSettingsTheme } from "@/components/image-settings-panel";
 import { boolConfig, isSeedanceFastModel, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceRatioOptions } from "@/lib/seedance-video";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import { normalizeVideoDuration, normalizeVideoResolution, VIDEO_DURATION_MIN } from "@/lib/video-generation-options";
-import { modelCapabilityConfigFor, videoDurationOptions, type VideoCapabilityConfig } from "@/lib/model-capabilities";
+import { modelCapabilityConfigFor, normalizeVideoValue, videoDurationOptions, type VideoCapabilityConfig } from "@/lib/model-capabilities";
 import { modelOptionName, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 
 const sizeOptions = [
@@ -27,7 +27,11 @@ type VideoSettingsPanelProps = {
 
 export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[292px] space-y-3" }: VideoSettingsPanelProps) {
     const profile = modelCapabilityConfigFor(config, config.model).video!;
-    if (resolveModelRequestConfig(config, config.model).interfaceType === "volcengine-jimeng-video") {
+    const interfaceType = resolveModelRequestConfig(config, config.model).interfaceType;
+    if (interfaceType === "globalaiopc-video") {
+        return <GlobalAiOpcVideoSettingsPanel config={config} profile={profile} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
+    }
+    if (interfaceType === "volcengine-jimeng-video") {
         return <JiMengVideoSettingsPanel config={config} profile={profile} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
     }
     if (isSeedanceVideoConfig(config)) {
@@ -88,6 +92,39 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
             </div>
         </ImageSettingsTheme>
     );
+}
+
+function GlobalAiOpcVideoSettingsPanel({ config, profile, onConfigChange, theme, showTitle, className }: VideoSettingsPanelProps & { profile: VideoCapabilityConfig }) {
+    const normalized = normalizeVideoValue(profile, { seconds: config.videoSeconds, ratio: config.size, resolution: config.vquality });
+    const generateAudio = boolConfig(config.videoGenerateAudio, profile.generateAudio.default);
+    const watermark = boolConfig(config.videoWatermark, profile.watermark.default);
+    return (
+        <ImageSettingsTheme theme={theme}>
+            <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
+                {showTitle ? <div className="text-sm font-semibold">视频设置</div> : null}
+                <SettingGroup title="分辨率" color={theme.node.muted}>
+                    <div className="grid grid-cols-3 gap-1.5">
+                        {profile.resolutions.map((value) => <OptionPill key={value} selected={normalized.resolution === value} theme={theme} onClick={() => onConfigChange("vquality", value)}>{value.toUpperCase()}</OptionPill>)}
+                    </div>
+                </SettingGroup>
+                <SettingGroup title="比例" color={theme.node.muted}>
+                    <div className="grid grid-cols-4 gap-1.5">
+                        {profile.ratios.map((value) => <OptionPill key={value} selected={normalized.ratio === value} theme={theme} onClick={() => onConfigChange("size", value)}>{globalAiOpcRatioLabel(value)}</OptionPill>)}
+                    </div>
+                </SettingGroup>
+                <SettingGroup title="秒数" color={theme.node.muted}>
+                    <VideoDurationControl profile={profile} value={Number(normalized.seconds)} theme={theme} onChange={(value) => onConfigChange("videoSeconds", String(value))} />
+                </SettingGroup>
+                {profile.generateAudio.supported || profile.watermark.supported ? <SettingGroup title="输出" color={theme.node.muted}><div className="grid grid-cols-2 gap-3 rounded-md px-2" style={{ background: theme.toolbar.itemHover }}>{profile.generateAudio.supported ? <SwitchRow label="生成声音" checked={generateAudio} theme={theme} onChange={(checked) => onConfigChange("videoGenerateAudio", String(checked))} /> : null}{profile.watermark.supported ? <SwitchRow label="添加水印" checked={watermark} theme={theme} onChange={(checked) => onConfigChange("videoWatermark", String(checked))} /> : null}</div></SettingGroup> : null}
+            </div>
+        </ImageSettingsTheme>
+    );
+}
+
+function globalAiOpcRatioLabel(value: string) {
+    if (value === "keep_ratio") return "保持原比例";
+    if (value === "adaptive") return "自适应";
+    return value;
 }
 
 function JiMengVideoSettingsPanel({ config, profile, onConfigChange, theme, showTitle, className }: VideoSettingsPanelProps & { profile: VideoCapabilityConfig }) {

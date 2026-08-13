@@ -6,14 +6,15 @@ import { getMediaBlob, uploadMediaFile, type UploadedFile } from "@/services/fil
 import { getResourceOSSUrl } from "@/services/api/resources";
 import { channelRequest } from "@/services/api/custom-channel-relay";
 import { imageToDataUrl } from "@/services/image-storage";
-import { modelCapabilityConfigFor, videoDurationAllowed } from "@/lib/model-capabilities";
+import { modelCapabilityConfigFor, normalizeVideoValue, videoDurationAllowed } from "@/lib/model-capabilities";
+import { globalAiOpcResponseCodeFailed, globalAiOpcTaskUrl } from "@/lib/globalaiopc-channel";
 import { boolConfig, buildSeedancePromptText, isArkPlanBaseUrl, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceVideoReferenceError, SEEDANCE_REFERENCE_LIMITS } from "@/lib/seedance-video";
 import { buildApiUrl, isSystemProxyBaseUrl, modelOptionName, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 
 type VideoResponse = { id?: string; request_id?: string; task_id?: string; status?: string; error?: { message?: string }; video?: { url?: string }; video_url?: string; result_url?: string };
-type ApiVideoResponse = VideoResponse | { code?: number; data?: VideoResponse | null; msg?: string };
+type ApiVideoResponse = VideoResponse | { code?: number | string; data?: VideoResponse | null; msg?: string };
 type ResolvedAiConfig = ReturnType<typeof resolveModelRequestConfig>;
 type SeedanceTask = {
     id: string;
@@ -28,7 +29,7 @@ type ApiEnvelope<T> = T | { code?: number; data?: T | null; msg?: string };
 type RequestOptions = { signal?: AbortSignal };
 
 export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string };
-export type VideoGenerationTask = { id: string; provider: "openai" | "seedance" | "video-generations" | "gemini-veo"; model: string };
+export type VideoGenerationTask = { id: string; provider: "openai" | "seedance" | "video-generations" | "globalaiopc" | "gemini-veo"; model: string };
 export type VideoGenerationTaskState = { status: "pending" } | { status: "completed"; result: VideoGenerationResult } | { status: "failed"; error: string };
 
 function aiApiUrl(config: AiConfig, path: string) {
@@ -62,6 +63,9 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     const requestConfig = resolveModelRequestConfig(config, selectedModel);
     assertVideoConfig(requestConfig, requestConfig.model);
     assertVideoCapability(modelCapabilityConfigFor(config, selectedModel).video!, references, videoReferences, audioReferences, config.videoSeconds);
+    if (requestConfig.interfaceType === "globalaiopc-video") {
+        return createGlobalAiOpcVideoTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
+    }
     if (requestConfig.interfaceType === "newapi-channel-2") {
         return createVideoGenerationsTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
     }
@@ -97,10 +101,89 @@ function assertVideoCapability(profile: NonNullable<ReturnType<typeof modelCapab
 export async function pollVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
     const requestConfig = resolveModelRequestConfig(config, task.model);
     assertVideoConfig(requestConfig, requestConfig.model);
+    if (task.provider === "globalaiopc") return pollGlobalAiOpcVideoTask(requestConfig, task, options);
     if (task.provider === "seedance") return pollSeedanceTask(requestConfig, task, options);
     if (task.provider === "video-generations") return pollVideoGenerationsTask(requestConfig, task, options);
     if (task.provider === "gemini-veo") return pollGeminiVeoTask(requestConfig, task, options);
     return pollOpenAIVideoTask(requestConfig, task, options);
+}
+
+async function createGlobalAiOpcVideoTask(config: ResolvedAiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
+    const modelName = modelOptionName(model);
+    const profile = modelCapabilityConfigFor(config, model).video!;
+    const [referenceImages, referenceVideos, referenceAudios] = await Promise.all([
+        Promise.all(references.map((item) => resolveVideoGenerationsUrl(item.url || item.dataUrl, item.storageKey))),
+        Promise.all(videoReferences.map((item) => resolveVideoGenerationsUrl(item.url, item.storageKey))),
+        Promise.all(audioReferences.map((item) => resolveVideoGenerationsUrl(item.url, item.storageKey))),
+    ]);
+    const normalized = normalizeVideoValue(profile, { seconds: config.videoSeconds, ratio: config.size, resolution: config.vquality });
+    const resolution = normalizeGlobalAiOpcVideoResolution(modelName, normalized.resolution, profile.defaultResolution);
+    const isSeedance15 = modelName.toLowerCase().startsWith("seedance_1_5_pro_");
+    const payload: Record<string, unknown> = {
+        model: modelName,
+        prompt: prompt.trim(),
+        duration: Number(normalized.seconds),
+        ...(referenceVideos.length ? { reference_videos: referenceVideos } : {}),
+        ...(referenceAudios.length ? { reference_audios: referenceAudios } : {}),
+    };
+    if (isSeedance15) {
+        payload.size = normalized.ratio;
+        if (referenceImages[0]) payload.first_image = referenceImages[0];
+        if (referenceImages[1]) payload.last_image = referenceImages[1];
+    }
+    else {
+        payload.aspect_ratio = normalized.ratio;
+        payload.resolution = resolution;
+        if (referenceImages.length) payload.reference_images = referenceImages;
+    }
+    if (profile.generateAudio.supported) payload.generate_audio = boolConfig(config.videoGenerateAudio, profile.generateAudio.default);
+    if (profile.watermark.supported) payload.watermark = boolConfig(config.videoWatermark, profile.watermark.default);
+    try {
+        const created = unwrapGlobalAiOpcVideoResponse(await channelPost<ApiVideoResponse>(config, globalAiOpcTaskUrl(config.baseUrl), payload, options));
+        const id = videoTaskId(created);
+        if (!id) throw new Error("GlobalAiOpc 接口没有返回任务 ID");
+        return { id, provider: "globalaiopc", model };
+    } catch (error) {
+        throw new Error(readAxiosError(error, "GlobalAiOpc 视频任务创建失败"));
+    }
+}
+
+async function pollGlobalAiOpcVideoTask(config: ResolvedAiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
+    try {
+        const state = unwrapGlobalAiOpcRecord(await channelGet<ApiEnvelope<Record<string, unknown>>>(config, globalAiOpcTaskUrl(config.baseUrl, task.id), options));
+        const status = String(state.status || "").toLowerCase();
+        if (status === "completed" || status === "succeeded" || status === "success") {
+            const url = String(state.video_url || state.result_url || state.url || "");
+            if (!url) return { status: "failed", error: "GlobalAiOpc 视频任务已完成但没有返回视频地址" };
+            return { status: "completed", result: await videoResultFromUrl(url, options) };
+        }
+        if (["failed", "cancelled", "canceled", "expired"].includes(status)) return { status: "failed", error: globalAiOpcVideoError(state) };
+        return { status: "pending" };
+    } catch (error) {
+        throw new Error(readAxiosError(error, "GlobalAiOpc 视频任务查询失败"));
+    }
+}
+
+function normalizeGlobalAiOpcVideoResolution(model: string, value: string, fallback: string) {
+    const modelName = model.trim().toLowerCase();
+    if (modelName === "minimax-h3-c4") return "1440P";
+    let normalized = value.trim().toLowerCase();
+    if (normalized === "low") normalized = "480";
+    if (normalized === "auto" || normalized === "medium" || normalized === "high") normalized = "720";
+    if (normalized === "4k" || normalized === "2160" || normalized === "2160p") normalized = "2160p";
+    else if (/^\d+$/.test(normalized)) normalized += "p";
+    if (!normalized) normalized = fallback.toLowerCase();
+    if (modelName === "sd_2.0_special" && normalized === "2160p") return "4k";
+    return normalized;
+}
+
+function globalAiOpcVideoError(state: Record<string, unknown>) {
+    if (typeof state.error === "string" && state.error.trim()) return state.error.trim();
+    if (state.error && typeof state.error === "object") {
+        const error = state.error as Record<string, unknown>;
+        return String(error.message || error.code || "GlobalAiOpc 视频生成失败");
+    }
+    return String(state.message || state.msg || "GlobalAiOpc 视频生成失败");
 }
 
 async function createVideoGenerationsTask(config: ResolvedAiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
@@ -572,8 +655,28 @@ function normalizeVideoResolution(value: string) {
     return `${resolution}p`;
 }
 
-function unwrapVideoResponse(payload: ApiVideoResponse) {
-    return unwrapEnvelope(payload, "接口没有返回视频任务");
+function unwrapVideoResponse(payload: ApiVideoResponse): VideoResponse {
+    return unwrapEnvelope<VideoResponse>(payload as ApiEnvelope<VideoResponse>, "接口没有返回视频任务");
+}
+
+function unwrapGlobalAiOpcVideoResponse(payload: ApiVideoResponse): VideoResponse {
+    if (payload && typeof payload === "object" && "data" in payload) {
+        const envelope = payload as { code?: number | string; data?: VideoResponse | null; msg?: string };
+        if (globalAiOpcResponseCodeFailed(envelope.code)) throw new Error(envelope.msg || "GlobalAiOpc 请求失败");
+        if (!envelope.data) throw new Error("GlobalAiOpc 接口没有返回视频任务");
+        return envelope.data;
+    }
+    return unwrapVideoResponse(payload);
+}
+
+function unwrapGlobalAiOpcRecord(payload: ApiEnvelope<Record<string, unknown>>): Record<string, unknown> {
+    if (payload && typeof payload === "object" && "data" in payload) {
+        const envelope = payload as { code?: number | string; data?: Record<string, unknown> | null; msg?: string };
+        if (globalAiOpcResponseCodeFailed(envelope.code)) throw new Error(envelope.msg || "GlobalAiOpc 请求失败");
+        if (!envelope.data) throw new Error("GlobalAiOpc 接口没有返回任务状态");
+        return envelope.data;
+    }
+    return payload as Record<string, unknown>;
 }
 
 function videoTaskId(payload: VideoResponse) {

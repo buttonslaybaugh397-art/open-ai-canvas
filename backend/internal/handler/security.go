@@ -30,6 +30,7 @@ var (
 	customXAIVideoTaskPath    = regexp.MustCompile(`(?:^|/)videos/[^/]+$`)
 	customVideoContentPath    = regexp.MustCompile(`(?:^|/)videos/[^/]+/content$`)
 	customArkVideoTaskPath    = regexp.MustCompile(`(?:^|/)contents/generations/tasks/[^/]+$`)
+	customGlobalAiOpcTaskPath = regexp.MustCompile(`(?:^|/)v2/model-center/tasks/[^/]+$`)
 	customGeminiOperationPath = regexp.MustCompile(`(?:^|/)(?:models/[^/]+/)?operations/[^/]+$`)
 	openAIPostEndpoints       = map[string]bool{
 		"/responses": true, "/chat/completions": true, "/images/generations": true, "/images/edits": true,
@@ -58,8 +59,24 @@ func authorizeCustomRelay(method string, target *url.URL, apiFormat string, cont
 	}
 
 	apiFormat = strings.ToLower(strings.TrimSpace(apiFormat))
-	if apiFormat != "openai" && apiFormat != "gemini" {
+	if apiFormat != "openai" && apiFormat != "gemini" && apiFormat != "globalaiopc" {
 		return errors.New("自定义渠道调用格式无效")
+	}
+	if apiFormat == "globalaiopc" {
+		if len(query) != 0 {
+			return errors.New("GlobalAiOpc 渠道不允许使用查询参数")
+		}
+		if method == http.MethodGet && customGlobalAiOpcTaskPath.MatchString(requestPath) {
+			return nil
+		}
+		if method != http.MethodPost {
+			return errors.New("GlobalAiOpc 渠道不允许使用该请求方法")
+		}
+		mediaType, _, err := mime.ParseMediaType(contentType)
+		if err != nil || mediaType != "application/json" || !strings.HasSuffix(requestPath, "/v2/model-center/tasks") {
+			return errors.New("GlobalAiOpc 渠道只允许访问模型中心任务接口")
+		}
+		return nil
 	}
 	if method == http.MethodGet {
 		allowed := requestPath == "/models" || strings.HasSuffix(requestPath, "/models")

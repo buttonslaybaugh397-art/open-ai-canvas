@@ -812,6 +812,15 @@ func (r *Repository) ResourceForUser(userID string, id string) (*model.Resource,
 	return &resource, nil
 }
 
+func (r *Repository) ResourceForUserOrTeam(userID string, id string) (*model.Resource, error) {
+	var resource model.Resource
+	sharedResource := r.db.Model(&model.TeamAssetResource{}).Select("resource_id").Where("resource_id = ?", id)
+	if err := r.db.Where("id = ? AND (user_id = ? OR id IN (?))", id, userID, sharedResource).First(&resource).Error; err != nil {
+		return nil, err
+	}
+	return &resource, nil
+}
+
 func (r *Repository) Resources(userID string, limit int) ([]model.Resource, error) {
 	var resources []model.Resource
 	if limit <= 0 || limit > 500 {
@@ -876,6 +885,120 @@ func (r *Repository) ReplaceAssets(userID string, assets []model.Asset) error {
 			return nil
 		}
 		return tx.Create(&assets).Error
+	})
+}
+
+func (r *Repository) TeamAssets() ([]model.TeamAsset, error) {
+	var assets []model.TeamAsset
+	err := r.db.Order("updated_at desc").Find(&assets).Error
+	return assets, err
+}
+
+func (r *Repository) TeamAssetsInFolder(folderID string) ([]model.TeamAsset, error) {
+	var assets []model.TeamAsset
+	err := r.db.Find(&assets, "folder_id = ?", folderID).Error
+	return assets, err
+}
+
+func (r *Repository) TeamAssetFolders() ([]model.TeamAssetFolder, error) {
+	var folders []model.TeamAssetFolder
+	err := r.db.Order("name asc").Find(&folders).Error
+	return folders, err
+}
+
+func (r *Repository) TeamAssetFolder(id string) (*model.TeamAssetFolder, error) {
+	var folder model.TeamAssetFolder
+	if err := r.db.First(&folder, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &folder, nil
+}
+
+func (r *Repository) SaveTeamAssetFolder(folder *model.TeamAssetFolder) error {
+	return r.db.Save(folder).Error
+}
+
+func (r *Repository) DeleteTeamAssetFolder(folderID string, assets []model.TeamAsset) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		for index := range assets {
+			if err := tx.Model(&model.TeamAsset{}).Where("id = ?", assets[index].ID).Updates(map[string]any{"folder_id": "", "payload_json": assets[index].PayloadJSON, "updated_at": assets[index].UpdatedAt}).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Delete(&model.TeamAssetFolder{}, "id = ?", folderID).Error
+	})
+}
+
+func (r *Repository) MoveTeamAsset(assetID string, folderID string, payloadJSON string, updatedAt time.Time) error {
+	return r.db.Model(&model.TeamAsset{}).Where("id = ?", assetID).Updates(map[string]any{"folder_id": folderID, "payload_json": payloadJSON, "updated_at": updatedAt}).Error
+}
+
+func (r *Repository) TeamAsset(id string) (*model.TeamAsset, error) {
+	var asset model.TeamAsset
+	if err := r.db.First(&asset, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	return &asset, nil
+}
+
+func (r *Repository) TeamAssetResourceIDs(id string) ([]string, error) {
+	var resourceIDs []string
+	err := r.db.Model(&model.TeamAssetResource{}).
+		Where("team_asset_id = ?", id).
+		Pluck("resource_id", &resourceIDs).Error
+	return resourceIDs, err
+}
+
+func (r *Repository) TeamAssetStorageUsage(userID string) (int64, int64, error) {
+	var usage struct {
+		Count int64
+		Bytes int64
+	}
+	lengthExpression := "length(CAST(COALESCE(payload_json, '') AS BLOB))"
+	if r.Dialect() == "postgres" {
+		lengthExpression = "octet_length(COALESCE(payload_json, ''))"
+	}
+	err := r.db.Model(&model.TeamAsset{}).
+		Select("COUNT(*) AS count, COALESCE(SUM("+lengthExpression+"), 0) AS bytes").
+		Where("owner_user_id = ?", userID).
+		Scan(&usage).Error
+	return usage.Count, usage.Bytes, err
+}
+
+func (r *Repository) UpsertTeamAsset(asset *model.TeamAsset, resourceIDs []string) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&model.TeamAsset{}).
+			Where("id = ? AND owner_user_id = ?", asset.ID, asset.OwnerUserID).
+			Updates(map[string]any{"folder_id": asset.FolderID, "kind": asset.Kind, "category": asset.Category, "status": asset.Status, "title": asset.Title, "payload_json": asset.PayloadJSON, "updated_at": asset.UpdatedAt})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			if err := tx.Create(asset).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Delete(&model.TeamAssetResource{}, "team_asset_id = ?", asset.ID).Error; err != nil {
+			return err
+		}
+		if len(resourceIDs) == 0 {
+			return nil
+		}
+		now := time.Now()
+		links := make([]model.TeamAssetResource, 0, len(resourceIDs))
+		for _, resourceID := range resourceIDs {
+			links = append(links, model.TeamAssetResource{TeamAssetID: asset.ID, ResourceID: resourceID, CreatedAt: now})
+		}
+		return tx.Create(&links).Error
+	})
+}
+
+func (r *Repository) DeleteTeamAsset(id string) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Delete(&model.TeamAssetResource{}, "team_asset_id = ?", id).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&model.TeamAsset{}, "id = ?", id).Error
 	})
 }
 

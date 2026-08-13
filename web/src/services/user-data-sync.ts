@@ -198,7 +198,7 @@ async function prepareRemoteCanvasProjects(projects: CanvasProject[], uploaded: 
     return result;
 }
 
-async function ensureRemoteResourceReferences<T>(value: T, uploaded = new Map<string, string>()): Promise<T> {
+export async function ensureRemoteResourceReferences<T>(value: T, uploaded = new Map<string, string>()): Promise<T> {
     if (!value || typeof value !== "object") return value;
     if (Array.isArray(value)) {
         const result: unknown[] = [];

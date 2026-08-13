@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { Input, Modal, Pagination, Tag } from "antd";
+import { Input, Modal, Pagination, Tabs, Tag } from "antd";
 import { Search } from "lucide-react";
 
+import { TeamAssetBrowser, type TeamLibraryAsset } from "@/components/assets/team-asset-library";
 import { WorkspaceState } from "@/components/layout/workspace-state";
 import { AssetMediaPreview } from "@/components/asset-media-preview";
 import { cn } from "@/lib/utils";
@@ -23,10 +24,27 @@ type Props = {
     onClose: () => void;
 };
 
-export function AssetPickerModal({ open, onInsert, onClose }: Props) {
+export function AssetPickerModal({ open, defaultTab = "mine", onInsert, onClose }: Props) {
+    const [activeTab, setActiveTab] = useState(defaultTab === "team" ? "team" : "mine");
+
+    useEffect(() => {
+        if (open) setActiveTab(defaultTab === "team" ? "team" : "mine");
+    }, [defaultTab, open]);
+
+    const insertTeamAsset = (asset: TeamLibraryAsset) => {
+        if (isInsertableAsset(asset)) onInsert(toInsertPayload(asset));
+    };
+
     return (
         <Modal title="选择素材" open={open} onCancel={onClose} footer={null} width={860} destroyOnHidden styles={{ body: { padding: "0 24px 24px", minHeight: 480 } }}>
-            <MyAssetsTab onInsert={onInsert} />
+            <Tabs
+                activeKey={activeTab}
+                onChange={setActiveTab}
+                items={[
+                    { key: "mine", label: "我的素材", children: <MyAssetsTab onInsert={onInsert} /> },
+                    { key: "team", label: "团队共享", children: <TeamAssetBrowser allowedKinds={["text", "image", "video", "audio"]} onSelect={insertTeamAsset} /> },
+                ]}
+            />
         </Modal>
     );
 }
@@ -82,18 +100,6 @@ function MyAssetsTab({ onInsert }: { onInsert: (payload: InsertAssetPayload) => 
         setPage((v) => Math.min(v, maxPage));
     }, [filtered.length]);
 
-    const handleInsert = (asset: InsertableAsset) => {
-        if (asset.kind === "text") {
-            onInsert({ kind: "text", content: asset.data.content, title: asset.title, assetId: asset.id });
-        } else if (asset.kind === "audio") {
-            onInsert({ kind: "audio", url: asset.data.url, storageKey: asset.data.storageKey, title: asset.title, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id });
-        } else if (asset.kind === "video") {
-            onInsert({ kind: "video", url: asset.data.url, storageKey: asset.data.storageKey, title: asset.title, width: asset.data.width, height: asset.data.height, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id });
-        } else if (asset.kind === "image") {
-            onInsert({ kind: "image", dataUrl: asset.data.dataUrl, storageKey: asset.data.storageKey, title: asset.title, assetId: asset.id });
-        }
-    };
-
     return (
         <div className="space-y-4">
             <div className="flex flex-wrap items-center gap-3">
@@ -129,7 +135,7 @@ function MyAssetsTab({ onInsert }: { onInsert: (payload: InsertAssetPayload) => 
             {visible.length ? (
                 <div className="grid grid-cols-4 gap-3">
                     {visible.map((asset) => (
-                        <PickerCard key={asset.id} asset={asset} onClick={() => handleInsert(asset)} />
+                        <PickerCard key={asset.id} asset={asset} onClick={() => onInsert(toInsertPayload(asset))} />
                     ))}
                 </div>
             ) : (
@@ -143,4 +149,15 @@ function MyAssetsTab({ onInsert }: { onInsert: (payload: InsertAssetPayload) => 
             )}
         </div>
     );
+}
+
+function isInsertableAsset(asset: Asset): asset is InsertableAsset {
+    return asset.kind === "text" || asset.kind === "image" || asset.kind === "video" || asset.kind === "audio";
+}
+
+function toInsertPayload(asset: InsertableAsset): InsertAssetPayload {
+    if (asset.kind === "text") return { kind: "text", content: asset.data.content, title: asset.title, assetId: asset.id };
+    if (asset.kind === "image") return { kind: "image", dataUrl: asset.data.dataUrl, storageKey: asset.data.storageKey, title: asset.title, assetId: asset.id };
+    if (asset.kind === "video") return { kind: "video", url: asset.data.url, storageKey: asset.data.storageKey, title: asset.title, width: asset.data.width, height: asset.data.height, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
+    return { kind: "audio", url: asset.data.url, storageKey: asset.data.storageKey, title: asset.title, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
 }

@@ -35,6 +35,7 @@ type AssetBase<T extends AssetKind> = {
     primaryVersionId?: string;
     source?: string;
     note?: string;
+    folderId?: string;
     createdAt: string;
     updatedAt: string;
     metadata?: Record<string, unknown>;

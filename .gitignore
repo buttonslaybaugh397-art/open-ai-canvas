@@ -2,6 +2,15 @@
 out/
 node_modules/
 docs/
+!docs/
+docs/*
+!docs/content/
+docs/content/*
+!docs/content/docs/
+docs/content/docs/*
+!docs/content/docs/backend/
+!docs/content/docs/backend/backend-database.mdx
+!docs/content/docs/pending-test.mdx
 .env*
 !.env.example
 data/

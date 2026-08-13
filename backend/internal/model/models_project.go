@@ -38,6 +38,36 @@ type Asset struct {
 	UpdatedAt        time.Time          `json:"updatedAt" gorm:"index:idx_assets_user_updated,priority:2"`
 }
 
+// TeamAsset 是当前部署内登录成员共享的素材副本；个人素材仍保留在 assets 表中。
+type TeamAsset struct {
+	ID          string             `json:"id" gorm:"primaryKey;size:36"`
+	OwnerUserID string             `json:"ownerUserId" gorm:"index;size:36;index:idx_team_assets_owner_updated,priority:1"`
+	FolderID    string             `json:"folderId,omitempty" gorm:"index;size:36"`
+	Kind        string             `json:"kind" gorm:"index;size:24"`
+	Category    AssetCategory      `json:"category" gorm:"index;size:32"`
+	Status      AssetVersionStatus `json:"status" gorm:"index;size:24"`
+	Title       string             `json:"title" gorm:"size:240"`
+	PayloadJSON string             `json:"payloadJson" gorm:"type:text"`
+	CreatedAt   time.Time          `json:"createdAt"`
+	UpdatedAt   time.Time          `json:"updatedAt" gorm:"index;index:idx_team_assets_owner_updated,priority:2"`
+}
+
+// TeamAssetFolder 是部署内共享素材的一级目录；删除目录只解除归类，不删除素材。
+type TeamAssetFolder struct {
+	ID          string    `json:"id" gorm:"primaryKey;size:36"`
+	OwnerUserID string    `json:"ownerUserId" gorm:"index;size:36"`
+	Name        string    `json:"name" gorm:"size:120"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt" gorm:"index"`
+}
+
+// TeamAssetResource 只授予登录成员读取团队素材所引用资源的权限，不公开资源本身。
+type TeamAssetResource struct {
+	TeamAssetID string    `json:"teamAssetId" gorm:"primaryKey;size:36"`
+	ResourceID  string    `json:"resourceId" gorm:"primaryKey;index;size:36"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
 type ProjectAssetLink struct {
 	ID        string    `json:"id" gorm:"primaryKey;size:36"`
 	ProjectID string    `json:"projectId" gorm:"index;size:36;uniqueIndex:idx_project_asset_links_unique,priority:1"`

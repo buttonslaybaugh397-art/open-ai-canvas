@@ -3,6 +3,7 @@ export type ModelProtocol =
     | "openai-response"
     | "openai-image"
     | "grok-image"
+    | "globalaiopc-image"
     | "volcengine-ark-image"
     | "volcengine-jimeng-image"
     | "openai-audio"
@@ -10,6 +11,7 @@ export type ModelProtocol =
     | "newapi"
     | "newapi-channel-1"
     | "newapi-channel-2"
+    | "globalaiopc-video"
     | "xai-video"
     | "volcengine-ark-video"
     | "volcengine-jimeng-video"
@@ -32,6 +34,7 @@ export const MODEL_PROTOCOLS: ModelProtocolDefinition[] = [
     { value: "openai-response", label: "OpenAI Responses", capability: "text", create: "POST /v1/responses", contentType: "application/json", media: "文本与多模态输入" },
     { value: "openai-image", label: "OpenAI Images", capability: "image", create: "POST /v1/images/generations", contentType: "application/json / multipart", media: "生成、编辑与参考图" },
     { value: "grok-image", label: "Grok Images", capability: "image", create: "POST /v1/images/generations / edits", contentType: "application/json", media: "文生图与单张 URL 参考图，不支持蒙版" },
+    { value: "globalaiopc-image", label: "GlobalAiOpc 图片任务", capability: "image", create: "POST /v2/model-center/tasks", poll: "GET /v2/model-center/tasks/{task_id}", contentType: "application/json", media: "0-10 张公网 URL 参考图" },
     { value: "volcengine-ark-image", label: "火山方舟图片", capability: "image", create: "POST /api/v3/images/generations", contentType: "application/json", media: "文生图与 image 参考图，不支持蒙版" },
     { value: "volcengine-jimeng-image", label: "即梦官方图片", capability: "image", create: "POST CVSync2AsyncSubmitTask", poll: "POST CVSync2AsyncGetResult", contentType: "application/json + AK/SK 签名", media: "0-14 张参考图，模型标识填写 req_key" },
     { value: "openai-audio", label: "OpenAI Audio", capability: "audio", create: "POST /v1/audio/speech", contentType: "application/json", media: "文本转语音" },
@@ -47,6 +50,7 @@ export const MODEL_PROTOCOLS: ModelProtocolDefinition[] = [
         contentType: "application/json",
         media: "image_urls（首帧、尾帧、其他参考图） / video_urls / audio_urls",
     },
+    { value: "globalaiopc-video", label: "GlobalAiOpc 视频任务", capability: "video", create: "POST /v2/model-center/tasks", poll: "GET /v2/model-center/tasks/{task_id}", contentType: "application/json", media: "图片、视频、音频公网 URL 与首尾帧" },
     { value: "xai-video", label: "xAI 官方视频", capability: "video", create: "POST /v1/videos/generations", poll: "GET /v1/videos/{request_id}", contentType: "application/json", media: "单张起始图" },
     {
         value: "volcengine-ark-video",
@@ -61,7 +65,7 @@ export const MODEL_PROTOCOLS: ModelProtocolDefinition[] = [
     { value: "gemini-veo", label: "Gemini Veo", capability: "video", create: "POST /v1beta/models/{model}:predictLongRunning", poll: "GET /v1beta/{operation_name}", contentType: "application/json", media: "文本与单张起始图" },
 ];
 
-export const MODEL_PROTOCOL_OPTIONS = protocolGroups(MODEL_PROTOCOLS.filter((item) => !item.value.startsWith("volcengine-jimeng-")));
+export const MODEL_PROTOCOL_OPTIONS = protocolGroups(MODEL_PROTOCOLS.filter((item) => !item.value.startsWith("volcengine-jimeng-") && !item.value.startsWith("globalaiopc-")));
 
 export const SYSTEM_MODEL_PROTOCOL_OPTIONS = protocolGroups(MODEL_PROTOCOLS);
 
@@ -91,7 +95,9 @@ export function protocolForModelCatalog(endpointTypes: string[] = []): ModelProt
     if (normalized.has("openai-chat") || normalized.has("chat-completion") || normalized.has("chat")) return "chat-completion";
     if (normalized.has("openai-response") || normalized.has("responses")) return "openai-response";
     if (normalized.has("openai-image") || normalized.has("image")) return "openai-image";
+    if (normalized.has("globalaiopc-image")) return "globalaiopc-image";
     if (normalized.has("openai-video") || normalized.has("video")) return "newapi-channel-2";
+    if (normalized.has("globalaiopc-video")) return "globalaiopc-video";
     if (normalized.has("openai-audio") || normalized.has("audio")) return "openai-audio";
     if (normalized.has("grok-image")) return "grok-image";
     if (normalized.has("gemini-veo") || normalized.has("gemini-video") || normalized.has("veo")) return "gemini-veo";

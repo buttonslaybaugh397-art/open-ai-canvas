@@ -1,6 +1,6 @@
-import { isSystemProxyBaseUrl, resolveBackendApiUrl, type AiConfig, type ChannelHeader } from "@/stores/use-config-store";
+import { isSystemProxyBaseUrl, resolveBackendApiUrl, type AiConfig, type ChannelHeader, type ChannelInterfaceType } from "@/stores/use-config-store";
 
-type RelayConfig = Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat"> & { headers?: ChannelHeader[] };
+type RelayConfig = Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat"> & { headers?: ChannelHeader[]; interfaceType?: ChannelInterfaceType };
 
 export type ChannelRequest = {
     url: string;
@@ -20,7 +20,8 @@ export function channelRequest(config: RelayConfig, upstreamUrl: string, headers
     normalizedHeaders.delete("x-goog-api-key");
     normalizedHeaders.set("Authorization", `Bearer ${config.apiKey}`);
     normalizedHeaders.set("X-Canvas-Upstream-URL", normalizedUpstreamUrl);
-    normalizedHeaders.set("X-Canvas-Upstream-Format", config.apiFormat === "gemini" ? "gemini" : "openai");
+    const isGlobalAiOpc = config.interfaceType === "globalaiopc-image" || config.interfaceType === "globalaiopc-video";
+    normalizedHeaders.set("X-Canvas-Upstream-Format", isGlobalAiOpc ? "globalaiopc" : config.apiFormat === "gemini" ? "gemini" : "openai");
     if (config.headers?.length) normalizedHeaders.set("X-Canvas-Upstream-Headers", encodeChannelHeaders(config.headers));
     return {
         url: resolveBackendApiUrl("/api/ai/custom"),

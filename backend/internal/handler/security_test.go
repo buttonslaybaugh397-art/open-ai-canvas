@@ -49,6 +49,8 @@ func TestAuthorizeCustomRelayAllowsModelsAndAgentEndpoints(t *testing.T) {
 		{method: http.MethodPost, target: "https://ark.cn-beijing.volces.com/api/v3/images/generations", apiFormat: "openai", contentType: "application/json"},
 		{method: http.MethodPost, target: "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks", apiFormat: "openai", contentType: "application/json"},
 		{method: http.MethodGet, target: "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/task-1", apiFormat: "openai"},
+		{method: http.MethodPost, target: "https://zcbservice.aizfw.cn/kyyReactApiServer/v2/model-center/tasks", apiFormat: "globalaiopc", contentType: "application/json"},
+		{method: http.MethodGet, target: "https://zcbservice.aizfw.cn/kyyReactApiServer/v2/model-center/tasks/task-1", apiFormat: "globalaiopc"},
 		{method: http.MethodPost, target: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse", apiFormat: "gemini", contentType: "application/json"},
 		{method: http.MethodPost, target: "https://generativelanguage.googleapis.com/v1beta/models/veo-3.0-generate-preview:predictLongRunning", apiFormat: "gemini", contentType: "application/json"},
 		{method: http.MethodGet, target: "https://generativelanguage.googleapis.com/v1beta/operations/operation-1", apiFormat: "gemini"},
@@ -78,6 +80,9 @@ func TestAuthorizeCustomRelayRejectsArbitraryRequestsAndCredentialQueries(t *tes
 		{method: http.MethodPost, target: "https://api.example.com/v1/account", apiFormat: "openai", contentType: "multipart/form-data; boundary=test"},
 		{method: http.MethodPost, target: "https://api.example.com/v1/../account/chat/completions", apiFormat: "openai", contentType: "application/json"},
 		{method: http.MethodPost, target: "https://api.example.com/v1/models/gemini:streamGenerateContent?alt=sse&token=secret", apiFormat: "gemini", contentType: "application/json"},
+		{method: http.MethodPost, target: "https://zcbservice.aizfw.cn/kyyReactApiServer/v2/model-center/tasks", apiFormat: "openai", contentType: "application/json"},
+		{method: http.MethodPost, target: "https://api.example.com/v2/model-center/tasks", apiFormat: "globalaiopc", contentType: "text/plain"},
+		{method: http.MethodGet, target: "https://api.example.com/v2/model-center/tasks/task-1?token=secret", apiFormat: "globalaiopc"},
 	}
 	for _, test := range tests {
 		target, err := url.Parse(test.target)

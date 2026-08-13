@@ -51,7 +51,7 @@ func (s *Service) Resources(userID string, limit int) ([]model.Resource, error) 
 }
 
 func (s *Service) Resource(userID string, id string) (*model.Resource, error) {
-	resource, err := s.repo.ResourceForUser(userID, id)
+	resource, err := s.repo.ResourceForUserOrTeam(userID, id)
 	if resource != nil {
 		resource.PublicURL = ""
 	}
@@ -60,7 +60,7 @@ func (s *Service) Resource(userID string, id string) (*model.Resource, error) {
 
 // DirectResourceURL 先校验资源归属，再按实际存储位置签发短时下载地址。
 func (s *Service) DirectResourceURL(userID string, id string) (string, error) {
-	resource, err := s.repo.ResourceForUser(userID, id)
+	resource, err := s.repo.ResourceForUserOrTeam(userID, id)
 	if err != nil {
 		return "", err
 	}
@@ -241,11 +241,11 @@ func (s *Service) OpenResource(userID string, id string) (*model.Resource, io.Re
 }
 
 func (s *Service) OpenResourceRange(userID string, id string, rangeHeader string) (*ResourceStream, error) {
-	resource, err := s.repo.ResourceForUser(userID, id)
+	resource, err := s.repo.ResourceForUserOrTeam(userID, id)
 	if err != nil {
 		return nil, err
 	}
-	return s.openResourceRange(userID, resource, rangeHeader)
+	return s.openResourceRange(resource.UserID, resource, rangeHeader)
 }
 
 func (s *Service) OpenPublicResourceRange(id string, expires string, signature string, rangeHeader string) (*ResourceStream, error) {

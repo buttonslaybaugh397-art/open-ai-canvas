@@ -1110,6 +1110,32 @@ func TestNewAPIChannel2RejectsMissingConfiguredFrame(t *testing.T) {
 	}
 }
 
+func TestGlobalAiOpcC2CapabilityMatchesDocumentation(t *testing.T) {
+	profile := DefaultModelCapabilityConfigForModel("globalaiopc-video", "seedance-2.5-c2").Video
+	if profile == nil {
+		t.Fatal("GlobalAiOpc c2 video capability = nil")
+	}
+	if profile.References.MaxImages != 30 || profile.References.MaxVideos != 0 || profile.References.MaxAudios != 10 {
+		t.Fatalf("GlobalAiOpc c2 reference limits = %#v", profile.References)
+	}
+	if profile.References.MaxAudioDuration != 15 {
+		t.Fatalf("GlobalAiOpc c2 max audio duration = %d, want 15", profile.References.MaxAudioDuration)
+	}
+	if profile.Duration.Min != 4 || profile.Duration.Max != 29 || profile.Duration.Default != 5 {
+		t.Fatalf("GlobalAiOpc c2 duration = %#v", profile.Duration)
+	}
+}
+
+func TestUnwrapGlobalAiOpcTaskRejectsStringErrorCode(t *testing.T) {
+	if _, err := unwrapGlobalAiOpcTask(map[string]interface{}{"code": "500", "msg": "upstream failed", "data": map[string]interface{}{"id": "task-1"}}); err == nil || !strings.Contains(err.Error(), "upstream failed") {
+		t.Fatalf("unwrapGlobalAiOpcTask() error = %v", err)
+	}
+	data, err := unwrapGlobalAiOpcTask(map[string]interface{}{"code": "0", "data": map[string]interface{}{"id": "task-1"}})
+	if err != nil || stringField(data, "id") != "task-1" {
+		t.Fatalf("unwrapGlobalAiOpcTask() data = %#v, error = %v", data, err)
+	}
+}
+
 func TestValidateGenerationInterfaceRejectsMismatchedType(t *testing.T) {
 	if err := validateGenerationInterface("video", "chat-completion"); err == nil {
 		t.Fatal("validateGenerationInterface() error = nil")

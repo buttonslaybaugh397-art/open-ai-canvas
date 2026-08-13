@@ -53,8 +53,12 @@ export function CapabilityCardPicker({ value, onChange, density = "comfortable" 
     );
 }
 
-export function ProtocolCardPicker({ capability, value, onChange, density = "comfortable" }: { capability?: ModelCapabilityChoice; value?: ModelProtocol; onChange?: (value: ModelProtocol) => void; density?: PickerDensity }) {
-    const protocols = MODEL_PROTOCOLS.filter((item) => item.capability === capability);
+export function ProtocolCardPicker({ capability, value, onChange, density = "comfortable", allowedProtocols }: { capability?: ModelCapabilityChoice; value?: ModelProtocol; onChange?: (value: ModelProtocol) => void; density?: PickerDensity; allowedProtocols?: ModelProtocol[] }) {
+    const protocols = MODEL_PROTOCOLS.filter((item) => {
+        if (item.capability !== capability) return false;
+        if (allowedProtocols) return allowedProtocols.includes(item.value);
+        return item.value !== "globalaiopc-image" && item.value !== "globalaiopc-video";
+    });
     return (
         <div className={cn("grid grid-cols-1 gap-2 sm:grid-cols-2", density === "compact" && "gap-1.5")} role="radiogroup" aria-label="模型请求协议">
             {protocols.map((protocol) => {
