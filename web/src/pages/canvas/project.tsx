@@ -705,23 +705,35 @@ function InfiniteCanvasPage() {
         onNodesDeleted: handleNodesDeleted,
     });
 
-    const { cancelPendingConnectionCreate, closeConnectionCreateMenu, connectionTargetAnchorRatio, connectionTargetNodeId, connectingParams, createConnectedNode, handleConnectStart, mouseWorld, pendingConnectionCreate, setConnecting } =
-        useCanvasConnectionController({
-            projectId,
-            defaultDrawingEngine,
-            nodesRef,
-            connectionsRef,
-            viewportRef,
-            scriptScrollTopById,
-            screenToCanvas,
-            setNodes,
-            setConnections,
-            setSelectedNodeIds,
-            setSelectedConnectionId,
-            setContextMenu,
-            setDialogNodeId,
-            setDrawingNodeId,
-        });
+    const {
+        cancelPendingConnectionCreate,
+        closeConnectionCreateMenu,
+        connectionTargetAnchorRatio,
+        connectionTargetNodeId,
+        connectingParams,
+        createConnectedNode,
+        getConnectionCreateDisabledReason,
+        handleConnectStart,
+        mouseWorld,
+        pendingConnectionCreate,
+        setConnecting,
+    } = useCanvasConnectionController({
+        projectId,
+        config: effectiveConfig,
+        defaultDrawingEngine,
+        nodesRef,
+        connectionsRef,
+        viewportRef,
+        scriptScrollTopById,
+        screenToCanvas,
+        setNodes,
+        setConnections,
+        setSelectedNodeIds,
+        setSelectedConnectionId,
+        setContextMenu,
+        setDialogNodeId,
+        setDrawingNodeId,
+    });
 
     const handleCanvasSelectionStart = useCallback(() => {
         setContextMenu(null);
@@ -1786,6 +1798,7 @@ function InfiniteCanvasPage() {
                             viewportSize={size}
                             containerRef={containerRef}
                             canCreateDrawing={canCreateDrawingFromConnection}
+                            getDisabledReason={(type) => getConnectionCreateDisabledReason(type, pendingConnectionCreate)}
                             onCreate={(type) => void createConnectedNode(type, pendingConnectionCreate)}
                             onClose={cancelPendingConnectionCreate}
                         />

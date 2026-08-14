@@ -491,7 +491,7 @@ func (s *Service) hydrateGenerationMedia(userID string, input *canvasGenerationI
 func (s *Service) hydrateProviderMedia(userID string, media *providerMedia, requirePublicURL bool) error {
 	if !strings.HasPrefix(media.StorageKey, "resource:") {
 		if requirePublicURL && strings.HasPrefix(strings.TrimSpace(media.DataURL), "data:") {
-			return errors.New("当前 JSON 视频协议的参考素材不能使用内嵌数据，请先上传到 OSS 或提供公网素材地址")
+			return errors.New("当前 JSON 视频协议的参考素材不能使用内嵌数据，请先上传到对象存储或提供公网素材地址")
 		}
 		return nil
 	}
@@ -572,7 +572,7 @@ func (s *Service) resolveProviderConfig(config providerConfig) (providerConfig, 
 		}
 		return config, nil
 	}
-	channel, err := s.repo.SystemChannel(channelID)
+	channel, err := s.SystemChannel(channelID)
 	if err != nil {
 		return providerConfig{}, errors.New("系统渠道不存在或已停用")
 	}
@@ -754,9 +754,9 @@ func grokImageRequestBody(input canvasGenerationInput) (grokImageRequest, string
 		Prompt:         withSystemPrompt(input.Config, input.Prompt),
 		N:              1,
 		ResponseFormat: "url",
-		Size:           strings.TrimSpace(input.Config.Size),
-		AspectRatio:    normalizeGrokImageAspectRatio(input.Config.Size),
-		Resolution:     normalizeGrokImageResolution(input.Config.Quality),
+		// Grok 图片协议用 aspect_ratio 表达画布比例；同时发送 size 会被上游按 OpenAI 枚举校验并拒绝。
+		AspectRatio: normalizeGrokImageAspectRatio(input.Config.Size),
+		Resolution:  normalizeGrokImageResolution(input.Config.Quality),
 	}
 	if len(input.ReferenceImages) == 0 {
 		return body, "/images/generations", nil
@@ -836,7 +836,10 @@ func grokImageInputURL(media providerMedia) (string, error) {
 	return openAIImageInputURL(media)
 }
 
-const volcengineArkImageMaxPixels = 4624220
+const (
+	volcengineArkImageMinPixels = 3686400
+	volcengineArkImageMaxPixels = 4624220
+)
 
 func runVolcengineArkImageTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
 	if input.Mask != nil {
@@ -899,12 +902,26 @@ func normalizeVolcengineArkImageSize(value string) string {
 	if widthErr != nil || heightErr != nil || width <= 0 || height <= 0 {
 		return size
 	}
-	if int64(width)*int64(height) <= volcengineArkImageMaxPixels {
+	pixels := int64(width) * int64(height)
+	if pixels >= volcengineArkImageMinPixels && pixels <= volcengineArkImageMaxPixels {
 		return size
 	}
-	scale := math.Sqrt(float64(volcengineArkImageMaxPixels) / (float64(width) * float64(height)))
-	width = int(math.Floor(float64(width)*scale/2)) * 2
-	height = int(math.Floor(float64(height)*scale/2)) * 2
+	targetPixels := volcengineArkImageMaxPixels
+	round := math.Floor
+	if pixels < volcengineArkImageMinPixels {
+		targetPixels = volcengineArkImageMinPixels
+		round = math.Ceil
+	}
+	scale := math.Sqrt(float64(targetPixels) / float64(pixels))
+	width = int(round(float64(width)*scale/2)) * 2
+	height = int(round(float64(height)*scale/2)) * 2
+	for width > 2 && height > 2 && int64(width)*int64(height) < volcengineArkImageMinPixels {
+		if width >= height {
+			width += 2
+		} else {
+			height += 2
+		}
+	}
 	for width > 2 && height > 2 && int64(width)*int64(height) > volcengineArkImageMaxPixels {
 		if width >= height {
 			width -= 2
@@ -1328,6 +1345,9 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 	if input.Config.InterfaceType == "gemini-veo" {
 		return runGeminiVeoVideoTask(ctx, input)
 	}
+	if input.Config.InterfaceType == string(model.ChannelInterfaceNovitaVideo) {
+		return runNovitaVideoTask(ctx, input)
+	}
 	if input.Config.InterfaceType == "newapi-channel-2" {
 		return runNewAPIChannel2VideoTask(ctx, input)
 	}
@@ -1494,6 +1514,126 @@ func runGeminiVeoVideoTask(ctx context.Context, input canvasGenerationInput) (ma
 		}
 	}
 	return nil, fmt.Errorf("Gemini Veo 视频生成超时（任务 %s）", id)
+}
+
+func runNovitaVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
+	if len(input.ReferenceImages) > 1 || len(input.ReferenceVideos) > 0 || len(input.ReferenceAudios) > 0 {
+		return nil, errors.New("Novita 视频当前只支持 1 张起始图，不支持参考视频或参考音频")
+	}
+	id := resumedProviderRequestID(ctx)
+	if id == "" {
+		body := map[string]interface{}{
+			"model":    input.Config.Model,
+			"prompt":   strings.TrimSpace(input.Prompt),
+			"duration": normalizeNovitaVideoDuration(input.Config.VideoSeconds),
+		}
+		if len(input.ReferenceImages) == 1 {
+			imageValue, err := novitaVideoImageValue(input.ReferenceImages[0])
+			if err != nil {
+				return nil, err
+			}
+			body["image"] = imageValue
+		} else {
+			body["aspect_ratio"] = normalizeNovitaVideoRatio(input.Config.Size)
+		}
+		var created map[string]interface{}
+		if err := postNovitaJSON(ctx, input.Config, "/video/create", body, &created); err != nil {
+			return nil, err
+		}
+		id = strings.TrimSpace(stringField(created, "task_id"))
+	}
+	if id == "" {
+		return nil, errors.New("Novita 视频接口没有返回任务 ID")
+	}
+	for deadline := providerPollingDeadline(ctx); time.Now().Before(deadline); {
+		var result map[string]interface{}
+		if err := getNovitaJSON(ctx, input.Config, "/async/task-result?task_id="+url.QueryEscape(id), &result); err != nil {
+			return nil, err
+		}
+		task, _ := result["task"].(map[string]interface{})
+		switch stringField(task, "status") {
+		case "TASK_STATUS_SUCCEED":
+			videos, _ := result["videos"].([]interface{})
+			if len(videos) == 0 {
+				return nil, fmt.Errorf("Novita 视频任务 %s 已完成但没有返回视频", id)
+			}
+			first, _ := videos[0].(map[string]interface{})
+			videoURL := strings.TrimSpace(stringField(first, "video_url"))
+			if videoURL == "" {
+				return nil, fmt.Errorf("Novita 视频任务 %s 已完成但没有返回视频地址", id)
+			}
+			data, mimeType, err := getExternalBinary(withProviderRequestKind(ctx, "download"), videoURL)
+			if err != nil {
+				return nil, fmt.Errorf("Novita 视频结果下载失败（任务 %s）：%w", id, err)
+			}
+			mimeType = normalizedMediaMimeType(mimeType, data)
+			return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
+		case "TASK_STATUS_FAILED":
+			reason := firstNonEmptyString(stringField(task, "reason"), "上游返回失败")
+			return nil, fmt.Errorf("Novita 视频生成失败（任务 %s）：%s", id, reason)
+		}
+		if err := sleepContext(ctx, 5*time.Second); err != nil {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("Novita 视频生成超时（任务 %s）", id)
+}
+
+func novitaVideoImageValue(media providerMedia) (string, error) {
+	if isPublicMediaURL(media.URL) {
+		if _, err := ValidateOutboundURL(media.URL); err != nil {
+			return "", err
+		}
+		return media.URL, nil
+	}
+	raw, mimeType, err := mediaBytes(media)
+	if err != nil {
+		return "", err
+	}
+	return dataURL(mimeType, raw), nil
+}
+
+func normalizeNovitaVideoDuration(value string) string {
+	if normalizeSeedanceDuration(value) >= 8 {
+		return "10"
+	}
+	return "5"
+}
+
+func normalizeNovitaVideoRatio(value string) string {
+	switch strings.TrimSpace(value) {
+	case "16:9", "9:16", "1:1":
+		return strings.TrimSpace(value)
+	default:
+		return "16:9"
+	}
+}
+
+func novitaVideoURL(baseURL string, path string) string {
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	return base + "/" + strings.TrimLeft(path, "/")
+}
+
+func postNovitaJSON(ctx context.Context, config providerConfig, path string, body interface{}, target interface{}) error {
+	data, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, novitaVideoURL(config.BaseURL, path), bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+config.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	ApplyOutboundHeaders(req, config.Headers)
+	return doJSON(req, target)
+}
+
+func getNovitaJSON(ctx context.Context, config providerConfig, path string, target interface{}) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, novitaVideoURL(config.BaseURL, path), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+config.APIKey)
+	ApplyOutboundHeaders(req, config.Headers)
+	return doJSON(req, target)
 }
 
 func postGeminiJSON(ctx context.Context, config providerConfig, path string, body interface{}, target interface{}) error {
@@ -1730,6 +1870,10 @@ func newAPIChannel2VideoRequestBody(input canvasGenerationInput) (newAPIVideoReq
 	if len(input.ReferenceImages) > 9 || len(input.ReferenceVideos) > 3 || len(input.ReferenceAudios) > 3 {
 		return newAPIVideoRequest{}, errors.New("NewAPI Video Generations 最多支持 9 张参考图、3 个参考视频和 3 个参考音频")
 	}
+	// NewAPI Video Generations 只接受附着在参考视频上的音频；纯音频请求会被上游拒绝。
+	if len(input.ReferenceAudios) > 0 && len(input.ReferenceVideos) == 0 {
+		return newAPIVideoRequest{}, errors.New("NewAPI Video Generations 的参考音频必须同时提供至少 1 个参考视频；纯音频生视频请切换到支持该模式的渠道")
+	}
 	modelName := strings.ToLower(strings.TrimSpace(input.Config.Model))
 	requiresSingleImage := modelName == "grok-video-1.5" || modelName == "grok-video-1.5-1080p"
 	images := make([]string, 0, len(input.ReferenceImages))
@@ -1815,7 +1959,7 @@ func videoGenerationsMediaURL(media providerMedia) (string, error) {
 	if isPublicMediaURL(value) || strings.HasPrefix(value, "data:") {
 		return value, nil
 	}
-	return "", errors.New("NewAPI Video Generations 的参考素材需要公网 URL；私有素材请先保存到 OSS")
+	return "", errors.New("NewAPI Video Generations 的参考素材需要公网 URL；私有素材请先保存到对象存储")
 }
 
 func normalizeNewAPIChannel2Ratio(value string, modelName string) string {
@@ -1970,7 +2114,7 @@ func newAPIChannel1VideoBody(input canvasGenerationInput) (map[string]interface{
 func newAPIChannel1MediaURL(media providerMedia) (string, error) {
 	value := strings.TrimSpace(media.URL)
 	if !isPublicMediaURL(value) {
-		return "", errors.New("NewAPI 媒体任务的参考素材必须使用公网 HTTP(S) URL，请启用 OSS 或提供公网素材地址")
+		return "", errors.New("NewAPI 媒体任务的参考素材必须使用公网 HTTP(S) URL，请启用对象存储或提供公网素材地址")
 	}
 	if _, err := ValidateOutboundURL(value); err != nil {
 		return "", err
@@ -2304,7 +2448,7 @@ func validateGenerationInterface(mode string, interfaceType string) error {
 	allowed := map[string]map[string]bool{
 		"text":  {"chat-completion": true, "openai-response": true},
 		"image": {"openai-image": true, "grok-image": true, "globalaiopc-image": true, "volcengine-ark-image": true, "volcengine-jimeng-image": true},
-		"video": {"newapi": true, "newapi-channel-1": true, "newapi-channel-2": true, "globalaiopc-video": true, "xai-video": true, "volcengine-ark-video": true, "volcengine-jimeng-video": true, "gemini-veo": true},
+		"video": {"newapi": true, "newapi-channel-1": true, "newapi-channel-2": true, "globalaiopc-video": true, "xai-video": true, "volcengine-ark-video": true, "volcengine-jimeng-video": true, "gemini-veo": true, "novita-video": true},
 		"audio": {"openai-audio": true, "async-audio": true},
 	}
 	if allowed[mode] != nil && !allowed[mode][interfaceType] {
@@ -2352,6 +2496,7 @@ func grokVideoBody(input canvasGenerationInput) (map[string]interface{}, error) 
 }
 
 // xAI 生成接口与 legacy /videos 使用不同字段，保持独立可避免兼容字段触发上游 422。
+// 设置首帧时按 image-to-video 只传 image；未设置首帧时按 reference-to-video 把所有参考图放入 reference_images。
 func xaiVideoRequestBody(input canvasGenerationInput) (xaiVideoRequest, error) {
 	body := xaiVideoRequest{
 		Model:       input.Config.Model,
@@ -2363,8 +2508,24 @@ func xaiVideoRequestBody(input canvasGenerationInput) (xaiVideoRequest, error) {
 	if !shouldSendNewAPIVideoImages(input) || len(input.ReferenceImages) == 0 {
 		return body, nil
 	}
+	startFrameID := metadataString(input.Metadata, "videoStartFrameNodeId")
+	if startFrameID == "" {
+		// 未设置首帧：所有参考图作为 R2V 参考，不受单张起始图限制。
+		for index := range input.ReferenceImages {
+			imageURL, err := openAIImageInputURL(input.ReferenceImages[index])
+			if err != nil {
+				return xaiVideoRequest{}, err
+			}
+			body.ReferenceImages = append(body.ReferenceImages, xaiVideoImage{URL: imageURL})
+		}
+		return body, nil
+	}
+	// 设置了首帧：xAI 不允许 image 与 reference_images 同时出现，只把首帧作为起始图。
 	if len(input.ReferenceImages) > 1 {
-		return xaiVideoRequest{}, fmt.Errorf("xAI 图生视频只支持 1 张起始图，当前连接了 %d 张", len(input.ReferenceImages))
+		return xaiVideoRequest{}, fmt.Errorf("xAI 设置首帧后只支持 1 张起始图，当前连接了 %d 张", len(input.ReferenceImages))
+	}
+	if input.ReferenceImages[0].ID != startFrameID {
+		return xaiVideoRequest{}, errors.New("已配置的首帧参考图未包含在视频请求中")
 	}
 	imageURL, err := openAIImageInputURL(input.ReferenceImages[0])
 	if err != nil {
