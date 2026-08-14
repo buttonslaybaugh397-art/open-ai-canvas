@@ -1,5 +1,17 @@
 # 待测试
 
+## 后端数据库日志
+
+- 验证系统设置尚未保存时仍正常使用默认配置，但后端不再重复输出预期的 GORM `record not found` 日志；真实 SQL 错误仍会输出。
+
+## 1Panel 镜像部署
+
+- 验证 `POSTGRES_PASSWORD` 留空时，PostgreSQL 容器启动脚本会生成 48 位字母数字密码，后端与 Web 正常启动，编排不再依赖独立的 `alpine:3.22` 服务。
+- 验证手动填写少于 32 位或包含非字母数字字符的 `POSTGRES_PASSWORD` 时，PostgreSQL 容器明确失败。
+- 验证重新创建编排时继续复用 `deployment-secrets` 数据卷中的密码，不覆盖现有数据库和登录账号。
+- 验证 1Panel 未导入环境变量时，编排默认使用 `http://192.204.35.56:6868` 作为 CORS Origin 并成功创建。
+- 验证服务器通过 `0.0.0.0:6868` 暴露 Web，并可从 `http://192.204.35.56:6868` 正常访问和调用同源 API。
+
 ## GlobalAiOpc 独立渠道预设
 
 - 验证新增 GlobalAiOpc 渠道后固定使用 `https://zcbservice.aizfw.cn/kyyReactApiServer`，并仅为该渠道预置 `globalaiopc-image` 与 `globalaiopc-video` 模型协议。

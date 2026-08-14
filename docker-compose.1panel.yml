@@ -6,14 +6,42 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-open_ai_canvas}
       POSTGRES_USER: ${POSTGRES_USER:-open_ai_canvas}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      CANVAS_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_PASSWORD_FILE: /run/canvas-secrets/postgres-password
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        password_file=/run/canvas-secrets/postgres-password
+        database_url_file=/run/canvas-secrets/database-url
+        case "$$POSTGRES_DB" in ""|*[!A-Za-z0-9_]*) echo "POSTGRES_DB 只能包含字母、数字和下划线" >&2; exit 1 ;; esac
+        case "$$POSTGRES_USER" in ""|*[!A-Za-z0-9_]*) echo "POSTGRES_USER 只能包含字母、数字和下划线" >&2; exit 1 ;; esac
+        if [ ! -s "$$password_file" ]; then
+          if [ -n "$${CANVAS_POSTGRES_PASSWORD:-}" ]; then
+            password="$$CANVAS_POSTGRES_PASSWORD"
+          else
+            password="$$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48)"
+          fi
+          [ "$${#password}" -ge 32 ] || { echo "POSTGRES_PASSWORD 至少需要 32 位" >&2; exit 1; }
+          case "$$password" in *[!A-Za-z0-9]*) echo "POSTGRES_PASSWORD 只能包含字母和数字" >&2; exit 1 ;; esac
+          umask 077
+          printf '%s' "$$password" > "$$password_file"
+        fi
+        password="$$(cat "$$password_file")"
+        [ "$${#password}" -ge 32 ] || { echo "持久化的 PostgreSQL 密码无效" >&2; exit 1; }
+        case "$$password" in *[!A-Za-z0-9]*) echo "持久化的 PostgreSQL 密码无效" >&2; exit 1 ;; esac
+        printf 'host=postgres port=5432 user=%s password=%s dbname=%s sslmode=disable\n' "$$POSTGRES_USER" "$$password" "$$POSTGRES_DB" > "$$database_url_file"
+        chmod 0444 "$$password_file" "$$database_url_file"
+        unset CANVAS_POSTGRES_PASSWORD
+        exec docker-entrypoint.sh postgres
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - deployment-secrets:/run/canvas-secrets
     healthcheck:
       test: [CMD-SHELL, 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 20s
     restart: unless-stopped
 
   backend:
@@ -23,17 +51,21 @@ services:
       CANVAS_BACKEND_ADDR: ':8080'
       CANVAS_BACKEND_DATA_DIR: /data
       CANVAS_DATABASE_DRIVER: postgres
-      DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: redis://redis:6379/0
       CANVAS_WORKER_CONCURRENCY: ${CANVAS_WORKER_CONCURRENCY:-3}
       CANVAS_CHANNEL_CONCURRENCY: ${CANVAS_CHANNEL_CONCURRENCY:-3}
       CANVAS_REGISTRATION_ENABLED: ${CANVAS_REGISTRATION_ENABLED:-false}
       CANVAS_ALLOW_PRIVATE_UPSTREAMS: ${CANVAS_ALLOW_PRIVATE_UPSTREAMS:-false}
       CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS: ${CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS:-}
-      CANVAS_CORS_ORIGINS: ${CANVAS_CORS_ORIGINS}
+      CANVAS_CORS_ORIGINS: ${CANVAS_CORS_ORIGINS:-http://192.204.35.56:6868}
       GIN_MODE: release
+    command:
+      - /bin/sh
+      - -ec
+      - export DATABASE_URL="$$(cat /run/canvas-secrets/database-url)"; exec infinite-canvas-backend
     volumes:
       - backend-data:/data
+      - deployment-secrets:/run/canvas-secrets:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -57,7 +89,7 @@ services:
     image: ghcr.io/buttonslaybaugh397-art/open-ai-canvas-web:${CANVAS_IMAGE_TAG:-latest}
     pull_policy: always
     ports:
-      - '127.0.0.1:${CANVAS_HTTP_PORT:-3000}:3000'
+      - '${CANVAS_BIND_ADDRESS:-0.0.0.0}:${CANVAS_HTTP_PORT:-6868}:3000'
     depends_on:
       backend:
         condition: service_healthy
@@ -65,5 +97,6 @@ services:
 
 volumes:
   backend-data:
+  deployment-secrets:
   postgres-data:
   redis-data:

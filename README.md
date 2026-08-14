@@ -120,6 +120,12 @@ curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canv
 
 部署配置和 PostgreSQL 密码保存在 `/opt/open-ai-canvas/.env`，不要发送给他人，也不要删除 `backend-data`、`postgres-data` 和 `redis-data` 数据卷。数据卷持久化不等于备份，请定期备份 PostgreSQL 和上传文件。直接使用 IP 访问仅适合首次配置；公网长期使用必须绑定域名并配置 HTTPS。
 
+### 1Panel 编排部署
+
+在 1Panel 中使用仓库根目录的 `docker-compose.1panel.yml` 创建编排，并将 `1panel.env.example` 中的变量填入编排环境变量。`POSTGRES_PASSWORD` 可以留空，PostgreSQL 容器首次启动前会自动生成 48 位字母数字密码并保存在 `deployment-secrets` 数据卷；不需要额外启动凭据初始化镜像。后续更新或重建容器会继续使用原密码，不会覆盖现有数据库和登录账号。也可以在首次创建前手动填写至少 32 位的字母数字密码。
+
+`CANVAS_HTTP_PORT` 和 `CANVAS_CORS_ORIGINS` 属于外部访问合同，不会随机生成。当前 1Panel 编排默认使用 `6868` 和 `http://192.204.35.56:6868`，即使 1Panel 没有导入环境变量也能创建；绑定域名或修改端口时必须同步覆盖这两个变量。首次启动后不要修改 `POSTGRES_DB` 和 `POSTGRES_USER`，也不要删除 `deployment-secrets`、`postgres-data`、`backend-data` 和 `redis-data` 数据卷；只删除密码卷而保留数据库卷会造成数据库凭据不一致。
+
 ## 生产环境文本 SSE
 
 文本任务事件流是登录态接口 `GET /api/tasks/:id/text-events`。它只发送当前用户有权限访问的文本任务增量，响应类型为 `text/event-stream`；事件 `delta` 的 `id` 是单调递增的文本序号，`terminal` 表示任务已经成功、失败或取消。生产反向代理必须对这一条路径关闭响应缓冲和缓存，并允许长时间读取；不要把这些设置复制到所有 `/api/` 请求上。
