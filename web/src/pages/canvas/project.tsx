@@ -1181,6 +1181,7 @@ function InfiniteCanvasPage() {
         projectId,
         domainProjectId: currentProject?.projectId,
         addedSkills,
+        assets,
         nodesRef,
         connectionsRef,
         setNodes,
@@ -1221,6 +1222,7 @@ function InfiniteCanvasPage() {
         projectId,
         domainProjectId: currentProject?.projectId,
         addedSkills,
+        assets,
         nodesRef,
         connectionsRef,
         setNodes,
@@ -1786,7 +1788,7 @@ function InfiniteCanvasPage() {
                     ) : null}
 
                     {dialogNode && dialogNode.type !== CanvasNodeType.Script && dialogNode.type !== CanvasNodeType.Drawing && !selectionBox ? (
-                        <CanvasNodePanelOverlay node={dialogNode} viewport={viewport} containerRef={containerRef} panelWidth={624}>
+                        <CanvasNodePanelOverlay node={dialogNode} viewport={viewport} containerRef={containerRef}>
                             {renderCanvasNodePanel(dialogNode)}
                         </CanvasNodePanelOverlay>
                     ) : null}
