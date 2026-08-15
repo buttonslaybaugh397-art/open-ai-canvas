@@ -347,7 +347,6 @@ export default function AssetsPage() {
         <>
             <WorkspacePage grid className="library-page assets-library-page">
                 <PageHeader
-                    icon="assets"
                     title="素材库"
                     description={libraryView === "personal" ? "管理个人文本、图片、视频、音频和 3D 模型素材。" : "浏览当前部署内所有成员共享的团队素材。"}
                     meta={libraryView === "personal" ? <span className="text-xs text-foreground/45">{filteredAssets.length} 个素材</span> : undefined}
