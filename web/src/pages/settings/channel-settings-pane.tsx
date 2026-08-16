@@ -1,4 +1,4 @@
-import { App, Button, Form, Input, Popconfirm, Segmented, Select, Tooltip } from "antd";
+import { App, Button, Form, Input, Popconfirm, Segmented, Select, Switch, Tooltip } from "antd";
 import { ChevronDown, ChevronUp, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useState } from "react";
 
@@ -6,6 +6,8 @@ import { ChannelHeadersEditor, validateChannelHeaders } from "@/components/chann
 import { WorkspaceState } from "@/components/layout/workspace-state";
 import { defaultModelCapabilityConfig } from "@/lib/model-capabilities";
 import { modelProtocolCapability, protocolForModelCatalog } from "@/lib/model-protocols";
+import { desktopLocalChannelFormState, desktopLocalChannelPayloadValue, DESKTOP_LOCAL_CHANNEL_EXAMPLE_BASE_URL } from "@/lib/desktop-local-channel";
+import { applyGlobalAiOpcPreset, GLOBALAIOPC_BASE_URL } from "@/lib/globalaiopc-channel";
 import { fetchChannelModels, type ChannelModelCatalogItem } from "@/services/api/image";
 import {
     createModelChannel,
@@ -17,8 +19,9 @@ import {
     type ModelChannel,
 } from "@/stores/use-config-store";
 import { ChannelModelSettings } from "./channel-video-pricing";
+import { useUserStore } from "@/stores/use-user-store";
 
-type UserChannelConnection = "openai" | "gemini";
+type UserChannelConnection = "openai" | "gemini" | "globalaiopc";
 type ChannelModelCost = NonNullable<ModelChannel["modelCosts"]>[number];
 
 export function ChannelSettingsPane({ onOpenModels }: { onOpenModels: () => void }) {
@@ -27,6 +30,8 @@ export function ChannelSettingsPane({ onOpenModels }: { onOpenModels: () => void
     const replaceConfig = useConfigStore((state) => state.replaceConfig);
     const [loadingChannelIds, setLoadingChannelIds] = useState<string[]>([]);
     const [collapsedChannelIds, setCollapsedChannelIds] = useState<Set<string>>(new Set());
+    const desktopLocalChannelsEnabled = useUserStore((state) => state.features.desktopLocalChannelsEnabled);
+    const desktopLocalChannelHostname = typeof window === "undefined" ? "" : window.location.hostname;
     const userChannels = config.channels.filter((channel) => channel.scope !== "system");
 
     const updateChannels = (channels: ModelChannel[], baseConfig = config) => {
@@ -47,11 +52,21 @@ export function ChannelSettingsPane({ onOpenModels }: { onOpenModels: () => void
     };
 
     const updateChannelConnection = (channel: ModelChannel, connection: UserChannelConnection) => {
+        if (connection === "globalaiopc") {
+            updateChannel(channel.id, applyGlobalAiOpcPreset(channel));
+            return;
+        }
         const apiFormat = connection;
         const defaultBaseUrl = defaultBaseUrlForApiFormat(apiFormat);
-        const baseUrl = isKnownDefaultBaseUrl(channel.baseUrl) ? defaultBaseUrl : channel.baseUrl;
+        const baseUrl = channel.connectionType === "globalaiopc" || isKnownDefaultBaseUrl(channel.baseUrl) ? defaultBaseUrl : channel.baseUrl;
         // 渠道只负责连接类型；具体模型能力和请求协议由下方共享能力卡片维护。
-        updateChannel(channel.id, { apiFormat, interfaceType: undefined, baseUrl });
+        updateChannel(channel.id, {
+            connectionType: undefined,
+            apiFormat,
+            interfaceType: undefined,
+            baseUrl,
+            ...(channel.connectionType === "globalaiopc" ? { models: [], modelCosts: [] } : {}),
+        });
     };
 
     const addChannel = () => {
@@ -90,7 +105,8 @@ export function ChannelSettingsPane({ onOpenModels }: { onOpenModels: () => void
         }
         setChannelLoading(channel.id, true);
         try {
-            const result = await fetchChannelModels(channel, true);
+            const projectedChannel = { ...channel, allowLocalChannel: userLocalChannelFormOwner(desktopLocalChannelsEnabled, desktopLocalChannelHostname, channel.allowLocalChannel).payloadValue };
+            const result = await fetchChannelModels(projectedChannel, true);
             if (!result.models.length) {
                 message.warning(`${channel.name || "当前渠道"}未返回模型，已保留现有手工模型`);
                 return;
@@ -127,7 +143,8 @@ export function ChannelSettingsPane({ onOpenModels }: { onOpenModels: () => void
             const results = await Promise.all(
                 runnable.map(async (channel) => {
                     try {
-                        const result = await fetchChannelModels(channel, true);
+                        const projectedChannel = { ...channel, allowLocalChannel: userLocalChannelFormOwner(desktopLocalChannelsEnabled, desktopLocalChannelHostname, channel.allowLocalChannel).payloadValue };
+                        const result = await fetchChannelModels(projectedChannel, true);
                         return { channel, result, error: "" };
                     } catch (error) {
                         return { channel, result: { models: [], catalog: [] }, error: error instanceof Error ? error.message : "读取失败" };
@@ -208,9 +225,16 @@ export function ChannelSettingsPane({ onOpenModels }: { onOpenModels: () => void
                                     <div className="grid gap-x-3 gap-y-2 lg:grid-cols-12">
                                         <div className="settings-field-group-label lg:col-span-12">连接信息</div>
                                         <Form.Item label="渠道名称" htmlFor={`channel-${channel.id}-name`} className="mb-0 lg:col-span-3"><Input id={`channel-${channel.id}-name`} value={channel.name} placeholder="例如：我的 NewAPI" onChange={(event) => updateChannel(channel.id, { name: event.target.value })} onBlur={(event) => updateChannel(channel.id, { name: event.target.value.trim() || "未命名渠道" })} /></Form.Item>
-                                        <Form.Item label="渠道连接类型" className="mb-0 lg:col-span-3" extra="仅用于拉取模型目录；模型能力和请求协议在下方统一配置。"><Segmented<UserChannelConnection> block value={channelConnectionMode(channel)} options={[{ label: "OpenAI 兼容", value: "openai" }, { label: "Gemini 原生", value: "gemini" }]} onChange={(value) => updateChannelConnection(channel, value)} /></Form.Item>
-                                        <Form.Item label="Base URL" htmlFor={`channel-${channel.id}-base-url`} className="mb-0 lg:col-span-6"><Input id={`channel-${channel.id}-base-url`} inputMode="url" value={channel.baseUrl} placeholder="填写渠道 Base URL" onChange={(event) => updateChannel(channel.id, { baseUrl: event.target.value })} onBlur={(event) => updateChannel(channel.id, { baseUrl: event.target.value.trim().replace(/\/+$/, "") })} /></Form.Item>
-                                        <Form.Item label="API Key" htmlFor={`channel-${channel.id}-api-key`} className="mb-0 lg:col-span-5"><Input.Password id={`channel-${channel.id}-api-key`} autoComplete="new-password" value={channel.apiKey} placeholder={channel.apiFormat === "gemini" ? "填写 Gemini API Key" : "填写当前渠道 API Key"} onChange={(event) => updateChannel(channel.id, { apiKey: event.target.value })} onBlur={(event) => updateChannel(channel.id, { apiKey: event.target.value.trim() })} /></Form.Item>
+                                        <Form.Item label="渠道连接类型" className="mb-0 lg:col-span-3" extra="GlobalAiOpc 使用独立预设；其他渠道的模型能力和请求协议在下方配置。"><Segmented<UserChannelConnection> block value={channelConnectionMode(channel)} options={[{ label: "OpenAI 兼容", value: "openai" }, { label: "Gemini 原生", value: "gemini" }, { label: "GlobalAiOpc", value: "globalaiopc" }]} onChange={(value) => updateChannelConnection(channel, value)} /></Form.Item>
+                                        <UserLocalChannelFields
+                                            channel={channel}
+                                            visible={userLocalChannelFormOwner(desktopLocalChannelsEnabled, desktopLocalChannelHostname, channel.allowLocalChannel).visible}
+                                            checked={userLocalChannelFormOwner(desktopLocalChannelsEnabled, desktopLocalChannelHostname, channel.allowLocalChannel).checked}
+                                            desktopLocalChannelsEnabled={desktopLocalChannelsEnabled}
+                                            hostname={desktopLocalChannelHostname}
+                                            updateChannel={updateChannel}
+                                        />
+                                        <Form.Item label="API Key" htmlFor={`channel-${channel.id}-api-key`} className="mb-0 lg:col-span-5"><Input.Password id={`channel-${channel.id}-api-key`} autoComplete="new-password" value={channel.apiKey} placeholder={channel.connectionType === "globalaiopc" ? "填写 GlobalAiOpc API Key" : channel.apiFormat === "gemini" ? "填写 Gemini API Key" : "填写当前渠道 API Key"} onChange={(event) => updateChannel(channel.id, { apiKey: event.target.value })} onBlur={(event) => updateChannel(channel.id, { apiKey: event.target.value.trim() })} /></Form.Item>
                                         <Form.Item label="Secret Key（可选）" htmlFor={`channel-${channel.id}-secret-key`} className="mb-0 lg:col-span-5" extra="即梦等 AK/SK 协议需要；其他协议留空。"><Input.Password id={`channel-${channel.id}-secret-key`} autoComplete="new-password" value={channel.secretKey || ""} placeholder="填写 Secret Key" onChange={(event) => updateChannel(channel.id, { secretKey: event.target.value })} onBlur={(event) => updateChannel(channel.id, { secretKey: event.target.value.trim() })} /></Form.Item>
                                         <div className="settings-field-group-label lg:col-span-12">模型与能力</div>
                                         <Form.Item label="模型列表" htmlFor={`channel-${channel.id}-models`} className="mb-0 lg:col-span-7"><Select id={`channel-${channel.id}-models`} mode="tags" showSearch allowClear maxTagCount="responsive" tokenSeparators={[",", "\n"]} placeholder="输入模型名，或点击拉取模型" value={channel.models} onChange={(models) => updateChannel(channel.id, { models: uniqueModels(models) })} /></Form.Item>
@@ -225,6 +249,36 @@ export function ChannelSettingsPane({ onOpenModels }: { onOpenModels: () => void
             ) : <WorkspaceState icon="settings" compact title="当前没有自定义渠道" description="管理员配置的系统渠道会出现在模型选择中；也可以添加自己的模型服务。" action={<Button icon={<Plus className="size-4" />} onClick={addChannel}>新增自定义渠道</Button>} />}
         </Form>
     );
+}
+
+export function userLocalChannelFormOwner(desktopLocalChannelsEnabled: boolean, hostname: string, requestedAllowLocalChannel?: boolean) {
+    const state = desktopLocalChannelFormState(desktopLocalChannelsEnabled, hostname, requestedAllowLocalChannel);
+    return { ...state, payloadValue: desktopLocalChannelPayloadValue(desktopLocalChannelsEnabled, hostname, requestedAllowLocalChannel) };
+}
+
+export function UserLocalChannelSwitch({ visible, checked, onChange }: { visible: boolean; checked: boolean; onChange: (checked: boolean) => void }) {
+    if (!visible) return null;
+    return (
+        <Form.Item label="允许本机渠道" className="mb-0 lg:col-span-12" extra={`仅放行精确 localhost 或 127.0.0.1；示例：${DESKTOP_LOCAL_CHANNEL_EXAMPLE_BASE_URL}`}>
+            <Switch checked={checked} onChange={onChange} />
+        </Form.Item>
+    );
+}
+
+export function UserLocalChannelFields({ channel, visible, checked, desktopLocalChannelsEnabled, hostname, updateChannel }: { channel: ModelChannel; visible: boolean; checked: boolean; desktopLocalChannelsEnabled: boolean; hostname: string; updateChannel: (id: string, patch: Partial<ModelChannel>) => void }) {
+    const globalAiOpc = channel.connectionType === "globalaiopc";
+    return (
+        <>
+            <Form.Item label="Base URL" htmlFor={`channel-${channel.id}-base-url`} className="mb-0 lg:col-span-6">
+                <Input id={`channel-${channel.id}-base-url`} inputMode="url" value={channel.baseUrl} placeholder={globalAiOpc ? GLOBALAIOPC_BASE_URL : checked ? DESKTOP_LOCAL_CHANNEL_EXAMPLE_BASE_URL : "填写渠道 Base URL"} disabled={globalAiOpc} onChange={(event) => updateChannel(channel.id, { baseUrl: event.target.value })} onBlur={(event) => updateChannel(channel.id, { baseUrl: event.target.value.trim().replace(/\/+$/, "") })} />
+            </Form.Item>
+            <UserLocalChannelSwitch visible={visible && !globalAiOpc} checked={checked} onChange={(value) => updateChannel(channel.id, userLocalChannelChangePatch(desktopLocalChannelsEnabled, hostname, value))} />
+        </>
+    );
+}
+
+export function userLocalChannelChangePatch(desktopLocalChannelsEnabled: boolean, hostname: string, checked: boolean) {
+    return { allowLocalChannel: userLocalChannelFormOwner(desktopLocalChannelsEnabled, hostname, checked).payloadValue };
 }
 
 export function channelValidationError(channel: ModelChannel) {
@@ -298,6 +352,7 @@ function channelModelFetchErrorMessage(error: unknown) {
 }
 
 function channelConnectionMode(channel: ModelChannel): UserChannelConnection {
+    if (channel.connectionType === "globalaiopc") return "globalaiopc";
     return channel.apiFormat === "gemini" ? "gemini" : "openai";
 }
 
@@ -316,17 +371,19 @@ function channelConnectionError(channel: ModelChannel) {
 }
 
 function channelConnectionSignature(channel: ModelChannel) {
-    return [channel.baseUrl.trim(), channel.apiKey.trim(), channel.secretKey?.trim() || "", channel.apiFormat, channel.interfaceType || "auto", JSON.stringify(channel.headers || [])].join("\n");
+    return [channel.baseUrl.trim(), channel.apiKey.trim(), channel.secretKey?.trim() || "", channel.apiFormat, channel.connectionType || "", channel.interfaceType || "auto", channel.allowLocalChannel === true ? "local" : "remote", JSON.stringify(channel.headers || [])].join("\n");
 }
 
 function channelProtocolLabel(channel: ModelChannel) {
-    return channelConnectionMode(channel) === "gemini" ? "Gemini 原生" : "OpenAI 兼容";
+    const mode = channelConnectionMode(channel);
+    if (mode === "globalaiopc") return "GlobalAiOpc";
+    return mode === "gemini" ? "Gemini 原生" : "OpenAI 兼容";
 }
 
 function isKnownDefaultBaseUrl(value: string) {
     const normalized = value.trim().replace(/\/+$/, "");
     if (!normalized) return true;
-    return [defaultBaseUrlForApiFormat("openai"), defaultBaseUrlForApiFormat("gemini")].some((candidate) => candidate.replace(/\/+$/, "") === normalized);
+    return [defaultBaseUrlForApiFormat("openai"), defaultBaseUrlForApiFormat("gemini"), GLOBALAIOPC_BASE_URL].some((candidate) => candidate.replace(/\/+$/, "") === normalized);
 }
 
 function requiresSecretKey(channel: ModelChannel) {

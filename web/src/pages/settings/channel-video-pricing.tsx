@@ -6,7 +6,7 @@ import { testChannelModelConnection } from "@/lib/model-connection-test";
 import { ModelCapabilityEditor } from "@/components/model-capability-editor";
 import { CapabilityCardPicker, ProtocolCardPicker } from "@/components/model-protocol-picker";
 import { defaultModelCapabilityConfig } from "@/lib/model-capabilities";
-import { MODEL_PROTOCOLS, modelProtocolCapability, modelProtocolDefinition, type ModelProtocol } from "@/lib/model-protocols";
+import { MODEL_PROTOCOLS, modelProtocolCapability, modelProtocolDefinition, modelProtocolSupportsTokenBilling, type ModelProtocol } from "@/lib/model-protocols";
 import { modelMatchesCapability, modelOptionName, type ModelChannel } from "@/stores/use-config-store";
 
 type ModelCost = NonNullable<ModelChannel["modelCosts"]>[number];
@@ -49,6 +49,7 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
     const availableProtocols = channel.connectionType === "globalaiopc"
         ? MODEL_PROTOCOLS.filter((item) => item.value === "globalaiopc-image" || item.value === "globalaiopc-video")
         : MODEL_PROTOCOLS.filter((item) => item.value !== "globalaiopc-image" && item.value !== "globalaiopc-video");
+    const activeTokenBillingSupported = modelProtocolSupportsTokenBilling(activeCapability, activeProtocol);
 
     return (
         <div className="mt-4">
@@ -127,7 +128,7 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
                                     updateCost(activeModel, {
                                         protocol: nextProtocol,
                                         capability: nextCapability,
-                                        billingMode: nextCapability === "video" ? activeBillingMode : "fixed_request",
+                                        billingMode: activeBillingMode === "per_second" && nextCapability === "video" ? "per_second" : activeBillingMode === "token" && modelProtocolSupportsTokenBilling(nextCapability, nextProtocol) ? "token" : "fixed_request",
                                         capabilityConfig: nextCapability === "image" || nextCapability === "video" ? defaultModelCapabilityConfig(nextProtocol, activeModel) : undefined,
                                     });
                                 }}
@@ -139,7 +140,7 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
                                 capability={activeCapability}
                                 value={activeProtocol}
                                 allowedProtocols={availableProtocols.map((item) => item.value)}
-                                onChange={(nextProtocol) => updateCost(activeModel, { protocol: nextProtocol, capabilityConfig: activeCapability === "image" || activeCapability === "video" ? defaultModelCapabilityConfig(nextProtocol, activeModel) : undefined })}
+                                onChange={(nextProtocol) => updateCost(activeModel, { protocol: nextProtocol, billingMode: activeBillingMode === "token" && !modelProtocolSupportsTokenBilling(activeCapability, nextProtocol) ? "fixed_request" : activeBillingMode, capabilityConfig: activeCapability === "image" || activeCapability === "video" ? defaultModelCapabilityConfig(nextProtocol, activeModel) : undefined })}
                             />
                         </section>
                         {activeCapability === "video" ? (
@@ -153,6 +154,7 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
                                         options={[
                                             { label: "按次", value: "fixed_request" },
                                             { label: "按秒", value: "per_second" },
+                                            { label: "Token", value: "token", disabled: !activeTokenBillingSupported },
                                         ]}
                                         onChange={(value) => updateCost(activeModel, { billingMode: value as ModelCost["billingMode"] })}
                                     />
@@ -163,12 +165,13 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
                                         precision={6}
                                         step={0.1}
                                         className="w-full"
-                                        placeholder={activeBillingMode === "per_second" ? "每秒价格" : "每次价格"}
-                                        addonAfter={`积分/${activeBillingMode === "per_second" ? "秒" : "次"}`}
-                                        value={activeModelCost ? activeModelCost.unitPriceMicrocredits / 1_000_000 : null}
-                                        onChange={(value) => updateCost(activeModel, { unitPriceMicrocredits: Math.round(Number(value || 0) * 1_000_000) })}
+                                        placeholder={activeBillingMode === "token" ? "每百万视频 Token 价格" : activeBillingMode === "per_second" ? "每秒价格" : "每次价格"}
+                                        addonAfter={`积分/${activeBillingMode === "token" ? "百万 Token" : activeBillingMode === "per_second" ? "秒" : "次"}`}
+                                        value={activeModelCost ? (activeBillingMode === "token" ? (activeModelCost.outputTokenPriceMicrocredits || 0) : activeModelCost.unitPriceMicrocredits) / 1_000_000 : null}
+                                        onChange={(value) => updateCost(activeModel, activeBillingMode === "token" ? { outputTokenPriceMicrocredits: Math.round(Number(value || 0) * 1_000_000) } : { unitPriceMicrocredits: Math.round(Number(value || 0) * 1_000_000) })}
                                     />
                                 </div>
+                                {activeBillingMode === "token" ? <div className="text-[var(--fs-tiny)] text-foreground/45">按火山方舟任务查询响应的 usage.completion_tokens 结算。</div> : null}
                             </div>
                         ) : null}
                         {activeCapability === "image" || activeCapability === "video" ? (
