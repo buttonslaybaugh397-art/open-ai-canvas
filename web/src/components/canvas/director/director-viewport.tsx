@@ -1,6 +1,6 @@
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Grid, OrbitControls, TransformControls } from "@react-three/drei";
-import { forwardRef, Suspense, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, Suspense, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimationClip, AnimationMixer, Box3, Bone, Color, Group, LoopOnce, LoopRepeat, Mesh, MeshBasicMaterial, MeshDepthMaterial, MeshNormalMaterial, MeshStandardMaterial, Object3D, PerspectiveCamera, Quaternion, Scene, SkeletonHelper, Texture, TextureLoader, Vector3, WebGLRenderer } from "three";
 import type { Material } from "three";
 import { GLTFLoader, SkeletonUtils } from "three-stdlib";
@@ -200,7 +200,15 @@ function DirectorModel({ object, selected, selectedBone, playhead, onSelectBone,
     const mixerRef = useRef<AnimationMixer | null>(null);
     const onActorRigReadyRef = useRef(onActorRigReady);
     const invalidate = useThree((state) => state.invalidate);
-    const helper = useMemo(() => model ? new SkeletonHelper(model) : null, [model]);
+    const helper = useMemo(() => {
+        if (!model) return null;
+        model.updateMatrixWorld(true);
+        const nextHelper = new SkeletonHelper(model);
+        // SkeletonHelper 默认复用模型的世界矩阵；同级挂载时必须改为独立局部矩阵，避免人物变换被叠加两次。
+        nextHelper.matrix = model.matrix.clone();
+        nextHelper.matrixAutoUpdate = false;
+        return nextHelper;
+    }, [model]);
     const selectedBoneObject = selectedBone && rig?.boneMap[selectedBone as DirectorHumanoidBone] ? model?.getObjectByName(rig.boneMap[selectedBone as DirectorHumanoidBone]!) : null;
     const motion = object.motionClips?.find((item) => item.id === object.activeMotionClipId);
     const activeAnimation = motion ? animations.find((item) => item.name === motion.sourceAnimation) : undefined;
@@ -248,7 +256,7 @@ function DirectorModel({ object, selected, selectedBone, playhead, onSelectBone,
         invalidate();
     }, [invalidate, model, object.color, object.kind]);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         if (!model || !mixerRef.current) return;
         const mixer = mixerRef.current;
         mixer.stopAllAction();
@@ -259,7 +267,7 @@ function DirectorModel({ object, selected, selectedBone, playhead, onSelectBone,
         };
     }, [activeAnimation, model, motion?.loop]);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         if (!model || !mixerRef.current) return;
         if (activeAnimation && motion) {
             const localTime = Math.max(0, playhead - motion.start) * motion.playbackRate;
@@ -267,19 +275,22 @@ function DirectorModel({ object, selected, selectedBone, playhead, onSelectBone,
             mixerRef.current.setTime(motion.loop && clipDuration > 0 ? localTime % clipDuration : localTime);
         }
         applyDirectorBoneTracks(model, object, playhead, rig, restRotations, Boolean(activeAnimation && motion));
+        model.updateWorldMatrix(true, true);
         helper?.updateMatrixWorld(true);
         invalidate();
     }, [activeAnimation, helper, invalidate, model, motion, object.boneOverrides, object.boneTracks, object.pose, playhead, restRotations, rig]);
 
     useFrame(() => {
-        if (selectedBoneObject && selected) selectedBoneObject.updateMatrixWorld(true);
+        if (!selected) return;
+        model.updateWorldMatrix(true, true);
+        helper?.updateMatrixWorld(true);
     });
 
     if (!model) return <DirectorMannequin color={object.color} selected={selected} />;
     return <group>
         <primitive object={model} />
         {selected && helper ? <primitive object={helper} /> : null}
-        {selected && rig ? Object.entries(rig.boneMap).filter(([, name]) => Boolean(name)).map(([bone, name]) => <BoneController key={bone} bone={model.getObjectByName(name!)} model={model} selected={selectedBone === bone} onSelect={() => onSelectBone(bone)} />) : null}
+        {selected && rig ? Object.entries(rig.boneMap).filter(([, name]) => Boolean(name)).map(([bone, name]) => <BoneController key={bone} bone={model.getObjectByName(name!)} selected={selectedBone === bone} onSelect={() => onSelectBone(bone)} />) : null}
         {selected && selectedBoneObject ? <TransformControls object={selectedBoneObject} mode="rotate" size={0.55} onMouseUp={() => onBoneTransform(selectedBone!, selectedBoneObject.quaternion.toArray() as DirectorQuat)} /> : null}
     </group>;
 }
@@ -303,13 +314,14 @@ function LoadingBone({ from, to, color }: { from: DirectorVec3; to: DirectorVec3
     return <mesh position={midpoint} quaternion={rotation}><cylinderGeometry args={[0.025, 0.025, direction.length(), 8]} /><meshBasicMaterial color={color} transparent opacity={0.62} /></mesh>;
 }
 
-function BoneController({ bone, model, selected, onSelect }: { bone: Object3D | undefined; model: Object3D; selected: boolean; onSelect: () => void }) {
+function BoneController({ bone, selected, onSelect }: { bone: Object3D | undefined; selected: boolean; onSelect: () => void }) {
     const ref = useRef<Group>(null);
     const world = useMemo(() => new Vector3(), []);
     useFrame(() => {
-        if (!bone || !ref.current) return;
+        const parent = ref.current?.parent;
+        if (!bone || !ref.current || !parent) return;
         bone.getWorldPosition(world);
-        model.worldToLocal(world);
+        parent.worldToLocal(world);
         ref.current.position.copy(world);
     });
     if (!bone) return null;
@@ -333,6 +345,7 @@ function normalizeModel(root: Object3D, castShadow: boolean, receiveShadow: bool
         mesh.castShadow = castShadow;
         mesh.receiveShadow = receiveShadow;
     });
+    root.updateMatrixWorld(true);
 }
 
 function applyActorReferenceMaterial(root: Object3D, color: string) {
