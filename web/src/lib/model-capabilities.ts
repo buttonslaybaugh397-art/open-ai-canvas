@@ -276,6 +276,25 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.references.maxAudioDurationSeconds = 15;
         video.generateAudio = { supported: true, default: true };
     }
+    if (protocol === "huiquyun-video") {
+        const fixedDuration = model.trim().toLowerCase().match(/-(5|10|15)s$/)?.[1];
+        video.references.maxImages = 4;
+        video.references.maxVideos = 3;
+        video.references.maxAudios = 1;
+        video.references.maxVideoBytes = 200 * 1024 * 1024;
+        video.references.maxAudioBytes = 15 * 1024 * 1024;
+        video.references.maxVideoDurationSeconds = 15;
+        video.references.maxAudioDurationSeconds = 15;
+        video.duration = fixedDuration
+            ? { selection: "enum", values: [Number(fixedDuration)], default: Number(fixedDuration) }
+            : { selection: "range", min: 4, max: 15, step: 1, default: 8 };
+        video.ratios = ["21:9", "4:3", "16:9", "1:1", "3:4", "9:16"];
+        video.defaultRatio = "16:9";
+        video.resolutions = ["720p"];
+        video.defaultResolution = "720p";
+        video.generateAudio = { supported: true, default: true };
+        video.watermark = { supported: false, default: false };
+    }
     if (protocol === "volcengine-ark-video" || protocol === "newapi-channel-1") video.resolutions = ["480p", "720p", "1080p"];
     if (protocol === "volcengine-ark-video") video.watermark = { supported: true, default: false };
     if (protocol === "novita-video") {

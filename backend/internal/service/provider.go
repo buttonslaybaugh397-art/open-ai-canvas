@@ -215,6 +215,9 @@ func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string
 	if isVolcengineJiMengProtocol(input.Config.InterfaceType) && strings.TrimSpace(input.Config.SecretKey) == "" {
 		return nil, errors.New("即梦官方 API 缺少 Secret Key")
 	}
+	if input.Mode == "video" && input.Config.InterfaceType == string(model.ChannelInterfaceHuiQuYunVideo) {
+		normalizeHuiQuYunVideoInput(&input)
+	}
 	if input.Mode == "image" {
 		if err := s.validateResolvedImageCapability(&input); err != nil {
 			return nil, err
@@ -226,7 +229,7 @@ func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string
 		}
 	}
 	if resumedProviderRequestID(ctx) == "" {
-		requirePublicURL := input.Config.InterfaceType == "newapi-channel-1" || input.Config.InterfaceType == "newapi-channel-2" || input.Config.InterfaceType == string(model.ChannelInterfaceGlobalAiOpcImage) || input.Config.InterfaceType == string(model.ChannelInterfaceGlobalAiOpcVideo) || input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo)
+		requirePublicURL := input.Config.InterfaceType == "newapi-channel-1" || input.Config.InterfaceType == "newapi-channel-2" || input.Config.InterfaceType == string(model.ChannelInterfaceGlobalAiOpcImage) || input.Config.InterfaceType == string(model.ChannelInterfaceGlobalAiOpcVideo) || input.Config.InterfaceType == string(model.ChannelInterfaceHuiQuYunVideo) || input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo)
 		if err := s.hydrateGenerationMedia(userID, &input, requirePublicURL); err != nil {
 			return nil, err
 		}
@@ -1401,6 +1404,9 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 	if input.Config.InterfaceType == string(model.ChannelInterfaceGlobalAiOpcVideo) {
 		return runGlobalAiOpcTask(ctx, input, "video")
 	}
+	if input.Config.InterfaceType == string(model.ChannelInterfaceHuiQuYunVideo) {
+		return runHuiQuYunVideoTask(ctx, input)
+	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineJiMengVideo) {
 		return runVolcengineJiMengVideoTask(ctx, input)
 	}
@@ -1528,6 +1534,174 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 		}
 	}
 	return nil, errors.New("视频生成超时")
+}
+
+func runHuiQuYunVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
+	id := resumedProviderRequestID(ctx)
+	if id == "" {
+		body, err := huiQuYunVideoRequestBody(input)
+		if err != nil {
+			return nil, err
+		}
+		var created map[string]interface{}
+		if err := postJSON(ctx, input.Config, "/videos/generations", body, &created); err != nil {
+			return nil, err
+		}
+		id = firstNonEmptyString(stringField(created, "id"), stringField(created, "task_id"), stringField(created, "request_id"))
+		if id == "" {
+			if data, ok := created["data"].(map[string]interface{}); ok {
+				id = firstNonEmptyString(stringField(data, "id"), stringField(data, "task_id"), stringField(data, "request_id"))
+			}
+		}
+	}
+	if id == "" {
+		return nil, errors.New("汇取云接口没有返回任务 ID")
+	}
+	for deadline := providerPollingDeadline(ctx); time.Now().Before(deadline); {
+		var state map[string]interface{}
+		if err := getJSON(withProviderRequestKind(ctx, "poll"), input.Config, "/videos/"+url.PathEscape(id), &state); err != nil {
+			return nil, err
+		}
+		if data, ok := state["data"].(map[string]interface{}); ok {
+			state = data
+		}
+		status := strings.ToLower(strings.TrimSpace(stringField(state, "status")))
+		switch status {
+		case "completed", "succeeded":
+			if videoURL := newAPIVideoResultURL(state); videoURL != "" {
+				data, mimeType, err := getProviderExternalBinary(withProviderRequestKind(ctx, "download"), input.Config, videoURL)
+				if err != nil {
+					return nil, fmt.Errorf("汇取云视频结果下载失败（任务 %s）：%w", id, err)
+				}
+				mimeType = normalizedMediaMimeType(mimeType, data)
+				return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
+			}
+			data, mimeType, err := getBinary(withProviderRequestKind(ctx, "download"), input.Config, "/videos/"+url.PathEscape(id)+"/content")
+			if err != nil {
+				return nil, err
+			}
+			mimeType = normalizedMediaMimeType(mimeType, data)
+			return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
+		case "failed", "cancelled", "canceled":
+			return nil, fmt.Errorf("汇取云视频生成失败（任务 %s）：%s", id, huiQuYunVideoError(state))
+		case "queued", "in_progress", "processing", "":
+		default:
+			return nil, fmt.Errorf("汇取云任务 %s 返回未知状态：%s", id, status)
+		}
+		if err := sleepContext(ctx, 5*time.Second); err != nil {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("汇取云视频生成超时（任务 %s）", id)
+}
+
+func huiQuYunVideoRequestBody(input canvasGenerationInput) (map[string]interface{}, error) {
+	normalizeHuiQuYunVideoInput(&input)
+	if len(input.ReferenceImages) > 4 || len(input.ReferenceVideos) > 3 || len(input.ReferenceAudios) > 1 {
+		return nil, errors.New("汇取云最多支持 4 张参考图、3 个参考视频和 1 个参考音频")
+	}
+	if len(input.ReferenceAudios) > 0 && len(input.ReferenceImages) == 0 && len(input.ReferenceVideos) == 0 {
+		return nil, errors.New("汇取云参考音频必须搭配参考图片或参考视频")
+	}
+	images, err := huiQuYunMediaURLs(input.ReferenceImages)
+	if err != nil {
+		return nil, err
+	}
+	videos, err := huiQuYunMediaURLs(input.ReferenceVideos)
+	if err != nil {
+		return nil, err
+	}
+	audios, err := huiQuYunMediaURLs(input.ReferenceAudios)
+	if err != nil {
+		return nil, err
+	}
+	seconds, _ := strconv.Atoi(strings.TrimSpace(input.Config.VideoSeconds))
+	ratio := normalizeHuiQuYunVideoRatio(input.Config.Size)
+	if len(images) >= 3 && (seconds != 8 || ratio != "16:9") {
+		return nil, errors.New("汇取云多图参考仅支持 8 秒、16:9 视频")
+	}
+	body := map[string]interface{}{
+		"model":        input.Config.Model,
+		"prompt":       strings.TrimSpace(input.Prompt),
+		"seconds":      seconds,
+		"resolution":   "720P",
+		"aspect_ratio": ratio,
+		"audio":        parseBool(input.Config.VideoGenerateAudio, true),
+	}
+	switch len(images) {
+	case 1:
+		body["reference_image"] = images[0]
+	case 2:
+		body["start_frame"], body["end_frame"] = images[0], images[1]
+	default:
+		if len(images) > 2 {
+			body["reference_images"] = images
+		}
+	}
+	if len(videos) > 0 {
+		body["video_references"] = videos
+	}
+	if len(audios) > 0 {
+		body["audio_reference"] = audios[0]
+	}
+	return body, nil
+}
+
+func normalizeHuiQuYunVideoInput(input *canvasGenerationInput) {
+	seconds := huiQuYunFixedVideoDuration(input.Config.Model)
+	if seconds == 0 {
+		seconds, _ = strconv.Atoi(strings.TrimSpace(input.Config.VideoSeconds))
+		if seconds < 4 || seconds > 15 {
+			seconds = 8
+		}
+	}
+	input.Config.VideoSeconds = strconv.Itoa(seconds)
+	input.Config.Size = normalizeHuiQuYunVideoRatio(input.Config.Size)
+	input.Config.VQuality = "720p"
+}
+
+func huiQuYunMediaURLs(items []providerMedia) ([]string, error) {
+	urls := make([]string, 0, len(items))
+	for _, item := range items {
+		value, err := videoGenerationsMediaURL(item)
+		if err != nil || !isPublicMediaURL(value) {
+			return nil, errors.New("汇取云参考素材需要公网 URL；请先保存到对象存储")
+		}
+		urls = append(urls, value)
+	}
+	return urls, nil
+}
+
+func normalizeHuiQuYunVideoRatio(value string) string {
+	normalized := strings.TrimSpace(value)
+	if strings.Contains(normalized, "x") {
+		parts := strings.SplitN(normalized, "x", 2)
+		width, widthErr := strconv.Atoi(parts[0])
+		height, heightErr := strconv.Atoi(parts[1])
+		if widthErr == nil && heightErr == nil && width > 0 && height > 0 {
+			switch {
+			case width == height:
+				normalized = "1:1"
+			case width > height:
+				normalized = "16:9"
+			default:
+				normalized = "9:16"
+			}
+		}
+	}
+	switch normalized {
+	case "21:9", "4:3", "16:9", "1:1", "3:4", "9:16":
+		return normalized
+	default:
+		return "16:9"
+	}
+}
+
+func huiQuYunVideoError(state map[string]interface{}) string {
+	if value, ok := state["error"].(map[string]interface{}); ok {
+		return firstNonEmptyString(stringField(value, "message"), stringField(value, "code"), "上游返回失败")
+	}
+	return firstNonEmptyString(stringField(state, "error"), stringField(state, "message"), stringField(state, "msg"), "上游返回失败")
 }
 
 func runGeminiVeoVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
@@ -2531,7 +2705,7 @@ func validateGenerationInterface(mode string, interfaceType string) error {
 	allowed := map[string]map[string]bool{
 		"text":  {"chat-completion": true, "openai-response": true},
 		"image": {"openai-image": true, "grok-image": true, "globalaiopc-image": true, "volcengine-ark-image": true, "volcengine-jimeng-image": true},
-		"video": {"newapi": true, "newapi-channel-1": true, "newapi-channel-2": true, "globalaiopc-video": true, "xai-video": true, "volcengine-ark-video": true, "volcengine-jimeng-video": true, "gemini-veo": true, "novita-video": true},
+		"video": {"newapi": true, "newapi-channel-1": true, "newapi-channel-2": true, "globalaiopc-video": true, "huiquyun-video": true, "xai-video": true, "volcengine-ark-video": true, "volcengine-jimeng-video": true, "gemini-veo": true, "novita-video": true},
 		"audio": {"openai-audio": true, "async-audio": true},
 	}
 	if allowed[mode] != nil && !allowed[mode][interfaceType] {
@@ -3030,7 +3204,7 @@ func doJSON(req *http.Request, target interface{}) error {
 		}
 	}
 	if payload, ok := target.(*map[string]interface{}); ok {
-		if code, ok := (*payload)["code"].(float64); ok && code != 0 {
+		if code, ok := (*payload)["code"]; ok && responseCodeFailed(code) {
 			return errors.New(defaultString(stringField(*payload, "msg"), "请求失败"))
 		}
 		if errValue, ok := (*payload)["error"].(map[string]interface{}); ok && stringField(errValue, "message") != "" {
@@ -3038,6 +3212,21 @@ func doJSON(req *http.Request, target interface{}) error {
 		}
 	}
 	return nil
+}
+
+func responseCodeFailed(value interface{}) bool {
+	switch code := value.(type) {
+	case nil:
+		return false
+	case float64:
+		return code != 0
+	case string:
+		return strings.TrimSpace(code) != "0"
+	case json.Number:
+		return code.String() != "0"
+	default:
+		return true
+	}
 }
 
 func withProviderOutboundPolicy(ctx context.Context, config providerConfig) context.Context {

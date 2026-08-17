@@ -385,8 +385,9 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
               count: String(node?.metadata?.count || config.canvasImageCount || config.count || defaultConfig.count),
           })
         : undefined;
-    const isGlobalAiOpcVideo = mode === "video" && resolveModelRequestConfig(config, model).interfaceType === "globalaiopc-video";
-    const videoProfile = isGlobalAiOpcVideo ? modelCapabilityConfigFor(config, model).video! : undefined;
+    const videoInterfaceType = mode === "video" ? resolveModelRequestConfig(config, model).interfaceType : undefined;
+    const normalizeCapabilityVideo = videoInterfaceType === "globalaiopc-video" || videoInterfaceType === "huiquyun-video";
+    const videoProfile = normalizeCapabilityVideo ? modelCapabilityConfigFor(config, model).video! : undefined;
     const normalizedVideo = videoProfile
         ? normalizeVideoValue(videoProfile, {
               seconds: node?.metadata?.seconds || config.videoSeconds || defaultConfig.videoSeconds,
@@ -421,7 +422,7 @@ export function resolveCanvasGenerationModel(config: AiConfig, model: string | u
 
 export function supportsVideoReferenceAudio(config: AiConfig) {
     const interfaceType = resolveModelRequestConfig(config, config.model).interfaceType;
-    return interfaceType === "globalaiopc-video" || interfaceType === "newapi-channel-1" || interfaceType === "newapi-channel-2" || isSeedanceVideoConfig(config);
+    return interfaceType === "globalaiopc-video" || interfaceType === "huiquyun-video" || interfaceType === "newapi-channel-1" || interfaceType === "newapi-channel-2" || isSeedanceVideoConfig(config);
 }
 
 export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {

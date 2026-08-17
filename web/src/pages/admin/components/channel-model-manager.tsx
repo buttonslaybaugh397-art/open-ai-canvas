@@ -7,6 +7,7 @@ import { ListToolbar, TableSurface } from "@/components/layout/workspace-page";
 import { ModelIcon } from "@/components/model-picker";
 import { ModelCapabilityEditor } from "@/components/model-capability-editor";
 import { CapabilityCardPicker, ProtocolCardPicker, type ModelCapabilityChoice } from "@/components/model-protocol-picker";
+import { huiQuYunProtocolForModel, isHuiQuYunBaseUrl } from "@/lib/huiquyun-channel";
 import { defaultModelCapabilityConfig, type ModelCapabilityConfig } from "@/lib/model-capabilities";
 import { MODEL_PROTOCOLS, modelProtocolCapability, modelProtocolDefinition, modelProtocolLabel, modelProtocolSupportsTokenBilling, type ModelProtocol } from "@/lib/model-protocols";
 import { createAdminChannelModel, deleteAdminChannelModel, fetchAdminChannelModels, listAdminChannelModels, testAdminChannelModel, updateAdminChannelModel, type ChannelModel } from "@/services/api/wallet";
@@ -14,6 +15,7 @@ import type { ModelChannel } from "@/stores/use-config-store";
 import { AdminPageFrame } from "./admin-shell";
 
 type EditableCapability = ModelCapabilityChoice;
+const HUIQUYUN_PROTOCOLS: ModelProtocol[] = ["chat-completion", "openai-response", "openai-image", "openai-audio", "huiquyun-video"];
 
 type FormValues = {
     modelKey: string;
@@ -48,6 +50,7 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
     const modelCapability = Form.useWatch("capability", form);
     const modelProtocol = Form.useWatch("protocol", form);
     const modelKey = Form.useWatch("modelKey", form) || "";
+    const huiQuYun = isHuiQuYunBaseUrl(channel.baseUrl);
 
     const reload = async () => {
         if (!channel) return;
@@ -96,7 +99,9 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
 
     const startEdit = (item: ChannelModel) => {
         setEditing(item);
-        form.setFieldsValue({ modelKey: item.modelKey, displayName: item.displayName, capability: item.capability || undefined, protocol: item.protocol, billingMode: item.billingMode, unitPrice: item.unitPriceMicrocredits / 1_000_000, inputTokenPrice: item.inputTokenPriceMicrocredits / 1_000_000, outputTokenPrice: item.outputTokenPriceMicrocredits / 1_000_000, cachedTokenPrice: item.cachedTokenPriceMicrocredits / 1_000_000, enabled: item.enabled, capabilityConfig: item.capability === "image" || item.capability === "video" ? item.capabilityConfig || defaultModelCapabilityConfig(item.protocol, item.modelKey) : undefined });
+        const protocol = huiQuYun ? huiQuYunProtocolForModel(item.modelKey) : item.protocol || "chat-completion";
+        const capability = item.capability || modelProtocolCapability(protocol) || "text";
+        form.setFieldsValue({ modelKey: item.modelKey, displayName: item.displayName, capability, protocol, billingMode: item.billingMode, unitPrice: item.unitPriceMicrocredits / 1_000_000, inputTokenPrice: item.inputTokenPriceMicrocredits / 1_000_000, outputTokenPrice: item.outputTokenPriceMicrocredits / 1_000_000, cachedTokenPrice: item.cachedTokenPriceMicrocredits / 1_000_000, enabled: item.enabled, capabilityConfig: capability === "image" || capability === "video" ? item.capabilityConfig || defaultModelCapabilityConfig(protocol, item.modelKey) : undefined });
         setEditorOpen(true);
     };
 
@@ -162,6 +167,11 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
     };
 
     const handleFormValuesChange = (changed: Partial<FormValues>) => {
+        if (huiQuYun && changed.modelKey !== undefined) {
+            const protocol = huiQuYunProtocolForModel(changed.modelKey);
+            const capability = modelProtocolCapability(protocol) || "text";
+            form.setFieldsValue({ capability, protocol, capabilityConfig: capability === "image" || capability === "video" ? defaultModelCapabilityConfig(protocol, changed.modelKey) : undefined });
+        }
         if (changed.protocol && (modelCapability === "image" || modelCapability === "video")) {
             form.setFieldValue("capabilityConfig", defaultModelCapabilityConfig(changed.protocol, form.getFieldValue("modelKey")));
         }
@@ -174,7 +184,7 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
         if (!changed.capability) return;
         const current = form.getFieldValue("protocol") as ModelProtocol | undefined;
         if (modelProtocolCapability(current) !== changed.capability) {
-            const nextProtocol = MODEL_PROTOCOLS.find((item) => item.capability === changed.capability)?.value;
+            const nextProtocol = MODEL_PROTOCOLS.find((item) => item.capability === changed.capability && (!huiQuYun || HUIQUYUN_PROTOCOLS.includes(item.value)))?.value;
             form.setFieldValue("protocol", nextProtocol);
             form.setFieldValue("capabilityConfig", changed.capability === "image" || changed.capability === "video" ? defaultModelCapabilityConfig(nextProtocol, form.getFieldValue("modelKey")) : undefined);
         }
@@ -257,7 +267,7 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
                         <CapabilityCardPicker />
                     </Form.Item>
                     <Form.Item name="protocol" label="请求协议" rules={[{ required: true, message: "请选择模型请求协议" }]}>
-                        <ProtocolCardPicker capability={modelCapability} />
+                        <ProtocolCardPicker capability={modelCapability} allowedProtocols={huiQuYun ? HUIQUYUN_PROTOCOLS : undefined} />
                     </Form.Item>
                     {modelCapability === "image" || modelCapability === "video" ? <Form.Item name="capabilityConfig" rules={[{ required: true, message: `请配置${modelCapability === "image" ? "图片" : "视频"}能力参数` }]}><ModelCapabilityEditor capability={modelCapability} model={modelKey} protocol={form.getFieldValue("protocol")} /></Form.Item> : null}
                     <Form.Item name="billingMode" label="计费方式" rules={[{ required: true }]}>

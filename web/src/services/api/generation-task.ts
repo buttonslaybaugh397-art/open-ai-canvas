@@ -4,7 +4,7 @@ import { resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from
 import { createGenerationTask, waitForGenerationTask, type GenerationTask } from "@/services/api/task-center";
 import { LOCAL_DREAMINA_WAIT_STOPPED_CODE, LocalDreaminaGenerationClientError, runLocalDreaminaGenerationTask, type LocalDreaminaGenerationInput, type LocalDreaminaGenerationTask } from "@/services/local-dreamina-generation";
 import { isLocalDreaminaBackgroundTask, localDreaminaTaskId, projectLocalDreaminaTask, stripLocalDreaminaTaskPrefix } from "@/services/local-dreamina-task-projection";
-import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
+import { modelCapabilityConfigFor, normalizeVideoValue } from "@/lib/model-capabilities";
 import { grokImagePromptLimitError } from "@/lib/grok-image-prompt-limit";
 import { resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
@@ -415,6 +415,10 @@ function backendMediaReference<T extends ReferenceVideo | ReferenceAudio>(media:
 
 export function backendProviderConfig(config: AiConfig) {
     const requestConfig = resolveModelRequestConfig(config, config.model);
+    const capabilityConfig = modelCapabilityConfigFor(config, requestConfig.model);
+    const normalizedHuiQuYunVideo = requestConfig.interfaceType === "huiquyun-video" && capabilityConfig.video
+        ? normalizeVideoValue(capabilityConfig.video, { seconds: config.videoSeconds, ratio: config.size, resolution: config.vquality })
+        : undefined;
     return {
         channelId: requestConfig.channelId,
         apiFormat: requestConfig.apiFormat,
@@ -424,19 +428,19 @@ export function backendProviderConfig(config: AiConfig) {
         apiKey: requestConfig.apiKey,
         secretKey: requestConfig.secretKey,
         model: requestConfig.model,
-        size: config.size,
+        size: normalizedHuiQuYunVideo?.ratio || config.size,
         quality: config.quality,
         transparentBackground: config.transparentBackground,
         count: config.count,
-        videoSeconds: config.videoSeconds,
-        vquality: config.vquality,
+        videoSeconds: normalizedHuiQuYunVideo?.seconds || config.videoSeconds,
+        vquality: normalizedHuiQuYunVideo?.resolution || config.vquality,
         videoGenerateAudio: config.videoGenerateAudio,
         videoWatermark: config.videoWatermark,
         audioVoice: config.audioVoice,
         audioFormat: config.audioFormat,
         audioSpeed: config.audioSpeed,
         audioInstructions: config.audioInstructions,
-        capabilityConfig: modelCapabilityConfigFor(config, requestConfig.model),
+        capabilityConfig,
         systemPrompt: "",
     };
 }

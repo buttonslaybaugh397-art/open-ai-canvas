@@ -97,32 +97,118 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 		return nil, err
 	}
 	// 使用服务端保存的渠道密钥和请求头访问上游，避免敏感配置再次经过浏览器。
-	models, err := s.FetchChannelModels(ctx, actor, ChannelModelsRequest{BaseURL: channel.BaseURL, AllowLocalChannel: channel.AllowLocalChannel, APIKey: channel.APIKey, APIFormat: channel.APIFormat, Headers: headers})
+	catalog, err := s.FetchChannelModelCatalog(ctx, actor, ChannelModelsRequest{BaseURL: channel.BaseURL, AllowLocalChannel: channel.AllowLocalChannel, APIKey: channel.APIKey, APIFormat: channel.APIFormat, Headers: headers})
 	if err != nil {
 		return nil, err
+	}
+	models := make([]string, 0, len(catalog))
+	endpointTypes := make(map[string][]string, len(catalog))
+	for _, item := range catalog {
+		models = append(models, item.ID)
+		endpointTypes[item.ID] = item.SupportedEndpointTypes
 	}
 	// 只按当前未删除记录去重；重新拉取已删除模型时应生成新的待配置记录。
 	existing, err := s.repo.ChannelModels(channelID, true)
 	if err != nil {
 		return nil, err
 	}
-	known := make(map[string]struct{}, len(existing))
-	for _, item := range existing {
-		known[item.ModelKey] = struct{}{}
+	known := make(map[string]*model.ChannelModel, len(existing))
+	for index := range existing {
+		known[existing[index].ModelKey] = &existing[index]
 	}
 	missing := make([]model.ChannelModel, 0, len(models))
 	for _, name := range models {
-		if _, ok := known[name]; ok {
+		if item := known[name]; item != nil {
+			if syncHuiQuYunModelContract(*channel, item, endpointTypes[name]) {
+				if err := s.repo.SaveChannelModel(item); err != nil {
+					return nil, err
+				}
+			}
 			continue
 		}
-		// 自动发现不能绕过定价边界；新模型由管理员定价后再手动启用。
-		missing = append(missing, model.ChannelModel{ID: newID(), ChannelID: channelID, ModelKey: name, DisplayName: name, BillingMode: "fixed_request", Enabled: false, PriceVersion: 1})
+		// 自动发现不能绕过定价边界；汇取云仅补全能力合同，仍需管理员定价后手动启用。
+		missing = append(missing, discoveredChannelModel(*channel, name, endpointTypes[name]))
 	}
 	added, err := s.repo.CreateMissingChannelModels(missing)
 	if err != nil {
 		return nil, err
 	}
 	return &AdminChannelModelFetchResult{Models: models, Added: added}, nil
+}
+
+func discoveredChannelModel(channel model.ModelChannel, name string, endpointTypes []string) model.ChannelModel {
+	item := model.ChannelModel{ID: newID(), ChannelID: channel.ID, ModelKey: name, DisplayName: name, BillingMode: "fixed_request", Enabled: false, PriceVersion: 1}
+	syncHuiQuYunModelContract(channel, &item, endpointTypes)
+	return item
+}
+
+func syncHuiQuYunModelContract(channel model.ModelChannel, item *model.ChannelModel, endpointTypes []string) bool {
+	if item == nil || !isHuiQuYunBaseURL(channel.BaseURL) {
+		return false
+	}
+	protocol := huiQuYunProtocolForModel(item.ModelKey, endpointTypes)
+	capability := capabilityForProtocol(protocol)
+	contractChanged := item.Protocol != protocol || item.Capability != capability
+	item.Protocol, item.Capability = protocol, capability
+	configChanged := false
+	if capability == "image" || capability == "video" {
+		if contractChanged || strings.TrimSpace(item.CapabilityConfigJSON) == "" {
+			if encoded, err := json.Marshal(DefaultModelCapabilityConfigForModel(string(protocol), item.ModelKey)); err == nil {
+				configChanged = item.CapabilityConfigJSON != string(encoded)
+				item.CapabilityConfigJSON = string(encoded)
+				if configChanged {
+					item.CapabilityVersion++
+				}
+			}
+		}
+	} else if item.CapabilityConfigJSON != "" || item.CapabilityVersion != 0 {
+		item.CapabilityConfigJSON = ""
+		item.CapabilityVersion = 0
+		configChanged = true
+	}
+	return contractChanged || configChanged
+}
+
+func isHuiQuYunBaseURL(value string) bool {
+	normalized := strings.ToLower(strings.TrimRight(strings.TrimSpace(value), "/"))
+	return normalized == "https://api.bjhuiqu.net" || normalized == "https://api.bjhuiqu.net/v1"
+}
+
+func huiQuYunProtocolForModel(name string, endpointTypes []string) model.ChannelInterfaceType {
+	for _, endpointType := range endpointTypes {
+		switch strings.ToLower(strings.TrimSpace(endpointType)) {
+		case "openai-chat", "chat-completion", "chat":
+			return model.ChannelInterfaceChatCompletion
+		case "openai-response", "responses":
+			return model.ChannelInterfaceOpenAIResponse
+		case "openai-image", "image":
+			return model.ChannelInterfaceOpenAIImage
+		case "openai-video", "video":
+			return model.ChannelInterfaceHuiQuYunVideo
+		case "openai-audio", "audio":
+			return model.ChannelInterfaceOpenAIAudio
+		}
+	}
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if huiQuYunModelContainsAny(normalized, "tts", "speech", "voice", "audio", "music", "sound") {
+		return model.ChannelInterfaceOpenAIAudio
+	}
+	if huiQuYunModelContainsAny(normalized, "mj-sd", "seedance", "grok-video", "sora", "veo", "kling", "hailuo", "vidu", "wan-video", "jimeng-video", "doubao-video", "minimax-video", "video") {
+		return model.ChannelInterfaceHuiQuYunVideo
+	}
+	if huiQuYunModelContainsAny(normalized, "gpt-image", "nano-banana", "nanobanana", "seedream", "image", "dall-e", "dalle", "imagen", "flux", "sdxl", "stable-diffusion", "midjourney", "ideogram", "recraft") {
+		return model.ChannelInterfaceOpenAIImage
+	}
+	return model.ChannelInterfaceChatCompletion
+}
+
+func huiQuYunModelContainsAny(value string, markers ...string) bool {
+	for _, marker := range markers {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) SaveAdminChannelModel(actor *model.User, channelID string, id string, req ChannelModelRequest) (*model.ChannelModel, error) {
@@ -359,6 +445,10 @@ func normalizeChannelModelContract(channel *model.ModelChannel, req ChannelModel
 	if modelKey == "" {
 		return "", "", "", BadAuthRequest("请填写模型标识")
 	}
+	if channel != nil && isHuiQuYunBaseURL(channel.BaseURL) {
+		protocol := huiQuYunProtocolForModel(modelKey, nil)
+		return modelKey, capabilityForProtocol(protocol), protocol, nil
+	}
 	capability := normalizeCapability(req.Capability)
 	if capability == "" {
 		return "", "", "", BadAuthRequest("请选择模型能力")
@@ -492,7 +582,7 @@ func capabilityForProtocol(protocol model.ChannelInterfaceType) string {
 		return "image"
 	case model.ChannelInterfaceOpenAIAudio, model.ChannelInterfaceAsyncAudio:
 		return "audio"
-	case model.ChannelInterfaceNewAPIVideo, model.ChannelInterfaceNewAPIChannel1, model.ChannelInterfaceNewAPIChannel2, model.ChannelInterfaceGlobalAiOpcVideo, model.ChannelInterfaceXAIVideo, model.ChannelInterfaceVolcengineArkVideo, model.ChannelInterfaceVolcengineJiMengVideo, model.ChannelInterfaceGeminiVeo:
+	case model.ChannelInterfaceNewAPIVideo, model.ChannelInterfaceNewAPIChannel1, model.ChannelInterfaceNewAPIChannel2, model.ChannelInterfaceGlobalAiOpcVideo, model.ChannelInterfaceHuiQuYunVideo, model.ChannelInterfaceXAIVideo, model.ChannelInterfaceVolcengineArkVideo, model.ChannelInterfaceVolcengineJiMengVideo, model.ChannelInterfaceGeminiVeo:
 		return "video"
 	case model.ChannelInterfaceChatCompletion, model.ChannelInterfaceOpenAIResponse:
 		return "text"

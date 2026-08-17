@@ -1,4 +1,4 @@
-import { App, Button, Drawer, Form, Input, InputNumber, Select, Switch, Table, Tag } from "antd";
+import { App, Button, Drawer, Form, Input, InputNumber, Segmented, Select, Switch, Table, Tag } from "antd";
 import type { FormInstance } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { Pencil, Plus, Power, Search, Trash2 } from "lucide-react";
@@ -9,6 +9,7 @@ import { ListToolbar, TableSurface } from "@/components/layout/workspace-page";
 import { ChannelHeadersEditor, validateChannelHeaders } from "@/components/channel-headers-editor";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { desktopLocalChannelFormState, desktopLocalChannelPayloadValue, DESKTOP_LOCAL_CHANNEL_EXAMPLE_BASE_URL } from "@/lib/desktop-local-channel";
+import { HUIQUYUN_BASE_URL, isHuiQuYunBaseUrl } from "@/lib/huiquyun-channel";
 import { refreshSystemChannels } from "@/lib/user-session";
 import { createAdminChannel, deleteAdminChannel, listAdminChannels, updateAdminChannel } from "@/services/api/auth";
 import { type ChannelHeader, type ModelChannel } from "@/stores/use-config-store";
@@ -18,7 +19,8 @@ import { AdminPageFrame } from "../components/admin-shell";
 import { AdminRowActions, AdminTableEmpty, AdminTableSkeleton, configuredSecretText } from "../components/admin-ui";
 import { ChannelModelManager } from "../components/channel-model-manager";
 
-type ChannelFormValues = { name: string; baseUrl: string; allowLocalChannel?: boolean; apiKey?: string; secretKey?: string; headers?: ChannelHeader[]; useGlobalConcurrency?: boolean; concurrencyLimit?: number; enabled?: boolean };
+type AdminChannelConnection = "openai" | "huiquyun";
+type ChannelFormValues = { name: string; connectionType?: AdminChannelConnection; baseUrl: string; allowLocalChannel?: boolean; apiKey?: string; secretKey?: string; headers?: ChannelHeader[]; useGlobalConcurrency?: boolean; concurrencyLimit?: number; enabled?: boolean };
 
 export function adminLocalChannelFormOwner(desktopLocalChannelsEnabled: boolean, hostname: string, requestedAllowLocalChannel?: boolean) {
     const state = desktopLocalChannelFormState(desktopLocalChannelsEnabled, hostname, requestedAllowLocalChannel);
@@ -34,20 +36,22 @@ export function AdminLocalChannelSwitch({ visible, checked, onChange }: { visibl
     );
 }
 
-export function AdminLocalChannelFields({ visible, checked, form }: { visible: boolean; checked: boolean; form: Pick<FormInstance<ChannelFormValues>, "setFieldValue"> }) {
+export function AdminLocalChannelFields({ visible, checked, form, connectionType = "openai" }: { visible: boolean; checked: boolean; form: Pick<FormInstance<ChannelFormValues>, "setFieldValue">; connectionType?: AdminChannelConnection }) {
+    const huiQuYun = connectionType === "huiquyun";
     return (
         <>
-            <Form.Item name="baseUrl" label="Base URL" rules={[{ required: true, message: "请填写 Base URL" }]}><Input placeholder={checked ? DESKTOP_LOCAL_CHANNEL_EXAMPLE_BASE_URL : "填写渠道 Base URL"} /></Form.Item>
-            <AdminLocalChannelSwitch visible={visible} checked={checked} onChange={(value) => form.setFieldValue("allowLocalChannel", value)} />
+            <Form.Item name="baseUrl" label="Base URL" rules={[{ required: true, message: "请填写 Base URL" }]} extra={huiQuYun ? "汇取云专用预设使用固定地址，由模型名称自动识别请求协议。" : undefined}><Input disabled={huiQuYun} placeholder={huiQuYun ? HUIQUYUN_BASE_URL : checked ? DESKTOP_LOCAL_CHANNEL_EXAMPLE_BASE_URL : "填写渠道 Base URL"} /></Form.Item>
+            <AdminLocalChannelSwitch visible={visible && !huiQuYun} checked={checked} onChange={(value) => form.setFieldValue("allowLocalChannel", value)} />
         </>
     );
 }
 
 export function adminChannelSavePayload(values: ChannelFormValues, desktopLocalChannelsEnabled: boolean, hostname: string) {
+    const huiQuYun = values.connectionType === "huiquyun";
     return {
         name: values.name.trim(),
-        baseUrl: values.baseUrl.trim(),
-        allowLocalChannel: adminLocalChannelFormOwner(desktopLocalChannelsEnabled, hostname, values.allowLocalChannel).payloadValue,
+        baseUrl: huiQuYun ? HUIQUYUN_BASE_URL : values.baseUrl.trim(),
+        allowLocalChannel: huiQuYun ? false : adminLocalChannelFormOwner(desktopLocalChannelsEnabled, hostname, values.allowLocalChannel).payloadValue,
         apiKey: values.apiKey?.trim() || "",
         secretKey: values.secretKey?.trim() || "",
         headers: values.headers || [],
@@ -75,11 +79,12 @@ export default function ChannelsPage() {
     const [managingChannel, setManagingChannel] = useState<ModelChannel | null>(null);
     const requestSequence = useRef(0);
     const [form] = Form.useForm<ChannelFormValues>();
+    const connectionType = Form.useWatch("connectionType", form) || "openai";
     const useGlobalConcurrency = Form.useWatch("useGlobalConcurrency", form) !== false;
     const requestedAllowLocalChannel = Form.useWatch("allowLocalChannel", form) === true;
     const desktopLocalChannelsEnabled = useUserStore((state) => state.features.desktopLocalChannelsEnabled);
     const desktopLocalChannelHostname = typeof window === "undefined" ? "" : window.location.hostname;
-    const desktopLocalChannelControl = adminLocalChannelFormOwner(desktopLocalChannelsEnabled, desktopLocalChannelHostname, requestedAllowLocalChannel);
+    const desktopLocalChannelControl = adminLocalChannelFormOwner(desktopLocalChannelsEnabled, desktopLocalChannelHostname, connectionType === "huiquyun" ? false : requestedAllowLocalChannel);
     const allowLocalChannel = desktopLocalChannelControl.checked;
     const showDesktopLocalChannelControl = desktopLocalChannelControl.visible;
     const hasFilters = Boolean(keyword || status !== "all");
@@ -126,8 +131,16 @@ export default function ChannelsPage() {
     const openDrawer = (channel?: ModelChannel) => {
         setEditingChannel(channel || null);
         form.resetFields();
-        form.setFieldsValue(channel ? { name: channel.name, baseUrl: channel.baseUrl, allowLocalChannel: adminLocalChannelFormOwner(desktopLocalChannelsEnabled, desktopLocalChannelHostname, channel.allowLocalChannel).checked, apiKey: "", secretKey: "", headers: channel.headers || [], useGlobalConcurrency: !channel.concurrencyLimit, concurrencyLimit: channel.concurrencyLimit || undefined, enabled: channel.enabled !== false } : { name: "", baseUrl: "", allowLocalChannel: false, apiKey: "", secretKey: "", headers: [], useGlobalConcurrency: true, concurrencyLimit: undefined, enabled: true });
+        form.setFieldsValue(channel ? { name: channel.name, connectionType: isHuiQuYunBaseUrl(channel.baseUrl) ? "huiquyun" : "openai", baseUrl: channel.baseUrl, allowLocalChannel: adminLocalChannelFormOwner(desktopLocalChannelsEnabled, desktopLocalChannelHostname, channel.allowLocalChannel).checked, apiKey: "", secretKey: "", headers: channel.headers || [], useGlobalConcurrency: !channel.concurrencyLimit, concurrencyLimit: channel.concurrencyLimit || undefined, enabled: channel.enabled !== false } : { name: "", connectionType: "openai", baseUrl: "", allowLocalChannel: false, apiKey: "", secretKey: "", headers: [], useGlobalConcurrency: true, concurrencyLimit: undefined, enabled: true });
         setDrawerOpen(true);
+    };
+
+    const selectChannelConnection = (value: AdminChannelConnection) => {
+        const currentBaseUrl = form.getFieldValue("baseUrl") || "";
+        const currentName = form.getFieldValue("name") || "";
+        form.setFieldsValue(value === "huiquyun"
+            ? { connectionType: value, baseUrl: HUIQUYUN_BASE_URL, allowLocalChannel: false, ...(!editingChannel && !currentName.trim() ? { name: "汇取云" } : {}) }
+            : { connectionType: value, baseUrl: isHuiQuYunBaseUrl(currentBaseUrl) ? "" : currentBaseUrl });
     };
 
     const closeDrawer = () => {
@@ -213,7 +226,8 @@ export default function ChannelsPage() {
             <Drawer title={editingChannel ? "编辑系统渠道" : "新增系统渠道"} open={drawerOpen} size="min(720px, 100vw)" onClose={closeDrawer} maskClosable={!saving} destroyOnHidden extra={<Button type="primary" loading={saving} onClick={() => void save()}>保存</Button>}>
                 <Form form={form} layout="vertical" requiredMark={false}>
                     <Form.Item name="name" label="渠道名称" rules={[{ required: true, message: "请填写渠道名称" }]}><Input placeholder="例如：OpenAI 官方渠道" /></Form.Item>
-                    <AdminLocalChannelFields visible={showDesktopLocalChannelControl} checked={allowLocalChannel} form={form} />
+                    <Form.Item name="connectionType" label="渠道连接类型" extra="汇取云使用独立固定预设；其他服务保持 OpenAI 兼容配置。"><Segmented<AdminChannelConnection> block options={[{ label: "OpenAI 兼容", value: "openai" }, { label: "汇取云", value: "huiquyun" }]} onChange={selectChannelConnection} /></Form.Item>
+                    <AdminLocalChannelFields visible={showDesktopLocalChannelControl} checked={allowLocalChannel} form={form} connectionType={connectionType} />
                     <Form.Item name="apiKey" label={editingChannel ? `API Key / Access Key（${configuredSecretText}）` : "API Key / Access Key"} rules={editingChannel ? [] : [{ required: true, message: "请填写 API Key 或 Access Key" }]} extra="OpenAI 兼容协议填写 API Key；即梦官方协议填写 IAM Access Key。"><Input.Password autoComplete="new-password" placeholder={editingChannel ? "留空保留原凭证" : "API Key 或 Access Key"} /></Form.Item>
                     <Form.Item name="secretKey" label={editingChannel ? `Secret Key（${channelSecretText(editingChannel)}）` : "Secret Key（可选）"} extra="仅即梦官方等 AK/SK 签名协议需要；其他渠道留空。"><Input.Password autoComplete="new-password" placeholder={editingChannel ? "留空保留原 Secret Key" : "IAM Secret Key"} /></Form.Item>
                     <div className="mb-6"><Form.Item name="headers" noStyle><ChannelHeadersEditor /></Form.Item></div>

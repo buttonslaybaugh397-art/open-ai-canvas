@@ -6,6 +6,7 @@ import { testChannelModelConnection } from "@/lib/model-connection-test";
 import { ModelCapabilityEditor } from "@/components/model-capability-editor";
 import { CapabilityCardPicker, ProtocolCardPicker } from "@/components/model-protocol-picker";
 import { defaultModelCapabilityConfig } from "@/lib/model-capabilities";
+import { huiQuYunProtocolForModel } from "@/lib/huiquyun-channel";
 import { MODEL_PROTOCOLS, modelProtocolCapability, modelProtocolDefinition, modelProtocolSupportsTokenBilling, type ModelProtocol } from "@/lib/model-protocols";
 import { modelMatchesCapability, modelOptionName, type ModelChannel } from "@/stores/use-config-store";
 
@@ -48,7 +49,9 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
     const activeBillingMode = activeModelCost?.billingMode || "fixed_request";
     const availableProtocols = channel.connectionType === "globalaiopc"
         ? MODEL_PROTOCOLS.filter((item) => item.value === "globalaiopc-image" || item.value === "globalaiopc-video")
-        : MODEL_PROTOCOLS.filter((item) => item.value !== "globalaiopc-image" && item.value !== "globalaiopc-video");
+        : channel.connectionType === "huiquyun"
+            ? MODEL_PROTOCOLS.filter((item) => ["chat-completion", "openai-response", "openai-image", "openai-audio", "huiquyun-video"].includes(item.value))
+            : MODEL_PROTOCOLS.filter((item) => item.value !== "globalaiopc-image" && item.value !== "globalaiopc-video" && item.value !== "huiquyun-video");
     const activeTokenBillingSupported = modelProtocolSupportsTokenBilling(activeCapability, activeProtocol);
 
     return (
@@ -186,6 +189,7 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
 }
 
 function defaultProtocolForModel(channel: ModelChannel, model: string): ModelProtocol {
+    if (channel.connectionType === "huiquyun") return huiQuYunProtocolForModel(model);
     if (channel.interfaceType) return channel.interfaceType;
     if (channel.apiFormat === "gemini" && modelMatchesCapability(model, "video")) return "gemini-veo";
     if (modelMatchesCapability(model, "video")) return "newapi";

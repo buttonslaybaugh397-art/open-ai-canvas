@@ -66,6 +66,7 @@ func TestValidateImageTaskEnforcesGPTImage2CustomSizeLimits(t *testing.T) {
 func TestDefaultVideoCapabilityUsesProtocolSpecificResolutionTiers(t *testing.T) {
 	tests := map[string][]string{
 		"newapi-channel-2":        {"480p", "720p", "1080p", "1440p", "2160p"},
+		"huiquyun-video":          {"720p"},
 		"volcengine-ark-video":    {"480p", "720p", "1080p"},
 		"volcengine-jimeng-video": {"720p"},
 		"gemini-veo":              {"720p", "1080p"},
@@ -80,6 +81,19 @@ func TestDefaultVideoCapabilityUsesProtocolSpecificResolutionTiers(t *testing.T)
 				t.Fatalf("resolutions = %v, want %v", profile.Video.Resolutions, want)
 			}
 		})
+	}
+}
+
+func TestHuiQuYunFixedDurationCapabilityMatchesModelName(t *testing.T) {
+	profile := DefaultModelCapabilityConfigForModel("huiquyun-video", "sora-2-pro-15s").Video
+	if profile == nil {
+		t.Fatal("HuiQuYun video capability = nil")
+	}
+	if profile.Duration.Selection != "enum" || len(profile.Duration.Values) != 1 || profile.Duration.Values[0] != 15 || profile.Duration.Default != 15 {
+		t.Fatalf("HuiQuYun duration = %#v", profile.Duration)
+	}
+	if profile.References.MaxImages != 4 || profile.References.MaxVideos != 3 || profile.References.MaxAudios != 1 {
+		t.Fatalf("HuiQuYun reference limits = %#v", profile.References)
 	}
 }
 

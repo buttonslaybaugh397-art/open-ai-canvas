@@ -71,6 +71,7 @@ const (
 	ChannelInterfaceNewAPIChannel1        ChannelInterfaceType = "newapi-channel-1"
 	ChannelInterfaceNewAPIChannel2        ChannelInterfaceType = "newapi-channel-2"
 	ChannelInterfaceGlobalAiOpcVideo      ChannelInterfaceType = "globalaiopc-video"
+	ChannelInterfaceHuiQuYunVideo         ChannelInterfaceType = "huiquyun-video"
 	ChannelInterfaceXAIVideo              ChannelInterfaceType = "xai-video"
 	ChannelInterfaceVolcengineArkVideo    ChannelInterfaceType = "volcengine-ark-video"
 	ChannelInterfaceVolcengineJiMengVideo ChannelInterfaceType = "volcengine-jimeng-video"

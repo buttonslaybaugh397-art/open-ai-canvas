@@ -28,7 +28,7 @@ type VideoSettingsPanelProps = {
 export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[292px] space-y-3" }: VideoSettingsPanelProps) {
     const profile = modelCapabilityConfigFor(config, config.model).video!;
     const interfaceType = resolveModelRequestConfig(config, config.model).interfaceType;
-    if (interfaceType === "globalaiopc-video") {
+    if (interfaceType === "globalaiopc-video" || interfaceType === "huiquyun-video") {
         return <GlobalAiOpcVideoSettingsPanel config={config} profile={profile} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
     }
     if (interfaceType === "volcengine-jimeng-video") {

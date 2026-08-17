@@ -4,6 +4,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
 
 import { projectDesktopLocalChannelRuntime } from "@/lib/desktop-local-channel";
+import { syncHuiQuYunModelCosts } from "@/lib/huiquyun-channel";
 import { scopedLocalStorage } from "@/lib/user-scope";
 import { modelProtocolCapability, normalizeModelProtocol, type ModelProtocol } from "@/lib/model-protocols";
 import { normalizeVideoDuration, normalizeVideoResolution } from "@/lib/video-generation-options";
@@ -25,7 +26,7 @@ export type ModelChannel = {
     secretKey?: string;
     headers?: ChannelHeader[];
     apiFormat: ApiCallFormat;
-    connectionType?: "openai" | "gemini" | "globalaiopc";
+    connectionType?: "openai" | "gemini" | "globalaiopc" | "huiquyun";
     interfaceType?: ChannelInterfaceType;
     models: string[];
     scope?: "system" | "user";
@@ -388,8 +389,8 @@ export function effectiveConfigWithDreamina(config: AiConfig, catalogState: "idl
 }
 
 export function createModelChannel(channel?: Partial<ModelChannel>): ModelChannel {
-    const isGlobalAiOpc = channel?.connectionType === "globalaiopc";
-    const apiFormat = isGlobalAiOpc ? "openai" : normalizeApiFormat(channel?.apiFormat);
+    const connectionType = channel?.connectionType === "globalaiopc" || channel?.connectionType === "huiquyun" ? channel.connectionType : undefined;
+    const apiFormat = connectionType ? "openai" : normalizeApiFormat(channel?.apiFormat);
     const interfaceType = normalizeChannelInterfaceType(channel?.interfaceType);
     const providedBaseUrl = channel?.baseUrl?.trim();
     return {
@@ -401,7 +402,7 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
         secretKey: channel?.secretKey || "",
         headers: Array.isArray(channel?.headers) ? channel.headers.map((header) => ({ name: String(header.name || ""), value: String(header.value || "") })) : [],
         apiFormat,
-        ...(isGlobalAiOpc ? { connectionType: "globalaiopc" as const } : {}),
+        ...(connectionType ? { connectionType } : {}),
         interfaceType,
         models: uniqueRawModels(channel?.models || []),
         scope: channel?.scope === "system" ? "system" : "user",
@@ -485,7 +486,7 @@ export function resolveModelChannel(config: AiConfig, value: string) {
 }
 
 export function channelConnectionSignature(channel: ModelChannel) {
-    return [channel.baseUrl.trim(), channel.apiKey.trim(), channel.secretKey?.trim() || "", channel.apiFormat, channel.interfaceType || "auto", channel.allowLocalChannel === true ? "local:1" : "local:0", JSON.stringify(channel.headers || [])].join("\n");
+    return [channel.baseUrl.trim(), channel.apiKey.trim(), channel.secretKey?.trim() || "", channel.apiFormat, channel.connectionType || "", channel.interfaceType || "auto", channel.allowLocalChannel === true ? "local:1" : "local:0", JSON.stringify(channel.headers || [])].join("\n");
 }
 
 export function resolveModelRequestConfig(config: AiConfig, value: string) {
@@ -531,7 +532,10 @@ function normalizeChannels(config: AiConfig, ensureDefault = true) {
             }),
         );
     }
-    return channels.map((channel) => ({ ...channel, models: uniqueRawModels(channel.models) }));
+    return channels.map((channel) => {
+        const normalized = { ...channel, models: uniqueRawModels(channel.models) };
+        return normalized.connectionType === "huiquyun" ? { ...normalized, modelCosts: syncHuiQuYunModelCosts(normalized, normalized.models) } : normalized;
+    });
 }
 
 function isEmptyDefaultChannel(channel: ModelChannel) {

@@ -273,6 +273,19 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		if model.ChannelInterfaceType(protocol) == model.ChannelInterfaceNewAPIChannel1 {
 			video.Resolutions = []string{"480p", "720p", "1080p"}
 		}
+	case model.ChannelInterfaceHuiQuYunVideo:
+		video.References.MaxImages, video.References.MaxVideos, video.References.MaxAudios = 4, 3, 1
+		video.References.MaxVideoBytes, video.References.MaxAudioBytes = 200*1024*1024, 15*1024*1024
+		video.References.MaxVideoDuration, video.References.MaxAudioDuration = 15, 15
+		video.Ratios, video.DefaultRatio = []string{"21:9", "4:3", "16:9", "1:1", "3:4", "9:16"}, "16:9"
+		video.Resolutions, video.DefaultResolution = []string{"720p"}, "720p"
+		video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
+		fixedDuration := huiQuYunFixedVideoDuration(modelName)
+		if fixedDuration > 0 {
+			video.Duration = VideoDurationConfig{Selection: "enum", Values: []int{fixedDuration}, Default: fixedDuration}
+		} else {
+			video.Duration = VideoDurationConfig{Selection: "range", Min: 4, Max: 15, Step: 1, Default: 8}
+		}
 	case model.ChannelInterfaceNewAPIVideo, model.ChannelInterfaceXAIVideo:
 		video.GenerateAudio = VideoBooleanConfig{Supported: false, Default: false}
 	case model.ChannelInterfaceNovitaVideo:
@@ -283,6 +296,16 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		video.DefaultResolution = "1080p"
 	}
 	return &ModelCapabilityConfig{Version: 1, Image: DefaultImageCapabilityConfig(protocol, modelName), Video: video}
+}
+
+func huiQuYunFixedVideoDuration(modelName string) int {
+	normalized := strings.ToLower(strings.TrimSpace(modelName))
+	for _, seconds := range []int{5, 10, 15} {
+		if strings.HasSuffix(normalized, fmt.Sprintf("-%ds", seconds)) {
+			return seconds
+		}
+	}
+	return 0
 }
 
 func DecodeModelCapabilityConfig(raw string) (*ModelCapabilityConfig, error) {
@@ -427,6 +450,9 @@ func (s *Service) ValidateTaskCapability(input map[string]any) error {
 	var taskInput canvasGenerationInput
 	if err := json.Unmarshal(encoded, &taskInput); err != nil || (taskInput.Mode != "image" && taskInput.Mode != "video") {
 		return nil
+	}
+	if taskInput.Mode == "video" && taskInput.Config.InterfaceType == string(model.ChannelInterfaceHuiQuYunVideo) {
+		normalizeHuiQuYunVideoInput(&taskInput)
 	}
 	channelID := strings.TrimSpace(taskInput.Config.ChannelID)
 	if channelID == "" {

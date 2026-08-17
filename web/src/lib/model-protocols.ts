@@ -12,6 +12,7 @@ export type ModelProtocol =
     | "newapi-channel-1"
     | "newapi-channel-2"
     | "globalaiopc-video"
+    | "huiquyun-video"
     | "xai-video"
     | "volcengine-ark-video"
     | "volcengine-jimeng-video"
@@ -52,6 +53,7 @@ export const MODEL_PROTOCOLS: ModelProtocolDefinition[] = [
         media: "image_urls（首帧、尾帧、其他参考图） / video_urls / audio_urls",
     },
     { value: "globalaiopc-video", label: "GlobalAiOpc 视频任务", capability: "video", create: "POST /v2/model-center/tasks", poll: "GET /v2/model-center/tasks/{task_id}", contentType: "application/json", media: "图片、视频、音频公网 URL 与首尾帧" },
+    { value: "huiquyun-video", label: "汇取云视频任务", capability: "video", create: "POST /v1/videos/generations", poll: "GET /v1/videos/{task_id}", contentType: "application/json", media: "首尾帧、图片、视频与音频公网 URL 参考素材" },
     { value: "xai-video", label: "xAI 官方视频", capability: "video", create: "POST /v1/videos/generations", poll: "GET /v1/videos/{request_id}", contentType: "application/json", media: "单张起始图" },
     {
         value: "volcengine-ark-video",
@@ -67,7 +69,7 @@ export const MODEL_PROTOCOLS: ModelProtocolDefinition[] = [
     { value: "novita-video", label: "Novita 视频", capability: "video", create: "POST /v3/video/create", poll: "GET /v3/async/task-result?task_id={id}", contentType: "application/json", media: "文本或单张起始图" },
 ];
 
-export const MODEL_PROTOCOL_OPTIONS = protocolGroups(MODEL_PROTOCOLS.filter((item) => !item.value.startsWith("volcengine-jimeng-") && !item.value.startsWith("globalaiopc-")));
+export const MODEL_PROTOCOL_OPTIONS = protocolGroups(MODEL_PROTOCOLS.filter((item) => !item.value.startsWith("volcengine-jimeng-") && !item.value.startsWith("globalaiopc-") && item.value !== "huiquyun-video"));
 
 export const SYSTEM_MODEL_PROTOCOL_OPTIONS = protocolGroups(MODEL_PROTOCOLS);
 

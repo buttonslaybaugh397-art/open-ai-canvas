@@ -57,7 +57,7 @@ export function ProtocolCardPicker({ capability, value, onChange, density = "com
     const protocols = MODEL_PROTOCOLS.filter((item) => {
         if (item.capability !== capability) return false;
         if (allowedProtocols) return allowedProtocols.includes(item.value);
-        return item.value !== "globalaiopc-image" && item.value !== "globalaiopc-video";
+        return item.value !== "globalaiopc-image" && item.value !== "globalaiopc-video" && item.value !== "huiquyun-video";
     });
     return (
         <div className={cn("grid grid-cols-1 gap-2 sm:grid-cols-2", density === "compact" && "gap-1.5")} role="radiogroup" aria-label="模型请求协议">
@@ -149,7 +149,7 @@ function ProtocolBrandMark({ protocol, compact = false }: { protocol: ModelProto
     if (protocol.value === "chat-completion") return <BrandIconRow models={["openai", "deepseek", "glm"]} compact={compact} />;
     if (protocol.value.startsWith("volcengine-jimeng-")) return <span className={cn("grid shrink-0 place-items-center rounded-md bg-muted text-foreground/65", iconSize)}><Sparkles className={compact ? "size-3" : "size-4"} /></span>;
     if (protocol.value.startsWith("volcengine-")) return <span className={cn("grid shrink-0 place-items-center rounded-md bg-muted text-foreground/65", iconSize)}><Flame className={compact ? "size-3" : "size-4"} /></span>;
-    if (protocol.value.startsWith("newapi-channel-") || protocol.value === "novita-video") return <span className={cn("grid shrink-0 place-items-center rounded-md bg-muted text-foreground/65", iconSize)}><Network className={compact ? "size-3" : "size-4"} /></span>;
+    if (protocol.value.startsWith("newapi-channel-") || protocol.value === "novita-video" || protocol.value === "huiquyun-video") return <span className={cn("grid shrink-0 place-items-center rounded-md bg-muted text-foreground/65", iconSize)}><Network className={compact ? "size-3" : "size-4"} /></span>;
     const brand = protocol.value === "gemini-veo" ? "gemini" : protocol.value === "grok-image" || protocol.value === "xai-video" ? "grok" : "openai";
     return <BrandIconRow models={[brand]} compact={compact} />;
 }

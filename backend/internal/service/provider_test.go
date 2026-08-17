@@ -1474,6 +1474,48 @@ func TestGlobalAiOpcC2CapabilityMatchesDocumentation(t *testing.T) {
 	}
 }
 
+func TestHuiQuYunVideoRequestBodyUsesDedicatedContract(t *testing.T) {
+	body, err := huiQuYunVideoRequestBody(canvasGenerationInput{
+		Prompt: "make it move",
+		Config: providerConfig{
+			Model:              "sora-2-pro-15s",
+			VideoSeconds:       "8",
+			Size:               "9:16",
+			VideoGenerateAudio: "false",
+		},
+		ReferenceImages: []providerMedia{{URL: "https://example.com/reference.png"}},
+		ReferenceVideos: []providerMedia{{URL: "https://example.com/reference.mp4"}},
+		ReferenceAudios: []providerMedia{{URL: "https://example.com/reference.mp3"}},
+	})
+	if err != nil {
+		t.Fatalf("huiQuYunVideoRequestBody() error = %v", err)
+	}
+	if body["model"] != "sora-2-pro-15s" || body["seconds"] != 15 || body["resolution"] != "720P" || body["aspect_ratio"] != "9:16" || body["audio"] != false {
+		t.Fatalf("HuiQuYun request body = %#v", body)
+	}
+	if body["reference_image"] != "https://example.com/reference.png" || body["audio_reference"] != "https://example.com/reference.mp3" {
+		t.Fatalf("HuiQuYun reference fields = %#v", body)
+	}
+	videos, ok := body["video_references"].([]string)
+	if !ok || !reflect.DeepEqual(videos, []string{"https://example.com/reference.mp4"}) {
+		t.Fatalf("HuiQuYun video_references = %#v", body["video_references"])
+	}
+}
+
+func TestHuiQuYunVideoRequestBodyRejectsInvalidMultiImageParameters(t *testing.T) {
+	_, err := huiQuYunVideoRequestBody(canvasGenerationInput{
+		Config: providerConfig{Model: "sora-2", VideoSeconds: "10", Size: "9:16"},
+		ReferenceImages: []providerMedia{
+			{URL: "https://example.com/1.png"},
+			{URL: "https://example.com/2.png"},
+			{URL: "https://example.com/3.png"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "多图参考仅支持 8 秒、16:9") {
+		t.Fatalf("huiQuYunVideoRequestBody() error = %v", err)
+	}
+}
+
 func TestUnwrapGlobalAiOpcTaskRejectsStringErrorCode(t *testing.T) {
 	if _, err := unwrapGlobalAiOpcTask(map[string]interface{}{"code": "500", "msg": "upstream failed", "data": map[string]interface{}{"id": "task-1"}}); err == nil || !strings.Contains(err.Error(), "upstream failed") {
 		t.Fatalf("unwrapGlobalAiOpcTask() error = %v", err)
@@ -1492,6 +1534,9 @@ func TestValidateGenerationInterfaceRejectsMismatchedType(t *testing.T) {
 		t.Fatalf("validateGenerationInterface() error = %v", err)
 	}
 	if err := validateGenerationInterface("video", "newapi-channel-2"); err != nil {
+		t.Fatalf("validateGenerationInterface() error = %v", err)
+	}
+	if err := validateGenerationInterface("video", "huiquyun-video"); err != nil {
 		t.Fatalf("validateGenerationInterface() error = %v", err)
 	}
 	if err := validateGenerationInterface("video", "xai-video"); err != nil {

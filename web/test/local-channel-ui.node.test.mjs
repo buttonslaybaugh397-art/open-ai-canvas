@@ -79,6 +79,20 @@ test("administrator default editor fields render the real Switch and feed the re
     const nonLoopbackOwner = page.owner(true, "canvas.example.com", true);
     assert.equal(findAntdSwitchElement(page.FieldsComponent({ visible: nonLoopbackOwner.visible, checked: nonLoopbackOwner.checked, form }), page.SwitchComponent), null);
     assert.equal(page.module.adminChannelSavePayload(adminValues(true), true, "canvas.example.com").allowLocalChannel, false);
+    assert.deepEqual(
+        page.module.adminChannelSavePayload({ ...adminValues(true), connectionType: "huiquyun" }, true, "127.0.0.1"),
+        {
+            name: "Local",
+            baseUrl: "https://api.bjhuiqu.net/v1",
+            allowLocalChannel: false,
+            apiKey: "key",
+            secretKey: "",
+            headers: [],
+            useGlobalConcurrency: true,
+            concurrencyLimit: undefined,
+            enabled: true,
+        },
+    );
 });
 
 test("user default channel fields render the real Switch and feed the real update patch", { timeout: 30_000 }, async () => {

@@ -152,6 +152,25 @@ func TestFetchAdminChannelModelsReaddsDeletedModel(t *testing.T) {
 	}
 }
 
+func TestDiscoveredHuiQuYunModelUsesDedicatedProtocol(t *testing.T) {
+	channel := model.ModelChannel{ID: "huiquyun", BaseURL: "https://api.bjhuiqu.net/v1"}
+	item := discoveredChannelModel(channel, "sora-2-pro-15s", nil)
+	if item.Capability != "video" || item.Protocol != model.ChannelInterfaceHuiQuYunVideo {
+		t.Fatalf("discovered HuiQuYun model = %#v", item)
+	}
+	if item.CapabilityConfigJSON == "" || item.CapabilityVersion != 1 || item.Enabled || item.PriceConfigured {
+		t.Fatalf("discovered HuiQuYun capability contract = %#v", item)
+	}
+}
+
+func TestHuiQuYunChannelForcesProtocolFromModelName(t *testing.T) {
+	channel := &model.ModelChannel{BaseURL: "https://api.bjhuiqu.net"}
+	modelKey, capability, protocol, err := normalizeChannelModelContract(channel, ChannelModelRequest{ModelKey: "gpt-image-1", Capability: "text", Protocol: string(model.ChannelInterfaceChatCompletion)})
+	if err != nil || modelKey != "gpt-image-1" || capability != "image" || protocol != model.ChannelInterfaceOpenAIImage {
+		t.Fatalf("normalizeChannelModelContract() = %q, %q, %q, %v", modelKey, capability, protocol, err)
+	}
+}
+
 func TestSaveAdminChannelModelRejectsActiveDuplicateKey(t *testing.T) {
 	svc, db := newChannelModelTestService(t)
 	admin := &model.User{ID: "admin", Role: model.UserRoleAdmin}
