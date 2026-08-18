@@ -17,6 +17,7 @@ type ChannelModelsRequest struct {
 	AllowLocalChannel bool             `json:"allowLocalChannel"`
 	APIKey            string           `json:"apiKey"`
 	APIFormat         string           `json:"apiFormat"`
+	ConnectionType    string           `json:"connectionType"`
 	Headers           []OutboundHeader `json:"headers"`
 }
 
@@ -40,6 +41,33 @@ type channelModelItem struct {
 	MinImages              *int                          `json:"min_images"`
 	MaxImages              *int                          `json:"max_images"`
 }
+
+type aiStarsLabConfig struct {
+	ImageConfig []aiStarsLabChannel `json:"imageConfig"`
+	VideoConfig []aiStarsLabChannel `json:"videoConfig"`
+}
+
+type aiStarsLabChannel struct {
+	Channel       string             `json:"channel"`
+	Title         string             `json:"title"`
+	Description   string             `json:"description"`
+	DefaultOption string             `json:"defaultOption"`
+	Models        []aiStarsLabModel  `json:"models"`
+}
+
+type aiStarsLabModel struct {
+	Model           string              `json:"model"`
+	Label           string              `json:"label"`
+	Qualities       []aiStarsLabQuality  `json:"qualities"`
+	AspectRatios    []string            `json:"aspectRatios"`
+	Duration        []int               `json:"duration"`
+	Modes           []string            `json:"modes"`
+	InputImagesMax  int                 `json:"inputImagesMax"`
+	InputVideosMax  int                 `json:"inputVideosMax"`
+	InputAudiosMax  int                 `json:"inputAudiosMax"`
+}
+
+type aiStarsLabQuality struct { Quality string `json:"quality"` }
 
 type channelModelCatalogParameters struct {
 	AspectRatio     string `json:"aspect_ratio"`
@@ -84,6 +112,20 @@ type ChannelModelCatalogItem struct {
 	SupportsImages         *bool                                `json:"supportsImages,omitempty"`
 	MinImages              *int                                 `json:"minImages,omitempty"`
 	MaxImages              *int                                 `json:"maxImages,omitempty"`
+	AIStarsLab             *AIStarsLabCatalogRoute               `json:"aistarslab,omitempty"`
+}
+
+type AIStarsLabCatalogRoute struct {
+	Channel        string   `json:"channel"`
+	Capability     string   `json:"capability"`
+	Model          string   `json:"model"`
+	Qualities      []string `json:"qualities,omitempty"`
+	AspectRatios   []string `json:"aspectRatios,omitempty"`
+	Duration       []int    `json:"duration,omitempty"`
+	Modes          []string `json:"modes,omitempty"`
+	InputImagesMax int      `json:"inputImagesMax,omitempty"`
+	InputVideosMax int      `json:"inputVideosMax,omitempty"`
+	InputAudiosMax int      `json:"inputAudiosMax,omitempty"`
 }
 
 type ChannelModelCatalogDefaultParameters struct {
@@ -114,6 +156,9 @@ func (s *Service) FetchChannelModelCatalog(ctx context.Context, actor *model.Use
 	}
 	if apiKey == "" {
 		return nil, BadAuthRequest("请填写 API Key")
+	}
+	if strings.EqualFold(strings.TrimSpace(input.ConnectionType), "aistarslab") {
+		return s.fetchAiStarsLabCatalog(ctx, baseURL, apiKey, input.AllowLocalChannel, input.Headers)
 	}
 	apiFormat := strings.ToLower(strings.TrimSpace(input.APIFormat))
 	if apiFormat == "" {
@@ -201,6 +246,46 @@ func (s *Service) FetchChannelModelCatalog(ctx context.Context, actor *model.Use
 		return catalog[left].ID < catalog[right].ID
 	})
 	return catalog, nil
+}
+
+func (s *Service) fetchAiStarsLabCatalog(ctx context.Context, baseURL, apiKey string, allowLocal bool, rawHeaders []OutboundHeader) ([]ChannelModelCatalogItem, error) {
+	target := strings.TrimRight(baseURL, "/") + "/generation/config"
+	if _, err := s.validateChannelOutboundURL(target, allowLocal, false); err != nil { return nil, err }
+	headers, err := NormalizeOutboundHeaders(rawHeaders); if err != nil { return nil, err }
+	requestContext := withProviderOutboundPolicy(ctx, providerConfig{BaseURL: baseURL, AllowLocalChannel: s.effectiveAllowLocalChannel(allowLocal)})
+	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, target, nil); if err != nil { return nil, BadAuthRequest("模型服务地址无效") }
+	request.Header.Set("Authorization", "Bearer "+apiKey); ApplyOutboundHeaders(request, headers)
+	data, _, err := doBinary(request); if err != nil { return nil, channelModelsUpstreamError(err) }
+	var envelope struct { Code int `json:"code"`; Msg string `json:"msg"`; Data aiStarsLabConfig `json:"data"` }
+	if err := json.Unmarshal(data, &envelope); err != nil { return nil, &AuthError{Status: http.StatusBadGateway, Message: "AIStarsLab 返回的不是有效 JSON"} }
+	if envelope.Code != 0 { return nil, &AuthError{Status: http.StatusBadGateway, Message: firstNonEmpty(envelope.Msg, "AIStarsLab 配置读取失败")} }
+	result := make([]ChannelModelCatalogItem, 0)
+	appendChannels := func(capability string, channels []aiStarsLabChannel) {
+		for _, channel := range channels {
+			for _, item := range channel.Models {
+				name := strings.TrimSpace(item.Model)
+				channelID := strings.TrimSpace(channel.Channel)
+				if name == "" || channelID == "" {
+					continue
+				}
+				qualities := make([]string, 0, len(item.Qualities))
+				for _, quality := range item.Qualities {
+					if value := strings.TrimSpace(quality.Quality); value != "" {
+						qualities = append(qualities, value)
+					}
+				}
+				result = append(result, ChannelModelCatalogItem{
+					ID: name, DisplayName: strings.TrimSpace(item.Label), ModelType: capability,
+					SupportedEndpointTypes: []string{"aistarslab-" + capability},
+					AIStarsLab: &AIStarsLabCatalogRoute{Channel: channelID, Capability: capability, Model: name, Qualities: qualities, AspectRatios: item.AspectRatios, Duration: item.Duration, Modes: item.Modes, InputImagesMax: item.InputImagesMax, InputVideosMax: item.InputVideosMax, InputAudiosMax: item.InputAudiosMax},
+				})
+			}
+		}
+	}
+	appendChannels("image", envelope.Data.ImageConfig)
+	appendChannels("video", envelope.Data.VideoConfig)
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, nil
 }
 
 func normalizeCatalogModelType(value string) string {

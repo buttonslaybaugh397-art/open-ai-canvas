@@ -4,6 +4,7 @@ export type ModelProtocol =
     | "openai-image"
     | "grok-image"
     | "globalaiopc-image"
+    | "aistarslab-image"
     | "volcengine-ark-image"
     | "volcengine-jimeng-image"
     | "openai-audio"
@@ -13,6 +14,7 @@ export type ModelProtocol =
     | "newapi-channel-2"
     | "globalaiopc-video"
     | "huiquyun-video"
+    | "aistarslab-video"
     | "xai-video"
     | "volcengine-ark-video"
     | "volcengine-jimeng-video"
@@ -37,6 +39,7 @@ export const MODEL_PROTOCOLS: ModelProtocolDefinition[] = [
     { value: "openai-image", label: "OpenAI Images", capability: "image", create: "POST /v1/images/generations", contentType: "application/json / multipart", media: "生成、编辑与参考图" },
     { value: "grok-image", label: "Grok Images", capability: "image", create: "POST /v1/images/generations / edits", contentType: "application/json", media: "文生图与单张 URL 参考图，不支持蒙版" },
     { value: "globalaiopc-image", label: "GlobalAiOpc 图片任务", capability: "image", create: "POST /v2/model-center/tasks", poll: "GET /v2/model-center/tasks/{task_id}", contentType: "application/json", media: "0-10 张公网 URL 参考图" },
+    { value: "aistarslab-image", label: "AIStarsLab 图片任务", capability: "image", create: "POST /generation/create/image", poll: "GET /generation/status?taskId={taskId}", contentType: "application/json", media: "按线路配置的参考图" },
     { value: "volcengine-ark-image", label: "火山方舟图片", capability: "image", create: "POST /api/v3/images/generations", contentType: "application/json", media: "文生图与 image 参考图，不支持蒙版" },
     { value: "volcengine-jimeng-image", label: "即梦官方图片", capability: "image", create: "POST CVSync2AsyncSubmitTask", poll: "POST CVSync2AsyncGetResult", contentType: "application/json + AK/SK 签名", media: "0-14 张参考图，模型标识填写 req_key" },
     { value: "openai-audio", label: "OpenAI Audio", capability: "audio", create: "POST /v1/audio/speech", contentType: "application/json", media: "文本转语音" },
@@ -54,6 +57,7 @@ export const MODEL_PROTOCOLS: ModelProtocolDefinition[] = [
     },
     { value: "globalaiopc-video", label: "GlobalAiOpc 视频任务", capability: "video", create: "POST /v2/model-center/tasks", poll: "GET /v2/model-center/tasks/{task_id}", contentType: "application/json", media: "图片、视频、音频公网 URL 与首尾帧" },
     { value: "huiquyun-video", label: "汇取云视频任务", capability: "video", create: "POST /v1/videos/generations", poll: "GET /v1/videos/{task_id}", contentType: "application/json", media: "首尾帧、图片、视频与音频公网 URL 参考素材" },
+    { value: "aistarslab-video", label: "AIStarsLab 视频任务", capability: "video", create: "POST /generation/create/video", poll: "GET /generation/status?taskId={taskId}", contentType: "application/json", media: "文生视频、图生视频、首尾帧与音视频参考" },
     { value: "xai-video", label: "xAI 官方视频", capability: "video", create: "POST /v1/videos/generations", poll: "GET /v1/videos/{request_id}", contentType: "application/json", media: "单张起始图" },
     {
         value: "volcengine-ark-video",
@@ -69,7 +73,7 @@ export const MODEL_PROTOCOLS: ModelProtocolDefinition[] = [
     { value: "novita-video", label: "Novita 视频", capability: "video", create: "POST /v3/video/create", poll: "GET /v3/async/task-result?task_id={id}", contentType: "application/json", media: "文本或单张起始图" },
 ];
 
-export const MODEL_PROTOCOL_OPTIONS = protocolGroups(MODEL_PROTOCOLS.filter((item) => !item.value.startsWith("volcengine-jimeng-") && !item.value.startsWith("globalaiopc-") && item.value !== "huiquyun-video"));
+export const MODEL_PROTOCOL_OPTIONS = protocolGroups(MODEL_PROTOCOLS.filter((item) => !item.value.startsWith("volcengine-jimeng-") && !item.value.startsWith("globalaiopc-") && !item.value.startsWith("aistarslab-") && item.value !== "huiquyun-video"));
 
 export const SYSTEM_MODEL_PROTOCOL_OPTIONS = protocolGroups(MODEL_PROTOCOLS);
 

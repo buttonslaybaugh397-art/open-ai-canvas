@@ -281,7 +281,7 @@ function DirectorModel({ object, selected, selectedBone, playhead, onSelectBone,
     }, [activeAnimation, helper, invalidate, model, motion, object.boneOverrides, object.boneTracks, object.pose, playhead, restRotations, rig]);
 
     useFrame(() => {
-        if (!selected) return;
+        if (!selected || !model) return;
         model.updateWorldMatrix(true, true);
         helper?.updateMatrixWorld(true);
     });

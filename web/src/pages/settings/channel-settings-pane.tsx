@@ -4,11 +4,12 @@ import { useState } from "react";
 
 import { ChannelHeadersEditor, validateChannelHeaders } from "@/components/channel-headers-editor";
 import { WorkspaceState } from "@/components/layout/workspace-state";
-import { mergeFetchedChannelModelCosts as mergeGenericFetchedChannelModelCosts } from "@/lib/channel-model-catalog";
+import { mergeFetchedChannelModelCosts as mergeGenericFetchedChannelModelCosts, type ChannelModelCatalogItem } from "@/lib/channel-model-catalog";
 import { desktopLocalChannelFormState, desktopLocalChannelPayloadValue, DESKTOP_LOCAL_CHANNEL_EXAMPLE_BASE_URL } from "@/lib/desktop-local-channel";
 import { applyGlobalAiOpcPreset, GLOBALAIOPC_BASE_URL } from "@/lib/globalaiopc-channel";
 import { applyHuiQuYunPreset, HUIQUYUN_BASE_URL, syncHuiQuYunModelCosts } from "@/lib/huiquyun-channel";
-import { fetchChannelModels, type ChannelModelCatalogItem } from "@/services/api/image";
+import { applyAiStarsLabPreset, AISTARSLAB_BASE_URL } from "@/lib/aistarslab-channel";
+import { fetchChannelModels } from "@/services/api/image";
 import {
     createModelChannel,
     defaultBaseUrlForApiFormat,
@@ -21,7 +22,7 @@ import {
 import { ChannelModelSettings } from "./channel-video-pricing";
 import { useUserStore } from "@/stores/use-user-store";
 
-type UserChannelConnection = "openai" | "gemini" | "globalaiopc" | "huiquyun";
+type UserChannelConnection = "openai" | "gemini" | "globalaiopc" | "huiquyun" | "aistarslab";
 type ChannelModelCost = NonNullable<ModelChannel["modelCosts"]>[number];
 export function ChannelSettingsPane({ onOpenModels }: { onOpenModels: () => void }) {
     const { message } = App.useApp();
@@ -62,9 +63,13 @@ export function ChannelSettingsPane({ onOpenModels }: { onOpenModels: () => void
             updateChannel(channel.id, applyHuiQuYunPreset(channel));
             return;
         }
+        if (connection === "aistarslab") {
+            updateChannel(channel.id, applyAiStarsLabPreset(channel));
+            return;
+        }
         const apiFormat = connection;
         const defaultBaseUrl = defaultBaseUrlForApiFormat(apiFormat);
-        const specialConnection = channel.connectionType === "globalaiopc" || channel.connectionType === "huiquyun";
+        const specialConnection = channel.connectionType === "globalaiopc" || channel.connectionType === "huiquyun" || channel.connectionType === "aistarslab";
         const baseUrl = specialConnection || isKnownDefaultBaseUrl(channel.baseUrl) ? defaultBaseUrl : channel.baseUrl;
         // 渠道只负责连接类型；具体模型能力和请求协议由下方共享能力卡片维护。
         updateChannel(channel.id, {
@@ -275,11 +280,12 @@ export function UserLocalChannelSwitch({ visible, checked, onChange }: { visible
 export function UserLocalChannelFields({ channel, visible, checked, desktopLocalChannelsEnabled, hostname, updateChannel }: { channel: ModelChannel; visible: boolean; checked: boolean; desktopLocalChannelsEnabled: boolean; hostname: string; updateChannel: (id: string, patch: Partial<ModelChannel>) => void }) {
     const globalAiOpc = channel.connectionType === "globalaiopc";
     const huiQuYun = channel.connectionType === "huiquyun";
-    const dedicatedPreset = globalAiOpc || huiQuYun;
+    const aiStarsLab = channel.connectionType === "aistarslab";
+    const dedicatedPreset = globalAiOpc || huiQuYun || aiStarsLab;
     return (
         <>
             <Form.Item label="Base URL" htmlFor={`channel-${channel.id}-base-url`} className="mb-0 lg:col-span-6">
-                <Input id={`channel-${channel.id}-base-url`} inputMode="url" value={channel.baseUrl} placeholder={globalAiOpc ? GLOBALAIOPC_BASE_URL : huiQuYun ? HUIQUYUN_BASE_URL : checked ? DESKTOP_LOCAL_CHANNEL_EXAMPLE_BASE_URL : "填写渠道 Base URL"} disabled={dedicatedPreset} onChange={(event) => updateChannel(channel.id, { baseUrl: event.target.value })} onBlur={(event) => updateChannel(channel.id, { baseUrl: event.target.value.trim().replace(/\/+$/, "") })} />
+                <Input id={`channel-${channel.id}-base-url`} inputMode="url" value={channel.baseUrl} placeholder={globalAiOpc ? GLOBALAIOPC_BASE_URL : huiQuYun ? HUIQUYUN_BASE_URL : aiStarsLab ? AISTARSLAB_BASE_URL : checked ? DESKTOP_LOCAL_CHANNEL_EXAMPLE_BASE_URL : "填写渠道 Base URL"} disabled={dedicatedPreset} onChange={(event) => updateChannel(channel.id, { baseUrl: event.target.value })} onBlur={(event) => updateChannel(channel.id, { baseUrl: event.target.value.trim().replace(/\/+$/, "") })} />
             </Form.Item>
             <UserLocalChannelSwitch visible={visible && !dedicatedPreset} checked={checked} onChange={(value) => updateChannel(channel.id, userLocalChannelChangePatch(desktopLocalChannelsEnabled, hostname, value))} />
         </>
@@ -350,6 +356,7 @@ function channelModelFetchErrorMessage(error: unknown) {
 function channelConnectionMode(channel: ModelChannel): UserChannelConnection {
     if (channel.connectionType === "globalaiopc") return "globalaiopc";
     if (channel.connectionType === "huiquyun") return "huiquyun";
+    if (channel.connectionType === "aistarslab") return "aistarslab";
     return channel.apiFormat === "gemini" ? "gemini" : "openai";
 }
 
@@ -375,13 +382,14 @@ function channelProtocolLabel(channel: ModelChannel) {
     const mode = channelConnectionMode(channel);
     if (mode === "globalaiopc") return "GlobalAiOpc";
     if (mode === "huiquyun") return "汇取云";
+    if (mode === "aistarslab") return "AIStarsLab";
     return mode === "gemini" ? "Gemini 原生" : "OpenAI 兼容";
 }
 
 function isKnownDefaultBaseUrl(value: string) {
     const normalized = value.trim().replace(/\/+$/, "");
     if (!normalized) return true;
-    return [defaultBaseUrlForApiFormat("openai"), defaultBaseUrlForApiFormat("gemini"), GLOBALAIOPC_BASE_URL, HUIQUYUN_BASE_URL].some((candidate) => candidate.replace(/\/+$/, "") === normalized);
+    return [defaultBaseUrlForApiFormat("openai"), defaultBaseUrlForApiFormat("gemini"), GLOBALAIOPC_BASE_URL, HUIQUYUN_BASE_URL, AISTARSLAB_BASE_URL].some((candidate) => candidate.replace(/\/+$/, "") === normalized);
 }
 
 function requiresSecretKey(channel: ModelChannel) {

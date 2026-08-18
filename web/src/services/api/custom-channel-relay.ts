@@ -5,6 +5,7 @@ type RelayConfig = Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat"> & {
     allowLocalChannel?: boolean;
     headers?: ChannelHeader[];
     interfaceType?: ChannelInterfaceType;
+    connectionType?: AiConfig["channels"][number]["connectionType"];
 };
 
 export type ChannelRequest = {
@@ -27,7 +28,8 @@ export function channelRequest(config: RelayConfig, upstreamUrl: string, headers
     normalizedHeaders.set("Authorization", `Bearer ${runtimeConfig.apiKey}`);
     normalizedHeaders.set("X-Canvas-Upstream-URL", normalizedUpstreamUrl);
     const isGlobalAiOpc = runtimeConfig.interfaceType === "globalaiopc-image" || runtimeConfig.interfaceType === "globalaiopc-video";
-    normalizedHeaders.set("X-Canvas-Upstream-Format", isGlobalAiOpc ? "globalaiopc" : runtimeConfig.apiFormat === "gemini" ? "gemini" : "openai");
+    const isAiStarsLab = runtimeConfig.connectionType === "aistarslab" || runtimeConfig.interfaceType === "aistarslab-image" || runtimeConfig.interfaceType === "aistarslab-video";
+    normalizedHeaders.set("X-Canvas-Upstream-Format", isGlobalAiOpc ? "globalaiopc" : isAiStarsLab ? "aistarslab" : runtimeConfig.apiFormat === "gemini" ? "gemini" : "openai");
     if (runtimeConfig.allowLocalChannel === true) {
         normalizedHeaders.set("X-Canvas-Allow-Local-Channel", "1");
         normalizedHeaders.set("X-Canvas-Upstream-Base-URL", new URL(runtimeConfig.baseUrl).toString());

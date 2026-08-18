@@ -14,6 +14,7 @@ import { withOpenAIPromptCacheKey } from "@/lib/openai-prompt-cache";
 import { imageSizeRequest, modelCapabilityConfigFor, normalizeImageValue, type ImageCapabilityConfig } from "@/lib/model-capabilities";
 import { globalAiOpcResponseCodeFailed, globalAiOpcTaskUrl, GLOBALAIOPC_IMAGE_MODELS, GLOBALAIOPC_VIDEO_MODELS } from "@/lib/globalaiopc-channel";
 import { getResourceOSSUrl } from "@/services/api/resources";
+import { isAiStarsLabBaseUrl } from "@/lib/aistarslab-channel";
 
 export type AiTextMessage = {
     role: "system" | "user" | "assistant";
@@ -98,6 +99,8 @@ type GlobalAiOpcTask = {
     msg?: string;
 };
 type GlobalAiOpcTaskResponse = GlobalAiOpcTask | { code?: number | string; data?: GlobalAiOpcTask | null; msg?: string };
+type AiStarsLabOutput = { url?: string; uri?: string; type?: string };
+type AiStarsLabResponse = { code?: number; msg?: string; taskId?: string; id?: string; status?: number; output?: string; outputs?: AiStarsLabOutput[]; data?: AiStarsLabResponse };
 type GeminiPart = {
     text?: string;
     thought?: boolean;
@@ -888,6 +891,9 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     if (requestConfig.interfaceType === "globalaiopc-image") {
         return requestGlobalAiOpcImages(requestConfig, prompt, [], normalizedImage, options);
     }
+    if (requestConfig.interfaceType === "aistarslab-image") {
+        return requestAiStarsLabImage(requestConfig, prompt, normalizedImage, options);
+    }
     if (requestConfig.apiFormat === "gemini") {
         try {
             return await requestGeminiImages(requestConfig, prompt, [], n, options);
@@ -1002,6 +1008,45 @@ async function requestGlobalAiOpcImages(config: ReturnType<typeof resolveModelRe
     } catch (error) {
         throw new Error(readAxiosError(error, "GlobalAiOpc 图片生成失败"));
     }
+}
+
+async function requestAiStarsLabImage(config: ReturnType<typeof resolveModelRequestConfig>, prompt: string, image: ReturnType<typeof normalizeImageValue>, options?: RequestOptions) {
+    const route = config.capabilityConfig?.aistarslab;
+    const referenceImages: string[] = [];
+    const body = {
+        channel: route?.channel || "",
+        model: config.model,
+        prompt: withSystemPrompt(config, prompt),
+        aspectRatio: image.size && image.size !== "auto" ? image.size : "1:1",
+        quality: image.quality && image.quality !== "auto" ? image.quality : undefined,
+        inputImages: referenceImages,
+        n: 1,
+    };
+    try {
+        const created = unwrapAiStarsLabEnvelope(await postChannelJSON<AiStarsLabResponse>(config, aiApiUrl(config, "/generation/create/image"), body, options));
+        const taskId = String(created.taskId || created.id || "").trim();
+        if (!taskId) throw new Error("AIStarsLab 图片接口没有返回任务 ID");
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+            const state = unwrapAiStarsLabEnvelope(await getChannelJSON<AiStarsLabResponse>(config, `${aiApiUrl(config, "/generation/status")}?taskId=${encodeURIComponent(taskId)}`, options));
+            const status = Number(state.status);
+            if (status === 3) {
+                const url = String(state.outputs?.[0]?.url || state.outputs?.[0]?.uri || state.output || "").trim();
+                if (!url) throw new Error("AIStarsLab 图片任务成功但没有返回图片地址");
+                return [{ id: nanoid(), dataUrl: url }];
+            }
+            if (status === 4) throw new Error(state.msg || "AIStarsLab 图片生成失败");
+            await waitForGlobalAiOpcTask(options?.signal);
+        }
+        throw new Error("AIStarsLab 图片生成超时，请稍后重试");
+    } catch (error) {
+        throw new Error(readAxiosError(error, "AIStarsLab 图片生成失败"));
+    }
+}
+
+function unwrapAiStarsLabEnvelope(payload: AiStarsLabResponse): AiStarsLabResponse {
+    if (payload?.data && typeof payload.data === "object") return unwrapAiStarsLabEnvelope(payload.data);
+    if (payload?.code !== undefined && payload.code !== 0) throw new Error(payload.msg || "AIStarsLab 请求失败");
+    return payload;
 }
 
 async function getChannelJSON<T>(config: ReturnType<typeof resolveModelRequestConfig>, upstreamUrl: string, options?: RequestOptions) {
@@ -1287,6 +1332,7 @@ export async function fetchChannelModels(channel: ModelChannel, viaBackend = fal
         const catalog = [...imageModels, ...videoModels];
         return { models: catalog.map((item) => item.id), catalog };
     }
+    if (channel.connectionType === "aistarslab" && !isAiStarsLabBaseUrl(runtimeChannel.baseUrl)) throw new Error("AIStarsLab 渠道地址不正确");
     if (!viaBackend) {
         const models = await fetchImageModels({ baseUrl: runtimeChannel.baseUrl, allowLocalChannel: runtimeChannel.allowLocalChannel === true, apiKey: runtimeChannel.apiKey, apiFormat: runtimeChannel.apiFormat });
         return { models, catalog: models.map((id) => ({ id })) };
@@ -1300,6 +1346,7 @@ export async function fetchChannelModels(channel: ModelChannel, viaBackend = fal
                 allowLocalChannel: runtimeChannel.allowLocalChannel === true,
                 apiKey: runtimeChannel.apiKey,
                 apiFormat: runtimeChannel.apiFormat,
+                connectionType: runtimeChannel.connectionType,
                 headers: runtimeChannel.headers,
             },
             { withCredentials: true },

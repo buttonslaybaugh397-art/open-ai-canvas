@@ -4,6 +4,19 @@ export type ModelCapabilityConfig = {
     version: number;
     image?: ImageCapabilityConfig;
     video?: VideoCapabilityConfig;
+    aistarslab?: {
+        channel: string;
+        capability: "image" | "video";
+        model: string;
+        mode?: string;
+        qualities?: string[];
+        aspectRatios?: string[];
+        duration?: number[];
+        modes?: string[];
+        inputImagesMax?: number;
+        inputVideosMax?: number;
+        inputAudiosMax?: number;
+    };
 };
 
 export type ImageSizeParameter = "none" | "size" | "aspect_ratio";

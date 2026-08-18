@@ -26,7 +26,7 @@ export type ModelChannel = {
     secretKey?: string;
     headers?: ChannelHeader[];
     apiFormat: ApiCallFormat;
-    connectionType?: "openai" | "gemini" | "globalaiopc" | "huiquyun";
+    connectionType?: "openai" | "gemini" | "globalaiopc" | "huiquyun" | "aistarslab";
     interfaceType?: ChannelInterfaceType;
     models: string[];
     scope?: "system" | "user";
@@ -80,6 +80,7 @@ export type AiConfig = {
     transparentBackground: string;
     count: string;
     canvasImageCount: string;
+    capabilityConfig?: ModelCapabilityConfig;
 };
 
 export const CONFIG_STORE_KEY = "open_ai_canvas:ai_config_store";
@@ -389,7 +390,7 @@ export function effectiveConfigWithDreamina(config: AiConfig, catalogState: "idl
 }
 
 export function createModelChannel(channel?: Partial<ModelChannel>): ModelChannel {
-    const connectionType = channel?.connectionType === "globalaiopc" || channel?.connectionType === "huiquyun" ? channel.connectionType : undefined;
+    const connectionType = channel?.connectionType === "globalaiopc" || channel?.connectionType === "huiquyun" || channel?.connectionType === "aistarslab" ? channel.connectionType : undefined;
     const apiFormat = connectionType ? "openai" : normalizeApiFormat(channel?.apiFormat);
     const interfaceType = normalizeChannelInterfaceType(channel?.interfaceType);
     const providedBaseUrl = channel?.baseUrl?.trim();
@@ -503,8 +504,10 @@ export function resolveModelRequestConfig(config: AiConfig, value: string) {
         secretKey: channel.secretKey,
         headers: channel.headers,
         apiFormat: interfaceType ? (interfaceType === "gemini-veo" ? ("gemini" as const) : ("openai" as const)) : channel.apiFormat,
+        connectionType: channel.connectionType,
         interfaceType,
         channelId: channel.scope === "system" ? channel.id : "",
+        capabilityConfig: channel.modelCosts?.find((item) => item.model === model)?.capabilityConfig,
     });
 }
 
@@ -557,6 +560,7 @@ export function defaultBaseUrlForChannelInterface(interfaceType?: ChannelInterfa
     if (interfaceType === "novita-video") return "https://api.novita.ai/v3";
     if (interfaceType === "volcengine-ark-image" || interfaceType === "volcengine-ark-video") return "https://ark.cn-beijing.volces.com/api/v3";
     if (interfaceType === "volcengine-jimeng-image" || interfaceType === "volcengine-jimeng-video") return "https://visual.volcengineapi.com";
+    if (interfaceType === "aistarslab-image" || interfaceType === "aistarslab-video") return "https://api.video.aistarslab.com/openapi";
     if (interfaceType === "grok-image" || interfaceType === "newapi" || interfaceType === "newapi-channel-1" || interfaceType === "newapi-channel-2" || interfaceType === "xai-video") return "";
     return OPENAI_BASE_URL;
 }
