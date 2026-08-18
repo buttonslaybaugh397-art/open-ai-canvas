@@ -66,6 +66,8 @@ export function modelCompatibilityError(config: AiConfig, model: string, require
         if (visualInputCount > profile.references.maxImages) return `最多支持 ${profile.references.maxImages} 张参考图`;
         if (input.videoCount > profile.references.maxVideos) return `最多支持 ${profile.references.maxVideos} 个参考视频`;
         if (input.audioCount > profile.references.maxAudios) return `最多支持 ${profile.references.maxAudios} 个参考音频`;
+        if (input.videoCount > 0 && profile.references.maxVideos === 0) return "当前视频模型不支持参考视频";
+        if (input.audioCount > 0 && profile.references.maxAudios === 0) return "当前视频模型不支持参考音频";
         if (requirements.videoSeconds && !videoDurationAllowed(profile, Number(requirements.videoSeconds))) return "不支持当前视频时长";
         const operation = resolveVideoOperation(input, requirements.videoOperation);
         if (operation !== "concat" && !profile.operations.includes(operation)) return `不支持${videoOperationLabel(operation)}`;

@@ -103,10 +103,13 @@ func (s *Service) queryFailedVideoTask(ctx context.Context, task *model.Task, cl
 	if err != nil {
 		return nil, err
 	}
-	if config.InterfaceType != string(model.ChannelInterfaceNewAPIChannel2) {
-		return nil, BadAuthRequest("该任务不使用 NewAPI Video Generations 协议")
+	if !supportsProviderVideoRecovery(config.InterfaceType) {
+		return nil, BadAuthRequest("当前视频渠道暂不支持人工查询上游任务")
 	}
 	input.Config = config
+	if err := s.hydrateGenerationMedia(task.UserID, &input, true); err != nil {
+		return nil, err
+	}
 	task.InputJSON = decryptedInput
 	task.ProviderRequestID = providerRequestID
 	if err := s.repo.UpdateTaskProviderState(task.ID, providerRequestID, task.PollStage, task.NextPollAt); err != nil {
@@ -125,7 +128,7 @@ func (s *Service) queryFailedVideoTask(ctx context.Context, task *model.Task, cl
 
 	queryCtx := withProviderAnalytics(ctx, s, *task)
 	queryCtx = withProviderOutboundPolicy(queryCtx, input.Config)
-	result, providerStatus, err := queryNewAPIChannel2VideoTask(queryCtx, input, providerRequestID)
+	result, providerStatus, err := queryProviderVideoTask(queryCtx, input, providerRequestID)
 	if err != nil {
 		_ = s.log(task.UserID, task.ID, "error", "人工查询上游视频任务失败", err.Error())
 		return nil, err
@@ -164,4 +167,39 @@ func (s *Service) queryFailedVideoTask(ctx context.Context, task *model.Task, cl
 		_ = s.log(task.UserID, task.ID, "info", "人工查询确认生成成功，任务已恢复并完成结算", providerStatus)
 	}
 	return &ProviderTaskQueryResult{Task: taskForOutput(*task), ProviderStatus: providerStatus, Recovered: true, BillingSettled: billingSettled}, nil
+}
+
+func supportsProviderVideoRecovery(interfaceType string) bool {
+	switch interfaceType {
+	case string(model.ChannelInterfaceGlobalAiOpcVideo), string(model.ChannelInterfaceHuiQuYunVideo),
+		string(model.ChannelInterfaceVolcengineJiMengVideo), string(model.ChannelInterfaceGeminiVeo),
+		string(model.ChannelInterfaceNovitaVideo), string(model.ChannelInterfaceNewAPIChannel1),
+		string(model.ChannelInterfaceNewAPIChannel2), string(model.ChannelInterfaceVolcengineArkVideo),
+		string(model.ChannelInterfaceNewAPIVideo), string(model.ChannelInterfaceXAIVideo),
+		"grok-video", "seedance-videos", "seedance-agent-plan":
+		return true
+	default:
+		return false
+	}
+}
+
+func queryProviderVideoTask(ctx context.Context, input canvasGenerationInput, providerRequestID string) (map[string]interface{}, string, error) {
+	// 所有异步视频协议都通过 resumedProviderRequestID 进入既有轮询分支，绝不重新提交创建请求。
+	queryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	metadata, _ := ctx.Value(providerAnalyticsKey{}).(providerAnalyticsContext)
+	metadata.ProviderRequestID = providerRequestID
+	queryCtx = context.WithValue(queryCtx, providerAnalyticsKey{}, metadata)
+	result, err := runVideoTask(queryCtx, input)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return nil, "processing", nil
+		}
+		return nil, "", err
+	}
+	return result, "succeeded", nil
+}
+
+func isVideoGenerationTaskType(taskType string) bool {
+	return strings.HasPrefix(taskType, "canvas_video") || strings.HasPrefix(taskType, "video_")
 }

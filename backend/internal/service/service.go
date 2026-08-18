@@ -992,6 +992,13 @@ func (s *Service) processClaimedTask(task *model.Task) error {
 		if errors.Is(err, context.DeadlineExceeded) {
 			err = errors.New(taskTimeoutMessage(task.Type))
 		}
+		if isVideoGenerationTaskType(task.Type) && task.ProviderRequestID != "" && task.Attempts < 5 && isRecoverableProviderVideoError(err) {
+			nextPollAt := time.Now().Add(5 * time.Second)
+			if requeued, requeueErr := s.repo.RequeueProviderVideoTask(task.ID, model.TaskStatusRunning, "上游任务已接收，自动回捞中", &nextPollAt); requeueErr == nil && requeued {
+				_ = s.log(task.UserID, task.ID, "warn", "上游任务已接收，暂不标记失败", fmt.Sprintf("第 %d 次回捞：%s", task.Attempts, taskFailureMessage(err)))
+				return nil
+			}
+		}
 		task.Status = model.TaskStatusFailed
 		task.Stage = "任务失败"
 		task.Error = taskFailureMessage(err)

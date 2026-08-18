@@ -358,6 +358,24 @@ func (r *Repository) UpdateTaskProviderState(id string, providerRequestID string
 	return r.db.Model(&model.Task{}).Where("id = ?", id).Updates(updates).Error
 }
 
+// 上游已接受任务时，轮询/下载的瞬时错误只把本地任务重新排队，不能创建第二个供应商任务。
+func (r *Repository) RequeueProviderVideoTask(id string, expected model.TaskStatus, stage string, nextPollAt *time.Time) (bool, error) {
+	result := r.db.Model(&model.Task{}).
+		Where("id = ? AND status = ?", id, expected).
+		Updates(map[string]any{
+			"status":           model.TaskStatusQueued,
+			"stage":            stage,
+			"progress":         35,
+			"error":            "",
+			"completed_at":     nil,
+			"next_poll_at":     nextPollAt,
+			"lease_owner":      "",
+			"lease_expires_at": nil,
+			"updated_at":       time.Now(),
+		})
+	return result.RowsAffected == 1, result.Error
+}
+
 // 人工恢复仅锁定失败任务；旧 worker 的租约可覆盖，但未过期的人工恢复租约不能并发抢占。
 func (r *Repository) ClaimFailedTaskProviderRecovery(id string, userID string, owner string, leaseDuration time.Duration) error {
 	now := time.Now()

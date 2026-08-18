@@ -257,6 +257,11 @@ func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string
 	}
 }
 
+// 供应商已接受异步视频任务后，轮询或下载短暂失败不能重新创建任务；保留上游 ID 交给下一轮 worker 继续查询。
+func providerVideoTaskCanResume(ctx context.Context, input canvasGenerationInput) bool {
+	return input.Mode == "video" && resumedProviderRequestID(ctx) != "" && supportsProviderVideoRecovery(input.Config.InterfaceType)
+}
+
 type styleExecutionPlanDocument struct {
 	SchemaVersion   int    `json:"schemaVersion"`
 	ProfilePresetID string `json:"profilePresetId"`
@@ -1431,7 +1436,7 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 	if isSeedanceVideoConfig(input.Config) {
 		return runSeedanceVideosTask(ctx, input)
 	}
-	if len(input.ReferenceVideos) > 0 || len(input.ReferenceAudios) > 0 {
+	if resumedProviderRequestID(ctx) == "" && (len(input.ReferenceVideos) > 0 || len(input.ReferenceAudios) > 0) {
 		return nil, errors.New("OpenAI 风格视频接口不支持参考视频或参考音频，请切换到 Seedance / Agent Plan 渠道")
 	}
 	id := resumedProviderRequestID(ctx)
@@ -1534,6 +1539,30 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 		}
 	}
 	return nil, errors.New("视频生成超时")
+}
+
+func isRecoverableProviderVideoError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) {
+		return true
+	}
+	var httpErr providerHTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode == http.StatusRequestTimeout || httpErr.StatusCode == http.StatusTooManyRequests || httpErr.StatusCode >= http.StatusInternalServerError
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{"超时", "timeout", "do_request_failed", "do request failed", "connection reset", "connection refused", "temporarily unavailable", "上游网关", "查询失败", "下载失败"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func runHuiQuYunVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
@@ -2118,15 +2147,15 @@ func newAPIChannel2VideoRequestBody(input canvasGenerationInput) (newAPIVideoReq
 	if len(input.ReferenceImages) > 9 || len(input.ReferenceVideos) > 3 || len(input.ReferenceAudios) > 3 {
 		return newAPIVideoRequest{}, errors.New("NewAPI Video Generations 最多支持 9 张参考图、3 个参考视频和 3 个参考音频")
 	}
-	// NewAPI Video Generations 只接受附着在参考视频上的音频；纯音频请求会被上游拒绝。
-	if len(input.ReferenceAudios) > 0 && len(input.ReferenceVideos) == 0 {
-		return newAPIVideoRequest{}, errors.New("NewAPI Video Generations 的参考音频必须同时提供至少 1 个参考视频；纯音频生视频请切换到支持该模式的渠道")
+	// 参考音频必须有画面锚点；参考视频是可选素材，不应被错误地当成必填项。
+	if len(input.ReferenceAudios) > 0 && len(input.ReferenceImages) == 0 {
+		return newAPIVideoRequest{}, errors.New("NewAPI Video Generations 的参考音频必须同时提供至少 1 张参考图片")
 	}
 	modelName := strings.ToLower(strings.TrimSpace(input.Config.Model))
 	requiresSingleImage := modelName == "grok-video-1.5" || modelName == "grok-video-1.5-1080p"
 	images := make([]string, 0, len(input.ReferenceImages))
 	// 单图模型以实际参考图为准，兼容旧画布中未随连接关系更新的 text_to_video 元数据。
-	if shouldSendNewAPIVideoImages(input) || requiresSingleImage {
+	if shouldSendNewAPIVideoImages(input) || requiresSingleImage || len(input.ReferenceAudios) > 0 {
 		for _, image := range input.ReferenceImages {
 			url, err := videoGenerationsMediaURL(image)
 			if err != nil {
@@ -2661,7 +2690,12 @@ func globalAiOpcResponseCodeFailed(value interface{}) bool {
 	case float64:
 		return code != 0
 	case string:
-		return strings.TrimSpace(code) != "0"
+		switch strings.ToLower(strings.TrimSpace(code)) {
+		case "", "0", "ok", "success", "succeeded", "completed":
+			return false
+		default:
+			return true
+		}
 	default:
 		return true
 	}
@@ -3221,7 +3255,12 @@ func responseCodeFailed(value interface{}) bool {
 	case float64:
 		return code != 0
 	case string:
-		return strings.TrimSpace(code) != "0"
+		switch strings.ToLower(strings.TrimSpace(code)) {
+		case "", "0", "ok", "success", "succeeded", "completed":
+			return false
+		default:
+			return true
+		}
 	case json.Number:
 		return code.String() != "0"
 	default:
