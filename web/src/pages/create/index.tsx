@@ -23,7 +23,7 @@ import { resolveCompatibleModel, type ModelRequirements } from "@/lib/model-sele
 import { isGenerationTaskCancelled, runBackendGenerationTask, runBackendGenerationTaskBatch, type BackendGenerationResult } from "@/services/api/generation-task";
 import { requestImageQuestion, type AiTextContentPart } from "@/services/api/image";
 import { listAddedSkills, type Skill } from "@/services/api/skills";
-import { cancelGenerationTask, subscribeGenerationTasks, type GenerationTask } from "@/services/api/task-center";
+import { abortGenerationTask, cancelGenerationTask, subscribeGenerationTasks, type GenerationTask } from "@/services/api/task-center";
 import { isLocalDreaminaTaskId, isLocalDreaminaWaitStopped, localDreaminaCancellationCopy, localDreaminaCancellationMessage, localDreaminaDetachOutcome } from "@/services/local-dreamina-task-projection";
 import { getMediaBlob, uploadMediaFile } from "@/services/file-storage";
 import { uploadImage } from "@/services/image-storage";
@@ -771,7 +771,9 @@ export default function CreatePage() {
         composerFocusRef,
         placeholderOverride: viewMode === "storyboard" && composingNextShot ? `SC.${String(nextShotNumber).padStart(2, "0")} · 写下这一镜的镜头、画面或故事` : undefined,
         onSubmit: () => void submit(),
-        onStop: () => abortRef.current?.abort(),
+        onStop: () => {
+            if (abortRef.current) abortGenerationTask(abortRef.current);
+        },
     };
 
     const visibleShot = shots[visibleShotIndex];

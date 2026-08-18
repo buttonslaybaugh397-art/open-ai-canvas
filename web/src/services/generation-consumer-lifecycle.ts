@@ -24,7 +24,7 @@ export function runGenerationConsumer<T>(signal: AbortSignal | undefined, operat
     if (pausedTransitions > 0) return Promise.reject(abortError());
 
     const controller = new AbortController();
-    const abort = () => controller.abort();
+    const abort = () => controller.abort(signal?.reason);
     if (signal?.aborted) abort();
     else signal?.addEventListener("abort", abort, { once: true });
 
@@ -48,7 +48,7 @@ export function beginGenerationConsumer(signal?: AbortSignal): GenerationConsume
         controller.abort();
         return { signal: controller.signal, release() {} };
     }
-    const abort = () => controller.abort();
+    const abort = () => controller.abort(signal?.reason);
     if (signal?.aborted) abort();
     else signal?.addEventListener("abort", abort, { once: true });
     let release!: () => void;

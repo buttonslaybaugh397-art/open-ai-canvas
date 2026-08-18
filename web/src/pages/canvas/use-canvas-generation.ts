@@ -5,7 +5,7 @@ import { App } from "antd";
 import { applyGenerationTaskResultToNodes, generationTaskNodeId } from "@/lib/canvas/canvas-generation-task-sync";
 import { applyCanvasGenerationTaskNodeEffect, isCanvasGenerationDurableAckError } from "@/services/canvas-generation-consumer";
 import { consumeGenerationTaskNode, ensureCanvasNodeAsset } from "@/services/project-asset-sync";
-import { cancelGenerationTask, listGenerationTasks, listTaskLogs, queryGenerationTask, subscribeGenerationTasks, type GenerationTask, type TaskLog } from "@/services/api/task-center";
+import { abortGenerationTask, cancelGenerationTask, listGenerationTasks, listTaskLogs, queryGenerationTask, subscribeGenerationTasks, type GenerationTask, type TaskLog } from "@/services/api/task-center";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { cinematicStoryboardColumns, storyboardRowsFromTask } from "@/lib/canvas/canvas-project-domain";
@@ -209,7 +209,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
 
     const startGenerationRequest = useCallback((targetNodeId: string, originNodeId: string, runningId = originNodeId, controller = new AbortController()) => {
         const previous = generationRequestsRef.current.get(targetNodeId);
-        if (previous?.controller !== controller) previous?.controller.abort();
+        if (previous && previous.controller !== controller) abortGenerationTask(previous.controller);
         generationRequestsRef.current.set(targetNodeId, { targetNodeId, originNodeId, runningNodeId: runningId, controller });
         return controller;
     }, []);
@@ -224,7 +224,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
             const affectedNodeIds = new Set<string>();
             generationRequestsRef.current.forEach((request) => {
                 if (request.runningNodeId !== runningId) return;
-                request.controller.abort();
+                abortGenerationTask(request.controller);
                 generationRequestsRef.current.delete(request.targetNodeId);
                 affectedNodeIds.add(request.targetNodeId);
                 affectedNodeIds.add(request.originNodeId);

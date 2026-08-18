@@ -16,6 +16,7 @@ export type { BackendEnvelope } from "@/services/api/request";
 export type TaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type TaskBillingStatus = "reserved" | "running" | "settled" | "refunded" | "uncertain";
 export type ProviderCancelStatus = "requested" | "confirmed" | "uncertain";
+const GENERATION_TASK_CANCEL_ABORT_REASON = "generation-task-cancel";
 export type AgentSessionStatus = "active" | "completed" | "failed";
 export type GenerationTaskResultState = "NOT_AVAILABLE" | "PENDING_MATERIALIZATION" | "MATERIALIZING" | "READY" | "FAILED_RETRYABLE" | "FAILED_PERMANENT";
 export type GenerationTaskOutput = {
@@ -408,6 +409,14 @@ export function cancelGenerationTask(id: string) {
     return request<GenerationTask>(api.post(`/tasks/${encodeURIComponent(id)}/cancel`));
 }
 
+export function abortGenerationTask(controller: AbortController) {
+    controller.abort(GENERATION_TASK_CANCEL_ABORT_REASON);
+}
+
+export function generationTaskAbortRequestsCancellation(signal?: AbortSignal) {
+    return signal?.aborted === true && signal.reason === GENERATION_TASK_CANCEL_ABORT_REASON;
+}
+
 export function refreshGenerationTaskStatus(id: string, options?: { signal?: AbortSignal }) {
     if (!isLocalDreaminaTaskId(id)) return Promise.reject(new Error("当前任务不支持手动更新官方状态"));
     return refreshLocalDreaminaGenerationTask(stripLocalDreaminaTaskPrefix(id), {}, options?.signal).then((task) => projectLocalDreaminaTask(task));
@@ -525,8 +534,10 @@ export async function waitForGenerationTask(id: string, options?: { signal?: Abo
         }
     } catch (error) {
         if (options?.signal?.aborted) {
-            await cancelGenerationTask(id).catch(() => undefined);
-            window.dispatchEvent(new CustomEvent("wallet:updated"));
+            if (generationTaskAbortRequestsCancellation(options.signal)) {
+                await cancelGenerationTask(id).catch(() => undefined);
+                window.dispatchEvent(new CustomEvent("wallet:updated"));
+            }
             throw new DOMException("Aborted", "AbortError");
         }
         throw error;
