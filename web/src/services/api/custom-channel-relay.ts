@@ -22,7 +22,8 @@ export function channelRequest(config: RelayConfig, upstreamUrl: string, headers
         return { url: upstreamUrl, headers: Object.fromEntries(normalizedHeaders.entries()), credentials: "include" };
     }
 
-    const normalizedUpstreamUrl = new URL(upstreamUrl).toString();
+    const normalizedBaseUrl = requireHttpUrl(runtimeConfig.baseUrl, "当前模型渠道 Base URL");
+    const normalizedUpstreamUrl = requireHttpUrl(upstreamUrl, "当前模型请求地址");
     normalizedHeaders.delete("X-Canvas-Upstream-Headers");
     normalizedHeaders.delete("x-goog-api-key");
     normalizedHeaders.set("Authorization", `Bearer ${runtimeConfig.apiKey}`);
@@ -32,7 +33,7 @@ export function channelRequest(config: RelayConfig, upstreamUrl: string, headers
     normalizedHeaders.set("X-Canvas-Upstream-Format", isGlobalAiOpc ? "globalaiopc" : isAiStarsLab ? "aistarslab" : runtimeConfig.apiFormat === "gemini" ? "gemini" : "openai");
     if (runtimeConfig.allowLocalChannel === true) {
         normalizedHeaders.set("X-Canvas-Allow-Local-Channel", "1");
-        normalizedHeaders.set("X-Canvas-Upstream-Base-URL", new URL(runtimeConfig.baseUrl).toString());
+        normalizedHeaders.set("X-Canvas-Upstream-Base-URL", normalizedBaseUrl);
     } else {
         normalizedHeaders.delete("X-Canvas-Allow-Local-Channel");
         normalizedHeaders.delete("X-Canvas-Upstream-Base-URL");
@@ -43,6 +44,20 @@ export function channelRequest(config: RelayConfig, upstreamUrl: string, headers
         headers: Object.fromEntries(normalizedHeaders.entries()),
         credentials: "include",
     };
+}
+
+function requireHttpUrl(value: string, label: string) {
+    const normalized = value.trim();
+    let parsed: URL;
+    try {
+        parsed = new URL(normalized);
+    } catch {
+        throw new Error(`${label} 无效，请填写完整地址，例如：https://api.example.com/v1`);
+    }
+    if (!parsed.hostname || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+        throw new Error(`${label} 无效，请填写完整地址，例如：https://api.example.com/v1`);
+    }
+    return parsed.toString();
 }
 
 function encodeChannelHeaders(headers: ChannelHeader[]) {

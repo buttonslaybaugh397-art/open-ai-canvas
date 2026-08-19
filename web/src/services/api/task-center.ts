@@ -168,6 +168,7 @@ export type CreateSessionInput = {
     projectStyle?: { presetId: string; title: string; prompt: string };
     characters?: Array<{ assetId: string; versionId: string; name: string; definition: Record<string, unknown> }>;
     config?: Record<string, unknown>;
+	logicalModelId?: string;
 };
 
 export type CreateTaskInput = {
@@ -178,6 +179,7 @@ export type CreateTaskInput = {
     prompt: string;
     provider?: string;
     model?: string;
+	logicalModelId?: string;
     input?: Record<string, unknown>;
 };
 

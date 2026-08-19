@@ -65,6 +65,7 @@ const (
 	ChannelInterfaceGlobalAiOpcImage      ChannelInterfaceType = "globalaiopc-image"
 	ChannelInterfaceVolcengineArkImage    ChannelInterfaceType = "volcengine-ark-image"
 	ChannelInterfaceVolcengineJiMengImage ChannelInterfaceType = "volcengine-jimeng-image"
+	ChannelInterfaceGeminiImage           ChannelInterfaceType = "gemini-image"
 	ChannelInterfaceOpenAIAudio           ChannelInterfaceType = "openai-audio"
 	ChannelInterfaceAsyncAudio            ChannelInterfaceType = "async-audio"
 	ChannelInterfaceNewAPIVideo           ChannelInterfaceType = "newapi"

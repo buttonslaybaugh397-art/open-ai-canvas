@@ -130,9 +130,9 @@ curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canv
 
 `CANVAS_HTTP_PORT` 和 `CANVAS_CORS_ORIGINS` 属于外部访问合同，不会随机生成。当前 1Panel 编排默认使用 `6868` 和 `http://192.204.35.56:6868`，即使 1Panel 没有导入环境变量也能创建；绑定域名或修改端口时必须同步覆盖这两个变量。首次启动后不要修改 `POSTGRES_DB` 和 `POSTGRES_USER`，也不要删除 `deployment-secrets`、`postgres-data`、`backend-data` 和 `redis-data` 数据卷；只删除密码卷而保留数据库卷会造成数据库凭据不一致。
 
-## 生产环境文本 SSE
+## 生产环境 SSE
 
-文本任务事件流是登录态接口 `GET /api/tasks/:id/text-events`。它只发送当前用户有权限访问的文本任务增量，响应类型为 `text/event-stream`；事件 `delta` 的 `id` 是单调递增的文本序号，`terminal` 表示任务已经成功、失败或取消。生产反向代理必须对这一条路径关闭响应缓冲和缓存，并允许长时间读取；不要把这些设置复制到所有 `/api/` 请求上。
+文本任务事件流是登录态接口 `GET /api/tasks/:id/text-events`。它只发送当前用户有权限访问的文本任务增量，响应类型为 `text/event-stream`；事件 `delta` 的 `id` 是单调递增的文本序号，`terminal` 表示任务已经成功、失败或取消。画布创作对话还会通过 `/api/ai/system/:channelId/responses`、`/chat/completions` 或 Gemini `:streamGenerateContent` 接口直接接收模型事件流。生产反向代理必须只对这些流式路径关闭响应缓冲和缓存，并允许长时间读取；不要把这些设置复制到所有 `/api/` 请求上。
 
 ### Nginx
 
@@ -147,15 +147,34 @@ location ~ ^/api/tasks/[^/]+/text-events$ {
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header Connection "";
     proxy_buffering off;
     proxy_cache off;
+    proxy_pass_header X-Accel-Buffering;
+    gzip off;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+}
+
+location ~ ^/api/ai/system/[^/]+/(?:responses|chat/completions|models/[^/]+:streamGenerateContent)$ {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header Connection "";
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_pass_header X-Accel-Buffering;
     gzip off;
     proxy_read_timeout 3600s;
     proxy_send_timeout 3600s;
 }
 ```
 
-项目镜像内的 `nginx.conf` 已包含同等规则，并只对 `/api/tasks/<id>/text-events` 关闭缓冲。外层 Nginx 和镜像内 Nginx 都存在时，两层都要保留该路径的流式设置；任一层重新缓冲都会让浏览器看起来直到任务结束才收到增量。
+项目镜像内的 `nginx.conf` 已包含同等规则，并只对文本任务和系统模型事件流关闭缓冲。自定义渠道共用 `/api/ai/custom`，由后端仅在上游实际返回 `text/event-stream` 时发送 `X-Accel-Buffering: no`；镜像内 Nginx 会继续向外层代理传递这个信号。外层 Nginx 和镜像内 Nginx 都存在时，任一层重新缓冲都会让浏览器看起来直到模型响应结束才收到增量。
 
 ### Caddy
 
@@ -165,6 +184,16 @@ Caddy 终止 HTTPS 后，将网页入口转发到 Compose 暴露的 `3000` 端�
 canvas.example.com {
     @textEvents path_regexp textEvents ^/api/tasks/[^/]+/text-events$
     reverse_proxy @textEvents 127.0.0.1:3000 {
+        flush_interval -1
+        transport http {
+            read_timeout 1h
+        }
+        header_up X-Forwarded-Proto {scheme}
+        header_down Cache-Control "no-cache, no-transform"
+    }
+
+    @systemModelEvents path_regexp systemModelEvents ^/api/ai/system/[^/]+/(responses|chat/completions|models/[^/]+:streamGenerateContent)$
+    reverse_proxy @systemModelEvents 127.0.0.1:3000 {
         flush_interval -1
         transport http {
             read_timeout 1h
