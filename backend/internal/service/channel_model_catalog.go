@@ -351,11 +351,10 @@ func (s *Service) fetchAiStarsLabCatalog(ctx context.Context, baseURL, apiKey st
 	if envelope.Code != 0 {
 		return nil, &AuthError{Status: http.StatusBadGateway, Message: firstNonEmpty(envelope.Msg, "AIStarsLab 配置读取失败")}
 	}
-	type catalogChoice struct {
-		item      ChannelModelCatalogItem
-		preferred bool
-	}
-	choices := make(map[string]catalogChoice)
+	// 官方的模型身份是「线路 + 模型」的组合：同一个模型名可以出现在多条线路下，
+	// 而每条线路的价格、质量档位、时长、模式和参考素材上限都可能不同。
+	// 早期实现按模型名去重并只保留默认线路，会静默丢弃其余线路，管理员根本选不到。
+	items := make([]ChannelModelCatalogItem, 0, 16)
 	appendChannels := func(capability string, channels []aiStarsLabChannel) {
 		for _, channel := range channels {
 			for _, item := range channel.Models {
@@ -371,26 +370,31 @@ func (s *Service) fetchAiStarsLabCatalog(ctx context.Context, baseURL, apiKey st
 					}
 				}
 				candidate := ChannelModelCatalogItem{
-					ID: name, DisplayName: strings.TrimSpace(item.Label), ModelType: capability,
+					ID: channelID + ":" + name, DisplayName: aiStarsLabCatalogDisplayName(item.Label, name, firstNonEmpty(strings.TrimSpace(channel.Title), channelID)), ModelType: capability,
 					SupportedEndpointTypes: []string{"aistarslab-" + capability},
 					AIStarsLab:             &AIStarsLabCatalogRoute{Channel: channelID, Capability: capability, Model: name, Qualities: qualities, AspectRatios: item.AspectRatios, Duration: item.Duration.Options, DurationMin: item.Duration.Min, DurationMax: item.Duration.Max, Modes: item.Modes, InputImagesMax: item.InputImagesMax, InputVideosMax: item.InputVideosMax, InputAudiosMax: item.InputAudiosMax},
 				}
-				current, exists := choices[name]
-				preferred := bool(channel.DefaultOption)
-				if !exists || preferred && !current.preferred {
-					choices[name] = catalogChoice{item: candidate, preferred: preferred}
-				}
+				items = append(items, candidate)
 			}
 		}
 	}
 	appendChannels("image", envelope.Data.ImageConfig)
 	appendChannels("video", envelope.Data.VideoConfig)
-	result := make([]ChannelModelCatalogItem, 0, len(choices))
-	for _, choice := range choices {
-		result = append(result, choice.item)
+	sort.SliceStable(items, func(i, j int) bool { return items[i].ID < items[j].ID })
+	return items, nil
+}
+
+// 同名模型会出现在多条线路下，仅用官方 label 无法区分，这里补上线路标题（缺失时退回线路编码）。
+func aiStarsLabCatalogDisplayName(label, model, title string) string {
+	base := strings.TrimSpace(label)
+	if base == "" {
+		base = strings.TrimSpace(model)
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
-	return result, nil
+	suffix := strings.TrimSpace(title)
+	if suffix == "" || strings.Contains(base, suffix) {
+		return base
+	}
+	return base + "（" + suffix + "）"
 }
 
 func normalizePositiveInts(values []int) []int {

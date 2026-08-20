@@ -664,6 +664,17 @@ func (s *Service) resolveProviderConfig(config providerConfig) (providerConfig, 
 		return providerConfig{}, err
 	}
 	config.Model = modelName
+	// 系统渠道的线路块必须以服务端记录为准：它是官方必填的 channel/model 来源，不能依赖浏览器上报。
+	// 未定价模型不会随公开渠道下发 capabilityConfig，早期存量前端缓存也可能没有这个字段，因此在这里回填。
+	if profile, decodeErr := DecodeModelCapabilityConfig(channelModel.CapabilityConfigJSON); decodeErr == nil && profile != nil && profile.AIStarsLab != nil {
+		// 复制一份再改，CapabilityConfig 是指针，直接写会污染调用方持有的同一个结构体。
+		merged := ModelCapabilityConfig{}
+		if config.CapabilityConfig != nil {
+			merged = *config.CapabilityConfig
+		}
+		merged.AIStarsLab = profile.AIStarsLab
+		config.CapabilityConfig = &merged
+	}
 	return config, nil
 }
 

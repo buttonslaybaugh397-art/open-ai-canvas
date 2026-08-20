@@ -109,7 +109,7 @@ export function mergeFetchedChannelModelCosts(channel: ModelChannel, catalog: Ch
                 capability,
                 ...(inferredProtocol ? { protocol: inferredProtocol } : {}),
                 ...(patchCapabilityConfig || capabilityChanged || item.aistarslab
-                    ? { capabilityConfig: item.aistarslab ? { ...(capabilityConfig || defaultModelCapabilityConfig(protocol, item.id)), aistarslab: item.aistarslab } : capabilityConfig }
+                    ? { capabilityConfig: item.aistarslab ? { ...(capabilityConfig || defaultModelCapabilityConfig(protocol, catalogCapabilityModelName(item))), aistarslab: item.aistarslab } : capabilityConfig }
                     : {}),
             });
             continue;
@@ -143,8 +143,14 @@ function hasCatalogCapabilityConfig(item: ChannelModelCatalogItem) {
     return Boolean(item.defaultParameters || item.options || item.supportsImages !== undefined || item.minImages !== undefined || item.maxImages !== undefined || item.aistarslab);
 }
 
+// AIStarsLab 的目录 ID 是「线路:模型」（同一模型可在多条线路下报不同价格和能力）；
+// 按名字推导默认能力时只能用官方模型名，否则前缀会让家族识别失效。
+function catalogCapabilityModelName(item: ChannelModelCatalogItem) {
+    return item.aistarslab?.model || item.id;
+}
+
 function catalogCapabilityConfig(item: ChannelModelCatalogItem, protocol: ModelProtocol | undefined, capability: "image" | "video", existing: ModelCapabilityConfig | undefined, isNew: boolean): ModelCapabilityConfig {
-    const fallback = defaultModelCapabilityConfig(protocol, item.id);
+    const fallback = defaultModelCapabilityConfig(protocol, catalogCapabilityModelName(item));
     const existingProfile = capability === "image" ? existing?.image : existing?.video;
     const config = structuredClone(existingProfile ? existing! : fallback);
     if (capability === "image") {

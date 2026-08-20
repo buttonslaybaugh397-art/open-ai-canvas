@@ -140,8 +140,8 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 		// 自动发现不能绕过定价边界；汇取云仅补全能力合同，仍需管理员定价后手动启用。
 		missing = append(missing, discoveredChannelModel(*channel, name, endpointTypes[name], catalogItemByID(catalog, name)))
 	}
-	// 目录里已经没有的存量记录（如带线路前缀的旧 AIStarsLab key）不会被上面的循环访问到；
-	// 它们仍可能处于已启用已定价状态并被用户选中，必须在重新拉取时一并修复能力合同。
+	// 现在目录 ID 是「线路:模型」；早期只存模型名的存量记录不在目录里，
+	// 却可能已启用已定价并被用户选中，必须在重新拉取时把线路块补回去。
 	if channelConnectionType(channel) == "aistarslab" {
 		for index := range existing {
 			item := &existing[index]
@@ -171,11 +171,18 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 }
 
 func discoveredChannelModel(channel model.ModelChannel, name string, endpointTypes []string, catalogItems ...*ChannelModelCatalogItem) model.ChannelModel {
-	item := model.ChannelModel{ID: newID(), ChannelID: channel.ID, ModelKey: name, DisplayName: name, BillingMode: "fixed_request", Enabled: false, PriceVersion: 1}
 	var catalog *ChannelModelCatalogItem
 	if len(catalogItems) > 0 {
 		catalog = catalogItems[0]
 	}
+	// AIStarsLab 的 modelKey 是「线路:模型」，不可读；目录已给出带线路标题的展示名。
+	displayName := name
+	if catalog != nil {
+		if label := strings.TrimSpace(catalog.DisplayName); label != "" {
+			displayName = label
+		}
+	}
+	item := model.ChannelModel{ID: newID(), ChannelID: channel.ID, ModelKey: name, DisplayName: displayName, BillingMode: "fixed_request", Enabled: false, PriceVersion: 1}
 	syncChannelModelContract(channel, &item, endpointTypes, catalog)
 	return item
 }
@@ -189,24 +196,27 @@ func catalogItemByID(items []ChannelModelCatalogItem, id string) *ChannelModelCa
 	return nil
 }
 
-// 早期实现把 AIStarsLab 线路编码写进了 modelKey（`<线路>:<模型>`），后改为模型名 + 能力合约里存 channel。
-// 存量旧记录的名字不在目录里，不会被常规同步遍历到，因此永远缺少线路块。这里按前缀回目录重新匹配。
+// AIStarsLab 的模型身份是「线路 + 模型」，目录 ID 现为 `<线路>:<模型>`。
+// 早期曾改成只存模型名，这类存量记录不在新目录里，不会被常规同步遍历到，
+// 因此永远拿不到线路块。这里只在模型名在目录里唯一对应一条线路时回填；
+// 同名模型横跨多条线路时无法判定用户当初买的是哪条，宁可不改，也不能拿默认线路蒙对。
 func aiStarsLabCatalogItemForLegacyKey(items []ChannelModelCatalogItem, modelKey string) *ChannelModelCatalogItem {
-	channelID, modelName, found := strings.Cut(strings.TrimSpace(modelKey), ":")
-	channelID, modelName = strings.TrimSpace(channelID), strings.TrimSpace(modelName)
-	if !found || channelID == "" || modelName == "" {
+	modelName := strings.TrimSpace(modelKey)
+	if modelName == "" || strings.Contains(modelName, ":") {
 		return nil
 	}
+	var matched *ChannelModelCatalogItem
 	for index := range items {
 		route := items[index].AIStarsLab
-		if route == nil {
+		if route == nil || !strings.EqualFold(strings.TrimSpace(route.Model), modelName) {
 			continue
 		}
-		if strings.TrimSpace(route.Channel) == channelID && strings.EqualFold(strings.TrimSpace(route.Model), modelName) {
-			return &items[index]
+		if matched != nil {
+			return nil
 		}
+		matched = &items[index]
 	}
-	return nil
+	return matched
 }
 
 func channelConnectionType(channel *model.ModelChannel) string {
@@ -226,7 +236,8 @@ func syncChannelModelContract(channel model.ModelChannel, item *model.ChannelMod
 		}
 		changed := item.Protocol != protocol || item.Capability != capability
 		item.Protocol, item.Capability = protocol, capability
-		config := DefaultModelCapabilityConfigForModel(string(protocol), item.ModelKey)
+		// 目录 ID 带有 `<线路>:` 前缀，按名字推导默认能力时必须用官方模型名。
+		config := DefaultModelCapabilityConfigForModel(string(protocol), firstNonEmpty(strings.TrimSpace(catalog.AIStarsLab.Model), item.ModelKey))
 		config.AIStarsLab = &AIStarsLabCapabilityConfig{Channel: catalog.AIStarsLab.Channel, Capability: catalog.AIStarsLab.Capability, Model: catalog.AIStarsLab.Model, Qualities: append([]string(nil), catalog.AIStarsLab.Qualities...), AspectRatios: append([]string(nil), catalog.AIStarsLab.AspectRatios...), Duration: append([]int(nil), catalog.AIStarsLab.Duration...), DurationMin: catalog.AIStarsLab.DurationMin, DurationMax: catalog.AIStarsLab.DurationMax, Modes: append([]string(nil), catalog.AIStarsLab.Modes...), InputImagesMax: catalog.AIStarsLab.InputImagesMax, InputVideosMax: catalog.AIStarsLab.InputVideosMax, InputAudiosMax: catalog.AIStarsLab.InputAudiosMax}
 		if capability == "video" {
 			config.Video.References.MaxImages = catalog.AIStarsLab.InputImagesMax
