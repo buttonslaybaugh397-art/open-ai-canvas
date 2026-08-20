@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1.7
 
 # 构建 Vite 前端产物。
-FROM oven/bun:1.3.13 AS web-build
+FROM --platform=$BUILDPLATFORM oven/bun:1.3.13 AS web-build
 
 WORKDIR /app/web
 ARG VITE_TLDRAW_LICENSE_KEY
 ENV VITE_TLDRAW_LICENSE_KEY=${VITE_TLDRAW_LICENSE_KEY}
 COPY web/package.json web/bun.lock ./
-RUN --mount=type=cache,target=/root/.bun/install/cache bun install --cache-dir=/root/.bun/install/cache
+RUN --mount=type=cache,id=bun-install,target=/root/.bun/install/cache,sharing=locked bun install --frozen-lockfile --cache-dir=/root/.bun/install/cache
 COPY VERSION /app/VERSION
 COPY CHANGELOG.md /app/CHANGELOG.md
 COPY web ./
