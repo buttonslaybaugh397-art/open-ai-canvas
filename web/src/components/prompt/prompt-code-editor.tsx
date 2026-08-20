@@ -1,5 +1,6 @@
-import { EditorView } from "@codemirror/view";
-import CodeMirror from "@uiw/react-codemirror";
+// 从 @uiw/react-codemirror 再导出的入口取 EditorView，保证与 onCreateEditor 回调是同一份 @codemirror/view 实例；
+// 直接 import "@codemirror/view" 会解析到顶层提升的另一个版本，导致 EditorView 类型双身份冲突。
+import CodeMirror, { EditorView } from "@uiw/react-codemirror";
 import { forwardRef, useImperativeHandle, useRef } from "react";
 
 import { cn } from "@/lib/utils";
