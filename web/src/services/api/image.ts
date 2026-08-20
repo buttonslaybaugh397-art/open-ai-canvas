@@ -898,7 +898,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
         return requestGlobalAiOpcImages(requestConfig, prompt, [], normalizedImage, options);
     }
     if (requestConfig.interfaceType === "aistarslab-image") {
-        return requestAiStarsLabImage(requestConfig, prompt, normalizedImage, options);
+        return requestAiStarsLabImage(requestConfig, prompt, [], normalizedImage, options);
     }
     if (requestConfig.interfaceType === "gemini-image" || requestConfig.apiFormat === "gemini") {
         try {
@@ -1017,15 +1017,20 @@ async function requestGlobalAiOpcImages(config: ReturnType<typeof resolveModelRe
     }
 }
 
-async function requestAiStarsLabImage(config: ReturnType<typeof resolveModelRequestConfig>, prompt: string, image: ReturnType<typeof normalizeImageValue>, options?: RequestOptions) {
+async function requestAiStarsLabImage(config: ReturnType<typeof resolveModelRequestConfig>, prompt: string, references: ReferenceImage[], image: ReturnType<typeof normalizeImageValue>, options?: RequestOptions) {
     const route = config.capabilityConfig?.aistarslab;
-    const referenceImages: string[] = [];
+    // channel 与 quality 都是官方必填项，只能原样回传目录下发的值；缺失时明确失败而不是发空值。
+    if (!route?.channel?.trim()) throw new Error("AIStarsLab 模型缺少线路编码，请在后台重新拉取该渠道模型");
+    if (route.inputImagesMax !== undefined && references.length > route.inputImagesMax) {
+        throw new Error(`AIStarsLab 当前模型最多支持 ${route.inputImagesMax} 张参考图，当前连接了 ${references.length} 张`);
+    }
+    const referenceImages = await Promise.all(references.map(aiStarsLabImageURL));
     const body = {
-        channel: route?.channel || "",
+        channel: route.channel.trim(),
         model: config.model,
         prompt: withSystemPrompt(config, prompt),
-        aspectRatio: image.size && image.size !== "auto" ? image.size : "1:1",
-        quality: image.quality && image.quality !== "auto" ? image.quality : undefined,
+        aspectRatio: aiStarsLabImageRatio(image.size, route.aspectRatios),
+        quality: aiStarsLabImageQuality(image.quality, route.qualities),
         inputImages: referenceImages,
         n: 1,
     };
@@ -1054,6 +1059,29 @@ function unwrapAiStarsLabEnvelope(payload: AiStarsLabResponse): AiStarsLabRespon
     if (payload?.data && typeof payload.data === "object") return unwrapAiStarsLabEnvelope(payload.data);
     if (payload?.code !== undefined && payload.code !== 0) throw new Error(payload.msg || "AIStarsLab 请求失败");
     return payload;
+}
+
+async function aiStarsLabImageURL(image: ReferenceImage) {
+    if (image.storageKey?.startsWith("resource:")) return getResourceOSSUrl(image.storageKey);
+    const value = String(image.url || image.dataUrl || "").trim();
+    if (/^https?:\/\//i.test(value)) return value;
+    throw new Error("AIStarsLab 参考图片仅支持公网 URL，请先保存到 OSS");
+}
+
+function aiStarsLabImageRatio(value: string, supported?: string[]) {
+    const normalized = String(value || "").trim();
+    const matched = supported?.find((item) => item.trim().toLowerCase() === normalized.toLowerCase());
+    if (matched) return matched.trim();
+    if (supported?.length) return supported[0].trim();
+    return !normalized || normalized === "auto" ? "1:1" : normalized;
+}
+
+function aiStarsLabImageQuality(value: string, supported?: string[]) {
+    const normalized = String(value || "").trim();
+    const matched = supported?.find((item) => item.trim().toLowerCase() === normalized.toLowerCase());
+    if (matched) return matched.trim();
+    if (supported?.length) return supported[0].trim();
+    return normalized || undefined;
 }
 
 async function getChannelJSON<T>(config: ReturnType<typeof resolveModelRequestConfig>, upstreamUrl: string, options?: RequestOptions) {
@@ -1119,6 +1147,10 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     if (requestConfig.interfaceType === "globalaiopc-image") {
         if (mask) throw new Error("GlobalAiOpc 图片任务不支持蒙版编辑，请移除蒙版后重试");
         return requestGlobalAiOpcImages(requestConfig, requestPrompt, references, normalizedImage, options);
+    }
+    if (requestConfig.interfaceType === "aistarslab-image") {
+        if (mask) throw new Error("AIStarsLab 图片协议不支持蒙版编辑，请移除蒙版后重试");
+        return requestAiStarsLabImage(requestConfig, requestPrompt, references, normalizedImage, options);
     }
     if (requestConfig.interfaceType === "gemini-image") {
         if (mask) throw new Error("Gemini 调用格式暂不支持蒙版编辑");

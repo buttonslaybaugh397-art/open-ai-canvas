@@ -182,6 +182,30 @@ func TestHuiQuYunCatalogRefreshPreservesConfiguredContract(t *testing.T) {
 	}
 }
 
+func TestHuiQuYunVideoModelNamesResolveToDedicatedProtocol(t *testing.T) {
+	// MX933 家族和固定时长后缀都不含 video 字样，早期只靠关键字会把它们当文本模型。
+	for _, name := range []string{"sd2-mx933-720-5s", "sd2-mx933-720-fast-5s", "sd2-mx933-720-10s"} {
+		if protocol := huiQuYunProtocolForModel(name, nil); protocol != model.ChannelInterfaceHuiQuYunVideo {
+			t.Fatalf("huiQuYunProtocolForModel(%q) = %q", name, protocol)
+		}
+	}
+	if protocol := huiQuYunProtocolForModel("gpt-4.1-mini", nil); protocol != model.ChannelInterfaceChatCompletion {
+		t.Fatalf("text model protocol = %q", protocol)
+	}
+}
+
+func TestHuiQuYunCatalogRefreshRepairsStaleVideoProtocol(t *testing.T) {
+	// 定价保护不能锁死错误协议：视频模型被存成文本协议时，重新拉取必须纠正。
+	channel := model.ModelChannel{BaseURL: "https://api.bjhuiqu.net/v1"}
+	item := model.ChannelModel{ModelKey: "sd2-mx933-720-5s", Capability: "text", Protocol: model.ChannelInterfaceChatCompletion, PriceConfigured: true}
+	if changed := syncHuiQuYunModelContract(channel, &item, nil); !changed {
+		t.Fatal("stale HuiQuYun video protocol must be repaired on refresh")
+	}
+	if item.Protocol != model.ChannelInterfaceHuiQuYunVideo || item.Capability != "video" {
+		t.Fatalf("repaired HuiQuYun model = %#v", item)
+	}
+}
+
 func TestSaveAdminChannelModelRejectsActiveDuplicateKey(t *testing.T) {
 	svc, db := newChannelModelTestService(t)
 	admin := &model.User{ID: "admin", Role: model.UserRoleAdmin}

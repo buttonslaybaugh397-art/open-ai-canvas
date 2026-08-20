@@ -29,6 +29,8 @@ describe("video generation resolution options", () => {
         expect(huiQuYunProtocolForModel("gpt-image-1")).toBe("openai-image");
         expect(huiQuYunProtocolForModel("gpt-4o-mini-tts")).toBe("openai-audio");
         expect(huiQuYunProtocolForModel("sora-2-pro-15s")).toBe("huiquyun-video");
+        expect(huiQuYunProtocolForModel("sd2-mx933-720-5s")).toBe("huiquyun-video");
+        expect(huiQuYunProtocolForModel("sd2-mx933-720-fast-5s")).toBe("huiquyun-video");
         expect(huiQuYunProtocolForModel("catalog-video", ["openai-video"])).toBe("huiquyun-video");
     });
 
@@ -38,5 +40,14 @@ describe("video generation resolution options", () => {
         expect(profile?.duration).toEqual({ selection: "enum", values: [15], default: 15 });
         expect(profile?.resolutions).toEqual(["720p"]);
         expect(profile?.references).toMatchObject({ maxImages: 4, maxVideos: 3, maxAudios: 1 });
+    });
+
+    test("汇取云 MX933 使用官方多媒体能力", () => {
+        const profile = defaultModelCapabilityConfig("huiquyun-video", "sd2-mx933-720-10s").video;
+
+        expect(profile?.duration).toEqual({ selection: "enum", values: [10], default: 10 });
+        expect(profile?.resolutions).toEqual(["480p", "720p"]);
+        expect(profile?.ratios).toEqual(["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"]);
+        expect(profile?.references).toMatchObject({ maxImages: 9, maxVideos: 3, maxAudios: 3, maxVideoBytes: 50 * 1024 * 1024 });
     });
 });

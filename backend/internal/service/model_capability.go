@@ -336,6 +336,12 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		video.Ratios, video.DefaultRatio = []string{"21:9", "4:3", "16:9", "1:1", "3:4", "9:16"}, "16:9"
 		video.Resolutions, video.DefaultResolution = []string{"720p"}, "720p"
 		video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
+		if isHuiQuYunMX933VideoModel(modelName) {
+			video.References.MaxImages, video.References.MaxVideos, video.References.MaxAudios = 9, 3, 3
+			video.References.MaxVideoBytes = 50 * 1024 * 1024
+			video.Ratios = []string{"16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"}
+			video.Resolutions, video.DefaultResolution = []string{"480p", "720p"}, "720p"
+		}
 		fixedDuration := huiQuYunFixedVideoDuration(modelName)
 		if fixedDuration > 0 {
 			video.Duration = VideoDurationConfig{Selection: "enum", Values: []int{fixedDuration}, Default: fixedDuration}

@@ -1,4 +1,5 @@
 import type { ModelProtocol } from "@/lib/model-protocols";
+import { huiQuYunFixedVideoDuration, isHuiQuYunMX933Model } from "@/lib/huiquyun-models";
 
 export type ModelCapabilityConfig = {
     version: number;
@@ -410,7 +411,9 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.generateAudio = { supported: true, default: true };
     }
     if (protocol === "huiquyun-video") {
-        const fixedDuration = model.trim().toLowerCase().match(/-(5|10|15)s$/)?.[1];
+        const modelName = model.trim().toLowerCase();
+        const fixedDuration = huiQuYunFixedVideoDuration(modelName);
+        const isMX933 = isHuiQuYunMX933Model(modelName);
         video.references.maxImages = 4;
         video.references.maxVideos = 3;
         video.references.maxAudios = 1;
@@ -419,7 +422,7 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.references.maxVideoDurationSeconds = 15;
         video.references.maxAudioDurationSeconds = 15;
         video.duration = fixedDuration
-            ? { selection: "enum", values: [Number(fixedDuration)], default: Number(fixedDuration) }
+            ? { selection: "enum", values: [fixedDuration], default: fixedDuration }
             : { selection: "range", min: 4, max: 15, step: 1, default: 8 };
         video.ratios = ["21:9", "4:3", "16:9", "1:1", "3:4", "9:16"];
         video.defaultRatio = "16:9";
@@ -427,6 +430,15 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.defaultResolution = "720p";
         video.generateAudio = { supported: true, default: true };
         video.watermark = { supported: false, default: false };
+        if (isMX933) {
+            video.references.maxImages = 9;
+            video.references.maxVideos = 3;
+            video.references.maxAudios = 3;
+            video.references.maxVideoBytes = 50 * 1024 * 1024;
+            video.ratios = ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"];
+            video.resolutions = ["480p", "720p"];
+            video.defaultResolution = "720p";
+        }
     }
     if (protocol === "volcengine-ark-video" || protocol === "newapi-channel-1") video.resolutions = ["480p", "720p", "1080p"];
     if (protocol === "volcengine-ark-video") video.watermark = { supported: true, default: false };

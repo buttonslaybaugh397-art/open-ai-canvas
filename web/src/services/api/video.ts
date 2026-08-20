@@ -8,6 +8,7 @@ import { channelRequest } from "@/services/api/custom-channel-relay";
 import { imageToDataUrl } from "@/services/image-storage";
 import { modelCapabilityConfigFor, normalizeVideoValue, videoDurationAllowed, videoResolutionRequest } from "@/lib/model-capabilities";
 import { globalAiOpcResponseCodeFailed, globalAiOpcTaskUrl } from "@/lib/globalaiopc-channel";
+import { isHuiQuYunMX933Model } from "@/lib/huiquyun-models";
 import { boolConfig, buildSeedancePromptText, isArkPlanBaseUrl, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceVideoReferenceError, SEEDANCE_REFERENCE_LIMITS } from "@/lib/seedance-video";
 import { buildApiUrl, isSystemProxyBaseUrl, modelOptionName, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
@@ -179,14 +180,17 @@ async function pollGlobalAiOpcVideoTask(config: ResolvedAiConfig, task: VideoGen
 
 async function createHuiQuYunVideoTask(config: ResolvedAiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
     if (audioReferences.length && !references.length && !videoReferences.length) throw new Error("汇取云参考音频必须搭配参考图片或参考视频");
+    const modelName = modelOptionName(model);
+    const profile = modelCapabilityConfigFor(config, model).video!;
+    const normalized = normalizeVideoValue(profile, { seconds: config.videoSeconds, ratio: config.size, resolution: config.vquality });
+    if (isHuiQuYunMX933Model(modelName)) {
+        return createHuiQuYunMX933VideoTask(config, model, modelName, prompt, references, videoReferences, audioReferences, normalized, options);
+    }
     const [imageUrls, videoUrls, audioUrls] = await Promise.all([
         Promise.all(references.map((item) => resolveVideoGenerationsUrl(item.url || item.dataUrl, item.storageKey))),
         Promise.all(videoReferences.map((item) => resolveVideoGenerationsUrl(item.url, item.storageKey))),
         Promise.all(audioReferences.map((item) => resolveVideoGenerationsUrl(item.url, item.storageKey))),
     ]);
-    const modelName = modelOptionName(model);
-    const profile = modelCapabilityConfigFor(config, model).video!;
-    const normalized = normalizeVideoValue(profile, { seconds: config.videoSeconds, ratio: config.size, resolution: config.vquality });
     const seconds = Number(normalized.seconds);
     const payload: Record<string, unknown> = {
         model: modelName,
@@ -211,6 +215,69 @@ async function createHuiQuYunVideoTask(config: ResolvedAiConfig, model: string, 
     } catch (error) {
         throw new Error(readAxiosError(error, "汇取云视频任务创建失败"));
     }
+}
+
+async function createHuiQuYunMX933VideoTask(
+    config: ResolvedAiConfig,
+    model: string,
+    modelName: string,
+    prompt: string,
+    references: ReferenceImage[],
+    videoReferences: ReferenceVideo[],
+    audioReferences: ReferenceAudio[],
+    normalized: ReturnType<typeof normalizeVideoValue>,
+    options?: RequestOptions,
+): Promise<VideoGenerationTask> {
+    const hasReferences = references.length + videoReferences.length + audioReferences.length > 0;
+    const generateAudio = boolConfig(config.videoGenerateAudio, true);
+    try {
+        let created: ApiVideoResponse;
+        if (!hasReferences) {
+            created = await channelPost<ApiVideoResponse>(config, aiApiUrl(config, "/videos/generations"), {
+                model: modelName,
+                prompt: prompt.trim(),
+                seconds: Number(normalized.seconds),
+                resolution: normalized.resolution,
+                aspect_ratio: normalized.ratio,
+                generate_audio: generateAudio,
+            }, options);
+        } else {
+            const body = new FormData();
+            body.append("model", modelName);
+            body.append("prompt", prompt.trim());
+            body.append("seconds", normalized.seconds);
+            body.append("resolution", normalized.resolution);
+            body.append("aspect_ratio", normalized.ratio);
+            body.append("generate_audio", String(generateAudio));
+            const [images, videos, audios] = await Promise.all([
+                Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) }))),
+                Promise.all(videoReferences.map((video) => huiQuYunMediaFile(video, "video"))),
+                Promise.all(audioReferences.map((audio) => huiQuYunMediaFile(audio, "audio"))),
+            ]);
+            images.forEach((file) => body.append("images", file));
+            videos.forEach((file) => body.append("videos", file));
+            audios.forEach((file) => body.append("audios", file));
+            created = await channelPostForm<ApiVideoResponse>(config, aiApiUrl(config, "/videos/generations"), body, options);
+        }
+        const payload = unwrapVideoResponse(created);
+        const id = videoTaskId(payload);
+        if (!id) throw new Error("汇取云接口没有返回任务 ID");
+        return { id, provider: "huiquyun", model };
+    } catch (error) {
+        throw new Error(readAxiosError(error, "汇取云 MX933 视频任务创建失败"));
+    }
+}
+
+async function huiQuYunMediaFile(media: ReferenceVideo | ReferenceAudio, kind: "video" | "audio") {
+    let blob: Blob | null = null;
+    if (media.storageKey) blob = await getMediaBlob(media.storageKey);
+    if (!blob && media.url) {
+        const response = await fetch(media.url);
+        if (response.ok) blob = await response.blob();
+    }
+    if (!blob) throw new Error(`汇取云 MX933 参考${kind === "video" ? "视频" : "音频"}读取失败`);
+    const extension = kind === "video" ? "mp4" : "mp3";
+    return new File([blob], media.name || `reference.${extension}`, { type: blob.type || media.type });
 }
 
 async function pollHuiQuYunVideoTask(config: ResolvedAiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {

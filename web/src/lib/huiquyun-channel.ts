@@ -1,4 +1,5 @@
 import { defaultModelCapabilityConfig } from "@/lib/model-capabilities";
+import { isHuiQuYunVideoModel } from "@/lib/huiquyun-models";
 import { modelProtocolCapability, protocolForModelCatalog, type ModelProtocol } from "@/lib/model-protocols";
 import type { ModelChannel } from "@/stores/use-config-store";
 
@@ -18,7 +19,7 @@ export function huiQuYunProtocolForModel(model: string, endpointTypes: string[] 
 
     const normalized = model.trim().toLowerCase();
     if (matchesAny(normalized, ["tts", "speech", "voice", "audio", "music", "sound"])) return "openai-audio";
-    if (matchesAny(normalized, ["mj-sd", "seedance", "grok-video", "sora", "veo", "kling", "hailuo", "vidu", "wan-video", "jimeng-video", "doubao-video", "minimax-video", "video"])) return "huiquyun-video";
+    if (isHuiQuYunVideoModel(normalized)) return "huiquyun-video";
     if (matchesAny(normalized, ["gpt-image", "nano-banana", "nanobanana", "seedream", "image", "dall-e", "dalle", "imagen", "flux", "sdxl", "stable-diffusion", "midjourney", "ideogram", "recraft"])) return "openai-image";
     return "chat-completion";
 }

@@ -1748,6 +1748,69 @@ func TestHuiQuYunVideoRequestBodyDoesNotApplyLegacyReferenceLimits(t *testing.T)
 	}
 }
 
+func TestHuiQuYunMX933TextToVideoUsesDocumentedJSONFields(t *testing.T) {
+	body, err := huiQuYunVideoRequestBody(canvasGenerationInput{
+		Prompt: "make it move",
+		Config: providerConfig{
+			Model:              "sd2-mx933-720-10s",
+			VideoSeconds:       "5",
+			Size:               "3:2",
+			VQuality:           "480p",
+			VideoGenerateAudio: "false",
+		},
+	})
+	if err != nil {
+		t.Fatalf("huiQuYunVideoRequestBody() error = %v", err)
+	}
+	if body["model"] != "sd2-mx933-720-10s" || body["seconds"] != 10 || body["resolution"] != "480p" || body["aspect_ratio"] != "3:2" || body["generate_audio"] != false {
+		t.Fatalf("HuiQuYun MX933 JSON body = %#v", body)
+	}
+	if _, exists := body["audio"]; exists {
+		t.Fatalf("HuiQuYun MX933 JSON must not contain legacy audio field: %#v", body)
+	}
+}
+
+func TestHuiQuYunMX933MultipartUploadsReferenceFiles(t *testing.T) {
+	input := canvasGenerationInput{
+		Prompt: "make it move",
+		Config: providerConfig{
+			Model:              "sd2-mx933-720-fast-5s",
+			VideoSeconds:       "10",
+			Size:               "2:3",
+			VQuality:           "720p",
+			VideoGenerateAudio: "true",
+		},
+		ReferenceImages: []providerMedia{
+			{ID: "first", Type: "image/png", DataURL: testReferenceImageDataURL},
+			{ID: "last", Type: "image/png", DataURL: testReferenceImageDataURL},
+			{ID: "reference", Type: "image/png", DataURL: testReferenceImageDataURL},
+		},
+		ReferenceVideos: []providerMedia{{ID: "video", Type: "video/mp4", DataURL: "data:video/mp4;base64,aGVsbG8="}},
+		ReferenceAudios: []providerMedia{{ID: "audio", Type: "audio/mpeg", DataURL: "data:audio/mpeg;base64,aGVsbG8="}},
+		Metadata: map[string]interface{}{
+			"videoStartFrameNodeId": "first",
+			"videoEndFrameNodeId":   "last",
+		},
+	}
+	body, contentType, err := huiQuYunMX933MultipartBody(input)
+	if err != nil {
+		t.Fatalf("huiQuYunMX933MultipartBody() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "http://example.test", bytes.NewReader(body.Bytes()))
+	request.Header.Set("Content-Type", contentType)
+	if err := request.ParseMultipartForm(1 << 20); err != nil {
+		t.Fatalf("ParseMultipartForm() error = %v", err)
+	}
+	if request.FormValue("model") != "sd2-mx933-720-fast-5s" || request.FormValue("seconds") != "5" || request.FormValue("aspect_ratio") != "2:3" || request.FormValue("resolution") != "720p" || request.FormValue("generate_audio") != "true" {
+		t.Fatalf("HuiQuYun MX933 multipart fields = %#v", request.MultipartForm.Value)
+	}
+	for field, want := range map[string]int{"first_frame": 1, "last_frame": 1, "images": 1, "videos": 1, "audios": 1} {
+		if got := len(request.MultipartForm.File[field]); got != want {
+			t.Fatalf("multipart file count %s = %d, want %d; files = %#v", field, got, want, request.MultipartForm.File)
+		}
+	}
+}
+
 func TestUnwrapGlobalAiOpcTaskRejectsStringErrorCode(t *testing.T) {
 	if _, err := unwrapGlobalAiOpcTask(map[string]interface{}{"code": "500", "msg": "upstream failed", "data": map[string]interface{}{"id": "task-1"}}); err == nil || !strings.Contains(err.Error(), "upstream failed") {
 		t.Fatalf("unwrapGlobalAiOpcTask() error = %v", err)

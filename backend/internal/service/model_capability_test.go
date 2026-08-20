@@ -97,6 +97,25 @@ func TestHuiQuYunFixedDurationCapabilityMatchesModelName(t *testing.T) {
 	}
 }
 
+func TestHuiQuYunMX933CapabilityMatchesDocumentation(t *testing.T) {
+	profile := DefaultModelCapabilityConfigForModel("huiquyun-video", "sd2-mx933-720-10s").Video
+	if profile == nil {
+		t.Fatal("HuiQuYun MX933 video capability = nil")
+	}
+	if profile.Duration.Selection != "enum" || len(profile.Duration.Values) != 1 || profile.Duration.Values[0] != 10 {
+		t.Fatalf("HuiQuYun MX933 duration = %#v", profile.Duration)
+	}
+	if profile.References.MaxImages != 9 || profile.References.MaxVideos != 3 || profile.References.MaxAudios != 3 || profile.References.MaxVideoBytes != 50*1024*1024 {
+		t.Fatalf("HuiQuYun MX933 reference limits = %#v", profile.References)
+	}
+	if fmt.Sprint(profile.Ratios) != fmt.Sprint([]string{"16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"}) {
+		t.Fatalf("HuiQuYun MX933 ratios = %#v", profile.Ratios)
+	}
+	if fmt.Sprint(profile.Resolutions) != fmt.Sprint([]string{"480p", "720p"}) || profile.DefaultResolution != "720p" {
+		t.Fatalf("HuiQuYun MX933 resolutions = %#v, default = %q", profile.Resolutions, profile.DefaultResolution)
+	}
+}
+
 func TestCapabilitySpecFromModelCapabilityConfigRestoresLegacyWildcardImageSizes(t *testing.T) {
 	config := &ModelCapabilityConfig{
 		Version: 1,

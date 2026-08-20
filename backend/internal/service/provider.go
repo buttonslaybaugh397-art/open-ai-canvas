@@ -237,6 +237,10 @@ func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string
 	}
 	if resumedProviderRequestID(ctx) == "" {
 		requirePublicURL := input.Config.InterfaceType == "newapi-channel-1" || input.Config.InterfaceType == "newapi-channel-2" || input.Config.InterfaceType == string(model.ChannelInterfaceGlobalAiOpcImage) || input.Config.InterfaceType == string(model.ChannelInterfaceGlobalAiOpcVideo) || input.Config.InterfaceType == string(model.ChannelInterfaceHuiQuYunVideo) || input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo)
+		// MX933 带参考素材时只接受 multipart 文件，必须保留本地字节而不是转换为 OSS URL。
+		if input.Config.InterfaceType == string(model.ChannelInterfaceHuiQuYunVideo) && isHuiQuYunMX933VideoModel(input.Config.Model) {
+			requirePublicURL = false
+		}
 		if err := s.hydrateGenerationMedia(userID, &input, requirePublicURL); err != nil {
 			return nil, err
 		}
@@ -678,6 +682,9 @@ func runImageTask(ctx context.Context, input canvasGenerationInput) (map[string]
 	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceGrokImage) {
 		return runGrokImageTask(ctx, input)
+	}
+	if input.Config.InterfaceType == string(model.ChannelInterfaceAIStarsLabImage) {
+		return runAiStarsLabImageTask(ctx, input)
 	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineJiMengImage) {
 		return runVolcengineJiMengImageTask(ctx, input)
@@ -1734,13 +1741,23 @@ func isRecoverableProviderVideoError(err error) bool {
 func runHuiQuYunVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
 	id := resumedProviderRequestID(ctx)
 	if id == "" {
-		body, err := huiQuYunVideoRequestBody(input)
-		if err != nil {
-			return nil, err
-		}
 		var created map[string]interface{}
-		if err := postJSON(ctx, input.Config, "/videos/generations", body, &created); err != nil {
-			return nil, err
+		if isHuiQuYunMX933VideoModel(input.Config.Model) && hasHuiQuYunVideoReferences(input) {
+			body, contentType, err := huiQuYunMX933MultipartBody(input)
+			if err != nil {
+				return nil, err
+			}
+			if err := postForm(ctx, input.Config, "/videos/generations", contentType, body, &created); err != nil {
+				return nil, err
+			}
+		} else {
+			body, err := huiQuYunVideoRequestBody(input)
+			if err != nil {
+				return nil, err
+			}
+			if err := postJSON(ctx, input.Config, "/videos/generations", body, &created); err != nil {
+				return nil, err
+			}
 		}
 		id = firstNonEmptyString(stringField(created, "id"), stringField(created, "task_id"), stringField(created, "request_id"))
 		if id == "" {
@@ -1801,63 +1818,45 @@ func runAiStarsLabVideoTask(ctx context.Context, input canvasGenerationInput) (m
 		if err := postJSON(ctx, input.Config, "/generation/create/video", body, &created); err != nil {
 			return nil, err
 		}
-		id = firstNonEmptyString(stringField(created, "taskId"), stringField(created, "task_id"), stringField(created, "id"))
-		if data, ok := created["data"].(map[string]interface{}); ok && id == "" {
-			id = firstNonEmptyString(stringField(data, "taskId"), stringField(data, "task_id"), stringField(data, "id"))
-		}
+		id = aiStarsLabTaskID(created)
 	}
 	if id == "" {
 		return nil, errors.New("AIStarsLab 视频接口没有返回任务 ID")
 	}
-	for deadline := providerPollingDeadline(ctx); time.Now().Before(deadline); {
-		var payload map[string]interface{}
-		if err := getJSON(withProviderRequestKind(ctx, "poll"), input.Config, "/generation/status?taskId="+url.QueryEscape(id), &payload); err != nil {
-			return nil, err
-		}
-		state := payload
-		if data, ok := payload["data"].(map[string]interface{}); ok {
-			state = data
-		}
-		status := fmt.Sprint(state["status"])
-		switch status {
-		case "3", "success", "succeeded", "completed":
-			resultURL := firstNonEmptyString(stringField(state, "output"), stringField(state, "result_url"), stringField(state, "video_url"), stringField(state, "url"))
-			if resultURL == "" {
-				return nil, fmt.Errorf("AIStarsLab 视频任务 %s 已完成但没有返回视频地址", id)
-			}
-			data, mimeType, err := getProviderExternalBinary(withProviderRequestKind(ctx, "download"), input.Config, resultURL)
-			if err != nil {
-				return nil, fmt.Errorf("AIStarsLab 视频结果下载失败（任务 %s）：%w", id, err)
-			}
-			mimeType = normalizedMediaMimeType(mimeType, data)
-			return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
-		case "4", "failed", "failure", "cancelled", "canceled":
-			return nil, fmt.Errorf("AIStarsLab 视频生成失败（任务 %s）：%s", id, firstNonEmptyString(stringField(state, "msg"), stringField(state, "message"), "上游返回失败"))
-		}
-		if err := sleepContext(ctx, 5*time.Second); err != nil {
-			return nil, err
-		}
+	resultURL, err := pollAiStarsLabTask(ctx, input, id, "视频")
+	if err != nil {
+		return nil, err
 	}
-	return nil, context.DeadlineExceeded
+	data, mimeType, err := getProviderExternalBinary(withProviderRequestKind(ctx, "download"), input.Config, resultURL)
+	if err != nil {
+		return nil, fmt.Errorf("AIStarsLab 视频结果下载失败（任务 %s）：%w", id, err)
+	}
+	mimeType = normalizedMediaMimeType(mimeType, data)
+	return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
 }
 
 func aiStarsLabVideoRequestBody(input canvasGenerationInput) (map[string]interface{}, error) {
 	if len(input.ReferenceAudios) > 0 && len(input.ReferenceImages) == 0 {
 		return nil, errors.New("AIStarsLab 参考音频必须同时提供至少 1 张参考图片")
 	}
+	route := aiStarsLabRoute(input.Config.CapabilityConfig)
+	// channel 是官方必填的线路编码，只能原样回传目录下发的值；缺失时必须明确失败，不能用空字符串让上游猜线路。
+	if route == nil || strings.TrimSpace(route.Channel) == "" {
+		return nil, errors.New("AIStarsLab 模型缺少线路编码，请在后台重新拉取该渠道模型")
+	}
 	config := DefaultModelCapabilityConfigForModel(string(model.ChannelInterfaceAIStarsLabVideo), input.Config.Model).Video
 	if input.VideoCapability != nil {
 		config = input.VideoCapability
 	}
-	images, err := huiQuYunMediaURLs(input.ReferenceImages)
+	images, err := aiStarsLabMediaURLs(input.ReferenceImages)
 	if err != nil {
 		return nil, err
 	}
-	videos, err := huiQuYunMediaURLs(input.ReferenceVideos)
+	videos, err := aiStarsLabMediaURLs(input.ReferenceVideos)
 	if err != nil {
 		return nil, err
 	}
-	audios, err := huiQuYunMediaURLs(input.ReferenceAudios)
+	audios, err := aiStarsLabMediaURLs(input.ReferenceAudios)
 	if err != nil {
 		return nil, err
 	}
@@ -1865,8 +1864,214 @@ func aiStarsLabVideoRequestBody(input canvasGenerationInput) (map[string]interfa
 	if value, parseErr := strconv.Atoi(strings.TrimSpace(input.Config.VideoSeconds)); parseErr == nil && value > 0 {
 		duration = value
 	}
-	body := map[string]interface{}{"channel": "", "model": input.Config.Model, "prompt": strings.TrimSpace(input.Prompt), "duration": duration, "aspectRatio": strings.TrimSpace(input.Config.Size), "inputImages": images, "inputVideos": videos, "inputAudios": audios}
+	mode, err := aiStarsLabVideoMode(route, len(images))
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]interface{}{
+		"channel":     strings.TrimSpace(route.Channel),
+		"model":       input.Config.Model,
+		"prompt":      strings.TrimSpace(input.Prompt),
+		"aspectRatio": strings.TrimSpace(input.Config.Size),
+		"quality":     aiStarsLabRequestQuality(route, config, input.Config.VQuality),
+		"duration":    duration,
+		"inputImages": images,
+		"inputVideos": videos,
+		"inputAudios": audios,
+	}
+	if mode != "" {
+		body["mode"] = mode
+	}
 	return body, nil
+}
+
+func aiStarsLabRoute(config *ModelCapabilityConfig) *AIStarsLabCapabilityConfig {
+	if config == nil || config.AIStarsLab == nil {
+		return nil
+	}
+	return config.AIStarsLab
+}
+
+func runAiStarsLabImageTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
+	if input.Mask != nil {
+		return nil, errors.New("AIStarsLab 图片协议不支持蒙版编辑，请移除蒙版后重试")
+	}
+	id := resumedProviderRequestID(ctx)
+	if id == "" {
+		body, err := aiStarsLabImageRequestBody(input)
+		if err != nil {
+			return nil, err
+		}
+		var created map[string]interface{}
+		if err := postJSON(ctx, input.Config, "/generation/create/image", body, &created); err != nil {
+			return nil, err
+		}
+		id = aiStarsLabTaskID(created)
+	}
+	if id == "" {
+		return nil, errors.New("AIStarsLab 图片接口没有返回任务 ID")
+	}
+	resultURL, err := pollAiStarsLabTask(ctx, input, id, "图片")
+	if err != nil {
+		return nil, err
+	}
+	data, mimeType, err := getProviderExternalBinary(withProviderRequestKind(ctx, "download"), input.Config, resultURL)
+	if err != nil {
+		return nil, fmt.Errorf("AIStarsLab 图片结果下载失败（任务 %s）：%w", id, err)
+	}
+	mimeType = normalizedMediaMimeType(mimeType, data)
+	return map[string]interface{}{"mode": "image", "images": []map[string]interface{}{{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}}, nil
+}
+
+func aiStarsLabImageRequestBody(input canvasGenerationInput) (map[string]interface{}, error) {
+	route := aiStarsLabRoute(input.Config.CapabilityConfig)
+	if route == nil || strings.TrimSpace(route.Channel) == "" {
+		return nil, errors.New("AIStarsLab 模型缺少线路编码，请在后台重新拉取该渠道模型")
+	}
+	images, err := aiStarsLabMediaURLs(input.ReferenceImages)
+	if err != nil {
+		return nil, err
+	}
+	if route.InputImagesMax >= 0 && len(images) > route.InputImagesMax {
+		return nil, fmt.Errorf("AIStarsLab 当前模型最多支持 %d 张参考图，当前连接了 %d 张", route.InputImagesMax, len(images))
+	}
+	// n 官方当前仅支持 1；画布的多图需求由上层拆成多个任务，不在这里静默放大。
+	body := map[string]interface{}{
+		"channel":     strings.TrimSpace(route.Channel),
+		"model":       input.Config.Model,
+		"prompt":      withSystemPrompt(input.Config, input.Prompt),
+		"aspectRatio": aiStarsLabImageRatio(input.Config.Size, route),
+		"quality":     aiStarsLabRequestQuality(route, nil, input.Config.Quality),
+		"inputImages": images,
+		"n":           1,
+	}
+	return body, nil
+}
+
+// aspectRatio 是必填项且只能从目录声明的比例里选；画布可能传 auto 或像素尺寸，这里回退到首个声明比例。
+func aiStarsLabImageRatio(value string, route *AIStarsLabCapabilityConfig) string {
+	normalized := strings.TrimSpace(value)
+	for _, ratio := range route.AspectRatios {
+		if strings.EqualFold(strings.TrimSpace(ratio), normalized) {
+			return strings.TrimSpace(ratio)
+		}
+	}
+	if len(route.AspectRatios) > 0 {
+		return strings.TrimSpace(route.AspectRatios[0])
+	}
+	if normalized == "" || strings.EqualFold(normalized, "auto") {
+		return "1:1"
+	}
+	return normalized
+}
+
+func aiStarsLabTaskID(payload map[string]interface{}) string {
+	id := firstNonEmptyString(stringField(payload, "taskId"), stringField(payload, "task_id"), stringField(payload, "id"))
+	if data, ok := payload["data"].(map[string]interface{}); ok && id == "" {
+		id = firstNonEmptyString(stringField(data, "taskId"), stringField(data, "task_id"), stringField(data, "id"))
+	}
+	return id
+}
+
+// 图片和视频共用同一个状态轮询合同：1 已创建、2 执行中、3 成功、4 失败，结果只在 outputs 数组。
+func pollAiStarsLabTask(ctx context.Context, input canvasGenerationInput, id string, label string) (string, error) {
+	for deadline := providerPollingDeadline(ctx); time.Now().Before(deadline); {
+		var payload map[string]interface{}
+		if err := getJSON(withProviderRequestKind(ctx, "poll"), input.Config, "/generation/status?taskId="+url.QueryEscape(id), &payload); err != nil {
+			return "", err
+		}
+		state := payload
+		if data, ok := payload["data"].(map[string]interface{}); ok {
+			state = data
+		}
+		switch fmt.Sprint(state["status"]) {
+		case "3":
+			resultURL := firstStringInList(state["outputs"])
+			if resultURL == "" {
+				return "", fmt.Errorf("AIStarsLab %s任务 %s 已完成但没有返回结果地址", label, id)
+			}
+			return resultURL, nil
+		case "4":
+			return "", fmt.Errorf("AIStarsLab %s生成失败（任务 %s）：%s", label, id, firstNonEmptyString(stringField(state, "errorMessage"), stringField(state, "errorCode"), "上游返回失败"))
+		}
+		// 官方建议 10~15 秒轮询一次，频率过高容易触发限流。
+		if err := sleepContext(ctx, 10*time.Second); err != nil {
+			return "", err
+		}
+	}
+	return "", context.DeadlineExceeded
+}
+
+func aiStarsLabMediaURLs(items []providerMedia) ([]string, error) {
+	urls := make([]string, 0, len(items))
+	for _, item := range items {
+		value, err := videoGenerationsMediaURL(item)
+		if err != nil || !isPublicMediaURL(value) {
+			return nil, errors.New("AIStarsLab 参考素材仅支持公网 URL；请先保存到对象存储")
+		}
+		urls = append(urls, value)
+	}
+	return urls, nil
+}
+
+// quality 是官方必填项，必须取自目录下发的档位；用户选择不在档位内时回退到首个可用档位。
+func aiStarsLabRequestQuality(route *AIStarsLabCapabilityConfig, config *VideoCapabilityConfig, requested string) string {
+	supported := route.Qualities
+	if len(supported) == 0 && config != nil {
+		supported = config.Resolutions
+	}
+	normalized := strings.TrimSpace(requested)
+	for _, value := range supported {
+		if strings.EqualFold(strings.TrimSpace(value), normalized) {
+			return strings.TrimSpace(value)
+		}
+	}
+	if len(supported) > 0 {
+		return strings.TrimSpace(supported[0])
+	}
+	return normalized
+}
+
+// mode 决定上游对参考图的校验规则：2 张图优先首尾帧，否则有图走全能参考、无图走文生视频。
+// 模型未声明对应模式时不静默降级，直接报错，避免上游按默认模式产出与预期不符的结果。
+func aiStarsLabVideoMode(route *AIStarsLabCapabilityConfig, imageCount int) (string, error) {
+	if len(route.Modes) == 0 {
+		return "", nil
+	}
+	supports := func(name string) bool {
+		for _, value := range route.Modes {
+			if strings.EqualFold(strings.TrimSpace(value), name) {
+				return true
+			}
+		}
+		return false
+	}
+	if imageCount == 0 {
+		if supports("text2video") {
+			return "text2video", nil
+		}
+		return "", errors.New("AIStarsLab 当前模型不支持文生视频，请至少提供 1 张参考图片")
+	}
+	if imageCount == 2 && supports("frames2video") {
+		return "frames2video", nil
+	}
+	if supports("image2video") {
+		return "image2video", nil
+	}
+	return "", errors.New("AIStarsLab 当前模型不支持参考图片生成，请改用文生视频")
+}
+
+func firstStringInList(value interface{}) string {
+	items, ok := value.([]interface{})
+	if !ok {
+		return ""
+	}
+	for _, item := range items {
+		if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
+			return strings.TrimSpace(text)
+		}
+	}
+	return ""
 }
 
 func huiQuYunVideoRequestBody(input canvasGenerationInput) (map[string]interface{}, error) {
@@ -1887,7 +2092,21 @@ func huiQuYunVideoRequestBody(input canvasGenerationInput) (map[string]interface
 		return nil, err
 	}
 	seconds, _ := strconv.Atoi(strings.TrimSpace(input.Config.VideoSeconds))
-	ratio := normalizeHuiQuYunVideoRatio(input.Config.Size)
+	ratio := input.Config.Size
+	if isHuiQuYunMX933VideoModel(input.Config.Model) {
+		if hasHuiQuYunVideoReferences(input) {
+			return nil, errors.New("汇取云 MX933 参考素材必须使用 multipart 文件上传")
+		}
+		return map[string]interface{}{
+			"model":          input.Config.Model,
+			"prompt":         strings.TrimSpace(input.Prompt),
+			"seconds":        seconds,
+			"resolution":     input.Config.VQuality,
+			"aspect_ratio":   ratio,
+			"generate_audio": parseBool(input.Config.VideoGenerateAudio, true),
+		}, nil
+	}
+	ratio = normalizeHuiQuYunVideoRatio(ratio)
 	body := map[string]interface{}{
 		"model":        input.Config.Model,
 		"prompt":       strings.TrimSpace(input.Prompt),
@@ -1915,6 +2134,74 @@ func huiQuYunVideoRequestBody(input canvasGenerationInput) (map[string]interface
 	return body, nil
 }
 
+func hasHuiQuYunVideoReferences(input canvasGenerationInput) bool {
+	return len(input.ReferenceImages)+len(input.ReferenceVideos)+len(input.ReferenceAudios) > 0
+}
+
+func isHuiQuYunMX933VideoModel(modelName string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(modelName))
+	return strings.HasPrefix(normalized, "sd2-mx933-720-") || strings.HasPrefix(normalized, "sd2-mx933-720-fast-")
+}
+
+func huiQuYunMX933MultipartBody(input canvasGenerationInput) (*bytes.Buffer, string, error) {
+	normalizeHuiQuYunVideoInput(&input)
+	if len(input.ReferenceAudios) > 0 && len(input.ReferenceImages) == 0 && len(input.ReferenceVideos) == 0 {
+		return nil, "", errors.New("汇取云参考音频必须搭配参考图片或参考视频")
+	}
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	writeField(writer, "model", input.Config.Model)
+	writeField(writer, "prompt", strings.TrimSpace(input.Prompt))
+	writeField(writer, "seconds", input.Config.VideoSeconds)
+	writeField(writer, "resolution", input.Config.VQuality)
+	writeField(writer, "aspect_ratio", input.Config.Size)
+	writeField(writer, "generate_audio", strconv.FormatBool(parseBool(input.Config.VideoGenerateAudio, true)))
+
+	images := append([]providerMedia(nil), input.ReferenceImages...)
+	writeFrame := func(metadataKey string, field string) error {
+		frameID := metadataString(input.Metadata, metadataKey)
+		if frameID == "" {
+			return nil
+		}
+		for index, image := range images {
+			if image.ID != frameID {
+				continue
+			}
+			if err := writeMediaPart(writer, field, image); err != nil {
+				return err
+			}
+			images = append(images[:index], images[index+1:]...)
+			return nil
+		}
+		return fmt.Errorf("汇取云 MX933 %s参考图未包含在当前任务素材中", map[string]string{"first_frame": "首帧", "last_frame": "尾帧"}[field])
+	}
+	if err := writeFrame("videoStartFrameNodeId", "first_frame"); err != nil {
+		return nil, "", err
+	}
+	if err := writeFrame("videoEndFrameNodeId", "last_frame"); err != nil {
+		return nil, "", err
+	}
+	for _, image := range images {
+		if err := writeMediaPart(writer, "images", image); err != nil {
+			return nil, "", err
+		}
+	}
+	for _, video := range input.ReferenceVideos {
+		if err := writeMediaPart(writer, "videos", video); err != nil {
+			return nil, "", err
+		}
+	}
+	for _, audio := range input.ReferenceAudios {
+		if err := writeMediaPart(writer, "audios", audio); err != nil {
+			return nil, "", err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, "", err
+	}
+	return body, writer.FormDataContentType(), nil
+}
+
 func normalizeHuiQuYunVideoInput(input *canvasGenerationInput) {
 	seconds := huiQuYunFixedVideoDuration(input.Config.Model)
 	if seconds == 0 {
@@ -1924,6 +2211,15 @@ func normalizeHuiQuYunVideoInput(input *canvasGenerationInput) {
 		}
 	}
 	input.Config.VideoSeconds = strconv.Itoa(seconds)
+	if isHuiQuYunMX933VideoModel(input.Config.Model) {
+		input.Config.Size = normalizeHuiQuYunMX933VideoRatio(input.Config.Size)
+		quality := strings.ToLower(strings.TrimSpace(input.Config.VQuality))
+		if quality != "480p" && quality != "720p" {
+			quality = "720p"
+		}
+		input.Config.VQuality = quality
+		return
+	}
 	input.Config.Size = normalizeHuiQuYunVideoRatio(input.Config.Size)
 	input.Config.VQuality = "720p"
 }
@@ -1962,6 +2258,15 @@ func normalizeHuiQuYunVideoRatio(value string) string {
 		return normalized
 	default:
 		return "16:9"
+	}
+}
+
+func normalizeHuiQuYunMX933VideoRatio(value string) string {
+	switch strings.TrimSpace(value) {
+	case "3:2", "2:3":
+		return strings.TrimSpace(value)
+	default:
+		return normalizeHuiQuYunVideoRatio(value)
 	}
 }
 

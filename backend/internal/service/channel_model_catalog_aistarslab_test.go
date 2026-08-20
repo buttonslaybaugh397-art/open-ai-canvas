@@ -70,3 +70,80 @@ func TestSyncAIStarsLabModelUsesDurationRange(t *testing.T) {
 		t.Fatalf("duration = %#v", config.Video)
 	}
 }
+
+func aiStarsLabVideoTestInput(route *AIStarsLabCapabilityConfig, seconds string, images []providerMedia) canvasGenerationInput {
+	return canvasGenerationInput{
+		Prompt:          "海边日落",
+		Config:          providerConfig{Model: "seedance-2.5", Size: "16:9", VQuality: "720p", VideoSeconds: seconds, CapabilityConfig: &ModelCapabilityConfig{AIStarsLab: route}},
+		ReferenceImages: images,
+	}
+}
+
+func TestAiStarsLabVideoRequestBodySendsRequiredContractFields(t *testing.T) {
+	// channel、quality、aspectRatio、duration 均为官方必填项；早期实现把 channel 写死为空字符串且丢失 quality。
+	route := &AIStarsLabCapabilityConfig{Channel: "12", Capability: "video", Model: "seedance-2.5", Qualities: []string{"720p", "1080p"}, Modes: []string{"text2video", "image2video"}}
+	body, err := aiStarsLabVideoRequestBody(aiStarsLabVideoTestInput(route, "10", nil))
+	if err != nil {
+		t.Fatalf("aiStarsLabVideoRequestBody() error = %v", err)
+	}
+	if body["channel"] != "12" || body["quality"] != "720p" || body["aspectRatio"] != "16:9" || body["duration"] != 10 {
+		t.Fatalf("AIStarsLab video body = %#v", body)
+	}
+	if body["mode"] != "text2video" {
+		t.Fatalf("AIStarsLab text2video mode = %#v", body["mode"])
+	}
+}
+
+func TestAiStarsLabVideoRequestBodyDerivesModeFromReferenceImages(t *testing.T) {
+	route := &AIStarsLabCapabilityConfig{Channel: "12", Model: "seedance-2.5", Qualities: []string{"720p"}, Modes: []string{"text2video", "image2video", "frames2video"}}
+	single, err := aiStarsLabVideoRequestBody(aiStarsLabVideoTestInput(route, "5", []providerMedia{{URL: "https://example.com/1.png"}}))
+	if err != nil || single["mode"] != "image2video" {
+		t.Fatalf("single reference mode = %#v, err = %v", single["mode"], err)
+	}
+	// 官方规则：正好 2 张参考图且模型声明 frames2video 时，按首尾帧处理。
+	frames, err := aiStarsLabVideoRequestBody(aiStarsLabVideoTestInput(route, "5", []providerMedia{{URL: "https://example.com/1.png"}, {URL: "https://example.com/2.png"}}))
+	if err != nil || frames["mode"] != "frames2video" {
+		t.Fatalf("frames mode = %#v, err = %v", frames["mode"], err)
+	}
+}
+
+func TestAiStarsLabVideoRequestBodyRejectsMissingChannel(t *testing.T) {
+	// 线路编码缺失时必须明确失败，不能用空字符串让上游猜线路。
+	if _, err := aiStarsLabVideoRequestBody(aiStarsLabVideoTestInput(nil, "5", nil)); err == nil {
+		t.Fatal("missing AIStarsLab channel must fail closed")
+	}
+}
+
+func TestAiStarsLabRequestQualityFallsBackToDeclaredOption(t *testing.T) {
+	route := &AIStarsLabCapabilityConfig{Channel: "12", Qualities: []string{"720p", "1080p"}}
+	if quality := aiStarsLabRequestQuality(route, nil, "4k"); quality != "720p" {
+		t.Fatalf("unsupported quality fallback = %q", quality)
+	}
+	if quality := aiStarsLabRequestQuality(route, nil, "1080P"); quality != "1080p" {
+		t.Fatalf("case-insensitive quality = %q", quality)
+	}
+}
+
+func TestAiStarsLabImageRequestBodySendsChannelAndQuality(t *testing.T) {
+	route := &AIStarsLabCapabilityConfig{Channel: "21", Capability: "image", Model: "example-image", Qualities: []string{"1K"}, AspectRatios: []string{"1:1", "16:9"}, InputImagesMax: 9}
+	body, err := aiStarsLabImageRequestBody(canvasGenerationInput{
+		Prompt: "一只白色陶瓷杯",
+		Config: providerConfig{Model: "example-image", Size: "16:9", Quality: "auto", CapabilityConfig: &ModelCapabilityConfig{AIStarsLab: route}},
+	})
+	if err != nil {
+		t.Fatalf("aiStarsLabImageRequestBody() error = %v", err)
+	}
+	if body["channel"] != "21" || body["quality"] != "1K" || body["aspectRatio"] != "16:9" || body["n"] != 1 {
+		t.Fatalf("AIStarsLab image body = %#v", body)
+	}
+}
+
+func TestFirstStringInListReadsOfficialOutputsArray(t *testing.T) {
+	// 官方结果只在 outputs 数组，早期实现读标量 output 字段会把成功任务当成无结果。
+	if value := firstStringInList([]interface{}{"", "https://example.com/out.mp4"}); value != "https://example.com/out.mp4" {
+		t.Fatalf("firstStringInList() = %q", value)
+	}
+	if value := firstStringInList(nil); value != "" {
+		t.Fatalf("firstStringInList(nil) = %q", value)
+	}
+}

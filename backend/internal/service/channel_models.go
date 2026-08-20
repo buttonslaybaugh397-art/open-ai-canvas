@@ -216,7 +216,8 @@ func syncHuiQuYunModelContract(channel model.ModelChannel, item *model.ChannelMo
 		return false
 	}
 	// 管理员完成定价配置后，能力与协议就是人工确认的合同；后续拉取不得再用模型名覆盖。
-	if item.PriceConfigured && validHuiQuYunProtocol(item.Protocol) && capabilityForProtocol(item.Protocol) == item.Capability {
+	// 例外：模型名已确定属于视频家族却存成非视频协议，属于早期识别缺失留下的脏数据，必须纠正。
+	if item.PriceConfigured && validHuiQuYunProtocol(item.Protocol) && capabilityForProtocol(item.Protocol) == item.Capability && !huiQuYunContractNeedsVideoRepair(item) {
 		return false
 	}
 	protocol := huiQuYunProtocolForModel(item.ModelKey, endpointTypes)
@@ -271,7 +272,7 @@ func huiQuYunProtocolForModel(name string, endpointTypes []string) model.Channel
 	if huiQuYunModelContainsAny(normalized, "tts", "speech", "voice", "audio", "music", "sound") {
 		return model.ChannelInterfaceOpenAIAudio
 	}
-	if huiQuYunModelContainsAny(normalized, "mj-sd", "seedance", "grok-video", "sora", "veo", "kling", "hailuo", "vidu", "wan-video", "jimeng-video", "doubao-video", "minimax-video", "video") {
+	if isHuiQuYunVideoModelName(normalized) {
 		return model.ChannelInterfaceHuiQuYunVideo
 	}
 	if huiQuYunModelContainsAny(normalized, "gpt-image", "nano-banana", "nanobanana", "seedream", "image", "dall-e", "dalle", "imagen", "flux", "sdxl", "stable-diffusion", "midjourney", "ideogram", "recraft") {
@@ -287,6 +288,20 @@ func huiQuYunModelContainsAny(value string, markers ...string) bool {
 		}
 	}
 	return false
+}
+
+// 汇取云视频模型名不一定带 video 字样：MX933 家族和 "-5s" 这类固定时长后缀都是确定的视频合同，
+// 必须在关键字兜底之前识别，否则会落到文本协议并让上游返回无效请求。
+func isHuiQuYunVideoModelName(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if isHuiQuYunMX933VideoModel(normalized) || huiQuYunFixedVideoDuration(normalized) > 0 {
+		return true
+	}
+	return huiQuYunModelContainsAny(normalized, "mj-sd", "seedance", "grok-video", "sora", "veo", "kling", "hailuo", "vidu", "wan-video", "jimeng-video", "doubao-video", "minimax-video", "video")
+}
+
+func huiQuYunContractNeedsVideoRepair(item *model.ChannelModel) bool {
+	return isHuiQuYunVideoModelName(item.ModelKey) && item.Protocol != model.ChannelInterfaceHuiQuYunVideo
 }
 
 func validHuiQuYunProtocol(protocol model.ChannelInterfaceType) bool {
