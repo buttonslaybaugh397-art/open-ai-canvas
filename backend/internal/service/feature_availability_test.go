@@ -11,19 +11,19 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestFeatureAvailabilityDefaultsToEnabled(t *testing.T) {
+func TestFeatureAvailabilityDefaultsToCustomChannelsDisabled(t *testing.T) {
 	svc, _ := newFeatureAvailabilityTestService(t)
 
 	setting, err := svc.FeatureAvailability()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if setting.Configured || !setting.ShortDramaEnabled || !setting.TaskCenterEnabled || !setting.CreditsEnabled || !setting.CustomChannelsEnabled {
+	if setting.Configured || !setting.ShortDramaEnabled || !setting.TaskCenterEnabled || !setting.CreditsEnabled || setting.CustomChannelsEnabled {
 		t.Fatalf("FeatureAvailability() = %#v", setting)
 	}
 }
 
-func TestFeatureAvailabilityLegacySettingKeepsCustomChannelsEnabled(t *testing.T) {
+func TestFeatureAvailabilityLegacySettingDisablesCustomChannels(t *testing.T) {
 	svc, db := newFeatureAvailabilityTestService(t)
 	legacy := &model.SystemSetting{Key: featureAvailabilitySettingKey, ValueJSON: `{"shortDramaEnabled":false,"taskCenterEnabled":true,"creditsEnabled":true}`}
 	if err := db.Create(legacy).Error; err != nil {
@@ -34,7 +34,7 @@ func TestFeatureAvailabilityLegacySettingKeepsCustomChannelsEnabled(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if setting.ShortDramaEnabled || !setting.CustomChannelsEnabled {
+	if setting.ShortDramaEnabled || setting.CustomChannelsEnabled {
 		t.Fatalf("FeatureAvailability() = %#v", setting)
 	}
 }
@@ -48,7 +48,7 @@ func TestUpdateFeatureAvailabilityPersistsAndAudits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !setting.Configured || setting.ShortDramaEnabled || !setting.TaskCenterEnabled || setting.CreditsEnabled || !setting.CustomChannelsEnabled {
+	if !setting.Configured || setting.ShortDramaEnabled || !setting.TaskCenterEnabled || setting.CreditsEnabled || setting.CustomChannelsEnabled {
 		t.Fatalf("UpdateFeatureAvailability() = %#v", setting)
 	}
 	if err := svc.RequireFeature(FeatureShortDrama); err == nil {

@@ -105,6 +105,7 @@ type PublicModelChannel struct {
 	AllowLocalChannel bool                      `json:"allowLocalChannel,omitempty"`
 	APIKey            string                    `json:"apiKey"`
 	APIFormat         string                    `json:"apiFormat"`
+	ConnectionType    string                    `json:"connectionType,omitempty"`
 	ConcurrencyLimit  int                       `json:"concurrencyLimit"`
 	Models            []string                  `json:"models"`
 	ModelCosts        []PublicChannelModelPrice `json:"modelCosts"`
@@ -122,6 +123,7 @@ type PublicChannelModelPrice struct {
 	Protocol                     model.ChannelInterfaceType `json:"protocol"`
 	BillingMode                  string                     `json:"billingMode"`
 	UnitPriceMicrocredits        int64                      `json:"unitPriceMicrocredits"`
+	ResolutionPriceMicrocredits  map[string]int64           `json:"resolutionPriceMicrocredits,omitempty"`
 	InputTokenPriceMicrocredits  int64                      `json:"inputTokenPriceMicrocredits"`
 	OutputTokenPriceMicrocredits int64                      `json:"outputTokenPriceMicrocredits"`
 	CachedTokenPriceMicrocredits int64                      `json:"cachedTokenPriceMicrocredits"`
@@ -816,7 +818,7 @@ func mergeChannelRequest(req ChannelRequest, channel model.ModelChannel) Channel
 
 func validChannelInterfaceType(value model.ChannelInterfaceType) bool {
 	switch value {
-	case model.ChannelInterfaceChatCompletion, model.ChannelInterfaceOpenAIResponse, model.ChannelInterfaceOpenAIImage, model.ChannelInterfaceGrokImage, model.ChannelInterfaceGlobalAiOpcImage, model.ChannelInterfaceVolcengineArkImage, model.ChannelInterfaceVolcengineJiMengImage, model.ChannelInterfaceGeminiImage, model.ChannelInterfaceOpenAIAudio, model.ChannelInterfaceAsyncAudio, model.ChannelInterfaceNewAPIVideo, model.ChannelInterfaceNewAPIChannel1, model.ChannelInterfaceNewAPIChannel2, model.ChannelInterfaceGlobalAiOpcVideo, model.ChannelInterfaceHuiQuYunVideo, model.ChannelInterfaceXAIVideo, model.ChannelInterfaceVolcengineArkVideo, model.ChannelInterfaceVolcengineJiMengVideo, model.ChannelInterfaceGeminiVeo:
+	case model.ChannelInterfaceChatCompletion, model.ChannelInterfaceOpenAIResponse, model.ChannelInterfaceOpenAIImage, model.ChannelInterfaceGrokImage, model.ChannelInterfaceGlobalAiOpcImage, model.ChannelInterfaceAIStarsLabImage, model.ChannelInterfaceVolcengineArkImage, model.ChannelInterfaceVolcengineJiMengImage, model.ChannelInterfaceGeminiImage, model.ChannelInterfaceOpenAIAudio, model.ChannelInterfaceAsyncAudio, model.ChannelInterfaceNewAPIVideo, model.ChannelInterfaceNewAPIChannel1, model.ChannelInterfaceNewAPIChannel2, model.ChannelInterfaceGlobalAiOpcVideo, model.ChannelInterfaceHuiQuYunVideo, model.ChannelInterfaceAIStarsLabVideo, model.ChannelInterfaceXAIVideo, model.ChannelInterfaceVolcengineArkVideo, model.ChannelInterfaceVolcengineJiMengVideo, model.ChannelInterfaceGeminiVeo:
 		return true
 	default:
 		return false
@@ -833,7 +835,7 @@ func publicChannel(channel model.ModelChannel, admin bool, channelModels []model
 		models = append(models, item.ModelKey)
 		if item.Enabled && item.PriceConfigured {
 			capabilityConfig, _ := DecodeModelCapabilityConfig(item.CapabilityConfigJSON)
-			modelCosts = append(modelCosts, PublicChannelModelPrice{Model: item.ModelKey, DisplayName: item.DisplayName, Capability: item.Capability, Protocol: item.Protocol, BillingMode: item.BillingMode, UnitPriceMicrocredits: item.UnitPriceMicrocredits, InputTokenPriceMicrocredits: item.InputTokenPriceMicrocredits, OutputTokenPriceMicrocredits: item.OutputTokenPriceMicrocredits, CachedTokenPriceMicrocredits: item.CachedTokenPriceMicrocredits, CapabilityConfig: capabilityConfig})
+			modelCosts = append(modelCosts, PublicChannelModelPrice{Model: item.ModelKey, DisplayName: item.DisplayName, Capability: item.Capability, Protocol: item.Protocol, BillingMode: item.BillingMode, UnitPriceMicrocredits: item.UnitPriceMicrocredits, ResolutionPriceMicrocredits: decodeResolutionPrices(item.ResolutionPricesJSON), InputTokenPriceMicrocredits: item.InputTokenPriceMicrocredits, OutputTokenPriceMicrocredits: item.OutputTokenPriceMicrocredits, CachedTokenPriceMicrocredits: item.CachedTokenPriceMicrocredits, CapabilityConfig: capabilityConfig})
 		}
 	}
 	if len(models) == 0 {
@@ -863,6 +865,7 @@ func publicChannel(channel model.ModelChannel, admin bool, channelModels []model
 		AllowLocalChannel: admin && channel.AllowLocalChannel,
 		APIKey:            apiKey,
 		APIFormat:         channel.APIFormat,
+		ConnectionType:    channelConnectionType(&channel),
 		ConcurrencyLimit:  channel.ConcurrencyLimit,
 		Models:            models,
 		ModelCosts:        modelCosts,

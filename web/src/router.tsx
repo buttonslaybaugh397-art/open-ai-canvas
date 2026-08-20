@@ -17,7 +17,6 @@ const AccessSettingsPage = lazy(() => import("@/pages/admin/admin-route-pages").
 const EmailSettingsPage = lazy(() => import("@/pages/admin/admin-route-pages").then((module) => ({ default: module.EmailSettingsPage })));
 const FeatureAvailabilityPage = lazy(() => import("@/pages/admin/admin-route-pages").then((module) => ({ default: module.FeatureAvailabilityPage })));
 const ChannelsPage = lazy(() => import("@/pages/admin/channels/channels-page"));
-const LogicalModelsPage = lazy(() => import("@/pages/admin/logical-models/logical-models-page"));
 const LogsPage = lazy(() => import("@/pages/admin/logs/logs-page"));
 const RedemptionCodesPage = lazy(() => import("@/pages/admin/redemption-codes/redemption-codes-page"));
 const RuntimePolicySettingsPage = lazy(() => import("@/pages/admin/settings/runtime-policy-settings-page"));
@@ -134,7 +133,7 @@ export const router = createBrowserRouter([
                     { index: true, element: deferred(<AnalyticsPage />) },
                     { path: "users", element: deferred(<UsersPage />) },
                     { path: "channels", element: deferred(<ChannelsPage />) },
-                    { path: "models", element: deferred(<LogicalModelsPage />) },
+                    { path: "models", element: <Navigate to="/admin/channels" replace /> },
                     { path: "prompt-templates", element: deferred(<StoryboardPromptsPage />) },
                     { path: "storyboard-prompts", element: <Navigate to="/admin/prompt-templates" replace /> },
                     { path: "announcements", element: deferred(<AnnouncementsPage />) },

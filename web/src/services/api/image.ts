@@ -900,7 +900,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     if (requestConfig.interfaceType === "aistarslab-image") {
         return requestAiStarsLabImage(requestConfig, prompt, normalizedImage, options);
     }
-    if (requestConfig.interfaceType === "gemini-image") {
+    if (requestConfig.interfaceType === "gemini-image" || requestConfig.apiFormat === "gemini") {
         try {
             return await requestGeminiImages(requestConfig, prompt, [], n, buildGeminiImageGenerationConfig(normalizedImage.size, normalizedImage.quality), options);
         } catch (error) {

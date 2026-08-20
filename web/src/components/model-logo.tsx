@@ -1,22 +1,53 @@
-import { useMemo, useState, type ComponentType, type SVGProps } from "react";
+import { useEffect, useMemo, useState, type ComponentType, type SVGProps } from "react";
 import { Input, Popover } from "antd";
 import { Cpu, Search, X } from "lucide-react";
 
-import * as LobeIcons from "@lobehub/icons/es/icons";
 import { toc } from "@lobehub/icons/es/toc";
 
 import { cn } from "@/lib/utils";
 
 type LobeIconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>;
 
-const iconRegistry = LobeIcons as unknown as Record<string, LobeIconComponent>;
+let iconRegistry: Record<string, LobeIconComponent> = {};
+let iconRegistryPromise: Promise<Record<string, LobeIconComponent>> | null = null;
+
+function loadIconRegistry() {
+    if (Object.keys(iconRegistry).length) return Promise.resolve(iconRegistry);
+    iconRegistryPromise ||= import("@lobehub/icons/es/icons").then((icons) => {
+        iconRegistry = icons as unknown as Record<string, LobeIconComponent>;
+        return iconRegistry;
+    });
+    return iconRegistryPromise;
+}
+
 const iconOptions = toc
     .filter((item) => item.group === "model" || item.group === "provider")
-    .map((item) => ({ id: item.id, title: item.fullTitle || item.title }))
-    .filter((item) => Boolean(iconRegistry[item.id]));
+    .map((item) => ({ id: item.id, title: item.fullTitle || item.title }));
 
 export function ModelLogo({ icon, size = 18, className }: { icon?: string; size?: number; className?: string }) {
-    const Icon = icon ? iconRegistry[icon] : undefined;
+    const [Icon, setIcon] = useState<LobeIconComponent | undefined>(() => (icon ? iconRegistry[icon] : undefined));
+    useEffect(() => {
+        let active = true;
+        if (!icon) {
+            setIcon(undefined);
+            return () => {
+                active = false;
+            };
+        }
+        const loaded = iconRegistry[icon];
+        if (loaded) {
+            setIcon(() => loaded);
+            return () => {
+                active = false;
+            };
+        }
+        void loadIconRegistry().then((registry) => {
+            if (active) setIcon(() => registry[icon]);
+        });
+        return () => {
+            active = false;
+        };
+    }, [icon]);
     if (!Icon) return <Cpu className={cn("shrink-0 text-foreground/45", className)} size={size} aria-hidden />;
     return <Icon size={size} className={cn("shrink-0", className)} aria-hidden />;
 }

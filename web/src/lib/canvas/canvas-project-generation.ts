@@ -1,5 +1,5 @@
 import { type GenerationTask } from "@/services/api/task-center";
-import { backendProviderConfig, logicalModelIDForConfig, runBackendGenerationTask, type GenerationTaskDependencies } from "@/services/api/generation-task";
+import { backendProviderConfig, runBackendGenerationTask, type GenerationTaskDependencies } from "@/services/api/generation-task";
 import { configuredModelMatchesCapability, defaultConfig, normalizeModelOptionValue, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { resolveMediaUrl } from "@/services/file-storage";
@@ -64,7 +64,7 @@ export async function runBackendCanvasGenerationTask(
             referenceAudios,
             mask,
             signal,
-            metadata: { nodeId, ...(mode === "video" && !metadata?.videoEditOperation ? { videoEditOperation: "image_to_video" } : {}), ...metadata },
+            metadata: { nodeId, ...metadata },
             onTaskUpdate: onTaskCreated,
             clientOperationId,
             retryOf,
@@ -85,7 +85,7 @@ export function assertCanvasImageReferenceLimit(config: AiConfig, referenceImage
     if (error) throw new Error(error);
 }
 
-export { backendProviderConfig, logicalModelIDForConfig };
+export { backendProviderConfig };
 
 const generationOperationLocks = new Map<string, Promise<unknown>>();
 

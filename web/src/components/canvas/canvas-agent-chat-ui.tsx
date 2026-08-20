@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Tooltip } from "antd";
 import { ArrowUp, CheckCircle2, CircleAlert, ImagePlus, LoaderCircle, UserRound, Wrench, X, XCircle } from "lucide-react";
+import { motion, useReducedMotion } from "motion/react";
 
+import { aceternityMotion } from "@/lib/aceternity-motion";
 import { canvasThemes } from "@/lib/canvas-theme";
 import type { CanvasAgentOperationImpact } from "@/lib/canvas/canvas-agent-ops";
 import type { LocalUser } from "@/stores/use-user-store";
@@ -172,6 +174,7 @@ export function AgentChatComposer({
     attachments = [],
     disabled,
     sending,
+    collapsed = false,
     placeholder,
     theme,
     onPromptChange,
@@ -184,6 +187,7 @@ export function AgentChatComposer({
     attachments?: CanvasAgentChatAttachment[];
     disabled?: boolean;
     sending?: boolean;
+    collapsed?: boolean;
     placeholder: string;
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     onPromptChange: (value: string) => void;
@@ -192,63 +196,82 @@ export function AgentChatComposer({
     onRemoveAttachment?: (id: string) => void;
     left?: ReactNode;
 }) {
+    const composerRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const reducedMotion = useReducedMotion();
     const canSubmit = !disabled && !sending && Boolean(prompt.trim() || attachments.length);
+
+    useEffect(() => {
+        if (!collapsed) return;
+        const activeElement = document.activeElement;
+        if (activeElement instanceof HTMLElement && composerRef.current?.contains(activeElement)) activeElement.blur();
+    }, [collapsed]);
+
     return (
-        <div className="px-3 pb-3 pt-1" onWheelCapture={(event) => event.stopPropagation()}>
-            <div className="rounded-lg border px-3 pb-2.5 pt-3 transition-[border-color,box-shadow] duration-150 focus-within:border-current" style={{ background: theme.node.fill, borderColor: theme.toolbar.border, color: theme.accent.primary, boxShadow: `0 10px 30px ${theme.spatial.shadow}` }}>
-                {attachments.length ? (
-                    <div className="thin-scrollbar mb-2 flex gap-2 overflow-x-auto pb-1">
-                        {attachments.map((item) => (
-                            <div key={item.id} className="group relative size-14 shrink-0 overflow-hidden rounded-md" title={item.name}>
-                                <img src={item.url} alt={item.name} className="size-full object-cover" />
-                                {onRemoveAttachment ? (
-                                    <button type="button" className="absolute right-1 top-1 grid size-5 place-items-center rounded-full border opacity-0 shadow-sm transition group-hover:opacity-100" style={{ background: theme.toolbar.panel, borderColor: theme.node.stroke, color: theme.node.text }} onClick={() => onRemoveAttachment(item.id)} aria-label="移除图片">
-                                        <X className="size-3" />
-                                    </button>
-                                ) : null}
-                            </div>
-                        ))}
+        <motion.div
+            ref={composerRef}
+            initial={false}
+            animate={{ height: collapsed ? 0 : "auto", opacity: collapsed ? 0 : 1, y: collapsed ? 12 : 0 }}
+            transition={{ duration: reducedMotion ? 0 : aceternityMotion.duration.state, ease: collapsed ? aceternityMotion.easing.exit : aceternityMotion.easing.enter }}
+            aria-hidden={collapsed}
+            inert={collapsed ? true : undefined}
+            style={{ overflow: "hidden", pointerEvents: collapsed ? "none" : "auto" }}
+        >
+            <div className="px-3 pb-3 pt-1" onWheelCapture={(event) => event.stopPropagation()}>
+                <div className="rounded-lg border px-3 pb-2.5 pt-3 transition-[border-color,box-shadow] duration-150 focus-within:border-current" style={{ background: theme.node.fill, borderColor: theme.toolbar.border, color: theme.accent.primary, boxShadow: `0 10px 30px ${theme.spatial.shadow}` }}>
+                    {attachments.length ? (
+                        <div className="thin-scrollbar mb-2 flex gap-2 overflow-x-auto pb-1">
+                            {attachments.map((item) => (
+                                <div key={item.id} className="group relative size-14 shrink-0 overflow-hidden rounded-md" title={item.name}>
+                                    <img src={item.url} alt={item.name} className="size-full object-cover" />
+                                    {onRemoveAttachment ? (
+                                        <button type="button" className="absolute right-1 top-1 grid size-5 place-items-center rounded-full border opacity-0 shadow-sm transition group-hover:opacity-100" style={{ background: theme.toolbar.panel, borderColor: theme.node.stroke, color: theme.node.text }} onClick={() => onRemoveAttachment(item.id)} aria-label="移除图片">
+                                            <X className="size-3" />
+                                        </button>
+                                    ) : null}
+                                </div>
+                            ))}
+                        </div>
+                    ) : null}
+                    <textarea
+                        value={prompt}
+                        onChange={(event) => onPromptChange(event.target.value)}
+                        onPaste={(event) => {
+                            if (!onAddFiles) return;
+                            const images = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+                            if (!images.length) return;
+                            event.preventDefault();
+                            void onAddFiles(images);
+                        }}
+                        onKeyDown={(event) => {
+                            if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.metaKey) return;
+                            event.preventDefault();
+                            void onSubmit();
+                        }}
+                        className="thin-scrollbar max-h-40 min-h-[60px] w-full resize-none border-0 bg-transparent px-1 py-1 text-sm leading-5 outline-none placeholder:opacity-45"
+                        style={{ color: theme.node.text }}
+                        placeholder={placeholder}
+                    />
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                        <div className="flex min-w-0 items-center gap-1">
+                            {onAddFiles ? (
+                                <>
+                                    <input ref={fileInputRef} hidden type="file" accept="image/*" multiple onChange={(event) => {
+                                        void onAddFiles(event.target.files);
+                                        event.target.value = "";
+                                    }} />
+                                    <Tooltip title="上传图片">
+                                        <Button type="text" shape="circle" className="!h-8 !w-8 !min-w-8" disabled={sending} style={{ color: theme.node.muted }} icon={<ImagePlus className="size-4" />} onClick={() => fileInputRef.current?.click()} />
+                                    </Tooltip>
+                                </>
+                            ) : null}
+                            {left}
+                        </div>
+                        <Button type="primary" className="!h-8 !w-8 !min-w-8 !rounded-md !p-0" disabled={!canSubmit} icon={sending ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowUp className="size-4" />} onClick={() => void onSubmit()} aria-label="发送" />
                     </div>
-                ) : null}
-                <textarea
-                    value={prompt}
-                    onChange={(event) => onPromptChange(event.target.value)}
-                    onPaste={(event) => {
-                        if (!onAddFiles) return;
-                        const images = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
-                        if (!images.length) return;
-                        event.preventDefault();
-                        void onAddFiles(images);
-                    }}
-                    onKeyDown={(event) => {
-                        if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.metaKey) return;
-                        event.preventDefault();
-                        void onSubmit();
-                    }}
-                    className="thin-scrollbar max-h-40 min-h-[60px] w-full resize-none border-0 bg-transparent px-1 py-1 text-sm leading-5 outline-none placeholder:opacity-45"
-                    style={{ color: theme.node.text }}
-                    placeholder={placeholder}
-                />
-                <div className="mt-2 flex items-center justify-between gap-2">
-                    <div className="flex min-w-0 items-center gap-1">
-                        {onAddFiles ? (
-                            <>
-                                <input ref={fileInputRef} hidden type="file" accept="image/*" multiple onChange={(event) => {
-                                    void onAddFiles(event.target.files);
-                                    event.target.value = "";
-                                }} />
-                                <Tooltip title="上传图片">
-                                    <Button type="text" shape="circle" className="!h-8 !w-8 !min-w-8" disabled={sending} style={{ color: theme.node.muted }} icon={<ImagePlus className="size-4" />} onClick={() => fileInputRef.current?.click()} />
-                                </Tooltip>
-                            </>
-                        ) : null}
-                        {left}
-                    </div>
-                    <Button type="primary" className="!h-8 !w-8 !min-w-8 !rounded-md !p-0" disabled={!canSubmit} icon={sending ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowUp className="size-4" />} onClick={() => void onSubmit()} aria-label="发送" />
                 </div>
             </div>
-        </div>
+        </motion.div>
     );
 }
 

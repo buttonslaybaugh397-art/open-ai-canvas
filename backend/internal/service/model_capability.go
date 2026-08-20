@@ -13,10 +13,26 @@ import (
 
 // ModelCapabilityConfig 是模型能力声明，不包含供应商字段名；协议适配器负责把统一参数映射到上游请求。
 type ModelCapabilityConfig struct {
-	Version int                    `json:"version"`
-	Text    *TextCapabilityConfig  `json:"text,omitempty"`
-	Image   *ImageCapabilityConfig `json:"image,omitempty"`
-	Video   *VideoCapabilityConfig `json:"video,omitempty"`
+	Version    int                         `json:"version"`
+	Text       *TextCapabilityConfig       `json:"text,omitempty"`
+	Image      *ImageCapabilityConfig      `json:"image,omitempty"`
+	Video      *VideoCapabilityConfig      `json:"video,omitempty"`
+	AIStarsLab *AIStarsLabCapabilityConfig `json:"aistarslab,omitempty"`
+}
+
+type AIStarsLabCapabilityConfig struct {
+	Channel        string   `json:"channel"`
+	Capability     string   `json:"capability"`
+	Model          string   `json:"model"`
+	Qualities      []string `json:"qualities,omitempty"`
+	AspectRatios   []string `json:"aspectRatios,omitempty"`
+	Duration       []int    `json:"duration,omitempty"`
+	DurationMin    int      `json:"durationMin,omitempty"`
+	DurationMax    int      `json:"durationMax,omitempty"`
+	Modes          []string `json:"modes,omitempty"`
+	InputImagesMax int      `json:"inputImagesMax,omitempty"`
+	InputVideosMax int      `json:"inputVideosMax,omitempty"`
+	InputAudiosMax int      `json:"inputAudiosMax,omitempty"`
 }
 
 type TextCapabilityConfig struct {
@@ -212,6 +228,14 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		DefaultOperation:  "text_to_video",
 	}
 	switch model.ChannelInterfaceType(protocol) {
+	case model.ChannelInterfaceAIStarsLabVideo:
+		video.References.MaxImages = 30
+		video.References.MaxVideos = 10
+		video.References.MaxAudios = 10
+		video.References.MaxVideoBytes = 200 * 1024 * 1024
+		video.References.MaxAudioBytes = 15 * 1024 * 1024
+		video.References.MaxVideoDuration, video.References.MaxAudioDuration = 30, 15
+		video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
 	case model.ChannelInterfaceVolcengineJiMengVideo:
 		video.Duration = VideoDurationConfig{Selection: "enum", Values: []int{5, 10}, Default: 5}
 		video.Resolutions = []string{"720p"}
@@ -369,7 +393,7 @@ func NormalizeModelCapabilityConfig(capability string, _ string, input *ModelCap
 		if input == nil || input.Image == nil {
 			return nil, BadAuthRequest("请配置图片模型能力参数")
 		}
-		value := &ModelCapabilityConfig{Version: 1, Image: input.Image}
+		value := &ModelCapabilityConfig{Version: 1, Image: input.Image, AIStarsLab: input.AIStarsLab}
 		if err := validateImageCapabilityConfig(value.Image); err != nil {
 			return nil, err
 		}
@@ -378,15 +402,16 @@ func NormalizeModelCapabilityConfig(capability string, _ string, input *ModelCap
 	if input == nil || input.Video == nil {
 		return nil, BadAuthRequest("请配置视频模型能力参数")
 	}
-	value := &ModelCapabilityConfig{Version: 1, Video: input.Video}
+	value := &ModelCapabilityConfig{Version: 1, Video: input.Video, AIStarsLab: input.AIStarsLab}
 	if err := validateVideoCapabilityConfig(value.Video); err != nil {
 		return nil, err
 	}
 	return value, nil
 }
 
-// CapabilitySpecFromModelCapabilityConfig 将渠道模型的真实供应能力投影为路由能力规格。
-// 渠道模型能力参数是唯一事实来源，前台模型供应线路直接引用该规格。
+// CapabilitySpecFromModelCapabilityConfig 将渠道模型的真实供应能力投影为路由能力快照。
+// 这是唯一的转换入口：渠道模型能力参数负责定义事实，variant 只保存兼容路由表的投影，
+// 不再允许管理员在 variant 上重复维护尺寸、比例、数量等字段。
 func CapabilitySpecFromModelCapabilityConfig(config *ModelCapabilityConfig, capability string) (CapabilitySpec, error) {
 	spec := CapabilitySpec{Version: 1, Capability: capability, Inputs: map[string]InputConstraint{}, Options: map[string]OptionConstraint{}}
 	// 音频模型当前没有可编辑的渠道能力 JSON，使用空能力规格表示“无额外路由约束”。
@@ -394,7 +419,16 @@ func CapabilitySpecFromModelCapabilityConfig(config *ModelCapabilityConfig, capa
 		return spec, nil
 	}
 	if config == nil {
-		return spec, BadAuthRequest("渠道模型尚未配置能力参数")
+		switch capability {
+		case "text":
+			return spec, BadAuthRequest("渠道文本模型尚未配置能力参数")
+		case "image":
+			return spec, BadAuthRequest("渠道图片模型尚未配置能力参数")
+		case "video":
+			return spec, BadAuthRequest("渠道视频模型尚未配置能力参数")
+		default:
+			return spec, BadAuthRequest("渠道模型尚未配置能力参数")
+		}
 	}
 	switch capability {
 	case "text":

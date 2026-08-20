@@ -58,7 +58,9 @@ export function buildCanvasResourceReferences(nodes: CanvasNodeData[], connectio
 }
 
 export function buildNodeMentionReferences(node: CanvasNodeData, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
-    return labelResourceNodes(getMentionResourceNodes(node.id, nodes, connections), true);
+    const resourceNodes = getMentionResourceNodes(node.id, nodes, connections);
+    // 视频生成成功后仍是输出节点，不能在没有上游素材时把自身结果反推成“参考视频”。
+    return labelResourceNodes(node.type === CanvasNodeType.Video ? resourceNodes.filter((resourceNode) => resourceNode.id !== node.id) : resourceNodes, true);
 }
 
 export function getMentionResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {

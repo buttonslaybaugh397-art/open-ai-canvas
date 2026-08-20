@@ -55,6 +55,7 @@ export type ChannelModel = {
     protocol?: import("@/lib/model-protocols").ModelProtocol;
     billingMode: "fixed_request" | "per_second" | "token";
     unitPriceMicrocredits: number;
+    resolutionPriceMicrocredits?: Record<string, number>;
     inputTokenPriceMicrocredits: number;
     outputTokenPriceMicrocredits: number;
     cachedTokenPriceMicrocredits: number;

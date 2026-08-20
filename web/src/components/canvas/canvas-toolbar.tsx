@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { Segmented, Switch } from "antd";
-import { CircleDot, Grid2x2, Moon, Palette, Sun, Square, Info } from "lucide-react";
+import { CircleDot, Crop, Grid2x2, Moon, Palette, Sun, Square, Info } from "lucide-react";
 
 import { AnimatedThemeToggler } from "@/components/ui/animated-theme-toggler";
 import { FloatingDock } from "@/components/ui/aceternity/floating-dock";
@@ -11,6 +11,7 @@ import { ToolbarSettingsModal } from "@/components/canvas/toolbars/toolbar-setti
 import { aceternityMotion } from "@/lib/aceternity-motion";
 import { canvasDockStyle } from "@/lib/canvas/canvas-aceternity-style";
 import { canvasThemes, type CanvasBackgroundMode, type CanvasColorTheme, type CanvasTheme } from "@/lib/canvas-theme";
+import { CANVAS_GENERATION_RATIO_OPTIONS } from "@/lib/canvas/canvas-generation-ratio";
 import { defaultToolbarPrefs, readToolbarPrefs, resolveAddNodeMenuCommands, resolveToolbarEntries, type AddNodeMenuCommand, type ToolContext, type ToolbarHandlers, type ToolbarPrefs } from "@/lib/canvas/tool-registry";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasToolMode, CanvasWorkspaceMode } from "@/types/canvas";
@@ -25,6 +26,9 @@ export function CanvasToolbar({
     canRedo,
     backgroundMode,
     showImageInfo,
+    canvasRatio,
+    canvasRatioInherited,
+    globalCanvasRatio,
     onAddImage,
     onAddVideo,
     onAddAudio,
@@ -42,6 +46,8 @@ export function CanvasToolbar({
     onDeselect,
     onBackgroundModeChange,
     onShowImageInfoChange,
+    onCanvasRatioChange,
+    onGlobalCanvasRatioChange,
     onOpenMyAssets,
     onOpenProjectCharacters,
 }: {
@@ -54,6 +60,9 @@ export function CanvasToolbar({
     canRedo: boolean;
     backgroundMode: CanvasBackgroundMode;
     showImageInfo: boolean;
+    canvasRatio: string;
+    canvasRatioInherited: boolean;
+    globalCanvasRatio: string;
     onAddImage: () => void;
     onAddVideo: () => void;
     onAddAudio: () => void;
@@ -71,6 +80,8 @@ export function CanvasToolbar({
     onDeselect: () => void;
     onBackgroundModeChange: (mode: CanvasBackgroundMode) => void;
     onShowImageInfoChange: (show: boolean) => void;
+    onCanvasRatioChange: (ratio: string | undefined) => void;
+    onGlobalCanvasRatioChange: (ratio: string) => void;
     onOpenMyAssets: () => void;
     onOpenProjectCharacters: () => void;
 }) {
@@ -192,9 +203,38 @@ export function CanvasToolbar({
 
             <AnimatePresence>
                 {appearanceOpen ? (
-                    <motion.div initial={{ opacity: 0, scaleY: 0.9, y: 8 }} animate={{ opacity: 1, scaleY: 1, y: 0 }} exit={{ opacity: 0, scaleY: 0.92, y: 6 }} transition={{ duration: aceternityMotion.duration.panel, ease: aceternityMotion.easing.enter }} className="pointer-events-auto absolute bottom-[var(--canvas-dock-popover-offset)] z-[var(--dock-z-popover)] w-[224px] max-w-[calc(100vw-24px)]" style={{ left: panelX || "50%", transformOrigin: "bottom center", x: "-50%" }}>
+                    <motion.div initial={{ opacity: 0, scaleY: 0.9, y: 8 }} animate={{ opacity: 1, scaleY: 1, y: 0 }} exit={{ opacity: 0, scaleY: 0.92, y: 6 }} transition={{ duration: aceternityMotion.duration.panel, ease: aceternityMotion.easing.enter }} className="pointer-events-auto absolute bottom-[var(--canvas-dock-popover-offset)] z-[var(--dock-z-popover)] w-72 max-w-[calc(100vw-24px)]" style={{ left: panelX || "50%", transformOrigin: "bottom center", x: "-50%" }}>
                         <SpotlightSurface spotlightColor={theme.toolbar.itemHover} initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.97, transition: { duration: 0 } }} transition={{ duration: aceternityMotion.duration.instant, ease: aceternityMotion.easing.enter }} className="aceternity-floating-panel overflow-hidden rounded-[var(--panel-radius)] border p-2.5 backdrop-blur-2xl" style={{ background: theme.spatial.elevated, borderColor: theme.toolbar.border, color: theme.toolbar.item }} onWheel={(event) => event.stopPropagation()}>
                             <PanelHeading icon={<Palette className="size-4" />} title="画布外观" subtitle="调整整个创作空间" theme={theme} />
+                            <div className="mt-3 flex items-center justify-between gap-2">
+                                <span className="inline-flex items-center gap-1.5 text-[var(--fs-micro)] font-semibold uppercase opacity-45"><Crop className="size-3" />生成画幅</span>
+                                <span className="text-[var(--fs-tiny)] font-semibold" style={{ color: theme.node.muted }}>当前 {canvasRatio}</span>
+                            </div>
+                            <div className="mt-1 grid grid-cols-3 gap-1">
+                                {CANVAS_GENERATION_RATIO_OPTIONS.map((ratio) => {
+                                    const selected = ratio === canvasRatio;
+                                    return (
+                                        <button
+                                            key={ratio}
+                                            type="button"
+                                            aria-pressed={selected}
+                                            className="flex h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-[var(--dock-item-radius)] border text-[var(--fs-tiny)] font-semibold transition-colors"
+                                            style={{ background: selected ? theme.toolbar.activeBg : theme.spatial.surface, borderColor: selected ? theme.frame.activeStroke : theme.toolbar.border, color: selected ? theme.toolbar.activeText : theme.toolbar.item }}
+                                            onClick={() => onCanvasRatioChange(ratio)}
+                                        >
+                                            <RatioPreview ratio={ratio} color={selected ? theme.toolbar.activeText : theme.node.muted} />
+                                            <span>{ratio}</span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                            <div className="mt-2 flex items-center justify-between gap-2 rounded-[var(--dock-item-radius-labeled)] border px-2.5 py-2" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>
+                                <span className="min-w-0"><span className="block text-[var(--fs-tiny)] font-semibold">跟随全局默认</span><span className="block text-[var(--fs-micro)]" style={{ color: theme.node.muted }}>全局 {globalCanvasRatio}</span></span>
+                                <Switch size="small" checked={canvasRatioInherited} onChange={(checked) => onCanvasRatioChange(checked ? undefined : canvasRatio)} />
+                            </div>
+                            <button type="button" className="mt-1.5 flex h-8 w-full items-center justify-center gap-1.5 rounded-[var(--dock-item-radius)] text-xs font-semibold transition-colors" style={{ color: theme.toolbar.item }} onClick={() => onGlobalCanvasRatioChange(canvasRatio)}>
+                                将 {canvasRatio} 设为全局默认
+                            </button>
                             <div className="mt-3 text-[var(--fs-micro)] font-semibold uppercase opacity-45">主题模式</div>
                             <div className="mt-1 grid grid-cols-2 gap-1 rounded-[var(--dock-item-radius-labeled)] border p-1" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border }}>
                                 <CanvasThemeButton colorTheme={colorTheme} targetTheme="light" onThemeChange={setTheme}><Sun className="size-3.5" />浅色</CanvasThemeButton>
@@ -223,6 +263,12 @@ export function CanvasToolbar({
             <ToolbarSettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} toolbar="main" />
         </div>
     );
+}
+
+function RatioPreview({ ratio, color }: { ratio: string; color: string }) {
+    const [width, height] = ratio.split(":").map(Number);
+    const landscape = width >= height;
+    return <span className="block rounded-sm border" style={{ aspectRatio: `${width} / ${height}`, borderColor: color, ...(landscape ? { width: "var(--space-8)" } : { height: "var(--space-5)" }) }} />;
 }
 
 function AddNodeMenu({ x, theme, commands }: {

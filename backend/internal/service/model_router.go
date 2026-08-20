@@ -57,6 +57,20 @@ func ModelRequestIntentFromTaskInput(input map[string]any, taskType string, oper
 			intent.Inputs[inputType] = len(values)
 		}
 	}
+	// reference_to_video 是旧前端按参考数量拼出的内部标签，不是正式视频操作。
+	// 历史任务重试时按真实输入还原，避免在逻辑模型能力校验阶段误判供应商不支持。
+	if normalizeCapabilityValue(intent.Operation) == "reference_to_video" {
+		switch {
+		case intent.Inputs["audio"] > 0 && intent.Inputs["image"] == 0 && intent.Inputs["video"] == 0:
+			intent.Operation = "audio_to_video"
+		case intent.Inputs["video"] > 0:
+			intent.Operation = "extend"
+		case intent.Inputs["image"] > 0:
+			intent.Operation = "image_to_video"
+		default:
+			intent.Operation = "text_to_video"
+		}
+	}
 	if mask, exists := input["mask"]; exists && mask != nil {
 		intent.Inputs["mask"] = 1
 	}
@@ -944,7 +958,7 @@ func (s *Service) switchTaskToNextRoute(task *model.Task, attempts []model.Route
 		if capability == "" {
 			capability = capabilityFromTaskType(task.Type)
 		}
-		replacement, err = s.newBillingOrder(task.UserID, task.ID, "route-switch:"+task.ID+":"+selected.Route.ID, selected.ChannelModel.ChannelID, selected.ChannelModel.ModelKey, capability, firstNonEmpty(strings.TrimSpace(task.Operation), task.Type), billingQuantity(capability, config["videoSeconds"]), estimateTaskBillingTokens(input, capability))
+		replacement, err = s.newBillingOrder(task.UserID, task.ID, "route-switch:"+task.ID+":"+selected.Route.ID, selected.ChannelModel.ChannelID, selected.ChannelModel.ModelKey, capability, firstNonEmpty(strings.TrimSpace(task.Operation), task.Type), billingQuantity(capability, config["videoSeconds"]), billingResolution(config), estimateTaskBillingTokens(input, capability))
 		if err != nil {
 			return nil, err
 		}

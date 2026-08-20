@@ -6,7 +6,7 @@ import { nanoid } from "nanoid";
 import { FRAME_HEADER_HEIGHT, getFrameChildIds, getFrameChildren, isFrameNode } from "@/lib/canvas/canvas-frame";
 import { alignCanvasNodes, layoutCanvasFlow, layoutCanvasNodes, nextCanvasVersionLabel, type CanvasAlignmentMode } from "@/lib/canvas/canvas-layout";
 import { createCanvasNode, removeCanvasNodes } from "@/lib/canvas/canvas-project-domain";
-import { isolateCopiedNodeMetadata } from "@/lib/canvas/canvas-node-copy";
+import { copiedNodeDropsMediaOutput, isolateCopiedNodeMetadata } from "@/lib/canvas/canvas-node-copy";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type ContextMenuState, type Position } from "@/types/canvas";
 import { cloneCanvasDrawing } from "@/lib/canvas/canvas-drawing-storage";
 import { isDrawingEngineAvailable, type CanvasDrawingEngine } from "@/lib/canvas/canvas-drawing-engine";
@@ -280,7 +280,7 @@ export function useCanvasNodeOperations({
         if (!source) return;
         const sources = isFrameNode(source) ? [source, ...getFrameChildren(source.id, nodesRef.current)] : [source];
         const idMap = new Map(sources.map((node, index) => [node.id, `${node.type}-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`]));
-        const versionRootId = isFrameNode(source) ? undefined : source.metadata?.versionOfNodeId || source.id;
+        const versionRootId = isFrameNode(source) || copiedNodeDropsMediaOutput(source) ? undefined : source.metadata?.versionOfNodeId || source.id;
         const versionLabel = versionRootId ? nextCanvasVersionLabel(versionRootId, nodesRef.current) : undefined;
         const copiedNodes = sources.map((node) => {
             const metadata = isolateCopiedNodeMetadata(node, idMap);

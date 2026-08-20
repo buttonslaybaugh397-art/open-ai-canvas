@@ -1,5 +1,54 @@
 # 后端数据库
 
+## 渠道模型与计费快照
+
+- `channel_models.resolution_prices_json` 保存视频模型按分辨率覆盖的积分单价；未配置的分辨率继续使用 `unit_price_microcredits`，已有模型升级后无需迁移旧价格。
+- `billing_orders.resolution` 保存任务创建时实际命中的规范化分辨率，`unit_price_microcredits` 保存该档最终单价，后续修改模型价格不会追溯改写历史账单。
+
+## 逻辑模型与路由（历史兼容）
+
+创作端当前直接使用公开系统渠道和渠道模型。以下逻辑模型与路由表保留用于历史任务、历史数据读取和后续兼容，不再作为新任务的模型选择或路由事实源。
+
+### `logical_models`
+
+- `code`、`name`、`icon`、`description`：前台模型身份和展示信息。
+- `capability`、`enabled`、`sort_order`：能力分类、启用状态与排序。
+- `revision_sequence`、`active_revision_id`：版本号分配器和当前发布版本。
+- `price_policy`、`billing_mode` 及价格字段：逻辑模型面向用户的统一计费合同。
+
+### `logical_model_revisions`
+
+- `logical_model_id`、`version`：同一逻辑模型内唯一的版本号。
+- `capability_spec_json`：该版本允许的输入、选项与能力约束。
+- `default_options_json`：由逻辑模型声明的前台默认参数，不能由供应商模型隐式覆盖。
+- `created_by`、`created_at`：发布人和发布时间。
+
+启动迁移会根据已有版本最大值回填 `logical_models.revision_sequence`，避免升级后重复分配版本号。
+
+### 历史物理能力变体
+
+旧版 `physical_capability_variants` 已由渠道模型能力配置取代。启动迁移会先把逻辑模型线路改为直接引用 `channel_models`，再删除旧表；新环境不会重新创建该表。
+
+### `logical_model_routes`
+
+- `logical_model_revision_id`、`physical_variant_id`：把逻辑模型版本连接到真实能力变体。
+- `enabled`、`priority`、`weight`：路由开关、优先级和同级权重。
+
+### `route_attempts`
+
+- `task_id`、`route_run`、`attempt_number`：一次生成任务中可追踪的路由运行和尝试序号。
+- `logical_model_id`、`logical_model_revision_id`、`route_id`、`physical_variant_id`：本次路由决策快照。
+- `channel_model_id`、`channel_id`、`provider_request_id`：最终选中的真实渠道与上游任务。
+- `status`、`dispatch_state`、`failure_code`、`failure_message`：派发、执行和失败记录。
+
+### `id_sequences`
+
+- `name`：需要可读 ID 的业务对象类型。
+- `value`：数据库原子递增值。
+- `updated_at`：最近分配时间。
+
+业务关联始终使用独立外键，不从带前缀 ID 中解析父子关系。
+
 ## 团队共享素材
 
 团队素材与个人素材分表保存，不迁移或覆盖个人的 `assets` 数据。

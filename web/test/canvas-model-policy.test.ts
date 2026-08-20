@@ -4,6 +4,7 @@ import { canvasConnectionError } from "../src/lib/canvas/canvas-connection-polic
 import { assertCanvasImageReferenceLimit, buildGenerationConfig, canvasImageReferenceLimitError, resolveCanvasGenerationModel } from "../src/lib/canvas/canvas-project-generation";
 import { defaultModelCapabilityConfig } from "../src/lib/model-capabilities";
 import { groupModelsByDisplayName, modelCompatibilityError, modelGroupReferenceLimits, resolveCompatibleModel, resolveModelGenerationDefaults } from "../src/lib/model-selection";
+import { DEFAULT_CANVAS_GENERATION_RATIO, isCanvasGenerationRatio, resolveCanvasGenerationRatio } from "../src/lib/canvas/canvas-generation-ratio";
 import { defaultConfig, type AiConfig, type ModelChannel } from "../src/stores/use-config-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "../src/types/canvas";
 
@@ -127,6 +128,15 @@ describe("逻辑模型选择", () => {
         };
 
         expect(resolveModelGenerationDefaults(config, model, "video", {}, { videoSeconds: "6" }).videoSeconds).toBe("15");
+    });
+
+    test("画布比例优先使用当前画布，否则继承全局默认", () => {
+        expect(DEFAULT_CANVAS_GENERATION_RATIO).toBe("16:9");
+        expect(resolveCanvasGenerationRatio(undefined, "9:16")).toBe("9:16");
+        expect(resolveCanvasGenerationRatio("4:3", "9:16")).toBe("4:3");
+        expect(resolveCanvasGenerationRatio("invalid", "invalid")).toBe("16:9");
+        expect(isCanvasGenerationRatio(" 16:9 ")).toBe(true);
+        expect(isCanvasGenerationRatio("invalid")).toBe(false);
     });
 
     test("后台标注的视频模型不因内部标识缺少视频关键词而回退", () => {

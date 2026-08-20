@@ -14,6 +14,7 @@ export type ModelCreditCost = {
     pricePolicy?: "channel" | "unified";
     billingMode: "fixed_request" | "per_second" | "token";
     unitPriceMicrocredits: number;
+    resolutionPriceMicrocredits?: Record<string, number>;
 };
 
 function modelCreditCost(modelCosts: ModelCreditCost[] | undefined, model: string) {
@@ -24,7 +25,7 @@ export function formatCredits(value: number, maximumFractionDigits = 6) {
     return (value / 1_000_000).toLocaleString("zh-CN", { maximumFractionDigits });
 }
 
-export function requestCreditCost(options: { channelMode: string; modelCosts?: ModelCreditCost[]; model: string; count?: string | number; seconds?: string | number }) {
+export function requestCreditCost(options: { channelMode: string; modelCosts?: ModelCreditCost[]; model: string; count?: string | number; seconds?: string | number; resolution?: string }) {
     if (options.channelMode !== "remote") return null;
     const cost = modelCreditCost(options.modelCosts, options.model);
     if (!cost) return null;
@@ -35,5 +36,15 @@ export function requestCreditCost(options: { channelMode: string; modelCosts?: M
     const quantity = cost.billingMode === "per_second"
         ? Math.max(1, Math.floor(Math.abs(Number(options.seconds)) || 1))
         : Math.max(1, Math.floor(Math.abs(Number(options.count)) || 1));
-    return (cost.unitPriceMicrocredits / 1_000_000) * quantity;
+    const resolution = normalizeResolutionPriceKey(options.resolution);
+    const unitPrice = resolution ? (cost.resolutionPriceMicrocredits?.[resolution] ?? cost.unitPriceMicrocredits) : cost.unitPriceMicrocredits;
+    return (unitPrice / 1_000_000) * quantity;
+}
+
+function normalizeResolutionPriceKey(value?: string) {
+    const normalized = String(value || "").trim().toLowerCase().replace(/p$/, "");
+    if (!normalized || normalized === "auto" || normalized === "default") return "";
+    if (normalized === "2k") return "1440p";
+    if (normalized === "4k") return "2160p";
+    return `${normalized}p`;
 }

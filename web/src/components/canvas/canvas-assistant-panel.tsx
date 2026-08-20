@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import copyToClipboard from "copy-to-clipboard";
 import { Copy, Cpu, History, MessageSquareText, Plus, ScrollText, Settings2, Trash2, X } from "lucide-react";
 import { Button, Modal, Segmented, Select, Tooltip } from "antd";
-import { motion } from "motion/react";
+import { motion, useReducedMotion } from "motion/react";
 
 import { modelDisplayName, modelIcon, normalizeModelOptionValue, resolveModelChannel, resolveModelRequestConfig, selectableModelsByCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -308,6 +308,7 @@ export function CanvasAssistantPanel({
     resizing = false,
 }: CanvasAssistantPanelProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const reducedMotion = useReducedMotion();
     const user = useUserStore((state) => state.user);
     const effectiveConfig = useEffectiveConfig();
     const cleanupImages = useAssetStore((state) => state.cleanupImages);
@@ -1018,10 +1019,17 @@ export function CanvasAssistantPanel({
                 }
             />
 
-            {view === "setup" ? (
-                <OnlineAgentSetupView theme={theme} activeModel={activeModel} onOpenConfig={() => navigateToSettings({ continueCreation: true })} />
-            ) : (
-                <div ref={chatListRef} className="thin-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
+            <motion.div
+                className="flex min-h-0 basis-0 flex-col overflow-hidden"
+                animate={{ flexGrow: resizing ? 0 : 1, opacity: resizing ? 0 : 1, y: resizing ? 8 : 0 }}
+                transition={{ duration: reducedMotion ? 0 : 0.18, ease: [0.22, 1, 0.36, 1] }}
+                style={{ pointerEvents: resizing ? "none" : undefined }}
+                aria-hidden={resizing}
+            >
+                {view === "setup" ? (
+                    <OnlineAgentSetupView theme={theme} activeModel={activeModel} onOpenConfig={() => navigateToSettings({ continueCreation: true })} />
+                ) : (
+                    <div ref={chatListRef} className="thin-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
                     {view === "history" ? (
                         <AssistantHistory
                             sessions={historySessions}
@@ -1059,12 +1067,12 @@ export function CanvasAssistantPanel({
                             }}
                         />
                     )}
-                </div>
-            )}
+                    </div>
+                )}
 
-            {view === "chat" ? (
-                <>
-                    {selectedReferences.length ? (
+                {view === "chat" ? (
+                    <>
+                        {selectedReferences.length ? (
                         <div className="thin-scrollbar flex max-w-full gap-1.5 overflow-x-auto px-3 pb-1">
                             {selectedReferences.map((item, index) => (
                                 <AssistantReferenceChip
@@ -1078,10 +1086,11 @@ export function CanvasAssistantPanel({
                                 />
                             ))}
                         </div>
-                    ) : null}
-                    <AgentChatComposer
+                        ) : null}
+                        <AgentChatComposer
                         prompt={prompt}
                         sending={agentBusy}
+                        collapsed={resizing}
                         placeholder={cinematicEntryActive ? "一句话描述题材、角色和核心冲突" : "描述你想让 Agent 如何操作画布"}
                         theme={theme}
                         onPromptChange={setPrompt}
@@ -1098,9 +1107,10 @@ export function CanvasAssistantPanel({
                                 ) : null}
                             </>
                         }
-                    />
-                </>
-            ) : null}
+                        />
+                    </>
+                ) : null}
+            </motion.div>
 
             <Modal
                 title="删除对话记录？"
@@ -1155,7 +1165,7 @@ export function CanvasAssistantPanel({
                 onUndo={undoLastOnlineBatch}
                 onCollapse={collapse}
             />
-            {agentMode === "local" ? <CanvasLocalAgentPanel embedded snapshot={snapshot} canUndoOps={canUndoOps} undoOpsCount={undoOpsCount} onApplyOps={onApplyOps} onUndoOps={onUndoOps} autoConnect={autoConnectLocal} /> : onlineContent}
+            {agentMode === "local" ? <CanvasLocalAgentPanel embedded resizing={resizing} snapshot={snapshot} canUndoOps={canUndoOps} undoOpsCount={undoOpsCount} onApplyOps={onApplyOps} onUndoOps={onUndoOps} autoConnect={autoConnectLocal} /> : onlineContent}
         </motion.aside>
     );
 }

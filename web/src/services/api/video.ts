@@ -188,7 +188,6 @@ async function createHuiQuYunVideoTask(config: ResolvedAiConfig, model: string, 
     const profile = modelCapabilityConfigFor(config, model).video!;
     const normalized = normalizeVideoValue(profile, { seconds: config.videoSeconds, ratio: config.size, resolution: config.vquality });
     const seconds = Number(normalized.seconds);
-    if (imageUrls.length >= 3 && (seconds !== 8 || normalized.ratio !== "16:9")) throw new Error("汇取云多图参考仅支持 8 秒、16:9 视频");
     const payload: Record<string, unknown> = {
         model: modelName,
         prompt: prompt.trim(),

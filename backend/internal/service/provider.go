@@ -1575,6 +1575,9 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 	if input.Config.InterfaceType == string(model.ChannelInterfaceHuiQuYunVideo) {
 		return runHuiQuYunVideoTask(ctx, input)
 	}
+	if input.Config.InterfaceType == string(model.ChannelInterfaceAIStarsLabVideo) {
+		return runAiStarsLabVideoTask(ctx, input)
+	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineJiMengVideo) {
 		return runVolcengineJiMengVideoTask(ctx, input)
 	}
@@ -1787,11 +1790,87 @@ func runHuiQuYunVideoTask(ctx context.Context, input canvasGenerationInput) (map
 	return nil, fmt.Errorf("汇取云视频生成超时（任务 %s）", id)
 }
 
+func runAiStarsLabVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
+	id := resumedProviderRequestID(ctx)
+	if id == "" {
+		body, err := aiStarsLabVideoRequestBody(input)
+		if err != nil {
+			return nil, err
+		}
+		var created map[string]interface{}
+		if err := postJSON(ctx, input.Config, "/generation/create/video", body, &created); err != nil {
+			return nil, err
+		}
+		id = firstNonEmptyString(stringField(created, "taskId"), stringField(created, "task_id"), stringField(created, "id"))
+		if data, ok := created["data"].(map[string]interface{}); ok && id == "" {
+			id = firstNonEmptyString(stringField(data, "taskId"), stringField(data, "task_id"), stringField(data, "id"))
+		}
+	}
+	if id == "" {
+		return nil, errors.New("AIStarsLab 视频接口没有返回任务 ID")
+	}
+	for deadline := providerPollingDeadline(ctx); time.Now().Before(deadline); {
+		var payload map[string]interface{}
+		if err := getJSON(withProviderRequestKind(ctx, "poll"), input.Config, "/generation/status?taskId="+url.QueryEscape(id), &payload); err != nil {
+			return nil, err
+		}
+		state := payload
+		if data, ok := payload["data"].(map[string]interface{}); ok {
+			state = data
+		}
+		status := fmt.Sprint(state["status"])
+		switch status {
+		case "3", "success", "succeeded", "completed":
+			resultURL := firstNonEmptyString(stringField(state, "output"), stringField(state, "result_url"), stringField(state, "video_url"), stringField(state, "url"))
+			if resultURL == "" {
+				return nil, fmt.Errorf("AIStarsLab 视频任务 %s 已完成但没有返回视频地址", id)
+			}
+			data, mimeType, err := getProviderExternalBinary(withProviderRequestKind(ctx, "download"), input.Config, resultURL)
+			if err != nil {
+				return nil, fmt.Errorf("AIStarsLab 视频结果下载失败（任务 %s）：%w", id, err)
+			}
+			mimeType = normalizedMediaMimeType(mimeType, data)
+			return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
+		case "4", "failed", "failure", "cancelled", "canceled":
+			return nil, fmt.Errorf("AIStarsLab 视频生成失败（任务 %s）：%s", id, firstNonEmptyString(stringField(state, "msg"), stringField(state, "message"), "上游返回失败"))
+		}
+		if err := sleepContext(ctx, 5*time.Second); err != nil {
+			return nil, err
+		}
+	}
+	return nil, context.DeadlineExceeded
+}
+
+func aiStarsLabVideoRequestBody(input canvasGenerationInput) (map[string]interface{}, error) {
+	if len(input.ReferenceAudios) > 0 && len(input.ReferenceImages) == 0 {
+		return nil, errors.New("AIStarsLab 参考音频必须同时提供至少 1 张参考图片")
+	}
+	config := DefaultModelCapabilityConfigForModel(string(model.ChannelInterfaceAIStarsLabVideo), input.Config.Model).Video
+	if input.VideoCapability != nil {
+		config = input.VideoCapability
+	}
+	images, err := huiQuYunMediaURLs(input.ReferenceImages)
+	if err != nil {
+		return nil, err
+	}
+	videos, err := huiQuYunMediaURLs(input.ReferenceVideos)
+	if err != nil {
+		return nil, err
+	}
+	audios, err := huiQuYunMediaURLs(input.ReferenceAudios)
+	if err != nil {
+		return nil, err
+	}
+	duration := config.Duration.Default
+	if value, parseErr := strconv.Atoi(strings.TrimSpace(input.Config.VideoSeconds)); parseErr == nil && value > 0 {
+		duration = value
+	}
+	body := map[string]interface{}{"channel": "", "model": input.Config.Model, "prompt": strings.TrimSpace(input.Prompt), "duration": duration, "aspectRatio": strings.TrimSpace(input.Config.Size), "inputImages": images, "inputVideos": videos, "inputAudios": audios}
+	return body, nil
+}
+
 func huiQuYunVideoRequestBody(input canvasGenerationInput) (map[string]interface{}, error) {
 	normalizeHuiQuYunVideoInput(&input)
-	if len(input.ReferenceImages) > 4 || len(input.ReferenceVideos) > 3 || len(input.ReferenceAudios) > 1 {
-		return nil, errors.New("汇取云最多支持 4 张参考图、3 个参考视频和 1 个参考音频")
-	}
 	if len(input.ReferenceAudios) > 0 && len(input.ReferenceImages) == 0 && len(input.ReferenceVideos) == 0 {
 		return nil, errors.New("汇取云参考音频必须搭配参考图片或参考视频")
 	}
@@ -1809,9 +1888,6 @@ func huiQuYunVideoRequestBody(input canvasGenerationInput) (map[string]interface
 	}
 	seconds, _ := strconv.Atoi(strings.TrimSpace(input.Config.VideoSeconds))
 	ratio := normalizeHuiQuYunVideoRatio(input.Config.Size)
-	if len(images) >= 3 && (seconds != 8 || ratio != "16:9") {
-		return nil, errors.New("汇取云多图参考仅支持 8 秒、16:9 视频")
-	}
 	body := map[string]interface{}{
 		"model":        input.Config.Model,
 		"prompt":       strings.TrimSpace(input.Prompt),
@@ -2904,8 +2980,8 @@ func validateGenerationInterface(mode string, interfaceType string) error {
 	}
 	allowed := map[string]map[string]bool{
 		"text":  {"chat-completion": true, "openai-response": true},
-		"image": {"openai-image": true, "grok-image": true, "globalaiopc-image": true, "volcengine-ark-image": true, "volcengine-jimeng-image": true, "gemini-image": true},
-		"video": {"newapi": true, "newapi-channel-1": true, "newapi-channel-2": true, "globalaiopc-video": true, "huiquyun-video": true, "xai-video": true, "volcengine-ark-video": true, "volcengine-jimeng-video": true, "gemini-veo": true, "novita-video": true},
+		"image": {"openai-image": true, "grok-image": true, "globalaiopc-image": true, "aistarslab-image": true, "volcengine-ark-image": true, "volcengine-jimeng-image": true, "gemini-image": true},
+		"video": {"newapi": true, "newapi-channel-1": true, "newapi-channel-2": true, "globalaiopc-video": true, "huiquyun-video": true, "aistarslab-video": true, "xai-video": true, "volcengine-ark-video": true, "volcengine-jimeng-video": true, "gemini-veo": true, "novita-video": true},
 		"audio": {"openai-audio": true, "async-audio": true},
 	}
 	if allowed[mode] != nil && !allowed[mode][interfaceType] {

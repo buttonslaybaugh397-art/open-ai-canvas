@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -1693,17 +1694,57 @@ func TestHuiQuYunVideoRequestBodyUsesDedicatedContract(t *testing.T) {
 	}
 }
 
-func TestHuiQuYunVideoRequestBodyRejectsInvalidMultiImageParameters(t *testing.T) {
-	_, err := huiQuYunVideoRequestBody(canvasGenerationInput{
-		Config: providerConfig{Model: "sora-2", VideoSeconds: "10", Size: "9:16"},
+func TestHuiQuYunVideoRequestBodyPreservesMultiImageParameters(t *testing.T) {
+	body, err := huiQuYunVideoRequestBody(canvasGenerationInput{
+		Config: providerConfig{Model: "sora-2", VideoSeconds: "15", Size: "9:16"},
 		ReferenceImages: []providerMedia{
 			{URL: "https://example.com/1.png"},
 			{URL: "https://example.com/2.png"},
 			{URL: "https://example.com/3.png"},
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "多图参考仅支持 8 秒、16:9") {
+	if err != nil {
 		t.Fatalf("huiQuYunVideoRequestBody() error = %v", err)
+	}
+	if body["seconds"] != 15 || body["aspect_ratio"] != "9:16" {
+		t.Fatalf("HuiQuYun multi-image parameters = %#v", body)
+	}
+	images, ok := body["reference_images"].([]string)
+	if !ok || len(images) != 3 {
+		t.Fatalf("HuiQuYun reference_images = %#v", body["reference_images"])
+	}
+}
+
+func TestHuiQuYunVideoRequestBodyDoesNotApplyLegacyReferenceLimits(t *testing.T) {
+	references := make([]providerMedia, 9)
+	for index := range references {
+		references[index] = providerMedia{URL: fmt.Sprintf("https://example.com/reference-%d.png", index)}
+	}
+	videos := make([]providerMedia, 3)
+	for index := range videos {
+		videos[index] = providerMedia{URL: fmt.Sprintf("https://example.com/reference-%d.mp4", index)}
+	}
+	audios := make([]providerMedia, 3)
+	for index := range audios {
+		audios[index] = providerMedia{URL: fmt.Sprintf("https://example.com/reference-%d.mp3", index)}
+	}
+	body, err := huiQuYunVideoRequestBody(canvasGenerationInput{
+		Config:          providerConfig{Model: "sora-2", VideoSeconds: "8", Size: "16:9"},
+		ReferenceImages: references,
+		ReferenceVideos: videos,
+		ReferenceAudios: audios,
+	})
+	if err != nil {
+		t.Fatalf("huiQuYunVideoRequestBody() rejected configured 9/3/3 references: %v", err)
+	}
+	if images, ok := body["reference_images"].([]string); !ok || len(images) != 9 {
+		t.Fatalf("HuiQuYun reference_images = %#v", body["reference_images"])
+	}
+	if videoRefs, ok := body["video_references"].([]string); !ok || len(videoRefs) != 3 {
+		t.Fatalf("HuiQuYun video_references = %#v", body["video_references"])
+	}
+	if body["audio_reference"] != audios[0].URL {
+		t.Fatalf("HuiQuYun audio_reference = %#v", body["audio_reference"])
 	}
 }
 

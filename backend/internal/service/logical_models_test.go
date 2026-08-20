@@ -65,6 +65,31 @@ func TestMatchCapabilityTreatsVideoResolutionSuffixAsEquivalent(t *testing.T) {
 	}
 }
 
+func TestModelRequestIntentNormalizesLegacyReferenceVideoOperation(t *testing.T) {
+	input := map[string]any{
+		"mode":            "video",
+		"referenceImages": []any{map[string]any{"id": "image-1"}, map[string]any{"id": "image-2"}, map[string]any{"id": "image-3"}},
+		"referenceAudios": []any{map[string]any{"id": "audio-1"}},
+	}
+	intent := ModelRequestIntentFromTaskInput(input, "canvas_video", "reference_to_video")
+	if intent.Operation != "image_to_video" {
+		t.Fatalf("operation = %q, want image_to_video", intent.Operation)
+	}
+	spec := CapabilitySpec{
+		Version:    1,
+		Capability: "video",
+		Operations: []string{"text_to_video", "image_to_video"},
+		Inputs: map[string]InputConstraint{
+			"image": {Min: 0, Max: 30},
+			"video": {Min: 0, Max: 10},
+			"audio": {Min: 0, Max: 10},
+		},
+	}
+	if match := MatchCapability(spec, intent); !match.Matched {
+		t.Fatalf("normalized AIStarsLab intent should match: %#v", match.Reasons)
+	}
+}
+
 func TestValidateProductSpecWithinRoutesRejectsUnsupportedCapabilityValue(t *testing.T) {
 	routes := []CapabilitySpec{
 		{

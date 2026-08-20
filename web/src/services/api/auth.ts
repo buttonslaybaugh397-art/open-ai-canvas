@@ -4,7 +4,7 @@ import type { GenerationTask, TaskStatus } from "@/services/api/task-center";
 import type { CanvasDrawingEngineSetting } from "@/lib/canvas/canvas-drawing-engine";
 import type { FeatureAvailability } from "@/stores/use-user-store";
 import { apiClient, request } from "@/services/api/request";
-import type { PublicLogicalModel } from "@/services/api/logical-models";
+
 
 const api = apiClient;
 
@@ -31,7 +31,7 @@ export type AdminUser = LocalUser & {
 
 export type AuthSessionPayload = {
     user: LocalUser | null;
-    logicalModels?: PublicLogicalModel[];
+    systemChannels?: ModelChannel[];
     runtimeLimits?: RuntimeLimits;
     drawingEngine?: CanvasDrawingEngineSetting;
     features?: FeatureAvailability;

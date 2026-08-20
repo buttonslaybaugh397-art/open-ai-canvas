@@ -11,12 +11,13 @@ import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resour
 import copyToClipboard from "copy-to-clipboard";
 import { nanoid } from "nanoid";
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
+import { CanvasGenerationRatioProvider, isCanvasGenerationRatio, resolveCanvasGenerationRatio } from "@/lib/canvas/canvas-generation-ratio";
 import { persistCanvasMediaPerformanceMode, readCanvasMediaPerformanceMode } from "@/lib/canvas/canvas-performance-mode";
 import { summarizeCanvasContext } from "@/lib/canvas/canvas-context-summary";
 import { refreshCanvasCharacterReferenceNodes } from "@/lib/canvas/canvas-character-reference";
 import { shouldAutoConnectCanvasRuntime } from "@/lib/canvas/local-runtime-connection";
 import { useAssetStore } from "@/stores/use-asset-store";
-import { flushCanvasStorePersistence } from "@/stores/canvas/use-canvas-store";
+import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { App } from "antd";
@@ -151,6 +152,18 @@ export default function CanvasPage() {
 }
 
 function InfiniteCanvasPage() {
+    const params = useParams<{ id: string }>();
+    const config = useConfigStore((state) => state.config);
+    const generationRatio = useCanvasStore((state) => state.projects.find((project) => project.id === (params.id || ""))?.generationRatio);
+
+    return (
+        <CanvasGenerationRatioProvider value={resolveCanvasGenerationRatio(generationRatio, config.canvasDefaultRatio)}>
+            <InfiniteCanvasWorkspace />
+        </CanvasGenerationRatioProvider>
+    );
+}
+
+function InfiniteCanvasWorkspace() {
     const { message } = App.useApp();
     const params = useParams<{ id: string }>();
     const [searchParams, setSearchParams] = useSearchParams();
@@ -165,6 +178,7 @@ function InfiniteCanvasPage() {
     const assetHandoffRef = useRef("");
 
     const config = useConfigStore((state) => state.config);
+    const updateConfig = useConfigStore((state) => state.updateConfig);
     const effectiveConfig = useEffectiveConfig();
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
     const assets = useAssetStore((state) => state.assets);
@@ -1790,6 +1804,7 @@ function InfiniteCanvasPage() {
                                     connectingParams={connectingParams}
                                     mouseWorld={mouseWorld}
                                     connectionTargetNodeId={connectionTargetNodeId}
+                                    connectionTargetAnchorRatio={connectionTargetAnchorRatio}
                                     nodeById={nodeById}
                                     visibleNodes={visibleNodes}
                                     frameChildrenById={frameChildrenById}
@@ -1819,6 +1834,7 @@ function InfiniteCanvasPage() {
                                         setSelectedNodeIds(new Set());
                                         setContextMenu(null);
                                     }}
+                                    onDeleteConnection={deleteConnection}
                                     onConnectionContextMenu={(event, connectionId) => {
                                         setSelectedConnectionId(connectionId);
                                         setSelectedNodeIds(new Set());
@@ -1880,6 +1896,9 @@ function InfiniteCanvasPage() {
                                     canRedo={historyState.canRedo}
                                     backgroundMode={backgroundMode}
                                     showImageInfo={showImageInfo}
+                                    canvasRatio={effectiveConfig.size}
+                                    canvasRatioInherited={!isCanvasGenerationRatio(currentProject?.generationRatio)}
+                                    globalCanvasRatio={config.canvasDefaultRatio}
                                     onAddImage={() => createNode(CanvasNodeType.Image)}
                                     onAddVideo={() => createNode(CanvasNodeType.Video)}
                                     onAddAudio={() => createNode(CanvasNodeType.Audio)}
@@ -1897,6 +1916,8 @@ function InfiniteCanvasPage() {
                                     onDeselect={deselectCanvas}
                                     onBackgroundModeChange={setBackgroundMode}
                                     onShowImageInfoChange={setShowImageInfo}
+                                    onCanvasRatioChange={(generationRatio) => updateProject(projectId, { generationRatio })}
+                                    onGlobalCanvasRatioChange={(generationRatio) => updateConfig("canvasDefaultRatio", generationRatio)}
                                     onOpenMyAssets={() => {
                                         openCanvasAssetLibrary();
                                     }}

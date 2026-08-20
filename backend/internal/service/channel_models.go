@@ -21,6 +21,7 @@ type ChannelModelRequest struct {
 	Protocol                     string                 `json:"protocol"`
 	BillingMode                  string                 `json:"billingMode"`
 	UnitPriceMicrocredits        int64                  `json:"unitPriceMicrocredits"`
+	ResolutionPriceMicrocredits  map[string]int64       `json:"resolutionPriceMicrocredits"`
 	InputTokenPriceMicrocredits  int64                  `json:"inputTokenPriceMicrocredits"`
 	OutputTokenPriceMicrocredits int64                  `json:"outputTokenPriceMicrocredits"`
 	CachedTokenPriceMicrocredits int64                  `json:"cachedTokenPriceMicrocredits"`
@@ -54,6 +55,10 @@ func (s *Service) EnsureSystemChannelModels() error {
 				return err
 			}
 		}
+		items, err = s.repo.ChannelModels(channels[index].ID, true)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -70,6 +75,7 @@ func (s *Service) AdminChannelModels(actor *model.User, channelID string) ([]mod
 		return nil, err
 	}
 	for index := range items {
+		items[index].ResolutionPriceMicrocredits = decodeResolutionPrices(items[index].ResolutionPricesJSON)
 		if strings.TrimSpace(items[index].CapabilityConfigJSON) == "" {
 			continue
 		}
@@ -98,7 +104,7 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 		return nil, err
 	}
 	// 使用服务端保存的渠道密钥和请求头访问上游，避免敏感配置再次经过浏览器。
-	catalog, err := s.FetchChannelModelCatalog(ctx, actor, ChannelModelsRequest{BaseURL: channel.BaseURL, AllowLocalChannel: channel.AllowLocalChannel, APIKey: channel.APIKey, APIFormat: channel.APIFormat, Headers: headers})
+	catalog, err := s.FetchChannelModelCatalog(ctx, actor, ChannelModelsRequest{BaseURL: channel.BaseURL, AllowLocalChannel: channel.AllowLocalChannel, APIKey: channel.APIKey, APIFormat: channel.APIFormat, ConnectionType: channelConnectionType(channel), Headers: headers})
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +126,7 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 	missing := make([]model.ChannelModel, 0, len(models))
 	for _, name := range models {
 		if item := known[name]; item != nil {
-			if syncHuiQuYunModelContract(*channel, item, endpointTypes[name]) {
+			if syncChannelModelContract(*channel, item, endpointTypes[name], catalogItemByID(catalog, name)) {
 				if err := s.repo.SaveChannelModel(item); err != nil {
 					return nil, err
 				}
@@ -128,7 +134,7 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 			continue
 		}
 		// 自动发现不能绕过定价边界；汇取云仅补全能力合同，仍需管理员定价后手动启用。
-		missing = append(missing, discoveredChannelModel(*channel, name, endpointTypes[name]))
+		missing = append(missing, discoveredChannelModel(*channel, name, endpointTypes[name], catalogItemByID(catalog, name)))
 	}
 	added, err := s.repo.CreateMissingChannelModels(missing)
 	if err != nil {
@@ -140,14 +146,77 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 	return &AdminChannelModelFetchResult{Models: models, Added: added}, nil
 }
 
-func discoveredChannelModel(channel model.ModelChannel, name string, endpointTypes []string) model.ChannelModel {
+func discoveredChannelModel(channel model.ModelChannel, name string, endpointTypes []string, catalogItems ...*ChannelModelCatalogItem) model.ChannelModel {
 	item := model.ChannelModel{ID: newID(), ChannelID: channel.ID, ModelKey: name, DisplayName: name, BillingMode: "fixed_request", Enabled: false, PriceVersion: 1}
-	syncHuiQuYunModelContract(channel, &item, endpointTypes)
+	var catalog *ChannelModelCatalogItem
+	if len(catalogItems) > 0 {
+		catalog = catalogItems[0]
+	}
+	syncChannelModelContract(channel, &item, endpointTypes, catalog)
 	return item
+}
+
+func catalogItemByID(items []ChannelModelCatalogItem, id string) *ChannelModelCatalogItem {
+	for index := range items {
+		if items[index].ID == id {
+			return &items[index]
+		}
+	}
+	return nil
+}
+
+func channelConnectionType(channel *model.ModelChannel) string {
+	if channel != nil && isAiStarsLabBaseURL(channel.BaseURL) {
+		return "aistarslab"
+	}
+	return ""
+}
+
+func syncChannelModelContract(channel model.ModelChannel, item *model.ChannelModel, endpointTypes []string, catalog *ChannelModelCatalogItem) bool {
+	if catalog != nil && catalog.AIStarsLab != nil {
+		protocol := model.ChannelInterfaceAIStarsLabVideo
+		capability := "video"
+		if strings.EqualFold(strings.TrimSpace(catalog.AIStarsLab.Capability), "image") {
+			protocol = model.ChannelInterfaceAIStarsLabImage
+			capability = "image"
+		}
+		changed := item.Protocol != protocol || item.Capability != capability
+		item.Protocol, item.Capability = protocol, capability
+		config := DefaultModelCapabilityConfigForModel(string(protocol), item.ModelKey)
+		config.AIStarsLab = &AIStarsLabCapabilityConfig{Channel: catalog.AIStarsLab.Channel, Capability: catalog.AIStarsLab.Capability, Model: catalog.AIStarsLab.Model, Qualities: append([]string(nil), catalog.AIStarsLab.Qualities...), AspectRatios: append([]string(nil), catalog.AIStarsLab.AspectRatios...), Duration: append([]int(nil), catalog.AIStarsLab.Duration...), DurationMin: catalog.AIStarsLab.DurationMin, DurationMax: catalog.AIStarsLab.DurationMax, Modes: append([]string(nil), catalog.AIStarsLab.Modes...), InputImagesMax: catalog.AIStarsLab.InputImagesMax, InputVideosMax: catalog.AIStarsLab.InputVideosMax, InputAudiosMax: catalog.AIStarsLab.InputAudiosMax}
+		if capability == "video" {
+			config.Video.References.MaxImages = catalog.AIStarsLab.InputImagesMax
+			config.Video.References.MaxVideos = catalog.AIStarsLab.InputVideosMax
+			config.Video.References.MaxAudios = catalog.AIStarsLab.InputAudiosMax
+			if len(catalog.AIStarsLab.Duration) > 0 {
+				config.Video.Duration.Selection = "enum"
+				config.Video.Duration.Values = append([]int(nil), catalog.AIStarsLab.Duration...)
+				config.Video.Duration.Default = catalog.AIStarsLab.Duration[0]
+			} else if catalog.AIStarsLab.DurationMin > 0 && catalog.AIStarsLab.DurationMax >= catalog.AIStarsLab.DurationMin {
+				config.Video.Duration = VideoDurationConfig{Selection: "range", Min: catalog.AIStarsLab.DurationMin, Max: catalog.AIStarsLab.DurationMax, Step: 1, Default: catalog.AIStarsLab.DurationMin}
+			}
+			config.Video.Ratios = append([]string(nil), catalog.AIStarsLab.AspectRatios...)
+			if len(config.Video.Ratios) > 0 {
+				config.Video.DefaultRatio = config.Video.Ratios[0]
+			}
+		}
+		encoded, err := json.Marshal(config)
+		if err == nil && item.CapabilityConfigJSON != string(encoded) {
+			item.CapabilityConfigJSON = string(encoded)
+			item.CapabilityVersion++
+			changed = true
+		}
+		return changed
+	}
+	return syncHuiQuYunModelContract(channel, item, endpointTypes)
 }
 
 func syncHuiQuYunModelContract(channel model.ModelChannel, item *model.ChannelModel, endpointTypes []string) bool {
 	if item == nil || !isHuiQuYunBaseURL(channel.BaseURL) {
+		return false
+	}
+	// 管理员完成定价配置后，能力与协议就是人工确认的合同；后续拉取不得再用模型名覆盖。
+	if item.PriceConfigured && validHuiQuYunProtocol(item.Protocol) && capabilityForProtocol(item.Protocol) == item.Capability {
 		return false
 	}
 	protocol := huiQuYunProtocolForModel(item.ModelKey, endpointTypes)
@@ -176,6 +245,11 @@ func syncHuiQuYunModelContract(channel model.ModelChannel, item *model.ChannelMo
 func isHuiQuYunBaseURL(value string) bool {
 	normalized := strings.ToLower(strings.TrimRight(strings.TrimSpace(value), "/"))
 	return normalized == "https://api.bjhuiqu.net" || normalized == "https://api.bjhuiqu.net/v1"
+}
+
+func isAiStarsLabBaseURL(value string) bool {
+	normalized := strings.ToLower(strings.TrimRight(strings.TrimSpace(value), "/"))
+	return normalized == "https://api.video.aistarslab.com/openapi"
 }
 
 func huiQuYunProtocolForModel(name string, endpointTypes []string) model.ChannelInterfaceType {
@@ -213,6 +287,15 @@ func huiQuYunModelContainsAny(value string, markers ...string) bool {
 		}
 	}
 	return false
+}
+
+func validHuiQuYunProtocol(protocol model.ChannelInterfaceType) bool {
+	switch protocol {
+	case model.ChannelInterfaceChatCompletion, model.ChannelInterfaceOpenAIResponse, model.ChannelInterfaceOpenAIImage, model.ChannelInterfaceOpenAIAudio, model.ChannelInterfaceHuiQuYunVideo:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) SaveAdminChannelModel(actor *model.User, channelID string, id string, req ChannelModelRequest) (*model.ChannelModel, error) {
@@ -256,6 +339,10 @@ func (s *Service) SaveAdminChannelModel(actor *model.User, channelID string, id 
 	if req.UnitPriceMicrocredits < 0 || req.InputTokenPriceMicrocredits < 0 || req.OutputTokenPriceMicrocredits < 0 || req.CachedTokenPriceMicrocredits < 0 {
 		return nil, BadAuthRequest("模型积分价格不能小于 0")
 	}
+	resolutionPrices, resolutionPricesJSON, priceErr := normalizeResolutionPrices(req.ResolutionPriceMicrocredits, capability, req.CapabilityConfig)
+	if priceErr != nil {
+		return nil, priceErr
+	}
 	if billingMode == "token" && req.InputTokenPriceMicrocredits == 0 && req.OutputTokenPriceMicrocredits == 0 && req.CachedTokenPriceMicrocredits == 0 {
 		return nil, BadAuthRequest("Token 计费至少需要配置一项价格")
 	}
@@ -287,6 +374,8 @@ func (s *Service) SaveAdminChannelModel(actor *model.User, channelID string, id 
 	item.Protocol = protocol
 	item.BillingMode = billingMode
 	item.UnitPriceMicrocredits = req.UnitPriceMicrocredits
+	item.ResolutionPricesJSON = resolutionPricesJSON
+	item.ResolutionPriceMicrocredits = resolutionPrices
 	item.InputTokenPriceMicrocredits = req.InputTokenPriceMicrocredits
 	item.OutputTokenPriceMicrocredits = req.OutputTokenPriceMicrocredits
 	item.CachedTokenPriceMicrocredits = req.CachedTokenPriceMicrocredits
@@ -312,6 +401,8 @@ func (s *Service) SaveAdminChannelModel(actor *model.User, channelID string, id 
 		item.Enabled = *req.Enabled
 	}
 	// 供应线路直接引用渠道模型，修改能力参数后会从这一唯一事实来源实时生成线路能力。
+	// 可用配置不再保存独立能力范围；路由能力会在读取时从当前渠道模型能力实时投影。
+	// 因此修改尺寸、比例或数量时无需拿旧快照做冲突校验，也不会留下第二个事实来源。
 	if err := s.repo.SaveChannelModel(item); err != nil {
 		return nil, err
 	}
@@ -320,6 +411,46 @@ func (s *Service) SaveAdminChannelModel(actor *model.User, channelID string, id 
 		return nil, err
 	}
 	return item, nil
+}
+
+func normalizeResolutionPrices(prices map[string]int64, capability string, config *ModelCapabilityConfig) (map[string]int64, string, error) {
+	if len(prices) == 0 {
+		return nil, "", nil
+	}
+	if capability != "video" || config == nil || config.Video == nil {
+		return nil, "", BadAuthRequest("只有视频模型可以配置分辨率价格")
+	}
+	supported := make(map[string]bool, len(config.Video.Resolutions))
+	for _, resolution := range config.Video.Resolutions {
+		supported[normalizeResolution(resolution)] = true
+	}
+	normalized := make(map[string]int64, len(prices))
+	for resolution, price := range prices {
+		key := normalizeResolution(resolution)
+		if !supported[key] {
+			return nil, "", BadAuthRequest("分辨率价格包含模型不支持的档位：" + strings.TrimSpace(resolution))
+		}
+		if price < 0 {
+			return nil, "", BadAuthRequest("分辨率价格不能小于 0")
+		}
+		normalized[key] = price
+	}
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		return nil, "", err
+	}
+	return normalized, string(encoded), nil
+}
+
+func decodeResolutionPrices(raw string) map[string]int64 {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	prices := map[string]int64{}
+	if json.Unmarshal([]byte(raw), &prices) != nil || len(prices) == 0 {
+		return nil
+	}
+	return prices
 }
 
 func supportsTokenBilling(capability string, protocol model.ChannelInterfaceType) bool {
@@ -456,10 +587,6 @@ func normalizeChannelModelContract(channel *model.ModelChannel, req ChannelModel
 	if modelKey == "" {
 		return "", "", "", BadAuthRequest("请填写模型标识")
 	}
-	if channel != nil && isHuiQuYunBaseURL(channel.BaseURL) {
-		protocol := huiQuYunProtocolForModel(modelKey, nil)
-		return modelKey, capabilityForProtocol(protocol), protocol, nil
-	}
 	capability := normalizeCapability(req.Capability)
 	if capability == "" {
 		return "", "", "", BadAuthRequest("请选择模型能力")
@@ -467,6 +594,9 @@ func normalizeChannelModelContract(channel *model.ModelChannel, req ChannelModel
 	protocol := model.ChannelInterfaceType(strings.TrimSpace(req.Protocol))
 	if !validChannelInterfaceType(protocol) {
 		return "", "", "", BadAuthRequest("请选择有效的模型请求协议")
+	}
+	if channel != nil && isHuiQuYunBaseURL(channel.BaseURL) && !validHuiQuYunProtocol(protocol) {
+		return "", "", "", BadAuthRequest("汇取云仅支持文本、图片、音频和汇取云视频协议")
 	}
 	if expected := capabilityForProtocol(protocol); expected != "" && expected != capability {
 		return "", "", "", BadAuthRequest("模型能力与请求协议不匹配")
@@ -603,7 +733,7 @@ func capabilityForProtocol(protocol model.ChannelInterfaceType) string {
 		return "image"
 	case model.ChannelInterfaceOpenAIAudio, model.ChannelInterfaceAsyncAudio:
 		return "audio"
-	case model.ChannelInterfaceNewAPIVideo, model.ChannelInterfaceNewAPIChannel1, model.ChannelInterfaceNewAPIChannel2, model.ChannelInterfaceGlobalAiOpcVideo, model.ChannelInterfaceHuiQuYunVideo, model.ChannelInterfaceXAIVideo, model.ChannelInterfaceVolcengineArkVideo, model.ChannelInterfaceVolcengineJiMengVideo, model.ChannelInterfaceGeminiVeo:
+	case model.ChannelInterfaceNewAPIVideo, model.ChannelInterfaceNewAPIChannel1, model.ChannelInterfaceNewAPIChannel2, model.ChannelInterfaceGlobalAiOpcVideo, model.ChannelInterfaceHuiQuYunVideo, model.ChannelInterfaceAIStarsLabVideo, model.ChannelInterfaceXAIVideo, model.ChannelInterfaceVolcengineArkVideo, model.ChannelInterfaceVolcengineJiMengVideo, model.ChannelInterfaceGeminiVeo:
 		return "video"
 	case model.ChannelInterfaceChatCompletion, model.ChannelInterfaceOpenAIResponse:
 		return "text"

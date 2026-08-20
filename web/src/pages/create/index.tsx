@@ -20,7 +20,7 @@ import { buildImageResolutionOptions, formatImageResolutionSize, imageRatioForSi
 import { VIDEO_RESOLUTION_OPTIONS } from "@/lib/video-generation-options";
 import { modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, videoDurationAllowed, videoDurationOptions, type ImageCapabilityConfig, type VideoCapabilityConfig } from "@/lib/model-capabilities";
 import { resolveCompatibleModel, mergedImageCapabilityConfig, type ModelRequirements } from "@/lib/model-selection";
-import { isGenerationTaskCancelled, logicalModelIDForConfig, runBackendGenerationTask, runBackendGenerationTaskBatch, type BackendGenerationResult } from "@/services/api/generation-task";
+import { isGenerationTaskCancelled, runBackendGenerationTask, runBackendGenerationTaskBatch, type BackendGenerationResult } from "@/services/api/generation-task";
 import { requestImageQuestion, type AiTextContentPart } from "@/services/api/image";
 import { listAddedSkills, type Skill } from "@/services/api/skills";
 import { abortGenerationTask, cancelGenerationTask, subscribeGenerationTasks, type GenerationTask } from "@/services/api/task-center";
@@ -513,24 +513,7 @@ export default function CreatePage() {
         };
         try {
             if (mode === "text") {
-				if (logicalModelIDForConfig(requestConfig)) {
-					const result = await runGenerationOperationOnce(retryContext?.clientOperationId, () => runBackendGenerationTask({
-						mode: "text",
-						prompt: expandedPrompt,
-						config: requestConfig,
-						referenceImages,
-						referenceVideos,
-						referenceAudios,
-						textHistory: (activeConversation.messages || []).filter((item) => item.content.trim()).map((item) => ({ role: item.role, content: item.content })),
-						signal: requestLifecycle.signal,
-						metadata: { source: "create-page", conversationId: activeConversation.id, messageId: assistantMessage.id, ...referenceMetadata },
-						onTaskUpdate: bindTask,
-						...retryContext,
-					}));
-					if (!result.text?.trim()) throw new Error("后端任务没有返回文本");
-					updateOriginAssistant((item) => ({ ...item, content: result.text || "" }));
-				} else {
-					const history = await Promise.all([...(activeConversation.messages || []), userMessage].map(async (item) => ({
+				const history = await Promise.all([...(activeConversation.messages || []), userMessage].map(async (item) => ({
 						role: item.role,
 						content: item.role === "user"
 							? await buildTextMessageContent(item)
@@ -540,7 +523,6 @@ export default function CreatePage() {
 						signal: requestLifecycle.signal,
 						onReasoning: (reasoning) => updateOriginAssistant((item) => ({ ...item, reasoning })),
 					});
-				}
             } else if (mode === "image") {
                 const taskCount = Math.max(1, Math.min(imageProfile.maxOutputs, Math.floor(Number(count) || 1)));
                 const settled = await runGenerationOperationOnce(retryContext?.clientOperationId, () => runBackendGenerationTaskBatch({
@@ -1102,6 +1084,7 @@ function CreationComposer(props: ComposerProps) {
         model: modelOptionName(props.model),
         count: props.mode === "image" ? props.count : 1,
         seconds: props.mode === "video" ? props.seconds : 1,
+        resolution: props.mode === "video" ? props.config.vquality : undefined,
     });
     const showCost = creditsEnabled && credits !== null;
     const formattedCredits = credits?.toLocaleString("zh-CN", { maximumFractionDigits: 6 });

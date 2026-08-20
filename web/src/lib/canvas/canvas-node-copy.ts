@@ -1,5 +1,5 @@
 import { resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
-import type { CanvasNodeData, CanvasNodeMetadata, StoryboardRow } from "@/types/canvas";
+import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata, type StoryboardRow } from "@/types/canvas";
 
 function remapReferenceId(nodeId: string | undefined, idMap: ReadonlyMap<string, string>) {
     return nodeId ? idMap.get(nodeId) || nodeId : undefined;
@@ -31,9 +31,31 @@ function copyStoryboardRow(row: StoryboardRow, idMap: ReadonlyMap<string, string
     };
 }
 
-// 副本只能继承内容和用户引用，运行中任务、批次及指向源生成结果的关系必须隔离。
+export function copiedNodeDropsMediaOutput(node: CanvasNodeData) {
+    return node.type === CanvasNodeType.Video && Boolean(node.metadata?.model || node.metadata?.videoEditOperation || node.metadata?.taskId || node.metadata?.generationMode === "video");
+}
+
+// 副本只能继承可复用内容和用户引用，运行中任务、批次及生成视频结果必须隔离。
 export function isolateCopiedNodeMetadata(node: CanvasNodeData, idMap: ReadonlyMap<string, string>): CanvasNodeMetadata {
-    const metadata = resetGenerationTaskMetadata(node.metadata, node.metadata?.content ? "success" : "idle");
+    const copyWithoutMediaOutput = copiedNodeDropsMediaOutput(node);
+    const metadata = resetGenerationTaskMetadata(node.metadata, copyWithoutMediaOutput ? "idle" : node.metadata?.content ? "success" : "idle");
+    if (copyWithoutMediaOutput) {
+        delete metadata.content;
+        delete metadata.previewContent;
+        delete metadata.storageKey;
+        delete metadata.mimeType;
+        delete metadata.bytes;
+        delete metadata.durationMs;
+        delete metadata.naturalWidth;
+        delete metadata.naturalHeight;
+        delete metadata.assetId;
+        delete metadata.subtitleEntries;
+        delete metadata.subtitleHighlights;
+        delete metadata.subtitleStyle;
+        delete metadata.subtitleUpdatedAt;
+    }
+    delete metadata.generationEffectKeys;
+    delete metadata.agentGenerationContinuation;
     delete metadata.generationBatches;
     delete metadata.batchRootId;
     delete metadata.batchChildIds;

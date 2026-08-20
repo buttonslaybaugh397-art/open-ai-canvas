@@ -39,7 +39,7 @@ export const defaultFeatureAvailability: FeatureAvailability = {
     shortDramaEnabled: true,
     taskCenterEnabled: true,
     creditsEnabled: true,
-    customChannelsEnabled: true,
+    customChannelsEnabled: false,
     desktopLocalChannelsEnabled: false,
 };
 
@@ -66,7 +66,7 @@ export const useUserStore = create<UserStore>()((set) => ({
     setUser: (user) => set({ user }),
     setRuntimeLimits: (runtimeLimits) => set({ runtimeLimits: runtimeLimits || { activeTaskLimit: 5, resourceUploadMB: 50, sessionUploadMB: 32 } }),
     setDrawingEngine: (drawingEngine) => set({ drawingEngine: drawingEngine || { defaultEngine: DEFAULT_DRAWING_ENGINE } }),
-    setFeatures: (features) => set({ features: features ? { ...defaultFeatureAvailability, ...features } : defaultFeatureAvailability }),
+    setFeatures: (features) => set({ features: features ? { ...defaultFeatureAvailability, ...features, customChannelsEnabled: false } : defaultFeatureAvailability }),
     setHydrated: (hydrated) => set({ hydrated }),
     clearSession: () => set({ user: null, runtimeLimits: { activeTaskLimit: 5, resourceUploadMB: 50, sessionUploadMB: 32 }, drawingEngine: { defaultEngine: DEFAULT_DRAWING_ENGINE }, features: defaultFeatureAvailability }),
 }));

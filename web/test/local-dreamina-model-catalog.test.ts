@@ -333,6 +333,7 @@ test("Dreamina catalog forced resync ignores a late result from the previous Run
 });
 
 test("effective config removes custom channels when administrators disable them", async () => {
+test("effective config always uses backend system channels", async () => {
     const { createModelChannel, effectiveConfigForCustomChannels, normalizeConfigSnapshot } = await import("../src/stores/use-config-store");
     const config = normalizeConfigSnapshot({
         config: {
@@ -351,7 +352,7 @@ test("effective config removes custom channels when administrators disable them"
         },
     }).config;
 
-    const effective = effectiveConfigForCustomChannels(config, false);
+    const effective = effectiveConfigForCustomChannels(config, true);
     expect(effective.channels.map((channel) => channel.id)).toEqual(["system-1"]);
     expect(effective.models).toContain("system-1::system-model");
     expect(effective.models).not.toContain("custom-1::custom-model");

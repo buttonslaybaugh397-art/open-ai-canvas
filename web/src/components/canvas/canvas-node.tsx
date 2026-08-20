@@ -10,6 +10,7 @@ import { CanvasNodeType, type CanvasNodeData, type Position } from "@/types/canv
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { MEDIA_NODE_MIN_SIZE } from "@/lib/canvas/canvas-node-size";
 import { CanvasNodeContent, CanvasNodeImageInfo } from "./canvas-node-content";
+import { normalizedAnchorRatio } from "./canvas-connections";
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 type CanvasTheme = (typeof canvasThemes)[keyof typeof canvasThemes];
@@ -22,6 +23,9 @@ type CanvasNodeProps = {
     isRelated: boolean;
     isFocusRelated: boolean;
     isConnectionTarget: boolean;
+    connectionTargetSide?: "left" | "right";
+    connectionTargetAnchorRatio?: number;
+    isConnecting: boolean;
     forceInputVisible?: boolean;
     showImageInfo: boolean;
     reduceMediaEffects?: boolean;
@@ -66,6 +70,8 @@ export const CanvasNode = React.memo(function CanvasNode({
     isRelated,
     isFocusRelated,
     isConnectionTarget,
+    connectionTargetSide = "left",
+    connectionTargetAnchorRatio,
     forceInputVisible = false,
     showImageInfo,
     reduceMediaEffects = false,
@@ -443,8 +449,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                 </> : null}
             </div>
 
-            {!readOnly && data.type !== CanvasNodeType.Script && (hovered || forceInputVisible) ? <ConnectionSideRail side="left" scale={scale} theme={theme} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "target", undefined, anchorRatio)} /> : null}
-            {!readOnly && data.type !== CanvasNodeType.Script && data.type !== CanvasNodeType.Config && hovered ? <ConnectionSideRail side="right" scale={scale} theme={theme} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "source", undefined, anchorRatio)} /> : null}
+            {!readOnly && data.type !== CanvasNodeType.Script ? <ConnectionSideRail side="left" scale={scale} visible={hovered || forceInputVisible || (isConnectionTarget && connectionTargetSide === "left")} anchorRatio={isConnectionTarget && connectionTargetSide === "left" ? connectionTargetAnchorRatio : undefined} theme={theme} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "target", undefined, anchorRatio)} /> : null}
+            {!readOnly && data.type !== CanvasNodeType.Script && data.type !== CanvasNodeType.Config ? <ConnectionSideRail side="right" scale={scale} visible={hovered || (isConnectionTarget && connectionTargetSide === "right")} anchorRatio={isConnectionTarget && connectionTargetSide === "right" ? connectionTargetAnchorRatio : undefined} theme={theme} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "source", undefined, anchorRatio)} /> : null}
 
         </div>
     );
@@ -672,31 +678,33 @@ function NodeStatusBadge({ status }: { status: "loading" | "success" | "error" }
     );
 }
 
-function ConnectionSideRail({ side, scale, theme, onPointerDown }: { side: "left" | "right"; scale: number; theme: CanvasTheme; onPointerDown: (event: React.PointerEvent, anchorRatio: number) => void }) {
+function ConnectionSideRail({ side, scale, visible, anchorRatio, theme, onPointerDown }: { side: "left" | "right"; scale: number; visible: boolean; anchorRatio?: number; theme: CanvasTheme; onPointerDown: (event: React.PointerEvent, anchorRatio: number) => void }) {
     const handleRef = useRef<HTMLSpanElement>(null);
     const anchorRatioRef = useRef(0.5);
     const inverseScale = 1 / Math.max(scale, 0.05);
 
     const resetAnchor = useCallback(() => {
-        anchorRatioRef.current = 0.5;
-        if (handleRef.current) handleRef.current.style.top = "50%";
-    }, []);
+        const nextRatio = normalizedAnchorRatio(anchorRatio);
+        anchorRatioRef.current = nextRatio;
+        if (handleRef.current) handleRef.current.style.top = `${nextRatio * 100}%`;
+    }, [anchorRatio]);
+
+    useEffect(() => {
+        resetAnchor();
+    }, [resetAnchor, visible]);
 
     const updateAnchor = (event: React.PointerEvent<HTMLButtonElement>) => {
-        const railBounds = event.currentTarget.getBoundingClientRect();
-        const nodeBounds = event.currentTarget.parentElement?.getBoundingClientRect() || railBounds;
-        const screenPadding = Math.min(railBounds.height * 0.35, 12);
-        const railRatio = Math.min(1 - screenPadding / Math.max(railBounds.height, 1), Math.max(screenPadding / Math.max(railBounds.height, 1), (event.clientY - railBounds.top) / Math.max(railBounds.height, 1)));
-        const anchorY = railBounds.top + railBounds.height * railRatio;
-        anchorRatioRef.current = Math.min(1, Math.max(0, (anchorY - nodeBounds.top) / Math.max(nodeBounds.height, 1)));
-        if (handleRef.current) handleRef.current.style.top = `${railRatio * 100}%`;
+        const nodeBounds = event.currentTarget.parentElement?.getBoundingClientRect() || event.currentTarget.getBoundingClientRect();
+        const nextRatio = normalizedAnchorRatio((event.clientY - nodeBounds.top) / Math.max(nodeBounds.height, 1));
+        anchorRatioRef.current = nextRatio;
+        if (handleRef.current) handleRef.current.style.top = `${nextRatio * 100}%`;
     };
 
     return (
         <button
             type="button"
-            className="group pointer-events-auto absolute top-1/2 z-[var(--node-z-overlay)] touch-none -translate-y-1/2 opacity-100 outline-none transition-opacity duration-150"
-            style={{ width: 56 * inverseScale, height: `min(100%, ${72 * inverseScale}px)`, ...(side === "left" ? { right: "100%" } : { left: "100%" }) }}
+            className={`group absolute top-0 z-[var(--node-z-overlay)] h-full touch-none outline-none transition-opacity duration-150 ${visible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"}`}
+            style={{ width: 56 * inverseScale, ...(side === "left" ? { right: "100%" } : { left: "100%" }) }}
             onPointerEnter={updateAnchor}
             onPointerMove={updateAnchor}
             onPointerLeave={resetAnchor}
@@ -707,10 +715,10 @@ function ConnectionSideRail({ side, scale, theme, onPointerDown }: { side: "left
                 ref={handleRef}
                 className="absolute grid -translate-y-1/2 place-items-center rounded-full border transition-[background-color,box-shadow] duration-150 group-hover:brightness-125 group-focus-visible:brightness-125"
                 style={{
-                    top: "50%",
+                    top: `${normalizedAnchorRatio(anchorRatio) * 100}%`,
                     width: 18 * inverseScale,
                     height: 18 * inverseScale,
-                    ...(side === "left" ? { right: 6 * inverseScale } : { left: 6 * inverseScale }),
+                    ...(side === "left" ? { right: -9 * inverseScale } : { left: -9 * inverseScale }),
                     borderWidth: inverseScale,
                     background: theme.spatial.elevated,
                     borderColor: theme.node.activeStroke,

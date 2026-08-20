@@ -36,8 +36,8 @@ type PublicFeatureAvailability struct {
 }
 
 func defaultFeatureAvailability() FeatureAvailability {
-	// 缺少配置代表尚未由运维接管，默认保持现有功能全部开放。
-	return FeatureAvailability{ShortDramaEnabled: true, TaskCenterEnabled: true, CreditsEnabled: true, CustomChannelsEnabled: true}
+	// 用户自定义渠道已下线；字段仅保留用于兼容现有配置合同和历史数据。
+	return FeatureAvailability{ShortDramaEnabled: true, TaskCenterEnabled: true, CreditsEnabled: true, CustomChannelsEnabled: false}
 }
 
 func (s *Service) FeatureAvailability() (*PublicFeatureAvailability, error) {
@@ -59,6 +59,7 @@ func (s *Service) UpdateFeatureAvailability(actor *model.User, value FeatureAvai
 	if err := s.RequireAdmin(actor); err != nil {
 		return nil, err
 	}
+	value.CustomChannelsEnabled = false
 	current, before, err := s.readFeatureAvailability()
 	if err != nil {
 		return nil, err
@@ -93,7 +94,7 @@ func (s *Service) FeatureEnabled(feature string) (bool, error) {
 	case FeatureCredits:
 		return value.CreditsEnabled, nil
 	case FeatureCustomChannels:
-		return value.CustomChannelsEnabled, nil
+		return false, nil
 	default:
 		return false, errors.New("未知功能开放配置")
 	}
@@ -134,6 +135,7 @@ func (s *Service) readFeatureAvailability() (*model.SystemSetting, FeatureAvaila
 	if strings.TrimSpace(setting.ValueJSON) == "" || json.Unmarshal([]byte(setting.ValueJSON), &value) != nil {
 		return nil, FeatureAvailability{}, errors.New("功能开放配置格式无效")
 	}
+	value.CustomChannelsEnabled = false
 	return setting, value, nil
 }
 

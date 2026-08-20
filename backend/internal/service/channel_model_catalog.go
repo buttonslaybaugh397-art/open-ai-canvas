@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -48,26 +49,84 @@ type aiStarsLabConfig struct {
 }
 
 type aiStarsLabChannel struct {
-	Channel       string             `json:"channel"`
-	Title         string             `json:"title"`
-	Description   string             `json:"description"`
-	DefaultOption string             `json:"defaultOption"`
-	Models        []aiStarsLabModel  `json:"models"`
+	Channel       string            `json:"channel"`
+	Title         string            `json:"title"`
+	Description   json.RawMessage   `json:"description"`
+	DefaultOption aiStarsLabBool    `json:"defaultOption"`
+	Models        []aiStarsLabModel `json:"models"`
+}
+
+type aiStarsLabBool bool
+
+func (value *aiStarsLabBool) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	var boolean bool
+	if err := json.Unmarshal(trimmed, &boolean); err == nil {
+		*value = aiStarsLabBool(boolean)
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(trimmed, &text); err != nil {
+		return err
+	}
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	if normalized != "true" && normalized != "false" {
+		return fmt.Errorf("invalid boolean value %q", text)
+	}
+	*value = aiStarsLabBool(normalized == "true")
+	return nil
 }
 
 type aiStarsLabModel struct {
-	Model           string              `json:"model"`
-	Label           string              `json:"label"`
-	Qualities       []aiStarsLabQuality  `json:"qualities"`
-	AspectRatios    []string            `json:"aspectRatios"`
-	Duration        []int               `json:"duration"`
-	Modes           []string            `json:"modes"`
-	InputImagesMax  int                 `json:"inputImagesMax"`
-	InputVideosMax  int                 `json:"inputVideosMax"`
-	InputAudiosMax  int                 `json:"inputAudiosMax"`
+	Model          string              `json:"model"`
+	Label          string              `json:"label"`
+	Qualities      []aiStarsLabQuality `json:"qualities"`
+	AspectRatios   []string            `json:"aspectRatios"`
+	Duration       aiStarsLabDuration  `json:"duration"`
+	Modes          []string            `json:"modes"`
+	InputImagesMax int                 `json:"inputImagesMax"`
+	InputVideosMax int                 `json:"inputVideosMax"`
+	InputAudiosMax int                 `json:"inputAudiosMax"`
 }
 
-type aiStarsLabQuality struct { Quality string `json:"quality"` }
+type aiStarsLabDuration struct {
+	Min     int
+	Max     int
+	Options []int
+}
+
+func (value *aiStarsLabDuration) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	var options []int
+	if trimmed[0] == '[' {
+		if err := json.Unmarshal(trimmed, &options); err != nil {
+			return err
+		}
+		value.Options = normalizePositiveInts(options)
+		return nil
+	}
+	var config struct {
+		Min     int   `json:"min"`
+		Max     int   `json:"max"`
+		Options []int `json:"options"`
+	}
+	if err := json.Unmarshal(trimmed, &config); err != nil {
+		return err
+	}
+	value.Min, value.Max = config.Min, config.Max
+	value.Options = normalizePositiveInts(config.Options)
+	return nil
+}
+
+type aiStarsLabQuality struct {
+	Quality string `json:"quality"`
+}
 
 type channelModelCatalogParameters struct {
 	AspectRatio     string `json:"aspect_ratio"`
@@ -112,7 +171,7 @@ type ChannelModelCatalogItem struct {
 	SupportsImages         *bool                                `json:"supportsImages,omitempty"`
 	MinImages              *int                                 `json:"minImages,omitempty"`
 	MaxImages              *int                                 `json:"maxImages,omitempty"`
-	AIStarsLab             *AIStarsLabCatalogRoute               `json:"aistarslab,omitempty"`
+	AIStarsLab             *AIStarsLabCatalogRoute              `json:"aistarslab,omitempty"`
 }
 
 type AIStarsLabCatalogRoute struct {
@@ -122,6 +181,8 @@ type AIStarsLabCatalogRoute struct {
 	Qualities      []string `json:"qualities,omitempty"`
 	AspectRatios   []string `json:"aspectRatios,omitempty"`
 	Duration       []int    `json:"duration,omitempty"`
+	DurationMin    int      `json:"durationMin,omitempty"`
+	DurationMax    int      `json:"durationMax,omitempty"`
 	Modes          []string `json:"modes,omitempty"`
 	InputImagesMax int      `json:"inputImagesMax,omitempty"`
 	InputVideosMax int      `json:"inputVideosMax,omitempty"`
@@ -253,16 +314,48 @@ func (s *Service) FetchChannelModelCatalog(ctx context.Context, actor *model.Use
 
 func (s *Service) fetchAiStarsLabCatalog(ctx context.Context, baseURL, apiKey string, allowLocal bool, rawHeaders []OutboundHeader) ([]ChannelModelCatalogItem, error) {
 	target := strings.TrimRight(baseURL, "/") + "/generation/config"
-	if _, err := s.validateChannelOutboundURL(target, allowLocal, false); err != nil { return nil, err }
-	headers, err := NormalizeOutboundHeaders(rawHeaders); if err != nil { return nil, err }
+	if _, err := s.validateChannelOutboundURL(target, allowLocal, false); err != nil {
+		return nil, err
+	}
+	headers, err := NormalizeOutboundHeaders(rawHeaders)
+	if err != nil {
+		return nil, err
+	}
 	requestContext := withProviderOutboundPolicy(ctx, providerConfig{BaseURL: baseURL, AllowLocalChannel: s.effectiveAllowLocalChannel(allowLocal)})
-	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, target, nil); if err != nil { return nil, BadAuthRequest("模型服务地址无效") }
-	request.Header.Set("Authorization", "Bearer "+apiKey); ApplyOutboundHeaders(request, headers)
-	data, _, err := doBinary(request); if err != nil { return nil, channelModelsUpstreamError(err) }
-	var envelope struct { Code int `json:"code"`; Msg string `json:"msg"`; Data aiStarsLabConfig `json:"data"` }
-	if err := json.Unmarshal(data, &envelope); err != nil { return nil, &AuthError{Status: http.StatusBadGateway, Message: "AIStarsLab 返回的不是有效 JSON"} }
-	if envelope.Code != 0 { return nil, &AuthError{Status: http.StatusBadGateway, Message: firstNonEmpty(envelope.Msg, "AIStarsLab 配置读取失败")} }
-	result := make([]ChannelModelCatalogItem, 0)
+	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, BadAuthRequest("模型服务地址无效")
+	}
+	request.Header.Set("Authorization", "Bearer "+apiKey)
+	request.Header.Set("Accept", "application/json")
+	ApplyOutboundHeaders(request, headers)
+	// AIStarsLab 返回 JSON；禁止自定义 Accept-Encoding 让 Go Transport 自动解压 gzip，避免把压缩字节交给 JSON 解码器。
+	request.Header.Del("Accept-Encoding")
+	data, _, err := doBinary(request)
+	if err != nil {
+		return nil, channelModelsUpstreamError(err)
+	}
+	var envelope struct {
+		Code int              `json:"code"`
+		Msg  string           `json:"msg"`
+		Data aiStarsLabConfig `json:"data"`
+	}
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	trimmedData := bytes.TrimSpace(data)
+	if !json.Valid(trimmedData) {
+		return nil, &AuthError{Status: http.StatusBadGateway, Message: "AIStarsLab 返回的不是有效 JSON，请检查渠道地址和请求头"}
+	}
+	if err := json.Unmarshal(trimmedData, &envelope); err != nil {
+		return nil, &AuthError{Status: http.StatusBadGateway, Message: "AIStarsLab 模型目录字段格式不兼容，请检查渠道接口版本"}
+	}
+	if envelope.Code != 0 {
+		return nil, &AuthError{Status: http.StatusBadGateway, Message: firstNonEmpty(envelope.Msg, "AIStarsLab 配置读取失败")}
+	}
+	type catalogChoice struct {
+		item      ChannelModelCatalogItem
+		preferred bool
+	}
+	choices := make(map[string]catalogChoice)
 	appendChannels := func(capability string, channels []aiStarsLabChannel) {
 		for _, channel := range channels {
 			for _, item := range channel.Models {
@@ -277,18 +370,41 @@ func (s *Service) fetchAiStarsLabCatalog(ctx context.Context, baseURL, apiKey st
 						qualities = append(qualities, value)
 					}
 				}
-				result = append(result, ChannelModelCatalogItem{
+				candidate := ChannelModelCatalogItem{
 					ID: name, DisplayName: strings.TrimSpace(item.Label), ModelType: capability,
 					SupportedEndpointTypes: []string{"aistarslab-" + capability},
-					AIStarsLab: &AIStarsLabCatalogRoute{Channel: channelID, Capability: capability, Model: name, Qualities: qualities, AspectRatios: item.AspectRatios, Duration: item.Duration, Modes: item.Modes, InputImagesMax: item.InputImagesMax, InputVideosMax: item.InputVideosMax, InputAudiosMax: item.InputAudiosMax},
-				})
+					AIStarsLab:             &AIStarsLabCatalogRoute{Channel: channelID, Capability: capability, Model: name, Qualities: qualities, AspectRatios: item.AspectRatios, Duration: item.Duration.Options, DurationMin: item.Duration.Min, DurationMax: item.Duration.Max, Modes: item.Modes, InputImagesMax: item.InputImagesMax, InputVideosMax: item.InputVideosMax, InputAudiosMax: item.InputAudiosMax},
+				}
+				current, exists := choices[name]
+				preferred := bool(channel.DefaultOption)
+				if !exists || preferred && !current.preferred {
+					choices[name] = catalogChoice{item: candidate, preferred: preferred}
+				}
 			}
 		}
 	}
 	appendChannels("image", envelope.Data.ImageConfig)
 	appendChannels("video", envelope.Data.VideoConfig)
+	result := make([]ChannelModelCatalogItem, 0, len(choices))
+	for _, choice := range choices {
+		result = append(result, choice.item)
+	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return result, nil
+}
+
+func normalizePositiveInts(values []int) []int {
+	seen := make(map[int]bool, len(values))
+	result := make([]int, 0, len(values))
+	for _, value := range values {
+		if value <= 0 || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	sort.Ints(result)
+	return result
 }
 
 func normalizeCatalogModelType(value string) string {

@@ -43,6 +43,7 @@ type BillingOrder struct {
 	Scene                        string        `json:"scene" gorm:"index;size:80"`
 	BillingMode                  string        `json:"billingMode" gorm:"size:32"`
 	PriceVersion                 int64         `json:"priceVersion"`
+	Resolution                   string        `json:"resolution,omitempty" gorm:"size:32"`
 	UnitPriceMicrocredits        int64         `json:"unitPriceMicrocredits"`
 	MultiplierBasisPoints        int64         `json:"multiplierBasisPoints"`
 	Quantity                     int64         `json:"quantity"`

@@ -7,6 +7,7 @@ import { PaginationBar } from "@/components/layout/workspace-page";
 import { ModelIcon } from "@/components/model-picker";
 import { ModelCapabilityEditor } from "@/components/model-capability-editor";
 import { CapabilityCardPicker, ProtocolCardPicker, type ModelCapabilityChoice } from "@/components/model-protocol-picker";
+import { isAiStarsLabBaseUrl } from "@/lib/aistarslab-channel";
 import { huiQuYunProtocolForModel, isHuiQuYunBaseUrl } from "@/lib/huiquyun-channel";
 import { defaultModelCapabilityConfig, normalizeModelCapabilityConfig, type ModelCapabilityConfig } from "@/lib/model-capabilities";
 import { MODEL_PROTOCOLS, modelProtocolCapability, modelProtocolDefinition, modelProtocolLabel, modelProtocolSupportsTokenBilling, type ModelProtocol } from "@/lib/model-protocols";
@@ -17,6 +18,7 @@ import { AdminDataTable, AdminFilterChip, AdminStatusBadge } from "./admin-ui";
 
 type EditableCapability = ModelCapabilityChoice;
 const HUIQUYUN_PROTOCOLS: ModelProtocol[] = ["chat-completion", "openai-response", "openai-image", "openai-audio", "huiquyun-video"];
+const AISTARSLAB_PROTOCOLS: ModelProtocol[] = ["aistarslab-image", "aistarslab-video"];
 
 type FormValues = {
     modelKey: string;
@@ -28,6 +30,7 @@ type FormValues = {
     inputTokenPrice: number;
     outputTokenPrice: number;
     cachedTokenPrice: number;
+    resolutionPrices?: Record<string, number>;
     enabled: boolean;
     capabilityConfig?: ModelCapabilityConfig;
 };
@@ -51,7 +54,10 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
     const modelCapability = Form.useWatch("capability", form);
     const modelProtocol = Form.useWatch("protocol", form);
     const modelKey = Form.useWatch("modelKey", form) || "";
+    const capabilityConfig = Form.useWatch("capabilityConfig", form);
+    const videoResolutions = capabilityConfig?.video?.resolutions || [];
     const huiQuYun = isHuiQuYunBaseUrl(channel.baseUrl);
+    const aiStarsLab = isAiStarsLabBaseUrl(channel.baseUrl);
 
     const reload = async () => {
         if (!channel) return;
@@ -97,22 +103,23 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
         form.setFieldsValue({
             modelKey: "",
             displayName: "",
-            capability: "text",
-            protocol: "chat-completion",
+            capability: aiStarsLab ? "video" : "text",
+            protocol: aiStarsLab ? "aistarslab-video" : "chat-completion",
             billingMode: "fixed_request",
             unitPrice: 0,
             inputTokenPrice: 0,
             outputTokenPrice: 0,
             cachedTokenPrice: 0,
+            resolutionPrices: {},
             enabled: true,
-            capabilityConfig: defaultModelCapabilityConfig("chat-completion", ""),
+            capabilityConfig: defaultModelCapabilityConfig(aiStarsLab ? "aistarslab-video" : "chat-completion", ""),
         });
         setEditorOpen(true);
     };
 
     const startEdit = (item: ChannelModel) => {
         setEditing(item);
-        const protocol = huiQuYun ? huiQuYunProtocolForModel(item.modelKey) : item.protocol || "chat-completion";
+        const protocol = item.protocol || (huiQuYun ? huiQuYunProtocolForModel(item.modelKey) : aiStarsLab ? "aistarslab-video" : "chat-completion");
         const capability = item.capability || modelProtocolCapability(protocol) || "text";
         form.setFieldsValue({
             modelKey: item.modelKey,
@@ -124,6 +131,7 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
             inputTokenPrice: item.inputTokenPriceMicrocredits / 1_000_000,
             outputTokenPrice: item.outputTokenPriceMicrocredits / 1_000_000,
             cachedTokenPrice: item.cachedTokenPriceMicrocredits / 1_000_000,
+            resolutionPrices: Object.fromEntries(Object.entries(item.resolutionPriceMicrocredits || {}).map(([resolution, price]) => [resolution, price / 1_000_000])),
             enabled: item.enabled,
             capabilityConfig: capability === "text" || capability === "image" || capability === "video" ? normalizeModelCapabilityConfig(item.capabilityConfig || defaultModelCapabilityConfig(protocol, item.modelKey)) : undefined,
         });
@@ -141,6 +149,7 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
                 protocol: values.protocol,
                 billingMode: values.billingMode,
                 unitPriceMicrocredits: Math.round(values.unitPrice * 1_000_000),
+                resolutionPriceMicrocredits: Object.fromEntries(Object.entries(values.resolutionPrices || {}).filter(([, price]) => Number.isFinite(price)).map(([resolution, price]) => [resolution, Math.round(price * 1_000_000)])),
                 inputTokenPriceMicrocredits: Math.round((values.inputTokenPrice || 0) * 1_000_000),
                 outputTokenPriceMicrocredits: Math.round((values.outputTokenPrice || 0) * 1_000_000),
                 cachedTokenPriceMicrocredits: Math.round((values.cachedTokenPrice || 0) * 1_000_000),
@@ -192,7 +201,7 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
     };
 
     const handleFormValuesChange = (changed: Partial<FormValues>) => {
-        if (huiQuYun && changed.modelKey !== undefined) {
+        if (huiQuYun && !editing && changed.modelKey !== undefined) {
             const protocol = huiQuYunProtocolForModel(changed.modelKey);
             const capability = modelProtocolCapability(protocol) || "text";
             form.setFieldsValue({ capability, protocol, capabilityConfig: capability === "image" || capability === "video" ? defaultModelCapabilityConfig(protocol, changed.modelKey) : undefined });
@@ -209,7 +218,8 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
         if (!changed.capability) return;
         const current = form.getFieldValue("protocol") as ModelProtocol | undefined;
         if (modelProtocolCapability(current) !== changed.capability) {
-            const nextProtocol = MODEL_PROTOCOLS.find((item) => item.capability === changed.capability && (!huiQuYun || HUIQUYUN_PROTOCOLS.includes(item.value)))?.value;
+            const allowedProtocols = aiStarsLab ? AISTARSLAB_PROTOCOLS : huiQuYun ? HUIQUYUN_PROTOCOLS : undefined;
+            const nextProtocol = MODEL_PROTOCOLS.find((item) => item.capability === changed.capability && (!allowedProtocols || allowedProtocols.includes(item.value)))?.value;
             form.setFieldValue("protocol", nextProtocol);
             form.setFieldValue("capabilityConfig", changed.capability === "text" || changed.capability === "image" || changed.capability === "video" ? defaultModelCapabilityConfig(nextProtocol, form.getFieldValue("modelKey")) : undefined);
         }
@@ -397,7 +407,7 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
                                 <CapabilityCardPicker density="compact" />
                             </Form.Item>
                             <Form.Item className="mb-0" name="protocol" label="请求协议" rules={[{ required: true, message: "请选择模型请求协议" }]}>
-                                <ProtocolCardPicker capability={modelCapability} allowedProtocols={huiQuYun ? HUIQUYUN_PROTOCOLS : undefined} density="compact" />
+                                <ProtocolCardPicker capability={modelCapability} density="compact" allowedProtocols={aiStarsLab ? AISTARSLAB_PROTOCOLS : huiQuYun ? HUIQUYUN_PROTOCOLS : undefined} />
                             </Form.Item>
                         </div>
                         {modelCapability === "text" || modelCapability === "image" || modelCapability === "video" ? (
@@ -440,9 +450,20 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
                                 </div>
                             )
                         ) : (
-                            <Form.Item name="unitPrice" label={billingMode === "per_second" ? "每秒消耗积分" : "每次消耗积分"} rules={[{ required: true, message: "请输入积分价格" }]}>
-                                <InputNumber style={{ width: "100%" }} min={0} max={1_000_000} precision={6} step={0.1} />
-                            </Form.Item>
+                            <>
+                                <Form.Item name="unitPrice" label={billingMode === "per_second" ? "默认每秒消耗积分" : "默认每次消耗积分"} rules={[{ required: true, message: "请输入积分价格" }]}>
+                                    <InputNumber style={{ width: "100%" }} min={0} max={1_000_000} precision={6} step={0.1} />
+                                </Form.Item>
+                                {modelCapability === "video" && videoResolutions.length > 1 ? (
+                                    <div className="grid gap-3 sm:grid-cols-2">
+                                        {videoResolutions.map((resolution) => (
+                                            <Form.Item key={resolution} name={["resolutionPrices", resolution.toLowerCase()]} label={`${resolution.toUpperCase()} ${billingMode === "per_second" ? "每秒积分" : "每次积分"}`}>
+                                                <InputNumber placeholder="留空使用默认价格" style={{ width: "100%" }} min={0} max={1_000_000} precision={6} step={0.1} />
+                                            </Form.Item>
+                                        ))}
+                                    </div>
+                                ) : null}
+                            </>
                         )}
                     </section>
 

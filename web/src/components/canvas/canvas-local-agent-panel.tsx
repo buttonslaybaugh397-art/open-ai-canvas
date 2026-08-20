@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState, type PointerEvent as Re
 import { App, Button, Segmented, Tooltip } from "antd";
 import copyToClipboard from "copy-to-clipboard";
 import { Copy, FolderOpen, History, LoaderCircle, MessageSquareText, PlugZap, Plus, RefreshCw, RotateCcw, Terminal, Trash2 } from "lucide-react";
-import { motion } from "motion/react";
+import { motion, useReducedMotion } from "motion/react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { consumeLocalRuntimeEventStream, postCanvasRuntimeState, prepareCanvasRuntimeConnection, waitForCanvasRuntimeReconnect, type LocalRuntimeEvent } from "@/lib/canvas/local-runtime-connection";
@@ -61,6 +61,7 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({
     embedded,
     headless,
     autoConnect,
+    resizing: externalResizing = false,
     onApplyOps,
     onUndoOps,
 }: {
@@ -71,10 +72,12 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({
     embedded?: boolean;
     headless?: boolean;
     autoConnect?: boolean;
+    resizing?: boolean;
     onApplyOps: (ops: CanvasAgentOp[], context?: { conversationId?: string; messageId?: string; source?: "online" | "local" }) => Promise<CanvasAgentSnapshot>;
     onUndoOps: () => CanvasAgentSnapshot | null;
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const reducedMotion = useReducedMotion();
     const user = useUserStore((state) => state.user);
     const { message, modal } = App.useApp();
     const {
@@ -102,6 +105,7 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({
         clearEventLogs,
     } = useCanvasAgentStore();
     const [resizing, setResizing] = useState(false);
+    const isResizing = resizing || externalResizing;
     const listRef = useRef<HTMLDivElement>(null);
     const snapshotRef = useRef(snapshot);
     const confirmToolsRef = useRef(confirmTools);
@@ -579,10 +583,17 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({
                 }
             />
 
-            {activeTab === "setup" ? (
-                <AgentConnectView theme={theme} enabled={enabled} connected={connected} activity={activity} connectError={connectError} onToggleEnabled={toggleAgentConnection} />
-            ) : activeTab === "history" ? (
-                <AgentHistoryView
+            <motion.div
+                className="flex min-h-0 basis-0 flex-col overflow-hidden"
+                animate={{ flexGrow: isResizing ? 0 : 1, opacity: isResizing ? 0 : 1, y: isResizing ? 8 : 0 }}
+                transition={{ duration: reducedMotion ? 0 : 0.18, ease: [0.22, 1, 0.36, 1] }}
+                style={{ pointerEvents: isResizing ? "none" : undefined }}
+                aria-hidden={isResizing}
+            >
+                {activeTab === "setup" ? (
+                    <AgentConnectView theme={theme} enabled={enabled} connected={connected} activity={activity} connectError={connectError} onToggleEnabled={toggleAgentConnection} />
+                ) : activeTab === "history" ? (
+                    <AgentHistoryView
                     theme={theme}
                     threads={threads}
                     activeThreadId={activeThreadId}
@@ -593,18 +604,18 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({
                     onNewThread={() => void startNewThread()}
                     onResumeThread={(threadId) => void resumeThread(threadId)}
                     onDeleteThread={confirmDeleteThread}
-                />
-            ) : activeTab === "log" ? (
-                <AgentLogView
+                    />
+                ) : activeTab === "log" ? (
+                    <AgentLogView
                     logs={eventLogs}
                     theme={theme}
                     context={{ connected, enabled, activity, waiting, sending, messages: messages.length, pendingTool: pendingTool?.name }}
                     onClear={clearEventLogs}
                     onCopied={(text) => message.success(text)}
                     onCopyBlocked={(text) => message.warning(text)}
-                />
-            ) : (
-                <>
+                    />
+                ) : (
+                    <>
                     <div ref={listRef} className="thin-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
                         {!messages.length && !pendingTool && !waiting ? (
                             <AgentChatEmptyState
@@ -633,6 +644,7 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({
                     <AgentChatComposer
                         prompt={prompt}
                         attachments={attachments.map(agentAttachmentToChatAttachment)}
+                        collapsed={isResizing}
                         disabled={!connected}
                         sending={sending || waiting}
                         placeholder="询问 Codex，或让它操作画布"
@@ -652,8 +664,9 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({
                             </>
                         }
                     />
-                </>
-            )}
+                    </>
+                )}
+            </motion.div>
         </>
     );
 
@@ -665,14 +678,14 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({
             className="relative z-[var(--z-panel-floating)] flex h-full shrink-0"
             initial={{ width: 0, opacity: 0 }}
             animate={{ width: collapsed ? 0 : width + 1, opacity: collapsed ? 0 : 1 }}
-            transition={{ duration: resizing ? 0 : PANEL_MOTION_SECONDS, ease: [0.22, 1, 0.36, 1] }}
+            transition={{ duration: isResizing ? 0 : PANEL_MOTION_SECONDS, ease: [0.22, 1, 0.36, 1] }}
             style={{ overflow: "clip", pointerEvents: collapsed ? "none" : undefined }}
         >
             <motion.aside
                 className="relative flex h-full shrink-0 flex-col border-l"
                 initial={{ x: 48 }}
                 animate={{ x: collapsed ? 28 : 0 }}
-                transition={{ duration: resizing ? 0 : PANEL_MOTION_SECONDS, ease: [0.22, 1, 0.36, 1] }}
+                transition={{ duration: isResizing ? 0 : PANEL_MOTION_SECONDS, ease: [0.22, 1, 0.36, 1] }}
                 style={{ width, background: theme.node.panel, borderColor: theme.node.stroke, color: theme.node.text }}
             >
                 <div className="absolute left-0 top-0 h-full w-1 cursor-col-resize transition hover:bg-current/20" onPointerDown={startResize} />

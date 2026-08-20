@@ -452,7 +452,7 @@ func (s *Service) taskBillingOrder(userID string, task *model.Task, input map[st
 		capability = capabilityFromTaskType(task.Type)
 	}
 	scene := firstNonEmpty(strings.TrimSpace(task.Operation), task.Type)
-	return s.newBillingOrder(userID, task.ID, "task:"+task.ID+":"+newID(), channelID, modelKey, capability, scene, billingQuantity(capability, config["videoSeconds"]), estimateTaskBillingTokens(input, capability))
+	return s.newBillingOrder(userID, task.ID, "task:"+task.ID+":"+newID(), channelID, modelKey, capability, scene, billingQuantity(capability, config["videoSeconds"]), billingResolution(config), estimateTaskBillingTokens(input, capability))
 }
 
 func (s *Service) newLogicalModelBillingOrder(userID string, task *model.Task, input map[string]any) (*model.BillingOrder, error) {
@@ -474,7 +474,7 @@ func (s *Service) newLogicalModelBillingOrder(userID string, task *model.Task, i
 		capability = capabilityFromTaskType(task.Type)
 	}
 	if logicalModel.PricePolicy == "channel" {
-		order, priceErr := s.newBillingOrder(userID, task.ID, "task:"+task.ID+":"+newID(), channelModel.ChannelID, channelModel.ModelKey, capability, firstNonEmpty(strings.TrimSpace(task.Operation), task.Type), billingQuantity(capability, config["videoSeconds"]), estimateTaskBillingTokens(input, capability))
+		order, priceErr := s.newBillingOrder(userID, task.ID, "task:"+task.ID+":"+newID(), channelModel.ChannelID, channelModel.ModelKey, capability, firstNonEmpty(strings.TrimSpace(task.Operation), task.Type), billingQuantity(capability, config["videoSeconds"]), billingResolution(config), estimateTaskBillingTokens(input, capability))
 		if priceErr != nil {
 			return nil, priceErr
 		}
@@ -540,7 +540,7 @@ func (s *Service) ReserveProxyBillingWithBody(userID string, channelID string, m
 	if strings.TrimSpace(idempotencyKey) == "" {
 		idempotencyKey = newID()
 	}
-	order, err := s.newBillingOrder(userID, "", "proxy:"+idempotencyKey, channelID, modelKey, capability, firstNonEmpty(strings.TrimSpace(scene), "system_proxy"), quantity, estimateProxyTokens(requestBody))
+	order, err := s.newBillingOrder(userID, "", "proxy:"+idempotencyKey, channelID, modelKey, capability, firstNonEmpty(strings.TrimSpace(scene), "system_proxy"), quantity, proxyBillingResolution(requestBody), estimateProxyTokens(requestBody))
 	if err != nil {
 		return nil, err
 	}
@@ -553,7 +553,7 @@ func (s *Service) ReserveProxyBillingWithBody(userID string, channelID string, m
 	return order, nil
 }
 
-func (s *Service) newBillingOrder(userID string, taskID string, idempotencyKey string, channelID string, modelKey string, capability string, scene string, requestedQuantity int64, tokenEstimate tokenBillingEstimate) (*model.BillingOrder, error) {
+func (s *Service) newBillingOrder(userID string, taskID string, idempotencyKey string, channelID string, modelKey string, capability string, scene string, requestedQuantity int64, requestedResolution string, tokenEstimate tokenBillingEstimate) (*model.BillingOrder, error) {
 	item, err := s.repo.ChannelModelByKey(channelID, modelKey)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, BadAuthRequest("当前模型暂时不可用，请重新选择")
@@ -564,6 +564,7 @@ func (s *Service) newBillingOrder(userID string, taskID string, idempotencyKey s
 	if !item.PriceConfigured {
 		return nil, BadAuthRequest("当前模型尚未配置用户积分价格")
 	}
+	resolution, unitPrice := channelModelUnitPrice(item, requestedResolution)
 	quantity := int64(1)
 	amount := int64(0)
 	switch item.BillingMode {
@@ -601,7 +602,7 @@ func (s *Service) newBillingOrder(userID string, taskID string, idempotencyKey s
 	if item.BillingMode == "token" {
 		amount, err = tokenEstimateAmount(item, tokenEstimate, multiplierBPS)
 	} else {
-		amount, err = creditAmount(item.UnitPriceMicrocredits, quantity, multiplierBPS)
+		amount, err = creditAmount(unitPrice, quantity, multiplierBPS)
 	}
 	if err != nil {
 		return nil, err
@@ -609,12 +610,53 @@ func (s *Service) newBillingOrder(userID string, taskID string, idempotencyKey s
 	return &model.BillingOrder{
 		ID: newID(), UserID: userID, IdempotencyKey: idempotencyKey, TaskID: taskID,
 		ChannelID: channelID, ChannelModelID: item.ID, Model: modelKey, Capability: capability,
-		Scene: truncateRunes(scene, 80), BillingMode: item.BillingMode, PriceVersion: item.PriceVersion,
-		UnitPriceMicrocredits: item.UnitPriceMicrocredits, MultiplierBasisPoints: multiplierBPS, Quantity: quantity, AmountMicrocredits: amount,
+		Scene: truncateRunes(scene, 80), BillingMode: item.BillingMode, PriceVersion: item.PriceVersion, Resolution: resolution,
+		UnitPriceMicrocredits: unitPrice, MultiplierBasisPoints: multiplierBPS, Quantity: quantity, AmountMicrocredits: amount,
 		ReservedAmountMicrocredits: amount, InputTokenPriceMicrocredits: item.InputTokenPriceMicrocredits,
 		OutputTokenPriceMicrocredits: item.OutputTokenPriceMicrocredits, CachedTokenPriceMicrocredits: item.CachedTokenPriceMicrocredits,
 		Status: model.BillingStatusReserved,
 	}, nil
+}
+
+func billingResolution(config map[string]any) string {
+	if config == nil {
+		return ""
+	}
+	return firstNonEmpty(strings.TrimSpace(fmt.Sprint(config["vquality"])), strings.TrimSpace(fmt.Sprint(config["resolution"])))
+}
+
+func proxyBillingResolution(requestBody []byte) string {
+	if len(requestBody) == 0 {
+		return ""
+	}
+	payload := map[string]any{}
+	if json.Unmarshal(requestBody, &payload) != nil {
+		return ""
+	}
+	return firstNonEmpty(strings.TrimSpace(fmt.Sprint(payload["resolution"])), strings.TrimSpace(fmt.Sprint(payload["vquality"])))
+}
+
+func channelModelUnitPrice(item *model.ChannelModel, requestedResolution string) (string, int64) {
+	if item == nil {
+		return "", 0
+	}
+	if item.Capability != "video" {
+		return "", item.UnitPriceMicrocredits
+	}
+	resolution := strings.TrimSpace(requestedResolution)
+	if resolution == "" || strings.EqualFold(resolution, "auto") || strings.EqualFold(resolution, "default") {
+		if profile, err := DecodeModelCapabilityConfig(item.CapabilityConfigJSON); err == nil && profile != nil && profile.Video != nil {
+			resolution = profile.Video.DefaultResolution
+		}
+	}
+	if strings.TrimSpace(resolution) == "" {
+		return "", item.UnitPriceMicrocredits
+	}
+	resolution = normalizeResolution(resolution)
+	if price, ok := decodeResolutionPrices(item.ResolutionPricesJSON)[resolution]; ok {
+		return resolution, price
+	}
+	return resolution, item.UnitPriceMicrocredits
 }
 
 func estimateTaskTokens(input map[string]any) tokenBillingEstimate {

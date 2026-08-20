@@ -1347,7 +1347,7 @@ test("remote image video and audio references keep Backend parity without Dreami
             mode: "video" as const,
             references: { referenceVideos: [{ id: "remote-video-0001", name: "video.mp4", type: "video/mp4", url: "", storageKey: "resource:remote-video-0001" }] },
             result: { mode: "video", video: { dataUrl: "opaque://video", storageKey: "resource:remote-video-output" } },
-            operation: "reference_to_video",
+            operation: "extend",
         },
         {
             mode: "audio" as const,
@@ -1708,7 +1708,7 @@ test("Create audio upload converts, previews, removes, and submits through the s
         operation?: string;
         input?: { referenceAudios?: Array<Record<string, unknown>> };
     };
-    expect(submitted.operation).toBe("reference_to_video");
+    expect(submitted.operation).toBe("audio_to_video");
     expect(submitted.input?.referenceAudios).toEqual([
         {
             id: attachment.id,

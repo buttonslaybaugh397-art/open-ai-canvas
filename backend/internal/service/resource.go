@@ -92,6 +92,20 @@ func (s *Service) directResourceURL(resource *model.Resource, expiresAt time.Tim
 		return "", BadAuthRequest("资源尚未上传完成")
 	}
 	if resource.Provider == "local" {
+		migrated, err := s.migrateLocalResourceToOSS(resource.UserID, resource)
+		if err != nil {
+			return "", err
+		}
+		if migrated {
+			setting, err := s.ossSettingForResource(resource.UserID, resource)
+			if err != nil {
+				return "", err
+			}
+			setting.Provider = firstNonEmpty(resource.Provider, setting.Provider)
+			setting.Endpoint = firstNonEmpty(resource.Endpoint, setting.Endpoint)
+			setting.Bucket = firstNonEmpty(resource.Bucket, setting.Bucket)
+			return signedOSSObjectURL(setting, resource.ObjectKey, expiresAt)
+		}
 		return s.signedPublicResourceURL(resource.ID, expiresAt)
 	}
 	setting, err := s.ossSettingForResource(resource.UserID, resource)
@@ -102,6 +116,57 @@ func (s *Service) directResourceURL(resource *model.Resource, expiresAt time.Tim
 	setting.Endpoint = firstNonEmpty(resource.Endpoint, setting.Endpoint)
 	setting.Bucket = firstNonEmpty(resource.Bucket, setting.Bucket)
 	return signedOSSObjectURL(setting, resource.ObjectKey, expiresAt)
+}
+
+func (s *Service) migrateLocalResourceToOSS(userID string, resource *model.Resource) (bool, error) {
+	if resource == nil || resource.Provider != "local" {
+		return false, nil
+	}
+
+	s.storageMu.Lock()
+	defer s.storageMu.Unlock()
+
+	current, err := s.repo.Resource(resource.ID)
+	if err != nil {
+		return false, err
+	}
+	if current.Provider != "local" {
+		*resource = *current
+		return true, nil
+	}
+	setting, storageSettingID, useOSS, err := s.activeResourceOSSSetting(userID)
+	if err != nil {
+		return false, err
+	}
+	if !useOSS {
+		return false, nil
+	}
+
+	filePath := filepath.Join(s.dataDir, "resources", filepath.FromSlash(current.ObjectKey))
+	file, err := os.Open(filePath)
+	if err != nil {
+		return false, fmt.Errorf("读取本地参考资源失败：%w", err)
+	}
+	defer file.Close()
+
+	objectKey := ossObjectKey(setting, current.UserID, current.Kind, filepath.Base(current.ObjectKey), current.CreatedAt)
+	etag, err := putOSSObject(setting, objectKey, current.MimeType, current.Size, file)
+	if err != nil {
+		return false, fmt.Errorf("迁移参考资源到 OSS 失败：%w", err)
+	}
+
+	current.Provider = setting.Provider
+	current.Endpoint = setting.Endpoint
+	current.Bucket = setting.Bucket
+	current.StorageSettingID = storageSettingID
+	current.ObjectKey = objectKey
+	current.ETag = etag
+	current.UpdatedAt = time.Now()
+	if err := s.repo.SaveResource(current); err != nil {
+		return false, fmt.Errorf("保存参考资源存储位置失败：%w", err)
+	}
+	*resource = *current
+	return true, nil
 }
 
 // PrepareResourceDelivery 统一决定浏览器资源出口：配置 CDN 时默认直连 CDN，显式代理仅用于需要同源 Blob 的内部读取。

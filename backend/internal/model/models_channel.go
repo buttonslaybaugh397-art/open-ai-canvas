@@ -33,6 +33,8 @@ type ChannelModel struct {
 	Protocol                     ChannelInterfaceType `json:"protocol" gorm:"size:32;index"`
 	BillingMode                  string               `json:"billingMode" gorm:"size:32"`
 	UnitPriceMicrocredits        int64                `json:"unitPriceMicrocredits"`
+	ResolutionPricesJSON         string               `json:"-" gorm:"type:text"`
+	ResolutionPriceMicrocredits  map[string]int64     `json:"resolutionPriceMicrocredits,omitempty" gorm:"-"`
 	InputTokenPriceMicrocredits  int64                `json:"inputTokenPriceMicrocredits"`
 	OutputTokenPriceMicrocredits int64                `json:"outputTokenPriceMicrocredits"`
 	CachedTokenPriceMicrocredits int64                `json:"cachedTokenPriceMicrocredits"`

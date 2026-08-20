@@ -311,6 +311,29 @@ describe("public channel model catalog", () => {
         expect(selectableModelsByCapability(staleSnapshot, "image")).not.toContain("ghost-image");
     });
 
+    test("removes the retired frontend model catalog from persisted config", () => {
+        const normalized = normalizeConfigSnapshot({
+            config: {
+                ...defaultConfig,
+                channels: [
+                    createModelChannel({ id: "managed", name: "平台模型", scope: "system", apiKey: "system", models: ["legacy-image"] }),
+                    createModelChannel({
+                        id: "backend-channel",
+                        name: "后台渠道",
+                        scope: "system",
+                        apiKey: "system",
+                        models: ["backend-image"],
+                        modelCosts: [{ model: "backend-image", capability: "image", billingMode: "fixed_request", unitPriceMicrocredits: 1 }],
+                    }),
+                ],
+                imageModel: "managed::legacy-image",
+            },
+        }).config;
+
+        expect(normalized.channels.map((channel) => channel.id)).toEqual(["backend-channel"]);
+        expect(selectableModelsByCapability(normalized, "image")).toEqual(["backend-channel::backend-image"]);
+    });
+
     test("omits resolution_name for Omni and for auto instead of inventing 720p", async () => {
         const bodies: Record<string, string>[] = [];
         axios.post = (async (_url: string, body: unknown) => {

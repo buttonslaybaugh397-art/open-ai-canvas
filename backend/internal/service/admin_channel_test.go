@@ -163,11 +163,22 @@ func TestDiscoveredHuiQuYunModelUsesDedicatedProtocol(t *testing.T) {
 	}
 }
 
-func TestHuiQuYunChannelForcesProtocolFromModelName(t *testing.T) {
+func TestHuiQuYunChannelAcceptsExplicitModelContract(t *testing.T) {
 	channel := &model.ModelChannel{BaseURL: "https://api.bjhuiqu.net"}
-	modelKey, capability, protocol, err := normalizeChannelModelContract(channel, ChannelModelRequest{ModelKey: "gpt-image-1", Capability: "text", Protocol: string(model.ChannelInterfaceChatCompletion)})
-	if err != nil || modelKey != "gpt-image-1" || capability != "image" || protocol != model.ChannelInterfaceOpenAIImage {
+	modelKey, capability, protocol, err := normalizeChannelModelContract(channel, ChannelModelRequest{ModelKey: "ambiguous-model", Capability: "video", Protocol: string(model.ChannelInterfaceHuiQuYunVideo)})
+	if err != nil || modelKey != "ambiguous-model" || capability != "video" || protocol != model.ChannelInterfaceHuiQuYunVideo {
 		t.Fatalf("normalizeChannelModelContract() = %q, %q, %q, %v", modelKey, capability, protocol, err)
+	}
+}
+
+func TestHuiQuYunCatalogRefreshPreservesConfiguredContract(t *testing.T) {
+	channel := model.ModelChannel{BaseURL: "https://api.bjhuiqu.net/v1"}
+	item := model.ChannelModel{ModelKey: "ambiguous-model", Capability: "video", Protocol: model.ChannelInterfaceHuiQuYunVideo, PriceConfigured: true, CapabilityConfigJSON: `{}`}
+	if changed := syncHuiQuYunModelContract(channel, &item, []string{"openai-image"}); changed {
+		t.Fatal("configured HuiQuYun contract must not be overwritten by a later catalog match")
+	}
+	if item.Capability != "video" || item.Protocol != model.ChannelInterfaceHuiQuYunVideo {
+		t.Fatalf("configured HuiQuYun model = %#v", item)
 	}
 }
 

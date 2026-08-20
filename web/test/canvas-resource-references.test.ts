@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { collectUpstreamVideoNodes } from "../src/lib/canvas/canvas-resource-references";
+import { buildNodeMentionReferences, collectUpstreamVideoNodes } from "../src/lib/canvas/canvas-resource-references";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "../src/types/canvas";
 
 function videoNode(id: string): CanvasNodeData {
@@ -48,5 +48,20 @@ describe("collectUpstreamVideoNodes", () => {
         const nodes = [a, b];
         const connections = [connection("a", "b"), connection("b", "a")];
         expect(collectUpstreamVideoNodes("a", nodes, connections).length).toBe(2);
+    });
+});
+
+describe("buildNodeMentionReferences", () => {
+    test("成功视频节点不会把自身结果标记为活动参考视频", () => {
+        const result = videoNode("generated-video");
+
+        expect(buildNodeMentionReferences(result, [result], [])).toEqual([]);
+    });
+
+    test("成功视频节点仍保留真实上游参考视频", () => {
+        const source = videoNode("reference-video");
+        const result = videoNode("generated-video");
+
+        expect(buildNodeMentionReferences(result, [source, result], [connection(source.id, result.id)]).map((reference) => reference.nodeId)).toEqual([source.id]);
     });
 });

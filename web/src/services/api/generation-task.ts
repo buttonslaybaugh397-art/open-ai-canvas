@@ -6,7 +6,7 @@ import { LOCAL_DREAMINA_WAIT_STOPPED_CODE, LocalDreaminaGenerationClientError, r
 import { isLocalDreaminaBackgroundTask, localDreaminaTaskId, projectLocalDreaminaTask, stripLocalDreaminaTaskPrefix } from "@/services/local-dreamina-task-projection";
 import { modelCapabilityConfigFor, normalizeVideoValue } from "@/lib/model-capabilities";
 import { grokImagePromptLimitError } from "@/lib/grok-image-prompt-limit";
-import { modelOptionName, resolveModelChannel, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
+import { resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import { useLocalDreaminaModelStore } from "@/stores/use-local-dreamina-model-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -232,7 +232,12 @@ async function runLocalDreaminaGeneration(options: BackendGenerationTaskOptions,
 function generationOperation(options: BackendGenerationTaskOptions) {
     if (options.mode !== "video") return options.mode;
     const imageCount = options.referenceImages?.length ?? 0;
-    if ((options.referenceVideos?.length ?? 0) > 0 || (options.referenceAudios?.length ?? 0) > 0 || imageCount > 2) return "reference_to_video";
+    const videoCount = options.referenceVideos?.length ?? 0;
+    const audioCount = options.referenceAudios?.length ?? 0;
+    const explicitOperation = typeof options.metadata?.videoEditOperation === "string" ? options.metadata.videoEditOperation.trim() : "";
+    if (explicitOperation && explicitOperation !== "reference_to_video") return explicitOperation;
+    if (audioCount > 0 && imageCount === 0 && videoCount === 0) return "audio_to_video";
+    if (videoCount > 0) return "extend";
     if (imageCount > 0) return "image_to_video";
     return "text_to_video";
 }
@@ -341,19 +346,16 @@ async function prepareGenerationReferences({
 async function createAndWaitGenerationTask(options: BackendGenerationTaskOptions, prepared: PreparedGenerationReferences, dependencies: GenerationTaskDependencies) {
     const { projectId, mode, prompt, config, signal, metadata, onTaskUpdate } = options;
     const videoOperation = generationOperation(options);
-    const logicalModelId = logicalModelIDForConfig(config);
     const task = await dependencies.createTask({
         ...(projectId ? { projectId } : {}),
         type: `canvas_${mode}`,
         operation: mode === "video" ? videoOperation : mode,
         prompt,
         model: config.model,
-        ...(logicalModelId ? { logicalModelId } : {}),
         input: {
             mode,
             prompt,
             config: backendProviderConfig(config),
-            capabilityOptions: logicalModelId ? logicalCapabilityOptions(config, mode) : undefined,
             textHistory: options.textHistory,
             referenceImages: prepared.referenceImages,
             referenceVideos: prepared.referenceVideos,
@@ -447,7 +449,6 @@ export function backendProviderConfig(config: AiConfig) {
         audioSpeed: config.audioSpeed,
         audioInstructions: config.audioInstructions,
     };
-    if (logicalModelIDForConfig(config)) return generationOptions;
     return {
         channelId: requestConfig.channelId,
         apiFormat: requestConfig.apiFormat,
@@ -461,24 +462,6 @@ export function backendProviderConfig(config: AiConfig) {
         capabilityConfig,
         systemPrompt: "",
     };
-}
-
-export function logicalModelIDForConfig(config: AiConfig) {
-    const channel = resolveModelChannel(config, config.model);
-    return channel.modelCosts?.find((item) => item.model === modelOptionName(config.model))?.logicalModelId || "";
-}
-
-function logicalCapabilityOptions(config: AiConfig, mode: BackendGenerationMode) {
-    const channel = resolveModelChannel(config, config.model);
-    const spec = channel.modelCosts?.find((item) => item.model === modelOptionName(config.model))?.logicalCapabilitySpec;
-    const candidates: Record<string, unknown> = mode === "image"
-        ? { size: config.size, quality: config.quality, transparentBackground: config.transparentBackground === "true", count: Number(config.count) }
-        : mode === "video"
-            ? { size: config.size, videoSeconds: Number(config.videoSeconds), vquality: config.vquality, videoGenerateAudio: config.videoGenerateAudio === "true", videoWatermark: config.videoWatermark === "true" }
-            : mode === "audio"
-                ? { audioVoice: config.audioVoice, audioFormat: config.audioFormat, audioSpeed: Number(config.audioSpeed) }
-                : {};
-    return Object.fromEntries(Object.entries(candidates).filter(([key]) => Boolean(spec?.options?.[key])));
 }
 
 export function parseBackendGenerationResult(task: GenerationTask): BackendGenerationResult {
