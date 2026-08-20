@@ -619,7 +619,9 @@ export function buildApiUrl(baseUrl: string, path: string) {
     let normalizedBaseUrl = resolveBackendApiUrl(baseUrl).replace(/\/+$/, "");
     normalizedBaseUrl = normalizeArkPlanBaseUrl(normalizedBaseUrl);
     const lowerBaseUrl = normalizedBaseUrl.toLowerCase();
-    const apiBaseUrl = isSystemProxyBaseUrl(normalizedBaseUrl) || lowerBaseUrl.endsWith("/v1") || lowerBaseUrl.endsWith("/api/v3") || lowerBaseUrl.endsWith("/api/plan/v3") ? normalizedBaseUrl : `${normalizedBaseUrl}/v1`;
+    // `/openapi` 本身就是上游的 API 根（如 AIStarsLab），官方路径直接挂在它下面；再补 `/v1` 会拿到 404。
+    const versionedBaseUrl = ["/v1", "/api/v3", "/api/plan/v3", "/openapi"].some((suffix) => lowerBaseUrl.endsWith(suffix));
+    const apiBaseUrl = isSystemProxyBaseUrl(normalizedBaseUrl) || versionedBaseUrl ? normalizedBaseUrl : `${normalizedBaseUrl}/v1`;
     return `${apiBaseUrl}${path}`;
 }
 

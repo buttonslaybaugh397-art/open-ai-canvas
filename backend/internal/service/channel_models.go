@@ -124,23 +124,47 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 		known[existing[index].ModelKey] = &existing[index]
 	}
 	missing := make([]model.ChannelModel, 0, len(models))
+	inCatalog := make(map[string]bool, len(models))
+	repaired := false
 	for _, name := range models {
+		inCatalog[name] = true
 		if item := known[name]; item != nil {
 			if syncChannelModelContract(*channel, item, endpointTypes[name], catalogItemByID(catalog, name)) {
 				if err := s.repo.SaveChannelModel(item); err != nil {
 					return nil, err
 				}
+				repaired = true
 			}
 			continue
 		}
 		// 自动发现不能绕过定价边界；汇取云仅补全能力合同，仍需管理员定价后手动启用。
 		missing = append(missing, discoveredChannelModel(*channel, name, endpointTypes[name], catalogItemByID(catalog, name)))
 	}
+	// 目录里已经没有的存量记录（如带线路前缀的旧 AIStarsLab key）不会被上面的循环访问到；
+	// 它们仍可能处于已启用已定价状态并被用户选中，必须在重新拉取时一并修复能力合同。
+	if channelConnectionType(channel) == "aistarslab" {
+		for index := range existing {
+			item := &existing[index]
+			if inCatalog[item.ModelKey] {
+				continue
+			}
+			legacy := aiStarsLabCatalogItemForLegacyKey(catalog, item.ModelKey)
+			if legacy == nil {
+				continue
+			}
+			if syncChannelModelContract(*channel, item, legacy.SupportedEndpointTypes, legacy) {
+				if err := s.repo.SaveChannelModel(item); err != nil {
+					return nil, err
+				}
+				repaired = true
+			}
+		}
+	}
 	added, err := s.repo.CreateMissingChannelModels(missing)
 	if err != nil {
 		return nil, err
 	}
-	if added > 0 {
+	if added > 0 || repaired {
 		s.invalidateRouteCatalog()
 	}
 	return &AdminChannelModelFetchResult{Models: models, Added: added}, nil
@@ -159,6 +183,26 @@ func discoveredChannelModel(channel model.ModelChannel, name string, endpointTyp
 func catalogItemByID(items []ChannelModelCatalogItem, id string) *ChannelModelCatalogItem {
 	for index := range items {
 		if items[index].ID == id {
+			return &items[index]
+		}
+	}
+	return nil
+}
+
+// 早期实现把 AIStarsLab 线路编码写进了 modelKey（`<线路>:<模型>`），后改为模型名 + 能力合约里存 channel。
+// 存量旧记录的名字不在目录里，不会被常规同步遍历到，因此永远缺少线路块。这里按前缀回目录重新匹配。
+func aiStarsLabCatalogItemForLegacyKey(items []ChannelModelCatalogItem, modelKey string) *ChannelModelCatalogItem {
+	channelID, modelName, found := strings.Cut(strings.TrimSpace(modelKey), ":")
+	channelID, modelName = strings.TrimSpace(channelID), strings.TrimSpace(modelName)
+	if !found || channelID == "" || modelName == "" {
+		return nil
+	}
+	for index := range items {
+		route := items[index].AIStarsLab
+		if route == nil {
+			continue
+		}
+		if strings.TrimSpace(route.Channel) == channelID && strings.EqualFold(strings.TrimSpace(route.Model), modelName) {
 			return &items[index]
 		}
 	}

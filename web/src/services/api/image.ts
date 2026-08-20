@@ -14,7 +14,7 @@ import { withOpenAIPromptCacheKey } from "@/lib/openai-prompt-cache";
 import { imageSizeRequest, modelCapabilityConfigFor, normalizeImageValue, type ImageCapabilityConfig } from "@/lib/model-capabilities";
 import { globalAiOpcResponseCodeFailed, globalAiOpcTaskUrl, GLOBALAIOPC_IMAGE_MODELS, GLOBALAIOPC_VIDEO_MODELS } from "@/lib/globalaiopc-channel";
 import { getResourceOSSUrl } from "@/services/api/resources";
-import { isAiStarsLabBaseUrl } from "@/lib/aistarslab-channel";
+import { aiStarsLabModelRoute, isAiStarsLabBaseUrl } from "@/lib/aistarslab-channel";
 import { buildGeminiImageGenerationConfig, parseGeminiImageDataUrl, type GeminiImageGenerationConfig } from "@/lib/gemini-image";
 
 export type AiTextMessage = {
@@ -97,8 +97,8 @@ type GlobalAiOpcTask = {
     msg?: string;
 };
 type GlobalAiOpcTaskResponse = GlobalAiOpcTask | { code?: number | string; data?: GlobalAiOpcTask | null; msg?: string };
-type AiStarsLabOutput = { url?: string; uri?: string; type?: string };
-type AiStarsLabResponse = { code?: number; msg?: string; taskId?: string; id?: string; status?: number; output?: string; outputs?: AiStarsLabOutput[]; data?: AiStarsLabResponse };
+// 官方合同里 outputs 是字符串数组（List<String>）；早期实现误当成对象数组，会把成功任务误判为无结果。
+type AiStarsLabResponse = { code?: number; msg?: string; taskId?: string; id?: string; status?: number; errorMessage?: string; errorCode?: string; output?: string; outputs?: string[]; data?: AiStarsLabResponse };
 type GeminiPart = {
     text?: string;
     thought?: boolean;
@@ -1018,8 +1018,8 @@ async function requestGlobalAiOpcImages(config: ReturnType<typeof resolveModelRe
 }
 
 async function requestAiStarsLabImage(config: ReturnType<typeof resolveModelRequestConfig>, prompt: string, references: ReferenceImage[], image: ReturnType<typeof normalizeImageValue>, options?: RequestOptions) {
-    const route = config.capabilityConfig?.aistarslab;
-    // channel 与 quality 都是官方必填项，只能原样回传目录下发的值；缺失时明确失败而不是发空值。
+    // channel 与 quality 都是官方必填项，只能原样回传目录下发或 modelKey 还原的值；缺失时明确失败而不是发空值。
+    const route = aiStarsLabModelRoute(config.capabilityConfig, config.model, "image");
     if (!route?.channel?.trim()) throw new Error("AIStarsLab 模型缺少线路编码，请在后台重新拉取该渠道模型");
     if (route.inputImagesMax !== undefined && references.length > route.inputImagesMax) {
         throw new Error(`AIStarsLab 当前模型最多支持 ${route.inputImagesMax} 张参考图，当前连接了 ${references.length} 张`);
@@ -1027,7 +1027,8 @@ async function requestAiStarsLabImage(config: ReturnType<typeof resolveModelRequ
     const referenceImages = await Promise.all(references.map(aiStarsLabImageURL));
     const body = {
         channel: route.channel.trim(),
-        model: config.model,
+        // 线路块里的 model 是目录下发的官方模型名；早期存量记录的 modelKey 带 `<线路>:` 前缀，不能直接回传。
+        model: route.model?.trim() || config.model,
         prompt: withSystemPrompt(config, prompt),
         aspectRatio: aiStarsLabImageRatio(image.size, route.aspectRatios),
         quality: aiStarsLabImageQuality(image.quality, route.qualities),
@@ -1042,11 +1043,11 @@ async function requestAiStarsLabImage(config: ReturnType<typeof resolveModelRequ
             const state = unwrapAiStarsLabEnvelope(await getChannelJSON<AiStarsLabResponse>(config, `${aiApiUrl(config, "/generation/status")}?taskId=${encodeURIComponent(taskId)}`, options));
             const status = Number(state.status);
             if (status === 3) {
-                const url = String(state.outputs?.[0]?.url || state.outputs?.[0]?.uri || state.output || "").trim();
+                const url = String(state.outputs?.find((item) => String(item || "").trim()) || state.output || "").trim();
                 if (!url) throw new Error("AIStarsLab 图片任务成功但没有返回图片地址");
                 return [{ id: nanoid(), dataUrl: url }];
             }
-            if (status === 4) throw new Error(state.msg || "AIStarsLab 图片生成失败");
+            if (status === 4) throw new Error(state.errorMessage || state.errorCode || state.msg || "AIStarsLab 图片生成失败");
             await waitForGlobalAiOpcTask(options?.signal);
         }
         throw new Error("AIStarsLab 图片生成超时，请稍后重试");

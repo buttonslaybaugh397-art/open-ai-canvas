@@ -236,7 +236,7 @@ func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string
 		}
 	}
 	if resumedProviderRequestID(ctx) == "" {
-		requirePublicURL := input.Config.InterfaceType == "newapi-channel-1" || input.Config.InterfaceType == "newapi-channel-2" || input.Config.InterfaceType == string(model.ChannelInterfaceGlobalAiOpcImage) || input.Config.InterfaceType == string(model.ChannelInterfaceGlobalAiOpcVideo) || input.Config.InterfaceType == string(model.ChannelInterfaceHuiQuYunVideo) || input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo)
+		requirePublicURL := protocolRequiresPublicReferenceURL(input.Config.InterfaceType)
 		// MX933 带参考素材时只接受 multipart 文件，必须保留本地字节而不是转换为 OSS URL。
 		if input.Config.InterfaceType == string(model.ChannelInterfaceHuiQuYunVideo) && isHuiQuYunMX933VideoModel(input.Config.Model) {
 			requirePublicURL = false
@@ -505,6 +505,23 @@ func metadataStringValues(value any) map[string]string {
 		values[key] = strings.TrimSpace(fmt.Sprint(item))
 	}
 	return values
+}
+
+// 以下协议只接受公网 URL 形式的参考素材（JSON 体里传地址，不支持内嵌 data URL 也不走 multipart）；
+// 素材库资源必须先签成可回源的临时地址，否则上游拉不到文件。
+func protocolRequiresPublicReferenceURL(interfaceType string) bool {
+	switch interfaceType {
+	case "newapi-channel-1", "newapi-channel-2":
+		return true
+	case string(model.ChannelInterfaceGlobalAiOpcImage), string(model.ChannelInterfaceGlobalAiOpcVideo):
+		return true
+	case string(model.ChannelInterfaceHuiQuYunVideo), string(model.ChannelInterfaceVolcengineArkVideo):
+		return true
+	case string(model.ChannelInterfaceAIStarsLabImage), string(model.ChannelInterfaceAIStarsLabVideo):
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) hydrateGenerationMedia(userID string, input *canvasGenerationInput, requirePublicURL bool) error {
@@ -1839,8 +1856,8 @@ func aiStarsLabVideoRequestBody(input canvasGenerationInput) (map[string]interfa
 	if len(input.ReferenceAudios) > 0 && len(input.ReferenceImages) == 0 {
 		return nil, errors.New("AIStarsLab 参考音频必须同时提供至少 1 张参考图片")
 	}
-	route := aiStarsLabRoute(input.Config.CapabilityConfig)
-	// channel 是官方必填的线路编码，只能原样回传目录下发的值；缺失时必须明确失败，不能用空字符串让上游猜线路。
+	route := aiStarsLabRoute(input.Config.CapabilityConfig, input.Config.Model)
+	// channel 是官方必填的线路编码，只能原样回传目录下发或 modelKey 还原的值；缺失时必须明确失败，不能用空字符串让上游猜线路。
 	if route == nil || strings.TrimSpace(route.Channel) == "" {
 		return nil, errors.New("AIStarsLab 模型缺少线路编码，请在后台重新拉取该渠道模型")
 	}
@@ -1870,7 +1887,7 @@ func aiStarsLabVideoRequestBody(input canvasGenerationInput) (map[string]interfa
 	}
 	body := map[string]interface{}{
 		"channel":     strings.TrimSpace(route.Channel),
-		"model":       input.Config.Model,
+		"model":       aiStarsLabRequestModel(route, input.Config.Model),
 		"prompt":      strings.TrimSpace(input.Prompt),
 		"aspectRatio": strings.TrimSpace(input.Config.Size),
 		"quality":     aiStarsLabRequestQuality(route, config, input.Config.VQuality),
@@ -1885,11 +1902,38 @@ func aiStarsLabVideoRequestBody(input canvasGenerationInput) (map[string]interfa
 	return body, nil
 }
 
-func aiStarsLabRoute(config *ModelCapabilityConfig) *AIStarsLabCapabilityConfig {
-	if config == nil || config.AIStarsLab == nil {
+// 线路块是 channel、model 等官方必填项的首选来源。
+// 早期存量记录把线路编码写进了 modelKey（`<线路>:<模型>`）且没有线路块，它们仍可能已定价启用并被用户选中；
+// 生成不能卡在“先去后台重新拉取模型”上，因此线路块缺失时按 modelKey 现场还原。
+// 还原结果只保证 channel 与 model 可信，各类参考素材上限置 -1 表示未知并交由上游校验，不能因本地默认 0 把参考图误判成超限。
+func aiStarsLabRoute(config *ModelCapabilityConfig, modelKey string) *AIStarsLabCapabilityConfig {
+	if config != nil && config.AIStarsLab != nil && strings.TrimSpace(config.AIStarsLab.Channel) != "" {
+		return config.AIStarsLab
+	}
+	channelID, modelName, found := strings.Cut(strings.TrimSpace(modelKey), ":")
+	channelID, modelName = strings.TrimSpace(channelID), strings.TrimSpace(modelName)
+	if !found || channelID == "" || modelName == "" {
 		return nil
 	}
-	return config.AIStarsLab
+	derived := AIStarsLabCapabilityConfig{Channel: channelID, Model: modelName, InputImagesMax: -1, InputVideosMax: -1, InputAudiosMax: -1}
+	if config != nil && config.AIStarsLab != nil {
+		existing := config.AIStarsLab
+		derived.Capability = existing.Capability
+		derived.Qualities, derived.AspectRatios, derived.Modes = existing.Qualities, existing.AspectRatios, existing.Modes
+		derived.Duration, derived.DurationMin, derived.DurationMax = existing.Duration, existing.DurationMin, existing.DurationMax
+	}
+	return &derived
+}
+
+// 线路块里的 model 是目录下发的官方模型名，是唯一可信值；
+// 早期存量记录的 modelKey 带有 `<线路>:` 前缀，直接回传会让上游找不到模型。
+func aiStarsLabRequestModel(route *AIStarsLabCapabilityConfig, fallback string) string {
+	if route != nil {
+		if name := strings.TrimSpace(route.Model); name != "" {
+			return name
+		}
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func runAiStarsLabImageTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
@@ -1924,7 +1968,7 @@ func runAiStarsLabImageTask(ctx context.Context, input canvasGenerationInput) (m
 }
 
 func aiStarsLabImageRequestBody(input canvasGenerationInput) (map[string]interface{}, error) {
-	route := aiStarsLabRoute(input.Config.CapabilityConfig)
+	route := aiStarsLabRoute(input.Config.CapabilityConfig, input.Config.Model)
 	if route == nil || strings.TrimSpace(route.Channel) == "" {
 		return nil, errors.New("AIStarsLab 模型缺少线路编码，请在后台重新拉取该渠道模型")
 	}
@@ -1938,7 +1982,7 @@ func aiStarsLabImageRequestBody(input canvasGenerationInput) (map[string]interfa
 	// n 官方当前仅支持 1；画布的多图需求由上层拆成多个任务，不在这里静默放大。
 	body := map[string]interface{}{
 		"channel":     strings.TrimSpace(route.Channel),
-		"model":       input.Config.Model,
+		"model":       aiStarsLabRequestModel(route, input.Config.Model),
 		"prompt":      withSystemPrompt(input.Config, input.Prompt),
 		"aspectRatio": aiStarsLabImageRatio(input.Config.Size, route),
 		"quality":     aiStarsLabRequestQuality(route, nil, input.Config.Quality),
@@ -4045,10 +4089,22 @@ func providerRequestKind(method string, path string) string {
 
 func apiURL(baseURL string, path string) string {
 	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if strings.HasSuffix(base, "/v1") || strings.HasSuffix(base, "/v1beta") || strings.HasSuffix(base, "/api/v3") || strings.HasSuffix(base, "/api/plan/v3") {
+	// `/openapi` 本身就是上游的 API 根（如 AIStarsLab），官方路径直接挂在它下面；再补 `/v1` 会拿到 404。
+	if isVersionedAPIBase(base) {
 		return base + path
 	}
 	return base + "/v1" + path
+}
+
+// 已经带版本或已经是 API 根的 base 不能再被补上 `/v1`。
+func isVersionedAPIBase(base string) bool {
+	lower := strings.ToLower(base)
+	for _, suffix := range []string{"/v1", "/v1beta", "/api/v3", "/api/plan/v3", "/openapi"} {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func writeField(writer *multipart.Writer, key string, value string) {

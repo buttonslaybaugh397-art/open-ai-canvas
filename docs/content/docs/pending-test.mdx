@@ -7,6 +7,8 @@
 - 验证汇取云 `sd2-mx933-720-*` 与 `sd2-mx933-720-fast-*` 文生视频使用 JSON，带图片、视频或音频参考时改用 multipart 文件上传；首尾帧、9 图/3 视频/3 音频、480P/720P、固定 5/10/15 秒及 `generate_audio` 参数均按官方合同生效，其他汇取云模型保持原协议。
 - 验证 AIStarsLab 多图、图片加音频等参考生成不再被错误标记为不存在的 `reference_to_video` 操作；历史任务重试会按真实参考素材还原为 `image_to_video`、`extend` 或 `audio_to_video`。
 - 验证 AIStarsLab 创建请求按官方合同上报必填字段：`channel` 取自模型目录线路编码（缺失时明确报错而不是发空值），`quality` 从声明档位选取，`mode` 按参考图数量推导为 `text2video`、`image2video` 或正好 2 张时的 `frames2video`。
+- 验证线路块缺失的 AIStarsLab 存量模型（modelKey 形如 `54:seedance-2.5`）无需先去后台“重新拉取模型”即可生成：前后端均按 modelKey 现场还原 `channel` 与官方 `model`，参考素材上限保持未声明而不因默认 0 把参考图卡成超限；不带线路前缀且无线路块时仍明确失败。
+- 验证 AIStarsLab 生成请求不再被补上多余的 `/v1`：`/openapi` 被识别为上游 API 根，创建与轮询分别打到 `/openapi/generation/create/{video,image}` 和 `/openapi/generation/status`，不再返回 `No static resource openapi/v1/...`；同时验证普通 OpenAI 兼容渠道仍正常补 `/v1`。
 - 验证 AIStarsLab 任务轮询按官方状态码 1/2/3/4 处理，结果从 `outputs` 数组读取，失败时使用 `errorMessage`；轮询间隔不低于 10 秒以免触发限流。
 - 验证 `aistarslab-image` 已有后端生成路径，不再错误地落到通用 OpenAI Images 协议；图生图会上报参考图并受模型 `inputImagesMax` 限制，蒙版编辑明确拒绝。
 - 验证 AIStarsLab 参考素材仅接受公网 URL，错误提示不再沿用汇取云文案。官方要求在提示词中用 `@图片1` 这类索引引用素材，当前未自动追加，需确认是否要由产品层补齐。
@@ -109,3 +111,9 @@
 
 - 验证平移、旋转和缩放人物时，骨骼辅助线、骨骼控制点与人物模型保持同步，不出现重复位移或偏离。
 - 验证演员首次加载时直接应用站立姿态，骨骼辅助线与控制点首帧位置正确，切换姿势和骨骼关键帧后仍正常更新。
+
+## 提示词代码编辑器依赖收敛
+
+- 验证提示词代码编辑器仍能正常输入、换行折行、显示行号并按明暗主题切换配色。
+- 验证通过编辑器句柄插入文本和聚焦（技能/变量插入路径）行为不变。
+- 背景：`EditorView` 改为从 `@uiw/react-codemirror` 再导出入口导入，消除 `@codemirror/view` 双版本类型冲突导致的 `tsc --noEmit` 失败。
