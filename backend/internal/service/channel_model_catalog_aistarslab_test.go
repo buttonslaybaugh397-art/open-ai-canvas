@@ -87,6 +87,24 @@ func TestSyncAIStarsLabModelUsesDurationRange(t *testing.T) {
 	}
 }
 
+// 线路声明的画质档位必须写进 Video.Resolutions：
+// 前端分辨率选项和后台分辨率定价都读这里，停在按模型名猜的通用档位上会让用户选到线路不支持的画质。
+func TestSyncAIStarsLabModelWritesDeclaredQualities(t *testing.T) {
+	channel := model.ModelChannel{BaseURL: "https://api.video.aistarslab.com/openapi"}
+	item := model.ChannelModel{ModelKey: "54:seedance-2.5", Protocol: model.ChannelInterfaceChatCompletion, Capability: "text"}
+	catalog := &ChannelModelCatalogItem{AIStarsLab: &AIStarsLabCatalogRoute{Channel: "54", Capability: "video", Model: "seedance-2.5", Qualities: []string{"720p", "1080p"}}}
+	if !syncChannelModelContract(channel, &item, nil, catalog) {
+		t.Fatal("expected contract update")
+	}
+	config, err := DecodeModelCapabilityConfig(item.CapabilityConfigJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Video == nil || strings.Join(config.Video.Resolutions, ",") != "720p,1080p" || config.Video.DefaultResolution != "720p" {
+		t.Fatalf("resolutions = %#v", config.Video)
+	}
+}
+
 func aiStarsLabVideoTestInput(route *AIStarsLabCapabilityConfig, seconds string, images []providerMedia) canvasGenerationInput {
 	return canvasGenerationInput{
 		Prompt:          "海边日落",
@@ -287,13 +305,28 @@ func TestAiStarsLabVideoRequestBodyRejectsMissingChannel(t *testing.T) {
 	}
 }
 
-func TestAiStarsLabRequestQualityFallsBackToDeclaredOption(t *testing.T) {
-	route := &AIStarsLabCapabilityConfig{Channel: "12", Qualities: []string{"720p", "1080p"}}
-	if quality := aiStarsLabRequestQuality(route, nil, "4k"); quality != "720p" {
-		t.Fatalf("unsupported quality fallback = %q", quality)
+func TestAiStarsLabRequestQualityMatchesDeclaredOption(t *testing.T) {
+	route := &AIStarsLabCapabilityConfig{Channel: "12", Qualities: []string{"480p", "720p", "1080p"}}
+	// 前端状态保存的是去掉 p 的裸数字，必须能对上带后缀的声明档位；
+	// 否则会静默兑现成首档（选 720 实际出 480），而计费仍按 720p 单价。
+	for _, requested := range []string{"720", "720p", "720P"} {
+		quality, err := aiStarsLabRequestQuality(route, nil, requested)
+		if err != nil || quality != "720p" {
+			t.Fatalf("aiStarsLabRequestQuality(%q) = %q, %v", requested, quality, err)
+		}
 	}
-	if quality := aiStarsLabRequestQuality(route, nil, "1080P"); quality != "1080p" {
-		t.Fatalf("case-insensitive quality = %q", quality)
+	// 未选择时才允许用首档兑现。
+	if quality, err := aiStarsLabRequestQuality(route, nil, "auto"); err != nil || quality != "480p" {
+		t.Fatalf("auto quality = %q, %v", quality, err)
+	}
+	// 线路真不支持的档位必须明确失败，不能静默降级后按高档计费。
+	if _, err := aiStarsLabRequestQuality(route, nil, "4k"); err == nil {
+		t.Fatal("unsupported quality must fail closed")
+	}
+	// 1K/2K 这类非分辨率档位仍按原串匹配。
+	imageRoute := &AIStarsLabCapabilityConfig{Channel: "21", Qualities: []string{"1K", "2K"}}
+	if quality, err := aiStarsLabRequestQuality(imageRoute, nil, "2k"); err != nil || quality != "2K" {
+		t.Fatalf("image quality = %q, %v", quality, err)
 	}
 }
 

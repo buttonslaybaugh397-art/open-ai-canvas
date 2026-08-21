@@ -13,7 +13,9 @@ import { isLocalDreaminaTaskId, projectLocalDreaminaDiagnosticLog, projectLocalD
 
 export type { BackendEnvelope } from "@/services/api/request";
 
-export type TaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+// text_replay 是前端自管的文本存档状态：任务不进 worker 队列，由前端直连生成并上报增量，
+// 完成时才收尾为 succeeded；浏览器中途关闭会让任务一直停在该状态。
+export type TaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "text_replay";
 export type TaskBillingStatus = "reserved" | "running" | "settled" | "refunded" | "uncertain";
 export type ProviderCancelStatus = "requested" | "confirmed" | "uncertain";
 const GENERATION_TASK_CANCEL_ABORT_REASON = "generation-task-cancel";
@@ -390,6 +392,10 @@ export function subscribeGenerationTasks(ids: readonly string[], listener: (task
 
 export function appendTaskTextDelta(id: string, content: string) {
     return request<TaskTextDelta>(api.post(`/tasks/${encodeURIComponent(id)}/text-deltas`, { content }));
+}
+
+export function completeTextReplayTask(id: string, text: string) {
+    return request<GenerationTask>(api.post(`/tasks/${encodeURIComponent(id)}/text-replay-complete`, { text }));
 }
 
 export function queryTaskTextReplay(id: string, after = 0) {

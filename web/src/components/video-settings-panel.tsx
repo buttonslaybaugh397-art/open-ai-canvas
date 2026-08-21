@@ -42,7 +42,8 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
     const size = normalizeVideoSizeValue(config.size);
     const dimensions = readSizeDimensions(size);
     const resolution = normalizeVideoResolutionValue(config.vquality);
-    const configuredResolutions = profile.resolutions.map((value) => ({ value: value.replace(/p$/i, ""), label: value.toUpperCase() }));
+    // 后端已归一化为小写 "480p"、"720p"，前端直接使用，不再去掉后缀
+    const configuredResolutions = profile.resolutions.map((value) => ({ value, label: value.toUpperCase() }));
     const generateAudio = boolConfig(config.videoGenerateAudio, profile.generateAudio.default);
     const watermark = boolConfig(config.videoWatermark, profile.watermark.default);
     const updateDimension = (key: "width" | "height", value: number | null) => {

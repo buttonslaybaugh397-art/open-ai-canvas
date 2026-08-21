@@ -365,8 +365,12 @@ func (s *Service) fetchAiStarsLabCatalog(ctx context.Context, baseURL, apiKey st
 				}
 				qualities := make([]string, 0, len(item.Qualities))
 				for _, quality := range item.Qualities {
+					// AIStarsLab 官方返回大写 "480P"、"720P"，统一归一化为小写 "480p"、"720p" 以匹配系统其他地方的分辨率格式。
 					if value := strings.TrimSpace(quality.Quality); value != "" {
-						qualities = append(qualities, value)
+						normalized := normalizeResolution(value)
+						if normalized != "" {
+							qualities = append(qualities, normalized)
+						}
 					}
 				}
 				candidate := ChannelModelCatalogItem{

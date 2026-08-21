@@ -3,8 +3,6 @@ export type ModelProtocol =
     | "openai-response"
     | "openai-image"
     | "grok-image"
-    | "globalaiopc-image"
-    | "aistarslab-image"
     | "volcengine-ark-image"
     | "volcengine-jimeng-image"
     | "gemini-image"
@@ -13,14 +11,17 @@ export type ModelProtocol =
     | "newapi"
     | "newapi-channel-1"
     | "newapi-channel-2"
+    | "globalaiopc-image"
     | "globalaiopc-video"
     | "huiquyun-video"
+    | "aistarslab-image"
     | "aistarslab-video"
     | "xai-video"
     | "volcengine-ark-video"
     | "volcengine-jimeng-video"
     | "gemini-veo"
-    | "novita-video";
+    | "novita-video"
+    | "minimax-video";
 
 export type ProtocolCapability = "text" | "image" | "video" | "audio";
 
@@ -39,8 +40,6 @@ export const MODEL_PROTOCOLS: ModelProtocolDefinition[] = [
     { value: "openai-response", label: "OpenAI Responses", capability: "text", create: "POST /v1/responses", contentType: "application/json", media: "文本与多模态输入" },
     { value: "openai-image", label: "OpenAI Images", capability: "image", create: "POST /v1/images/generations", contentType: "application/json / multipart", media: "生成、编辑与参考图" },
     { value: "grok-image", label: "Grok Images", capability: "image", create: "POST /v1/images/generations / edits", contentType: "application/json", media: "文生图与单张 URL 参考图，不支持蒙版" },
-    { value: "globalaiopc-image", label: "GlobalAiOpc 图片任务", capability: "image", create: "POST /v2/model-center/tasks", poll: "GET /v2/model-center/tasks/{task_id}", contentType: "application/json", media: "0-10 张公网 URL 参考图" },
-    { value: "aistarslab-image", label: "AIStarsLab 图片任务", capability: "image", create: "POST /generation/create/image", poll: "GET /generation/status?taskId={taskId}", contentType: "application/json", media: "按线路配置的参考图" },
     { value: "volcengine-ark-image", label: "火山方舟图片", capability: "image", create: "POST /api/v3/images/generations", contentType: "application/json", media: "文生图与 image 参考图，不支持蒙版" },
     { value: "volcengine-jimeng-image", label: "即梦官方图片", capability: "image", create: "POST CVSync2AsyncSubmitTask", poll: "POST CVSync2AsyncGetResult", contentType: "application/json + AK/SK 签名", media: "0-14 张参考图，模型标识填写 req_key" },
     { value: "gemini-image", label: "Gemini Images", capability: "image", create: "POST /v1beta/models/{model}:generateContent", contentType: "application/json", media: "文生图、图片编辑与多张内嵌参考图" },
@@ -57,9 +56,11 @@ export const MODEL_PROTOCOLS: ModelProtocolDefinition[] = [
         contentType: "application/json",
         media: "image_urls（首帧、尾帧、其他参考图） / video_urls / audio_urls",
     },
-    { value: "globalaiopc-video", label: "GlobalAiOpc 视频任务", capability: "video", create: "POST /v2/model-center/tasks", poll: "GET /v2/model-center/tasks/{task_id}", contentType: "application/json", media: "图片、视频、音频公网 URL 与首尾帧" },
-    { value: "huiquyun-video", label: "汇取云视频任务", capability: "video", create: "POST /v1/videos/generations", poll: "GET /v1/videos/{task_id}", contentType: "application/json", media: "首尾帧、图片、视频与音频公网 URL 参考素材" },
-    { value: "aistarslab-video", label: "AIStarsLab 视频任务", capability: "video", create: "POST /generation/create/video", poll: "GET /generation/status?taskId={taskId}", contentType: "application/json", media: "文生视频、图生视频、首尾帧与音视频参考" },
+    { value: "globalaiopc-image", label: "GlobalAiOpc 图片", capability: "image", create: "POST /v1/images/generations", contentType: "application/json", media: "文生图与参考图" },
+    { value: "globalaiopc-video", label: "GlobalAiOpc 视频", capability: "video", create: "POST /v1/video/generations", poll: "GET /v1/video/generations/{task_id}", contentType: "application/json", media: "文本、图片、视频、音频参考素材" },
+    { value: "huiquyun-video", label: "汇取云视频", capability: "video", create: "POST /videos/generations", poll: "GET /videos/{task_id}", contentType: "application/json / multipart", media: "文本、图片、视频、音频参考素材" },
+    { value: "aistarslab-image", label: "AIStarsLab 图片", capability: "image", create: "POST /generation/create/image", poll: "GET /generation/status?taskId={id}", contentType: "application/json", media: "文本与参考图" },
+    { value: "aistarslab-video", label: "AIStarsLab 视频", capability: "video", create: "POST /generation/create/video", poll: "GET /generation/status?taskId={id}", contentType: "application/json", media: "文本、图片、视频、音频参考素材" },
     { value: "xai-video", label: "xAI 官方视频", capability: "video", create: "POST /v1/videos/generations", poll: "GET /v1/videos/{request_id}", contentType: "application/json", media: "单张起始图" },
     {
         value: "volcengine-ark-video",
@@ -73,9 +74,10 @@ export const MODEL_PROTOCOLS: ModelProtocolDefinition[] = [
     { value: "volcengine-jimeng-video", label: "即梦官方视频", capability: "video", create: "POST CVSync2AsyncSubmitTask", poll: "POST CVSync2AsyncGetResult", contentType: "application/json + AK/SK 签名", media: "文本或一张首帧图，模型标识填写 req_key" },
     { value: "gemini-veo", label: "Gemini Veo", capability: "video", create: "POST /v1beta/models/{model}:predictLongRunning", poll: "GET /v1beta/{operation_name}", contentType: "application/json", media: "文本与单张起始图" },
     { value: "novita-video", label: "Novita 视频", capability: "video", create: "POST /v3/video/create", poll: "GET /v3/async/task-result?task_id={id}", contentType: "application/json", media: "文本或单张起始图" },
+    { value: "minimax-video", label: "MiniMax 视频", capability: "video", create: "POST /v2/video_generation", poll: "GET /v2/query/video_generation/{task_id}", contentType: "application/json", media: "文本、图片、视频、音频参考素材" },
 ];
 
-export const MODEL_PROTOCOL_OPTIONS = protocolGroups(MODEL_PROTOCOLS.filter((item) => !item.value.startsWith("volcengine-jimeng-") && !item.value.startsWith("globalaiopc-") && !item.value.startsWith("aistarslab-") && item.value !== "huiquyun-video"));
+export const MODEL_PROTOCOL_OPTIONS = protocolGroups(MODEL_PROTOCOLS.filter((item) => !item.value.startsWith("volcengine-jimeng-")));
 
 export const SYSTEM_MODEL_PROTOCOL_OPTIONS = protocolGroups(MODEL_PROTOCOLS);
 
@@ -110,9 +112,7 @@ export function protocolForModelCatalog(endpointTypes: string[] = []): ModelProt
     if (normalized.has("openai-response") || normalized.has("responses")) return "openai-response";
     if (normalized.has("gemini-image") || normalized.has("gemini-images")) return "gemini-image";
     if (normalized.has("openai-image") || normalized.has("image")) return "openai-image";
-    if (normalized.has("globalaiopc-image")) return "globalaiopc-image";
     if (normalized.has("openai-video") || normalized.has("video")) return "newapi-channel-2";
-    if (normalized.has("globalaiopc-video")) return "globalaiopc-video";
     if (normalized.has("openai-audio") || normalized.has("audio")) return "openai-audio";
     if (normalized.has("grok-image")) return "grok-image";
     if (normalized.has("gemini-veo") || normalized.has("gemini-video") || normalized.has("veo")) return "gemini-veo";

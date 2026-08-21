@@ -1,13 +1,13 @@
 import { memo, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
-import { Link2, Trash2 } from "lucide-react";
+import { Link2 } from "lucide-react";
 
-import { canvasConnectionPath, ConnectionPath } from "@/components/canvas/canvas-connections";
+import { ConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasFrameNode } from "@/components/canvas/canvas-frame-node";
 import { CanvasNode } from "@/components/canvas/canvas-node";
 import type { CanvasBatchConnectionPreview } from "@/lib/canvas/canvas-batch-connection";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { isFrameNode } from "@/lib/canvas/canvas-frame";
-import type { CanvasDisplayConnection, CanvasNodeData, ConnectionHandle, Position, SelectionBox } from "@/types/canvas";
+import type { CanvasDisplayConnection, CanvasFolderStyle, CanvasFolderTheme, CanvasNodeData, ConnectionHandle, Position, SelectionBox } from "@/types/canvas";
 
 type DragPreview = { x: number; y: number; nodeIds: Set<string> } | null;
 type NodeBounds = { left: number; top: number; width: number; height: number; count: number } | null;
@@ -23,10 +23,10 @@ type CanvasProjectWorldLayersProps = {
     connectingParams: ConnectionHandle | null;
     mouseWorld: Position;
     connectionTargetNodeId: string | null;
-    connectionTargetAnchorRatio?: number;
     nodeById: Map<string, CanvasNodeData>;
     visibleNodes: CanvasNodeData[];
     frameChildrenById: Map<string, CanvasNodeData[]>;
+    linkedFolderPreviewNodesById: Map<string, CanvasNodeData[]>;
     dragPreview: DragPreview;
     selectedNodeIds: Set<string>;
     frameDropTargetId: string | null;
@@ -49,7 +49,6 @@ type CanvasProjectWorldLayersProps = {
     selectionBoundsElementRef: RefObject<HTMLDivElement | null>;
     renderCanvasNodeContent: (node: CanvasNodeData) => ReactNode;
     onConnectionSelect: (connectionId: string) => void;
-    onDeleteConnection: (connectionId: string) => void;
     onConnectionContextMenu: (event: ReactMouseEvent<SVGPathElement>, connectionId: string) => void;
     onNodeMouseDown: (event: ReactMouseEvent, nodeId: string) => void;
     onNodeHoverStart: (nodeId: string) => void;
@@ -57,6 +56,8 @@ type CanvasProjectWorldLayersProps = {
     onConnectStart: (event: ReactPointerEvent, nodeId: string, handleType: "source" | "target", handleId?: string, anchorRatio?: number) => void;
     onNodeResize: (nodeId: string, width: number, height: number, position?: Position) => void;
     onToggleFrame: (nodeId: string) => void;
+    onFolderStyleChange: (nodeId: string, style: CanvasFolderStyle) => void;
+    onFolderThemeChange: (nodeId: string, theme: CanvasFolderTheme) => void;
     onNodeTitleChange: (nodeId: string, title: string) => void;
     onNodeContextMenu: (event: ReactMouseEvent, nodeId: string) => void;
     onNodeContentChange: (nodeId: string, content: string) => void;
@@ -79,16 +80,13 @@ const EMPTY_CANVAS_NODES: CanvasNodeData[] = [];
 
 export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(props: CanvasProjectWorldLayersProps) {
     const { viewportScale } = props;
-    const selectedConnection = props.displayConnections.find(({ connection }) => connection.id === props.selectedConnectionId);
-    const selectedConnectionMidpoint = selectedConnection
-        ? canvasConnectionPath(
-            selectedConnection.connection,
-            selectedConnection.from,
-            selectedConnection.to,
-            props.scriptScrollTopById[selectedConnection.from.id] || 0,
-            props.scriptScrollTopById[selectedConnection.to.id] || 0,
-        )
-        : null;
+    const framePreviewNodes = (node: CanvasNodeData) => {
+        const assetFolderId = node.metadata?.folder?.assetFolderId;
+        if (assetFolderId) return props.linkedFolderPreviewNodesById.get(assetFolderId) || EMPTY_CANVAS_NODES;
+        const localChildren = props.frameChildrenById.get(node.id) || EMPTY_CANVAS_NODES;
+        if (localChildren.length) return localChildren;
+        return EMPTY_CANVAS_NODES;
+    };
     return (
         <>
             <svg
@@ -112,29 +110,21 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
                 ))}
             </svg>
 
-            {selectedConnection && selectedConnectionMidpoint ? (
-                <ConnectionDeleteButton
-                    connectionId={selectedConnection.connection.id}
-                    x={selectedConnectionMidpoint.midX}
-                    y={selectedConnectionMidpoint.midY}
-                    scale={viewportScale}
-                    onDelete={props.onDeleteConnection}
-                />
-            ) : null}
-
             {props.visibleNodes.map((node) =>
                 isFrameNode(node) ? (
                     <CanvasFrameNode
                         key={node.id}
                         data={node}
                         dragOffset={props.dragPreview?.nodeIds.has(node.id) ? props.dragPreview : undefined}
-                        childNodes={props.frameChildrenById.get(node.id) || EMPTY_CANVAS_NODES}
+                        childNodes={framePreviewNodes(node)}
                         scale={viewportScale}
                         isSelected={props.selectedNodeIds.has(node.id)}
                         isDropTarget={props.frameDropTargetId === node.id}
                         onMouseDown={props.onNodeMouseDown}
                         onResize={props.onNodeResize}
                         onToggleCollapsed={props.onToggleFrame}
+                        onFolderStyleChange={props.onFolderStyleChange}
+                        onFolderThemeChange={props.onFolderThemeChange}
                         onTitleChange={props.onNodeTitleChange}
                         onContextMenu={props.onNodeContextMenu}
                     />
@@ -148,9 +138,6 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
                         isRelated={props.relatedNodeIds.has(node.id)}
                         isFocusRelated={props.activeNodeId === node.id}
                         isConnectionTarget={props.connectionTargetNodeId === node.id || props.batchConnectionPreview?.targetNodeId === node.id}
-                        connectionTargetSide={props.batchConnectionPreview?.targetNodeId === node.id || props.connectingParams?.handleType !== "target" ? "left" : "right"}
-                        connectionTargetAnchorRatio={props.connectionTargetNodeId === node.id ? props.connectionTargetAnchorRatio : props.batchConnectionPreview?.targetNodeId === node.id ? props.batchConnectionPreview.targetAnchorRatio : undefined}
-                        isConnecting={Boolean(props.connectingParams || props.batchConnectionPreview)}
                         forceInputVisible={Boolean(props.batchConnectionPreview)}
                         batchCount={props.batchChildCountById.get(node.id) || 0}
                         batchExpanded={Boolean(node.metadata?.imageBatchExpanded)}
@@ -212,36 +199,6 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
         </>
     );
 });
-
-function ConnectionDeleteButton({ connectionId, x, y, scale, onDelete }: { connectionId: string; x: number; y: number; scale: number; onDelete: (connectionId: string) => void }) {
-    const inverseScale = 1 / Math.max(scale, 0.05);
-    return (
-        <button
-            type="button"
-            data-canvas-no-zoom
-            data-connection-id={connectionId}
-            className="pointer-events-auto absolute z-[var(--z-panel-floating)] grid -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full border shadow-md transition hover:scale-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
-            style={{
-                left: x,
-                top: y,
-                width: 30 * inverseScale,
-                height: 30 * inverseScale,
-                borderColor: "var(--workspace-border-strong)",
-                background: "var(--workspace-surface-strong)",
-                color: "var(--destructive)",
-            }}
-            title="删除连线"
-            aria-label="删除连线"
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={(event) => {
-                event.stopPropagation();
-                onDelete(connectionId);
-            }}
-        >
-            <Trash2 style={{ width: 14 * inverseScale, height: 14 * inverseScale }} strokeWidth={2} />
-        </button>
-    );
-}
 
 function BatchConnectionHandle({ scale, count, active, onPointerDown }: { scale: number; count: number; active: boolean; onPointerDown: (event: ReactPointerEvent) => void }) {
     const inverseScale = 1 / Math.max(scale, 0.05);

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -89,6 +90,21 @@ func (s *Service) AdminChannelModels(actor *model.User, channelID string) ([]mod
 
 func (s *Service) SystemChannelModel(channelID string, modelKey string) (*model.ChannelModel, error) {
 	return s.repo.ChannelModelByKey(channelID, strings.TrimPrefix(strings.TrimSpace(modelKey), "models/"))
+}
+
+// SystemChannelHasProtocol 用于没有携带 model 字段的轮询请求：先确认渠道确实配置了该协议，
+// 再由 handler 按协议限定请求路径，避免用空模型绕过系统渠道授权。
+func (s *Service) SystemChannelHasProtocol(channelID string, protocol model.ChannelInterfaceType) (bool, error) {
+	items, err := s.repo.ChannelModels(channelID, false)
+	if err != nil {
+		return false, err
+	}
+	for _, item := range items {
+		if item.Protocol == protocol {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User, channelID string) (*AdminChannelModelFetchResult, error) {
@@ -254,6 +270,13 @@ func syncChannelModelContract(channel model.ModelChannel, item *model.ChannelMod
 			if len(config.Video.Ratios) > 0 {
 				config.Video.DefaultRatio = config.Video.Ratios[0]
 			}
+			// 线路声明的画质档位是唯一可信来源：不写进 Video.Resolutions 时，前端分辨率选项和后台分辨率定价
+			// 都会停留在按模型名猜出的通用档位（480p~2160p），用户能选到该线路根本不支持的档位，
+			// 随后生成请求被上游按第一档兑现，出现“选 1080 实际出 480 却按 1080 计费”。
+			if len(catalog.AIStarsLab.Qualities) > 0 {
+				config.Video.Resolutions = append([]string(nil), catalog.AIStarsLab.Qualities...)
+				config.Video.DefaultResolution = catalog.AIStarsLab.Qualities[0]
+			}
 		}
 		encoded, err := json.Marshal(config)
 		if err == nil && item.CapabilityConfigJSON != string(encoded) {
@@ -353,6 +376,25 @@ func isHuiQuYunVideoModelName(name string) bool {
 		return true
 	}
 	return huiQuYunModelContainsAny(normalized, "mj-sd", "seedance", "grok-video", "sora", "veo", "kling", "hailuo", "vidu", "wan-video", "jimeng-video", "doubao-video", "minimax-video", "video")
+}
+
+func isHuiQuYunMX933VideoModel(modelName string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(modelName))
+	return strings.HasPrefix(normalized, "sd2-mx933-720-") || strings.HasPrefix(normalized, "sd2-mx933-720-fast-")
+}
+
+// huiQuYunFixedVideoDuration 从汇取云模型名解析固定时长后缀（如 "-5s" → 5），未声明时返回 0。
+func huiQuYunFixedVideoDuration(modelName string) int {
+	normalized := strings.ToLower(strings.TrimSpace(modelName))
+	if idx := strings.LastIndex(normalized, "-"); idx >= 0 {
+		suffix := strings.TrimSpace(normalized[idx+1:])
+		if strings.HasSuffix(suffix, "s") {
+			if seconds, err := strconv.Atoi(strings.TrimSuffix(suffix, "s")); err == nil && seconds > 0 {
+				return seconds
+			}
+		}
+	}
+	return 0
 }
 
 func huiQuYunContractNeedsVideoRepair(item *model.ChannelModel) bool {
@@ -803,7 +845,7 @@ func capabilityForProtocol(protocol model.ChannelInterfaceType) string {
 		return "image"
 	case model.ChannelInterfaceOpenAIAudio, model.ChannelInterfaceAsyncAudio:
 		return "audio"
-	case model.ChannelInterfaceNewAPIVideo, model.ChannelInterfaceNewAPIChannel1, model.ChannelInterfaceNewAPIChannel2, model.ChannelInterfaceGlobalAiOpcVideo, model.ChannelInterfaceHuiQuYunVideo, model.ChannelInterfaceAIStarsLabVideo, model.ChannelInterfaceXAIVideo, model.ChannelInterfaceVolcengineArkVideo, model.ChannelInterfaceVolcengineJiMengVideo, model.ChannelInterfaceGeminiVeo:
+	case model.ChannelInterfaceNewAPIVideo, model.ChannelInterfaceNewAPIChannel1, model.ChannelInterfaceNewAPIChannel2, model.ChannelInterfaceGlobalAiOpcVideo, model.ChannelInterfaceHuiQuYunVideo, model.ChannelInterfaceAIStarsLabVideo, model.ChannelInterfaceXAIVideo, model.ChannelInterfaceVolcengineArkVideo, model.ChannelInterfaceVolcengineJiMengVideo, model.ChannelInterfaceGeminiVeo, model.ChannelInterfaceNovitaVideo, model.ChannelInterfaceMiniMaxVideo:
 		return "video"
 	case model.ChannelInterfaceChatCompletion, model.ChannelInterfaceOpenAIResponse:
 		return "text"

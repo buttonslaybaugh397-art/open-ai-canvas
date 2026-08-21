@@ -6,6 +6,7 @@ export const statusLabel: Record<TaskStatus, string> = {
     succeeded: "已完成",
     failed: "失败",
     cancelled: "已取消",
+    text_replay: "文本存档中",
 };
 
 type GenerationTaskDisplayTarget = Pick<GenerationTask, "provider" | "status" | "stage" | "officialStatus"> & Partial<Pick<GenerationTask, "errorCode">>;

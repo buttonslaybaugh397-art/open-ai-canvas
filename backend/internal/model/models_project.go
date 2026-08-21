@@ -40,7 +40,6 @@ type Asset struct {
 	UpdatedAt        time.Time          `json:"updatedAt" gorm:"index:idx_assets_user_updated,priority:2"`
 }
 
-// TeamAsset 是当前部署内登录成员共享的素材副本；个人素材仍保留在 assets 表中。
 type TeamAsset struct {
 	ID          string             `json:"id" gorm:"primaryKey;size:36"`
 	OwnerUserID string             `json:"ownerUserId" gorm:"index;size:36;index:idx_team_assets_owner_updated,priority:1"`
@@ -54,7 +53,6 @@ type TeamAsset struct {
 	UpdatedAt   time.Time          `json:"updatedAt" gorm:"index;index:idx_team_assets_owner_updated,priority:2"`
 }
 
-// TeamAssetFolder 是部署内共享素材的一级目录；删除目录只解除归类，不删除素材。
 type TeamAssetFolder struct {
 	ID          string    `json:"id" gorm:"primaryKey;size:36"`
 	OwnerUserID string    `json:"ownerUserId" gorm:"index;size:36"`
@@ -74,7 +72,23 @@ type ProjectAssetLink struct {
 	ID        string    `json:"id" gorm:"primaryKey;size:36"`
 	ProjectID string    `json:"projectId" gorm:"index;size:36;uniqueIndex:idx_project_asset_links_unique,priority:1"`
 	AssetID   string    `json:"assetId" gorm:"index;size:80;uniqueIndex:idx_project_asset_links_unique,priority:2"`
+	FolderID  string    `json:"folderId,omitempty" gorm:"index;size:36"`
+	Position  int       `json:"position" gorm:"index"`
 	CreatedAt time.Time `json:"createdAt"`
+}
+
+// ProjectAssetFolder 只保存项目内的目录结构；真实媒体仍由 Asset/Resource 唯一持有。
+type ProjectAssetFolder struct {
+	ID        string    `json:"id" gorm:"primaryKey;size:36"`
+	ProjectID string    `json:"projectId" gorm:"index;size:36;uniqueIndex:idx_project_asset_folders_sibling_name,priority:1"`
+	ParentID  string    `json:"parentId,omitempty" gorm:"index;size:36;uniqueIndex:idx_project_asset_folders_sibling_name,priority:2"`
+	Name      string    `json:"name" gorm:"size:240"`
+	NameKey   string    `json:"-" gorm:"size:240;uniqueIndex:idx_project_asset_folders_sibling_name,priority:3"`
+	Style     string    `json:"style" gorm:"size:24"`
+	Theme     string    `json:"theme" gorm:"size:24"`
+	Position  int       `json:"position" gorm:"index"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 type ProjectAssetCandidate struct {

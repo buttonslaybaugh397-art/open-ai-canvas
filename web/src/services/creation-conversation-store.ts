@@ -28,16 +28,23 @@ export function removeCreationConversationSnapshot<T extends { id: string }>(con
     return next;
 }
 
-export function pendingCreationMediaKey(conversations: StoredCreationConversation[]) {
+// 文本消息由前端直连生成，未完成时停在 streaming；媒体消息走后端队列，未完成时停在 pending。
+// 两者都需要已绑定 taskIds 才能在刷新后从后端任务终态恢复。
+function isRecoverableCreationMessage(message: PendingCreationMessage) {
+    if (message.role !== "assistant" || !message.taskIds?.length) return false;
+    return message.mode === "text" ? message.status === "streaming" || message.status === "pending" : message.status === "pending";
+}
+
+export function pendingCreationTaskKey(conversations: StoredCreationConversation[]) {
     return conversations
-        .flatMap((conversation) => conversation.messages.flatMap((message) => (message.role === "assistant" && message.status === "pending" && message.mode !== "text" ? [`${conversation.id}:${message.id}:${(message.taskIds || []).join(",")}`] : [])))
+        .flatMap((conversation) => conversation.messages.flatMap((message) => (isRecoverableCreationMessage(message) ? [`${conversation.id}:${message.id}:${(message.taskIds || []).join(",")}`] : [])))
         .join("|");
 }
 
 export function pendingCreationTaskIds(conversations: StoredCreationConversation[]) {
     const taskIds = conversations.flatMap((conversation) =>
         conversation.messages.flatMap((message) => {
-            if (message.role !== "assistant" || message.status !== "pending" || message.mode === "text") return [];
+            if (!isRecoverableCreationMessage(message)) return [];
             return message.taskIds || [];
         }),
     );

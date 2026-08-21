@@ -4,12 +4,12 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
 
 import { projectDesktopLocalChannelRuntime } from "@/lib/desktop-local-channel";
-import { DEFAULT_CANVAS_GENERATION_RATIO, normalizeCanvasGenerationRatio, useCanvasGenerationRatio } from "@/lib/canvas/canvas-generation-ratio";
-import { syncHuiQuYunModelCosts } from "@/lib/huiquyun-channel";
 import { scopedLocalStorage } from "@/lib/user-scope";
 import { modelProtocolCapability, normalizeModelProtocol, type ModelProtocol } from "@/lib/model-protocols";
 import { normalizeVideoDuration, normalizeVideoResolution } from "@/lib/video-generation-options";
 import type { ModelCapabilityConfig } from "@/lib/model-capabilities";
+import { useLocalDreaminaModelStore } from "@/stores/use-local-dreamina-model-store";
+import { useUserStore } from "@/stores/use-user-store";
 import type { DreaminaLocalModel } from "@/services/local-dreamina-model-catalog";
 import type { CapabilitySpec } from "@/services/api/logical-models";
 
@@ -17,7 +17,8 @@ export type ApiCallFormat = "openai" | "gemini";
 export type ChannelInterfaceType = ModelProtocol;
 export type ChannelHeader = { name: string; value: string };
 
-const LEGACY_PUBLIC_MODEL_CATALOG_ID = "managed";
+// 这是只读目录适配器的内部键，不是供应渠道或数据库实体 ID。
+export const PUBLIC_MODEL_CATALOG_ID = "managed";
 
 export type ModelChannel = {
     id: string;
@@ -27,8 +28,8 @@ export type ModelChannel = {
     apiKey: string;
     secretKey?: string;
     headers?: ChannelHeader[];
+    connectionType?: string;
     apiFormat: ApiCallFormat;
-    connectionType?: "openai" | "gemini" | "globalaiopc" | "huiquyun" | "aistarslab";
     interfaceType?: ChannelInterfaceType;
     models: string[];
     scope?: "system" | "user";
@@ -46,7 +47,6 @@ export type ModelChannel = {
         pricePolicy?: "channel" | "unified";
         billingMode: "fixed_request" | "per_second" | "token";
         unitPriceMicrocredits: number;
-        resolutionPriceMicrocredits?: Record<string, number>;
         inputTokenPriceMicrocredits?: number;
         outputTokenPriceMicrocredits?: number;
         cachedTokenPriceMicrocredits?: number;
@@ -90,8 +90,6 @@ export type AiConfig = {
     transparentBackground: string;
     count: string;
     canvasImageCount: string;
-    canvasDefaultRatio: string;
-    capabilityConfig?: ModelCapabilityConfig;
 };
 
 export const CONFIG_STORE_KEY = "open_ai_canvas:ai_config_store";
@@ -107,7 +105,6 @@ export const defaultConfig: AiConfig = {
     apiKey: "",
     apiFormat: "openai",
     // 创作端模型目录只能来自后台公开逻辑模型和用户自定义渠道，不能内置供应商模型。
-    // 创作端只使用后台公开的系统渠道；历史用户渠道仅保留在本地存储中。
     channels: [],
     model: "",
     imageModel: "",
@@ -133,7 +130,6 @@ export const defaultConfig: AiConfig = {
     transparentBackground: "false",
     count: "1",
     canvasImageCount: "1",
-    canvasDefaultRatio: DEFAULT_CANVAS_GENERATION_RATIO,
 };
 
 type ConfigStore = {
@@ -342,7 +338,6 @@ export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefine
             videoWatermark: config.videoWatermark || "false",
             transparentBackground: config.transparentBackground === "true" ? "true" : "false",
             canvasImageCount: config.canvasImageCount || defaultConfig.canvasImageCount,
-            canvasDefaultRatio: normalizeCanvasGenerationRatio(config.canvasDefaultRatio),
             imageModels,
             videoModels,
             textModels,
@@ -358,15 +353,15 @@ function normalizeSelectedModel(value: string, channels: ModelChannel[], options
 
 export function useEffectiveConfig() {
     const config = useConfigStore((state) => state.config);
-    const canvasRatio = useCanvasGenerationRatio();
-    return useMemo(() => {
-        const effective = effectiveConfigForCustomChannels(config, false);
-        return canvasRatio ? { ...effective, size: canvasRatio } : effective;
-    }, [canvasRatio, config]);
+    const customChannelsEnabled = useUserStore((state) => state.features.customChannelsEnabled);
+    const catalogState = useLocalDreaminaModelStore((state) => state.state);
+    const dreaminaModels = useLocalDreaminaModelStore((state) => state.models);
+    return useMemo(() => effectiveConfigWithDreamina(effectiveConfigForCustomChannels(config, customChannelsEnabled), catalogState, dreaminaModels), [catalogState, config, customChannelsEnabled, dreaminaModels]);
 }
 
-export function effectiveConfigForCustomChannels(config: AiConfig, _customChannelsEnabled: boolean): AiConfig {
-    const channels = config.channels.filter((channel) => channel.scope === "system");
+export function effectiveConfigForCustomChannels(config: AiConfig, customChannelsEnabled: boolean): AiConfig {
+    if (customChannelsEnabled) return config;
+    const channels = config.channels.filter((channel) => channel.scope === "system" || channel.transport === "local-runtime");
     return normalizeConfigSnapshot({ config: { ...config, channels } }).config;
 }
 
@@ -399,8 +394,7 @@ export function effectiveConfigWithDreamina(config: AiConfig, catalogState: "idl
 }
 
 export function createModelChannel(channel?: Partial<ModelChannel>): ModelChannel {
-    const connectionType = channel?.connectionType === "globalaiopc" || channel?.connectionType === "huiquyun" || channel?.connectionType === "aistarslab" ? channel.connectionType : undefined;
-    const apiFormat = connectionType ? "openai" : normalizeApiFormat(channel?.apiFormat);
+    const apiFormat = normalizeApiFormat(channel?.apiFormat);
     const interfaceType = normalizeChannelInterfaceType(channel?.interfaceType);
     const providedBaseUrl = channel?.baseUrl?.trim();
     return {
@@ -412,7 +406,6 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
         secretKey: channel?.secretKey || "",
         headers: Array.isArray(channel?.headers) ? channel.headers.map((header) => ({ name: String(header.name || ""), value: String(header.value || "") })) : [],
         apiFormat,
-        ...(connectionType ? { connectionType } : {}),
         interfaceType,
         models: uniqueRawModels(channel?.models || []),
         scope: channel?.scope === "system" ? "system" : "user",
@@ -503,14 +496,13 @@ export function resolveModelChannel(config: AiConfig, value: string) {
 }
 
 export function channelConnectionSignature(channel: ModelChannel) {
-    return [channel.baseUrl.trim(), channel.apiKey.trim(), channel.secretKey?.trim() || "", channel.apiFormat, channel.connectionType || "", channel.interfaceType || "auto", channel.allowLocalChannel === true ? "local:1" : "local:0", JSON.stringify(channel.headers || [])].join("\n");
+    return [channel.baseUrl.trim(), channel.apiKey.trim(), channel.secretKey?.trim() || "", channel.apiFormat, channel.interfaceType || "auto", channel.allowLocalChannel === true ? "local:1" : "local:0", JSON.stringify(channel.headers || [])].join("\n");
 }
 
 export function resolveModelRequestConfig(config: AiConfig, value: string) {
     const channel = resolveModelChannel(config, value);
     const model = modelOptionName(value || config.model);
-    const modelCost = channel.modelCosts?.find((item) => item.model === model);
-    const modelProtocol = modelCost?.protocol;
+    const modelProtocol = channel.modelCosts?.find((item) => item.model === model)?.protocol;
     const interfaceType = modelProtocol || channel.interfaceType;
     return projectDesktopLocalChannelRuntime({
         ...config,
@@ -521,10 +513,8 @@ export function resolveModelRequestConfig(config: AiConfig, value: string) {
         secretKey: channel.secretKey,
         headers: channel.headers,
         apiFormat: interfaceType ? (interfaceType === "gemini-veo" || interfaceType === "gemini-image" ? ("gemini" as const) : ("openai" as const)) : channel.apiFormat,
-        connectionType: channel.connectionType,
         interfaceType,
         channelId: channel.scope === "system" ? channel.id : "",
-        capabilityConfig: modelCost?.capabilityConfig,
     });
 }
 
@@ -539,7 +529,7 @@ function normalizeChannels(config: AiConfig, ensureDefault = true) {
                 models: uniqueRawModels(channel.models || []),
             }),
         )
-        .filter((channel) => channel.id !== LEGACY_PUBLIC_MODEL_CATALOG_ID && !isEmptyDefaultChannel(channel));
+        .filter((channel) => !isEmptyDefaultChannel(channel));
     if (!channels.length && ensureDefault && config.apiKey.trim()) {
         channels.push(
             createModelChannel({
@@ -552,10 +542,7 @@ function normalizeChannels(config: AiConfig, ensureDefault = true) {
             }),
         );
     }
-    return channels.map((channel) => {
-        const normalized = { ...channel, models: uniqueRawModels(channel.models) };
-        return normalized.connectionType === "huiquyun" ? { ...normalized, modelCosts: syncHuiQuYunModelCosts(normalized, normalized.models) } : normalized;
-    });
+    return channels.map((channel) => ({ ...channel, models: uniqueRawModels(channel.models) }));
 }
 
 function isEmptyDefaultChannel(channel: ModelChannel) {
@@ -578,6 +565,7 @@ export function defaultBaseUrlForChannelInterface(interfaceType?: ChannelInterfa
     if (interfaceType === "novita-video") return "https://api.novita.ai/v3";
     if (interfaceType === "volcengine-ark-image" || interfaceType === "volcengine-ark-video") return "https://ark.cn-beijing.volces.com/api/v3";
     if (interfaceType === "volcengine-jimeng-image" || interfaceType === "volcengine-jimeng-video") return "https://visual.volcengineapi.com";
+    if (interfaceType === "minimax-video") return "https://api.minimaxi.com";
     if (interfaceType === "grok-image" || interfaceType === "newapi" || interfaceType === "newapi-channel-1" || interfaceType === "newapi-channel-2" || interfaceType === "xai-video") return "";
     return OPENAI_BASE_URL;
 }
@@ -619,9 +607,7 @@ export function buildApiUrl(baseUrl: string, path: string) {
     let normalizedBaseUrl = resolveBackendApiUrl(baseUrl).replace(/\/+$/, "");
     normalizedBaseUrl = normalizeArkPlanBaseUrl(normalizedBaseUrl);
     const lowerBaseUrl = normalizedBaseUrl.toLowerCase();
-    // `/openapi` 本身就是上游的 API 根（如 AIStarsLab），官方路径直接挂在它下面；再补 `/v1` 会拿到 404。
-    const versionedBaseUrl = ["/v1", "/api/v3", "/api/plan/v3", "/openapi"].some((suffix) => lowerBaseUrl.endsWith(suffix));
-    const apiBaseUrl = isSystemProxyBaseUrl(normalizedBaseUrl) || versionedBaseUrl ? normalizedBaseUrl : `${normalizedBaseUrl}/v1`;
+    const apiBaseUrl = isSystemProxyBaseUrl(normalizedBaseUrl) || lowerBaseUrl.endsWith("/v1") || lowerBaseUrl.endsWith("/api/v3") || lowerBaseUrl.endsWith("/api/plan/v3") ? normalizedBaseUrl : `${normalizedBaseUrl}/v1`;
     return `${apiBaseUrl}${path}`;
 }
 

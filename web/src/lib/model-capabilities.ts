@@ -1,5 +1,4 @@
 import type { ModelProtocol } from "@/lib/model-protocols";
-import { huiQuYunFixedVideoDuration, isHuiQuYunMX933Model } from "@/lib/huiquyun-models";
 
 export type ModelCapabilityConfig = {
     version: number;
@@ -8,12 +7,13 @@ export type ModelCapabilityConfig = {
     video?: VideoCapabilityConfig;
     aistarslab?: {
         channel: string;
-        capability: "image" | "video";
+        capability: string;
         model: string;
-        mode?: string;
         qualities?: string[];
         aspectRatios?: string[];
         duration?: number[];
+        durationMin?: number;
+        durationMax?: number;
         modes?: string[];
         inputImagesMax?: number;
         inputVideosMax?: number;
@@ -213,22 +213,6 @@ export function defaultImageCapabilityConfig(protocol?: ModelProtocol, model = "
         image.responseFormat = { supported: true };
         image.outputFormat = { supported: false };
         image.maxOutputs = 1;
-    } else if (protocol === "globalaiopc-image") {
-        image.references.maxImages = 10;
-        image.references.maskSupported = false;
-        image.size = {
-            parameter: "aspect_ratio",
-            values: ["1:1", "3:4", "4:3", "16:9", "9:16", "3:2", "2:3", "21:9"],
-            default: "1:1",
-            allowCustom: false,
-        };
-        image.quality = model.trim().toLowerCase() === "seedream_5.0pro"
-            ? { supported: true, values: ["1K", "2K"], default: "1K" }
-            : { supported: true, values: ["2K", "3K", "4K"], default: "2K" };
-        image.transparentBackground = { supported: false, default: false };
-        image.responseFormat = { supported: false };
-        image.outputFormat = { supported: false };
-        image.maxOutputs = 1;
     } else if (protocol === "volcengine-ark-image") {
         image.references.maskSupported = false;
         image.quality.supported = false;
@@ -312,95 +296,6 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.duration = { selection: "enum", values: [4, 6, 8], default: 6 };
         video.resolutions = ["720p", "1080p"];
     }
-    if (protocol === "globalaiopc-video") {
-        const modelName = model.trim().toLowerCase();
-        video.references.maxImages = 9;
-        video.references.maxVideos = 3;
-        video.references.maxAudios = 3;
-        video.references.maxVideoBytes = 200 * 1024 * 1024;
-        video.references.maxAudioBytes = 15 * 1024 * 1024;
-        video.references.maxVideoDurationSeconds = 30;
-        video.references.maxAudioDurationSeconds = 30;
-        video.duration = { selection: "range", min: 4, max: 15, step: 1, default: 5 };
-        video.ratios = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"];
-        video.defaultRatio = "16:9";
-        video.resolutions = ["720p"];
-        video.defaultResolution = "720p";
-        if (modelName === "seedance-2.5-c1") {
-            video.references.maxImages = 30;
-            video.references.maxVideos = 10;
-            video.references.maxAudios = 10;
-            video.duration.max = 30;
-            video.duration.default = 4;
-            video.ratios = ["16:9", "9:16", "1:1"];
-            video.resolutions = ["480p", "720p"];
-        } else if (modelName === "seedance-2.5-c2") {
-            video.references.maxImages = 30;
-            video.references.maxVideos = 0;
-            video.references.maxAudios = 10;
-            video.references.maxAudioDurationSeconds = 15;
-            video.duration.max = 29;
-            video.duration.default = 5;
-            video.ratios = ["16:9", "9:16", "1:1"];
-        } else if (modelName === "seedance-2.5-c3") {
-            video.references.maxImages = 30;
-            video.references.maxVideos = 0;
-            video.references.maxAudios = 10;
-            video.duration.max = 29;
-            video.duration.default = 4;
-            video.ratios = ["16:9", "9:16", "1:1"];
-            video.generateAudio = { supported: true, default: true };
-        } else if (modelName === "sd_2.0_fast_special") {
-            video.resolutions = ["720p"];
-            video.generateAudio = { supported: true, default: true };
-            video.watermark = { supported: true, default: false };
-        } else if (modelName === "sd_2.0_special") {
-            video.resolutions = ["720p", "1080p", "2160p"];
-            video.generateAudio = { supported: true, default: true };
-            video.watermark = { supported: true, default: false };
-        } else if (modelName === "sd_2.0_discount") {
-            video.resolutions = ["480p", "720p", "1080p"];
-            video.generateAudio = { supported: true, default: true };
-            video.watermark = { supported: true, default: false };
-        } else if (modelName === "sd_2.0_fast_discount") {
-            video.resolutions = ["480p", "720p"];
-            video.generateAudio = { supported: true, default: true };
-            video.watermark = { supported: true, default: false };
-        } else if (modelName.startsWith("seedance_1_5_pro_")) {
-            video.references.maxImages = 2;
-            video.references.maxVideos = 0;
-            video.references.maxAudios = 0;
-            video.duration.max = 11;
-            video.duration.default = 4;
-            video.ratios = ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "keep_ratio", "adaptive"];
-            video.resolutions = [modelName.includes("1080p") ? "1080p" : modelName.includes("480p") ? "480p" : "720p"];
-            video.defaultResolution = video.resolutions[0];
-        } else if (modelName === "minimax-h3-c4") {
-            video.references.maxImages = 5;
-            video.references.maxVideos = 0;
-            video.references.maxAudios = 3;
-            video.duration.min = 5;
-            video.ratios = ["16:9", "9:16"];
-            video.resolutions = ["1440p"];
-            video.defaultResolution = "1440p";
-        } else if (modelName === "videos_933_c1") {
-            video.duration.default = 4;
-            video.resolutions = ["480p", "720p", "1080p"];
-            video.defaultResolution = "480p";
-            video.generateAudio = { supported: true, default: false };
-        } else if (modelName === "videos_fast_933_c1") {
-            video.duration.default = 4;
-            video.resolutions = ["480p", "720p"];
-            video.defaultResolution = "480p";
-            video.generateAudio = { supported: true, default: true };
-        } else if (modelName === "videos_stable" || modelName === "videos_stable_fast") {
-            video.references.maxImages = 4;
-            video.references.maxVideos = 3;
-            video.references.maxAudios = 1;
-            video.duration.default = 4;
-            video.ratios = ["16:9", "9:16", "1:1"];
-        }
-    }
     if (protocol === "volcengine-ark-video" || protocol === "newapi-channel-1" || protocol === "newapi-channel-2") {
         video.references.maxVideos = 3;
         video.references.maxAudios = 3;
@@ -409,36 +304,6 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.references.maxVideoDurationSeconds = 15;
         video.references.maxAudioDurationSeconds = 15;
         video.generateAudio = { supported: true, default: true };
-    }
-    if (protocol === "huiquyun-video") {
-        const modelName = model.trim().toLowerCase();
-        const fixedDuration = huiQuYunFixedVideoDuration(modelName);
-        const isMX933 = isHuiQuYunMX933Model(modelName);
-        video.references.maxImages = 4;
-        video.references.maxVideos = 3;
-        video.references.maxAudios = 1;
-        video.references.maxVideoBytes = 200 * 1024 * 1024;
-        video.references.maxAudioBytes = 15 * 1024 * 1024;
-        video.references.maxVideoDurationSeconds = 15;
-        video.references.maxAudioDurationSeconds = 15;
-        video.duration = fixedDuration
-            ? { selection: "enum", values: [fixedDuration], default: fixedDuration }
-            : { selection: "range", min: 4, max: 15, step: 1, default: 8 };
-        video.ratios = ["21:9", "4:3", "16:9", "1:1", "3:4", "9:16"];
-        video.defaultRatio = "16:9";
-        video.resolutions = ["720p"];
-        video.defaultResolution = "720p";
-        video.generateAudio = { supported: true, default: true };
-        video.watermark = { supported: false, default: false };
-        if (isMX933) {
-            video.references.maxImages = 9;
-            video.references.maxVideos = 3;
-            video.references.maxAudios = 3;
-            video.references.maxVideoBytes = 50 * 1024 * 1024;
-            video.ratios = ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"];
-            video.resolutions = ["480p", "720p"];
-            video.defaultResolution = "720p";
-        }
     }
     if (protocol === "volcengine-ark-video" || protocol === "newapi-channel-1") video.resolutions = ["480p", "720p", "1080p"];
     if (protocol === "volcengine-ark-video") video.watermark = { supported: true, default: false };
@@ -449,6 +314,22 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.ratios = ["16:9", "9:16", "1:1"];
         video.resolutions = ["1080p"];
         video.defaultResolution = "1080p";
+    }
+    if (protocol === "minimax-video") {
+        video.references.maxImages = 9;
+        video.references.maxImageBytes = 30 * 1024 * 1024;
+        video.references.maxVideos = 3;
+        video.references.maxVideoBytes = 50 * 1024 * 1024;
+        video.references.maxVideoDurationSeconds = 15;
+        video.references.maxAudios = 3;
+        video.references.maxAudioBytes = 15 * 1024 * 1024;
+        video.references.maxAudioDurationSeconds = 15;
+        video.duration = { selection: "enum", values: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], default: 5 };
+        video.ratios = ["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"];
+        video.resolutions = ["768P", "2K"];
+        video.defaultResolution = "768P";
+        video.watermark = { supported: true, default: false };
+        video.operations.push("reference_to_video");
     }
     return { version: 1, text, image: defaultImageCapabilityConfig(protocol, model), video };
 }

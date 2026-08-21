@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -105,6 +104,102 @@ data: [DONE]
 `)
 	if got, err := parseTextEventStream(chat, "chat-completion"); err != nil || got != "第一镜：远景" {
 		t.Fatalf("Chat stream = %q, err = %v", got, err)
+	}
+}
+
+func TestParseAgentToolPayloadSupportsChatCompletions(t *testing.T) {
+	result, err := parseAgentToolPayload(map[string]interface{}{
+		"choices": []interface{}{map[string]interface{}{
+			"message": map[string]interface{}{
+				"content": "准备读取画布",
+				"tool_calls": []interface{}{map[string]interface{}{
+					"id":       "call-1",
+					"function": map[string]interface{}{"name": "canvas_get_state", "arguments": `{}`},
+				}},
+			},
+		}},
+	}, "chat-completion")
+	if err != nil {
+		t.Fatalf("parseAgentToolPayload() error = %v", err)
+	}
+	if result["text"] != "准备读取画布" {
+		t.Fatalf("text = %v", result["text"])
+	}
+	calls, _ := result["toolCalls"].([]interface{})
+	if len(calls) != 1 {
+		t.Fatalf("toolCalls = %#v", result["toolCalls"])
+	}
+	call, _ := calls[0].(map[string]interface{})
+	function, _ := call["function"].(map[string]interface{})
+	if call["id"] != "call-1" || function["name"] != "canvas_get_state" || function["arguments"] != `{}` {
+		t.Fatalf("tool call = %#v", call)
+	}
+}
+
+func TestParseAgentToolPayloadSupportsResponses(t *testing.T) {
+	result, err := parseAgentToolPayload(map[string]interface{}{
+		"output": []interface{}{
+			map[string]interface{}{"type": "reasoning", "summary": []interface{}{map[string]interface{}{"type": "summary_text", "text": "先读取画布，再决定操作"}}},
+			map[string]interface{}{"type": "message", "content": []interface{}{map[string]interface{}{"type": "output_text", "text": "开始操作"}}},
+			map[string]interface{}{"type": "function_call", "call_id": "call-2", "name": "canvas_apply_ops", "arguments": `{"ops":[]}`},
+		},
+	}, "responses")
+	if err != nil {
+		t.Fatalf("parseAgentToolPayload() error = %v", err)
+	}
+	if result["text"] != "开始操作" {
+		t.Fatalf("text = %v", result["text"])
+	}
+	if result["reasoning"] != "先读取画布，再决定操作" {
+		t.Fatalf("reasoning = %v", result["reasoning"])
+	}
+	calls, _ := result["toolCalls"].([]interface{})
+	if len(calls) != 1 {
+		t.Fatalf("toolCalls = %#v", result["toolCalls"])
+	}
+	call, _ := calls[0].(map[string]interface{})
+	function, _ := call["function"].(map[string]interface{})
+	if call["id"] != "call-2" || function["name"] != "canvas_apply_ops" || function["arguments"] != `{"ops":[]}` {
+		t.Fatalf("tool call = %#v", call)
+	}
+}
+
+func TestRunAgentToolTaskFallsBackToolChoice(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	var choices []interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		choice, exists := body["tool_choice"]
+		if exists {
+			choices = append(choices, choice)
+		} else {
+			choices = append(choices, nil)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if len(choices) < 3 {
+			_, _ = w.Write([]byte(`{"error":{"message":"tool_choice is incompatible with thinking mode"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"完成","tool_calls":[]}}]}`))
+	}))
+	defer server.Close()
+
+	config := providerConfig{BaseURL: server.URL, APIKey: "key", Model: "thinking-model", AllowLocalChannel: true}
+	result, err := runAgentToolTask(withProviderOutboundPolicy(context.Background(), config), canvasGenerationInput{
+		Config:        config,
+		AgentRequests: &agentToolRequests{ChatCompletion: map[string]interface{}{"messages": []interface{}{}, "tool_choice": "required"}},
+	})
+	if err != nil {
+		t.Fatalf("runAgentToolTask() error = %v", err)
+	}
+	if result["text"] != "完成" {
+		t.Fatalf("text = %v", result["text"])
+	}
+	if len(choices) != 3 || choices[0] != "required" || choices[1] != "auto" || choices[2] != nil {
+		t.Fatalf("tool choices = %#v", choices)
 	}
 }
 
@@ -1565,42 +1660,13 @@ func TestNewAPIChannel2SendsOnlyDeclaredResolution(t *testing.T) {
 	}
 }
 
-func TestNewAPIChannel2RejectsAudioWithoutReferenceImage(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		videos []providerMedia
-	}{
-		{name: "audio only"},
-		{name: "video and audio", videos: []providerMedia{{ID: "video-1", URL: "https://example.com/reference.mp4"}}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			_, err := newAPIChannel2VideoRequestBody(canvasGenerationInput{
-				Config:          providerConfig{Model: "grok-image-video", VideoSeconds: "6"},
-				ReferenceVideos: test.videos,
-				ReferenceAudios: []providerMedia{{ID: "audio-1", URL: "https://example.com/reference.mp3"}},
-			})
-			if err == nil || !strings.Contains(err.Error(), "必须同时提供至少 1 张参考图片") {
-				t.Fatalf("newAPIChannel2VideoRequestBody() error = %v", err)
-			}
-		})
-	}
-}
-
-func TestNewAPIChannel2SendsReferenceImageWithAudioForStaleTextToVideoMetadata(t *testing.T) {
-	body, err := newAPIChannel2VideoRequestBody(canvasGenerationInput{
+func TestNewAPIChannel2RejectsAudioWithoutReferenceVideo(t *testing.T) {
+	_, err := newAPIChannel2VideoRequestBody(canvasGenerationInput{
 		Config:          providerConfig{Model: "grok-image-video", VideoSeconds: "6"},
-		ReferenceImages: []providerMedia{{ID: "image-1", DataURL: testReferenceImageDataURL}},
 		ReferenceAudios: []providerMedia{{ID: "audio-1", URL: "https://example.com/reference.mp3"}},
-		Metadata:        map[string]interface{}{"videoEditOperation": "text_to_video"},
 	})
-	if err != nil {
+	if err == nil || !strings.Contains(err.Error(), "必须同时提供至少 1 个参考视频") {
 		t.Fatalf("newAPIChannel2VideoRequestBody() error = %v", err)
-	}
-	if len(body.ImageURLs) != 1 || body.ImageURLs[0] != testReferenceImageDataURL {
-		t.Fatalf("image_urls = %#v", body.ImageURLs)
-	}
-	if len(body.AudioURLs) != 1 || body.AudioURLs[0] != "https://example.com/reference.mp3" {
-		t.Fatalf("audio_urls = %#v", body.AudioURLs)
 	}
 }
 
@@ -1650,177 +1716,6 @@ func TestNewAPIChannel2RejectsMissingConfiguredFrame(t *testing.T) {
 	}
 }
 
-func TestGlobalAiOpcC2CapabilityMatchesDocumentation(t *testing.T) {
-	profile := DefaultModelCapabilityConfigForModel("globalaiopc-video", "seedance-2.5-c2").Video
-	if profile == nil {
-		t.Fatal("GlobalAiOpc c2 video capability = nil")
-	}
-	if profile.References.MaxImages != 30 || profile.References.MaxVideos != 0 || profile.References.MaxAudios != 10 {
-		t.Fatalf("GlobalAiOpc c2 reference limits = %#v", profile.References)
-	}
-	if profile.References.MaxAudioDuration != 15 {
-		t.Fatalf("GlobalAiOpc c2 max audio duration = %d, want 15", profile.References.MaxAudioDuration)
-	}
-	if profile.Duration.Min != 4 || profile.Duration.Max != 29 || profile.Duration.Default != 5 {
-		t.Fatalf("GlobalAiOpc c2 duration = %#v", profile.Duration)
-	}
-}
-
-func TestHuiQuYunVideoRequestBodyUsesDedicatedContract(t *testing.T) {
-	body, err := huiQuYunVideoRequestBody(canvasGenerationInput{
-		Prompt: "make it move",
-		Config: providerConfig{
-			Model:              "sora-2-pro-15s",
-			VideoSeconds:       "8",
-			Size:               "9:16",
-			VideoGenerateAudio: "false",
-		},
-		ReferenceImages: []providerMedia{{URL: "https://example.com/reference.png"}},
-		ReferenceVideos: []providerMedia{{URL: "https://example.com/reference.mp4"}},
-		ReferenceAudios: []providerMedia{{URL: "https://example.com/reference.mp3"}},
-	})
-	if err != nil {
-		t.Fatalf("huiQuYunVideoRequestBody() error = %v", err)
-	}
-	if body["model"] != "sora-2-pro-15s" || body["seconds"] != 15 || body["resolution"] != "720P" || body["aspect_ratio"] != "9:16" || body["audio"] != false {
-		t.Fatalf("HuiQuYun request body = %#v", body)
-	}
-	if body["reference_image"] != "https://example.com/reference.png" || body["audio_reference"] != "https://example.com/reference.mp3" {
-		t.Fatalf("HuiQuYun reference fields = %#v", body)
-	}
-	videos, ok := body["video_references"].([]string)
-	if !ok || !reflect.DeepEqual(videos, []string{"https://example.com/reference.mp4"}) {
-		t.Fatalf("HuiQuYun video_references = %#v", body["video_references"])
-	}
-}
-
-func TestHuiQuYunVideoRequestBodyPreservesMultiImageParameters(t *testing.T) {
-	body, err := huiQuYunVideoRequestBody(canvasGenerationInput{
-		Config: providerConfig{Model: "sora-2", VideoSeconds: "15", Size: "9:16"},
-		ReferenceImages: []providerMedia{
-			{URL: "https://example.com/1.png"},
-			{URL: "https://example.com/2.png"},
-			{URL: "https://example.com/3.png"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("huiQuYunVideoRequestBody() error = %v", err)
-	}
-	if body["seconds"] != 15 || body["aspect_ratio"] != "9:16" {
-		t.Fatalf("HuiQuYun multi-image parameters = %#v", body)
-	}
-	images, ok := body["reference_images"].([]string)
-	if !ok || len(images) != 3 {
-		t.Fatalf("HuiQuYun reference_images = %#v", body["reference_images"])
-	}
-}
-
-func TestHuiQuYunVideoRequestBodyDoesNotApplyLegacyReferenceLimits(t *testing.T) {
-	references := make([]providerMedia, 9)
-	for index := range references {
-		references[index] = providerMedia{URL: fmt.Sprintf("https://example.com/reference-%d.png", index)}
-	}
-	videos := make([]providerMedia, 3)
-	for index := range videos {
-		videos[index] = providerMedia{URL: fmt.Sprintf("https://example.com/reference-%d.mp4", index)}
-	}
-	audios := make([]providerMedia, 3)
-	for index := range audios {
-		audios[index] = providerMedia{URL: fmt.Sprintf("https://example.com/reference-%d.mp3", index)}
-	}
-	body, err := huiQuYunVideoRequestBody(canvasGenerationInput{
-		Config:          providerConfig{Model: "sora-2", VideoSeconds: "8", Size: "16:9"},
-		ReferenceImages: references,
-		ReferenceVideos: videos,
-		ReferenceAudios: audios,
-	})
-	if err != nil {
-		t.Fatalf("huiQuYunVideoRequestBody() rejected configured 9/3/3 references: %v", err)
-	}
-	if images, ok := body["reference_images"].([]string); !ok || len(images) != 9 {
-		t.Fatalf("HuiQuYun reference_images = %#v", body["reference_images"])
-	}
-	if videoRefs, ok := body["video_references"].([]string); !ok || len(videoRefs) != 3 {
-		t.Fatalf("HuiQuYun video_references = %#v", body["video_references"])
-	}
-	if body["audio_reference"] != audios[0].URL {
-		t.Fatalf("HuiQuYun audio_reference = %#v", body["audio_reference"])
-	}
-}
-
-func TestHuiQuYunMX933TextToVideoUsesDocumentedJSONFields(t *testing.T) {
-	body, err := huiQuYunVideoRequestBody(canvasGenerationInput{
-		Prompt: "make it move",
-		Config: providerConfig{
-			Model:              "sd2-mx933-720-10s",
-			VideoSeconds:       "5",
-			Size:               "3:2",
-			VQuality:           "480p",
-			VideoGenerateAudio: "false",
-		},
-	})
-	if err != nil {
-		t.Fatalf("huiQuYunVideoRequestBody() error = %v", err)
-	}
-	if body["model"] != "sd2-mx933-720-10s" || body["seconds"] != 10 || body["resolution"] != "480p" || body["aspect_ratio"] != "3:2" || body["generate_audio"] != false {
-		t.Fatalf("HuiQuYun MX933 JSON body = %#v", body)
-	}
-	if _, exists := body["audio"]; exists {
-		t.Fatalf("HuiQuYun MX933 JSON must not contain legacy audio field: %#v", body)
-	}
-}
-
-func TestHuiQuYunMX933MultipartUploadsReferenceFiles(t *testing.T) {
-	input := canvasGenerationInput{
-		Prompt: "make it move",
-		Config: providerConfig{
-			Model:              "sd2-mx933-720-fast-5s",
-			VideoSeconds:       "10",
-			Size:               "2:3",
-			VQuality:           "720p",
-			VideoGenerateAudio: "true",
-		},
-		ReferenceImages: []providerMedia{
-			{ID: "first", Type: "image/png", DataURL: testReferenceImageDataURL},
-			{ID: "last", Type: "image/png", DataURL: testReferenceImageDataURL},
-			{ID: "reference", Type: "image/png", DataURL: testReferenceImageDataURL},
-		},
-		ReferenceVideos: []providerMedia{{ID: "video", Type: "video/mp4", DataURL: "data:video/mp4;base64,aGVsbG8="}},
-		ReferenceAudios: []providerMedia{{ID: "audio", Type: "audio/mpeg", DataURL: "data:audio/mpeg;base64,aGVsbG8="}},
-		Metadata: map[string]interface{}{
-			"videoStartFrameNodeId": "first",
-			"videoEndFrameNodeId":   "last",
-		},
-	}
-	body, contentType, err := huiQuYunMX933MultipartBody(input)
-	if err != nil {
-		t.Fatalf("huiQuYunMX933MultipartBody() error = %v", err)
-	}
-	request := httptest.NewRequest(http.MethodPost, "http://example.test", bytes.NewReader(body.Bytes()))
-	request.Header.Set("Content-Type", contentType)
-	if err := request.ParseMultipartForm(1 << 20); err != nil {
-		t.Fatalf("ParseMultipartForm() error = %v", err)
-	}
-	if request.FormValue("model") != "sd2-mx933-720-fast-5s" || request.FormValue("seconds") != "5" || request.FormValue("aspect_ratio") != "2:3" || request.FormValue("resolution") != "720p" || request.FormValue("generate_audio") != "true" {
-		t.Fatalf("HuiQuYun MX933 multipart fields = %#v", request.MultipartForm.Value)
-	}
-	for field, want := range map[string]int{"first_frame": 1, "last_frame": 1, "images": 1, "videos": 1, "audios": 1} {
-		if got := len(request.MultipartForm.File[field]); got != want {
-			t.Fatalf("multipart file count %s = %d, want %d; files = %#v", field, got, want, request.MultipartForm.File)
-		}
-	}
-}
-
-func TestUnwrapGlobalAiOpcTaskRejectsStringErrorCode(t *testing.T) {
-	if _, err := unwrapGlobalAiOpcTask(map[string]interface{}{"code": "500", "msg": "upstream failed", "data": map[string]interface{}{"id": "task-1"}}); err == nil || !strings.Contains(err.Error(), "upstream failed") {
-		t.Fatalf("unwrapGlobalAiOpcTask() error = %v", err)
-	}
-	data, err := unwrapGlobalAiOpcTask(map[string]interface{}{"code": "0", "data": map[string]interface{}{"id": "task-1"}})
-	if err != nil || stringField(data, "id") != "task-1" {
-		t.Fatalf("unwrapGlobalAiOpcTask() data = %#v, error = %v", data, err)
-	}
-}
-
 func TestValidateGenerationInterfaceRejectsMismatchedType(t *testing.T) {
 	if err := validateGenerationInterface("video", "chat-completion"); err == nil {
 		t.Fatal("validateGenerationInterface() error = nil")
@@ -1829,9 +1724,6 @@ func TestValidateGenerationInterfaceRejectsMismatchedType(t *testing.T) {
 		t.Fatalf("validateGenerationInterface() error = %v", err)
 	}
 	if err := validateGenerationInterface("video", "newapi-channel-2"); err != nil {
-		t.Fatalf("validateGenerationInterface() error = %v", err)
-	}
-	if err := validateGenerationInterface("video", "huiquyun-video"); err != nil {
 		t.Fatalf("validateGenerationInterface() error = %v", err)
 	}
 	if err := validateGenerationInterface("video", "xai-video"); err != nil {
@@ -1986,5 +1878,80 @@ func TestRunNovitaVideoTaskReturnsFailureReason(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "content violates policy") {
 		t.Fatalf("runVideoTask() error = %v, want reason in message", err)
+	}
+}
+
+func TestRunMiniMaxVideoTaskCreatesPollsAndDownloads(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	paths := make([]string, 0, 3)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v2/video_generation":
+			if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+				t.Errorf("Authorization = %q", got)
+			}
+			var body miniMaxVideoRequest
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if body.Model != "MiniMax-H3" || body.Resolution != "768P" || body.Duration != 5 || body.Ratio != "16:9" || len(body.Content) != 1 || body.Content[0].Text != "make it move" {
+				t.Errorf("body = %#v", body)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"task_id":"minimax-task-1"}`))
+		case "GET /v2/query/video_generation/minimax-task-1":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"task":{"id":"minimax-task-1","status":"succeeded","content":{"url":"` + server.URL + `/video.mp4"}}}`))
+		case "GET /video.mp4":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("video"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	result, err := runVideoTask(context.Background(), canvasGenerationInput{
+		Mode:   "video",
+		Prompt: "make it move",
+		Config: providerConfig{BaseURL: server.URL, APIKey: "test-key", Model: "MiniMax-H3", InterfaceType: "minimax-video", VideoSeconds: "5", VQuality: "720", Size: "16:9"},
+	})
+	if err != nil {
+		t.Fatalf("runVideoTask() error = %v", err)
+	}
+	video := result["video"].(map[string]interface{})
+	if video["dataUrl"] != "data:video/mp4;base64,dmlkZW8=" {
+		t.Fatalf("video = %#v", video)
+	}
+	if got := strings.Join(paths, ","); got != "POST /v2/video_generation,GET /v2/query/video_generation/minimax-task-1,GET /video.mp4" {
+		t.Fatalf("paths = %q", got)
+	}
+}
+
+func TestRunMiniMaxVideoTaskReturnsFailureReason(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v2/video_generation":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"task_id":"minimax-task-2"}`))
+		case "GET /v2/query/video_generation/minimax-task-2":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"task":{"status":"failed","error":{"code":"1026","message":"content violates policy"}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	_, err := runVideoTask(context.Background(), canvasGenerationInput{
+		Mode:   "video",
+		Prompt: "make it move",
+		Config: providerConfig{BaseURL: server.URL, APIKey: "test-key", Model: "MiniMax-H3", InterfaceType: "minimax-video"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "1026：content violates policy") {
+		t.Fatalf("runVideoTask() error = %v", err)
 	}
 }

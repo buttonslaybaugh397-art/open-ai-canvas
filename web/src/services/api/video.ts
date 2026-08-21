@@ -6,16 +6,16 @@ import { getMediaBlob, uploadMediaFile, type UploadedFile } from "@/services/fil
 import { getResourceOSSUrl } from "@/services/api/resources";
 import { channelRequest } from "@/services/api/custom-channel-relay";
 import { imageToDataUrl } from "@/services/image-storage";
-import { modelCapabilityConfigFor, normalizeVideoValue, videoDurationAllowed, videoResolutionRequest } from "@/lib/model-capabilities";
-import { globalAiOpcResponseCodeFailed, globalAiOpcTaskUrl } from "@/lib/globalaiopc-channel";
-import { isHuiQuYunMX933Model } from "@/lib/huiquyun-models";
+import { modelCapabilityConfigFor, videoDurationAllowed, videoResolutionRequest } from "@/lib/model-capabilities";
 import { boolConfig, buildSeedancePromptText, isArkPlanBaseUrl, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceVideoReferenceError, SEEDANCE_REFERENCE_LIMITS } from "@/lib/seedance-video";
 import { buildApiUrl, isSystemProxyBaseUrl, modelOptionName, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 
-type VideoResponse = { id?: string; request_id?: string; task_id?: string; status?: string; error?: { message?: string }; video?: { url?: string }; url?: string; video_url?: string; result_url?: string };
-type ApiVideoResponse = VideoResponse | { code?: number | string; data?: VideoResponse | null; msg?: string };
+type VideoResponse = { id?: string; request_id?: string; task_id?: string; status?: string; error?: { message?: string }; video?: { url?: string }; video_url?: string; result_url?: string };
+type MiniMaxVideoTask = { id?: string; status?: string; content?: { url?: string }; error?: { code?: string | number; message?: string } };
+type MiniMaxVideoCreateResponse = { task_id?: string; request_id?: string; data?: { task_id?: string; id?: string } };
+type ApiVideoResponse = VideoResponse | { code?: number; data?: VideoResponse | null; msg?: string };
 type ResolvedAiConfig = ReturnType<typeof resolveModelRequestConfig>;
 type SeedanceTask = {
     id: string;
@@ -26,11 +26,11 @@ type SeedanceTask = {
     video_url?: string | null;
     content?: { video_url?: string; last_frame_url?: string } | null;
 };
-type ApiEnvelope<T> = T | { code?: number | string; data?: T | null; msg?: string };
+type ApiEnvelope<T> = T | { code?: number; data?: T | null; msg?: string };
 type RequestOptions = { signal?: AbortSignal };
 
 export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string };
-export type VideoGenerationTask = { id: string; provider: "openai" | "seedance" | "video-generations" | "globalaiopc" | "huiquyun" | "gemini-veo" | "novita"; model: string };
+export type VideoGenerationTask = { id: string; provider: "openai" | "seedance" | "video-generations" | "gemini-veo" | "novita" | "minimax"; model: string };
 export type VideoGenerationTaskState = { status: "pending" } | { status: "completed"; result: VideoGenerationResult } | { status: "failed"; error: string };
 
 function aiApiUrl(config: AiConfig, path: string) {
@@ -63,17 +63,7 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     const selectedModel = (config.model || config.videoModel).trim();
     const requestConfig = resolveModelRequestConfig(config, selectedModel);
     assertVideoConfig(requestConfig, requestConfig.model);
-    const profile = modelCapabilityConfigFor(config, selectedModel).video!;
-    const validatedSeconds = requestConfig.interfaceType === "huiquyun-video"
-        ? normalizeVideoValue(profile, { seconds: config.videoSeconds, ratio: config.size, resolution: config.vquality }).seconds
-        : config.videoSeconds;
-    assertVideoCapability(profile, references, videoReferences, audioReferences, validatedSeconds);
-    if (requestConfig.interfaceType === "globalaiopc-video") {
-        return createGlobalAiOpcVideoTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
-    }
-    if (requestConfig.interfaceType === "huiquyun-video") {
-        return createHuiQuYunVideoTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
-    }
+    assertVideoCapability(modelCapabilityConfigFor(config, selectedModel).video!, references, videoReferences, audioReferences, config.videoSeconds);
     if (requestConfig.interfaceType === "newapi-channel-2") {
         return createVideoGenerationsTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
     }
@@ -82,6 +72,9 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     }
     if (requestConfig.interfaceType === "novita-video") {
         return createNovitaVideoTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
+    }
+    if (requestConfig.interfaceType === "minimax-video") {
+        return createMiniMaxVideoTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
     }
     if (requestConfig.interfaceType === "volcengine-ark-video") {
         return createSeedanceTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
@@ -113,224 +106,17 @@ function assertVideoCapability(profile: NonNullable<ReturnType<typeof modelCapab
 export async function pollVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
     const requestConfig = resolveModelRequestConfig(config, task.model);
     assertVideoConfig(requestConfig, requestConfig.model);
-    if (task.provider === "globalaiopc") return pollGlobalAiOpcVideoTask(requestConfig, task, options);
-    if (task.provider === "huiquyun") return pollHuiQuYunVideoTask(requestConfig, task, options);
     if (task.provider === "seedance") return pollSeedanceTask(requestConfig, task, options);
     if (task.provider === "video-generations") return pollVideoGenerationsTask(requestConfig, task, options);
     if (task.provider === "gemini-veo") return pollGeminiVeoTask(requestConfig, task, options);
     if (task.provider === "novita") return pollNovitaVideoTask(requestConfig, task, options);
+    if (task.provider === "minimax") return pollMiniMaxVideoTask(requestConfig, task, options);
     return pollOpenAIVideoTask(requestConfig, task, options);
-}
-
-async function createGlobalAiOpcVideoTask(config: ResolvedAiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
-    const modelName = modelOptionName(model);
-    const profile = modelCapabilityConfigFor(config, model).video!;
-    const [referenceImages, referenceVideos, referenceAudios] = await Promise.all([
-        Promise.all(references.map((item) => resolveVideoGenerationsUrl(item.url || item.dataUrl, item.storageKey))),
-        Promise.all(videoReferences.map((item) => resolveVideoGenerationsUrl(item.url, item.storageKey))),
-        Promise.all(audioReferences.map((item) => resolveVideoGenerationsUrl(item.url, item.storageKey))),
-    ]);
-    const normalized = normalizeVideoValue(profile, { seconds: config.videoSeconds, ratio: config.size, resolution: config.vquality });
-    const resolution = normalizeGlobalAiOpcVideoResolution(modelName, normalized.resolution, profile.defaultResolution);
-    const isSeedance15 = modelName.toLowerCase().startsWith("seedance_1_5_pro_");
-    const payload: Record<string, unknown> = {
-        model: modelName,
-        prompt: prompt.trim(),
-        duration: Number(normalized.seconds),
-        ...(referenceVideos.length ? { reference_videos: referenceVideos } : {}),
-        ...(referenceAudios.length ? { reference_audios: referenceAudios } : {}),
-    };
-    if (isSeedance15) {
-        payload.size = normalized.ratio;
-        if (referenceImages[0]) payload.first_image = referenceImages[0];
-        if (referenceImages[1]) payload.last_image = referenceImages[1];
-    }
-    else {
-        payload.aspect_ratio = normalized.ratio;
-        payload.resolution = resolution;
-        if (referenceImages.length) payload.reference_images = referenceImages;
-    }
-    if (profile.generateAudio.supported) payload.generate_audio = boolConfig(config.videoGenerateAudio, profile.generateAudio.default);
-    if (profile.watermark.supported) payload.watermark = boolConfig(config.videoWatermark, profile.watermark.default);
-    try {
-        const created = unwrapGlobalAiOpcVideoResponse(await channelPost<ApiVideoResponse>(config, globalAiOpcTaskUrl(config.baseUrl), payload, options));
-        const id = videoTaskId(created);
-        if (!id) throw new Error("GlobalAiOpc 接口没有返回任务 ID");
-        return { id, provider: "globalaiopc", model };
-    } catch (error) {
-        throw new Error(readAxiosError(error, "GlobalAiOpc 视频任务创建失败"));
-    }
-}
-
-async function pollGlobalAiOpcVideoTask(config: ResolvedAiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
-    try {
-        const state = unwrapGlobalAiOpcRecord(await channelGet<ApiEnvelope<Record<string, unknown>>>(config, globalAiOpcTaskUrl(config.baseUrl, task.id), options));
-        const status = String(state.status || "").toLowerCase();
-        if (status === "completed" || status === "succeeded" || status === "success") {
-            const url = String(state.video_url || state.result_url || state.url || "");
-            if (!url) return { status: "failed", error: "GlobalAiOpc 视频任务已完成但没有返回视频地址" };
-            return { status: "completed", result: await videoResultFromUrl(url, options) };
-        }
-        if (["failed", "cancelled", "canceled", "expired"].includes(status)) return { status: "failed", error: globalAiOpcVideoError(state) };
-        return { status: "pending" };
-    } catch (error) {
-        throw new Error(readAxiosError(error, "GlobalAiOpc 视频任务查询失败"));
-    }
-}
-
-async function createHuiQuYunVideoTask(config: ResolvedAiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
-    if (audioReferences.length && !references.length && !videoReferences.length) throw new Error("汇取云参考音频必须搭配参考图片或参考视频");
-    const modelName = modelOptionName(model);
-    const profile = modelCapabilityConfigFor(config, model).video!;
-    const normalized = normalizeVideoValue(profile, { seconds: config.videoSeconds, ratio: config.size, resolution: config.vquality });
-    if (isHuiQuYunMX933Model(modelName)) {
-        return createHuiQuYunMX933VideoTask(config, model, modelName, prompt, references, videoReferences, audioReferences, normalized, options);
-    }
-    const [imageUrls, videoUrls, audioUrls] = await Promise.all([
-        Promise.all(references.map((item) => resolveVideoGenerationsUrl(item.url || item.dataUrl, item.storageKey))),
-        Promise.all(videoReferences.map((item) => resolveVideoGenerationsUrl(item.url, item.storageKey))),
-        Promise.all(audioReferences.map((item) => resolveVideoGenerationsUrl(item.url, item.storageKey))),
-    ]);
-    const seconds = Number(normalized.seconds);
-    const payload: Record<string, unknown> = {
-        model: modelName,
-        prompt: prompt.trim(),
-        seconds,
-        resolution: "720P",
-        aspect_ratio: normalized.ratio,
-        audio: boolConfig(config.videoGenerateAudio, profile.generateAudio.default),
-        ...(videoUrls.length ? { video_references: videoUrls } : {}),
-        ...(audioUrls[0] ? { audio_reference: audioUrls[0] } : {}),
-    };
-    if (imageUrls.length === 1) payload.reference_image = imageUrls[0];
-    else if (imageUrls.length === 2) {
-        payload.start_frame = imageUrls[0];
-        payload.end_frame = imageUrls[1];
-    } else if (imageUrls.length > 2) payload.reference_images = imageUrls;
-    try {
-        const created = unwrapVideoResponse(await channelPost<ApiVideoResponse>(config, aiApiUrl(config, "/videos/generations"), payload, options));
-        const id = videoTaskId(created);
-        if (!id) throw new Error("汇取云接口没有返回任务 ID");
-        return { id, provider: "huiquyun", model };
-    } catch (error) {
-        throw new Error(readAxiosError(error, "汇取云视频任务创建失败"));
-    }
-}
-
-async function createHuiQuYunMX933VideoTask(
-    config: ResolvedAiConfig,
-    model: string,
-    modelName: string,
-    prompt: string,
-    references: ReferenceImage[],
-    videoReferences: ReferenceVideo[],
-    audioReferences: ReferenceAudio[],
-    normalized: ReturnType<typeof normalizeVideoValue>,
-    options?: RequestOptions,
-): Promise<VideoGenerationTask> {
-    const hasReferences = references.length + videoReferences.length + audioReferences.length > 0;
-    const generateAudio = boolConfig(config.videoGenerateAudio, true);
-    try {
-        let created: ApiVideoResponse;
-        if (!hasReferences) {
-            created = await channelPost<ApiVideoResponse>(config, aiApiUrl(config, "/videos/generations"), {
-                model: modelName,
-                prompt: prompt.trim(),
-                seconds: Number(normalized.seconds),
-                resolution: normalized.resolution,
-                aspect_ratio: normalized.ratio,
-                generate_audio: generateAudio,
-            }, options);
-        } else {
-            const body = new FormData();
-            body.append("model", modelName);
-            body.append("prompt", prompt.trim());
-            body.append("seconds", normalized.seconds);
-            body.append("resolution", normalized.resolution);
-            body.append("aspect_ratio", normalized.ratio);
-            body.append("generate_audio", String(generateAudio));
-            const [images, videos, audios] = await Promise.all([
-                Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) }))),
-                Promise.all(videoReferences.map((video) => huiQuYunMediaFile(video, "video"))),
-                Promise.all(audioReferences.map((audio) => huiQuYunMediaFile(audio, "audio"))),
-            ]);
-            images.forEach((file) => body.append("images", file));
-            videos.forEach((file) => body.append("videos", file));
-            audios.forEach((file) => body.append("audios", file));
-            created = await channelPostForm<ApiVideoResponse>(config, aiApiUrl(config, "/videos/generations"), body, options);
-        }
-        const payload = unwrapVideoResponse(created);
-        const id = videoTaskId(payload);
-        if (!id) throw new Error("汇取云接口没有返回任务 ID");
-        return { id, provider: "huiquyun", model };
-    } catch (error) {
-        throw new Error(readAxiosError(error, "汇取云 MX933 视频任务创建失败"));
-    }
-}
-
-async function huiQuYunMediaFile(media: ReferenceVideo | ReferenceAudio, kind: "video" | "audio") {
-    let blob: Blob | null = null;
-    if (media.storageKey) blob = await getMediaBlob(media.storageKey);
-    if (!blob && media.url) {
-        const response = await fetch(media.url);
-        if (response.ok) blob = await response.blob();
-    }
-    if (!blob) throw new Error(`汇取云 MX933 参考${kind === "video" ? "视频" : "音频"}读取失败`);
-    const extension = kind === "video" ? "mp4" : "mp3";
-    return new File([blob], media.name || `reference.${extension}`, { type: blob.type || media.type });
-}
-
-async function pollHuiQuYunVideoTask(config: ResolvedAiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
-    try {
-        const state = unwrapEnvelopeRecord(await channelGet<ApiEnvelope<Record<string, unknown>>>(config, aiApiUrl(config, `/videos/${encodeURIComponent(task.id)}`), options));
-        const status = String(state.status || "").toLowerCase();
-        if (status === "completed" || status === "succeeded") {
-            const resultUrl = String(state.video_url || state.url || state.result_url || "");
-            if (resultUrl) return { status: "completed", result: await videoResultFromUrl(resultUrl, options) };
-            const content = await channelGetBlob(config, aiApiUrl(config, `/videos/${encodeURIComponent(task.id)}/content`), options);
-            await assertVideoBlob(content);
-            return { status: "completed", result: { blob: content } };
-        }
-        if (status === "failed" || status === "cancelled" || status === "canceled") return { status: "failed", error: huiQuYunVideoError(state) };
-        return { status: "pending" };
-    } catch (error) {
-        throw new Error(readAxiosError(error, "汇取云视频任务查询失败"));
-    }
-}
-
-function huiQuYunVideoError(state: Record<string, unknown>) {
-    if (state.error && typeof state.error === "object") {
-        const error = state.error as Record<string, unknown>;
-        return String(error.message || error.code || "汇取云视频生成失败");
-    }
-    return String(state.error || state.message || state.msg || "汇取云视频生成失败");
-}
-
-function normalizeGlobalAiOpcVideoResolution(model: string, value: string, fallback: string) {
-    const modelName = model.trim().toLowerCase();
-    if (modelName === "minimax-h3-c4") return "1440P";
-    let normalized = value.trim().toLowerCase();
-    if (normalized === "low") normalized = "480";
-    if (normalized === "auto" || normalized === "medium" || normalized === "high") normalized = "720";
-    if (normalized === "4k" || normalized === "2160" || normalized === "2160p") normalized = "2160p";
-    else if (/^\d+$/.test(normalized)) normalized += "p";
-    if (!normalized) normalized = fallback.toLowerCase();
-    if (modelName === "sd_2.0_special" && normalized === "2160p") return "4k";
-    return normalized;
-}
-
-function globalAiOpcVideoError(state: Record<string, unknown>) {
-    if (typeof state.error === "string" && state.error.trim()) return state.error.trim();
-    if (state.error && typeof state.error === "object") {
-        const error = state.error as Record<string, unknown>;
-        return String(error.message || error.code || "GlobalAiOpc 视频生成失败");
-    }
-    return String(state.message || state.msg || "GlobalAiOpc 视频生成失败");
 }
 
 async function createVideoGenerationsTask(config: ResolvedAiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
     if (references.length > 9 || videoReferences.length > 3 || audioReferences.length > 3) throw new Error("NewAPI Video Generations 最多支持 9 张参考图、3 个参考视频和 3 个参考音频");
-    if (audioReferences.length > 0 && references.length === 0) throw new Error("NewAPI Video Generations 的参考音频必须同时提供至少 1 张参考图片");
+    if (audioReferences.length > 0 && videoReferences.length === 0) throw new Error("NewAPI Video Generations 的参考音频必须同时提供至少 1 个参考视频；纯音频生视频请切换到支持该模式的渠道");
     const [imageUrls, videoUrls, audioUrls] = await Promise.all([
         Promise.all(references.map((item) => resolveVideoGenerationsUrl(item.url || item.dataUrl, item.storageKey))),
         Promise.all(videoReferences.map((item) => resolveVideoGenerationsUrl(item.url, item.storageKey))),
@@ -490,6 +276,98 @@ async function pollNovitaVideoTask(config: ResolvedAiConfig, task: VideoGenerati
     } catch (error) {
         throw new Error(readAxiosError(error, "Novita 视频任务查询失败"));
     }
+}
+
+async function createMiniMaxVideoTask(config: ResolvedAiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
+    const imageUrls = await Promise.all(references.slice(0, 9).map((image) => resolveMiniMaxImageUrl(image)));
+    const videoUrls = await Promise.all(videoReferences.slice(0, 3).map((video) => resolveMiniMaxMediaUrl(video, "参考视频")));
+    const audioUrls = await Promise.all(audioReferences.slice(0, 3).map((audio) => resolveMiniMaxMediaUrl(audio, "参考音频")));
+    const content: Array<Record<string, unknown>> = [{ type: "text", text: prompt.trim() }];
+    imageUrls.forEach((url, index) => {
+        // 首尾帧只允许成对出现；三张及以上图片统一作为多模态参考图，避免提交 first/last 与 reference 混合的非法组合。
+        const role = videoUrls.length || audioUrls.length || imageUrls.length > 2 ? "reference_image" : index === 0 ? "first_frame" : "last_frame";
+        content.push({ type: "image_url", image_url: { url }, role });
+    });
+    videoUrls.forEach((url) => content.push({ type: "video_url", video_url: { url }, role: "reference_video" }));
+    audioUrls.forEach((url) => content.push({ type: "audio_url", audio_url: { url }, role: "reference_audio" }));
+    const frameMode = imageUrls.length > 0 &&
+        imageUrls.length <= 2 &&
+        videoUrls.length === 0 &&
+        audioUrls.length === 0;
+    const payload = {
+        model: modelOptionName(model),
+        content,
+        resolution: normalizeMiniMaxResolution(config.vquality),
+        duration: normalizeMiniMaxDuration(config.videoSeconds),
+        ratio: normalizeMiniMaxRatio(config.size, frameMode),
+        aigc_watermark: boolConfig(config.videoWatermark, false),
+    };
+    try {
+        const created = await channelPost<MiniMaxVideoCreateResponse>(config, miniMaxVideoUrl(config, "/video_generation"), payload, options);
+        const id = created.task_id || created.request_id || created.data?.task_id || created.data?.id || "";
+        if (!id) throw new Error("MiniMax 视频接口没有返回任务 ID");
+        return { id, provider: "minimax", model };
+    } catch (error) {
+        throw new Error(readAxiosError(error, "MiniMax 视频任务创建失败"));
+    }
+}
+
+async function pollMiniMaxVideoTask(config: ResolvedAiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
+    try {
+        const response = await channelGet<{ task?: MiniMaxVideoTask }>(config, miniMaxVideoUrl(config, `/query/video_generation/${encodeURIComponent(task.id)}`), options);
+        const state = response.task || {};
+        const status = String(state.status || "").toLowerCase();
+        if (status === "succeeded" || status === "completed") {
+            const url = state.content?.url || "";
+            if (!url) return { status: "failed", error: "MiniMax 视频任务已完成但没有返回视频地址" };
+            return { status: "completed", result: await videoResultFromUrl(url, options) };
+        }
+        if (status === "failed" || status === "cancelled") {
+            const code = state.error?.code ? `${state.error.code}：` : "";
+            return { status: "failed", error: `${code}${state.error?.message || "MiniMax 视频生成失败"}` };
+        }
+        return { status: "pending" };
+    } catch (error) {
+        throw new Error(readAxiosError(error, "MiniMax 视频任务查询失败"));
+    }
+}
+
+function miniMaxVideoUrl(config: ResolvedAiConfig, path: string) {
+    const base = config.baseUrl.replace(/\/+$/, "");
+    if (/\/v2$/i.test(base)) return `${base}${path}`;
+    return `${base}/v2${path}`;
+}
+
+function normalizeMiniMaxResolution(value: string) {
+    const normalized = value.trim().toLowerCase();
+    return ["2k", "4k", "high", "1080", "1080p", "1440p", "2160p"].includes(normalized) ? "2K" : "768P";
+}
+
+function normalizeMiniMaxDuration(value: string) {
+    const seconds = Math.floor(Number(value) || 5);
+    return Math.max(4, Math.min(15, seconds));
+}
+
+function normalizeMiniMaxRatio(value: string, frameMode: boolean) {
+    if (frameMode) return "adaptive";
+    return ["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"].includes(value) ? value : "16:9";
+}
+
+async function resolveMiniMaxImageUrl(image: ReferenceImage) {
+    const directUrl = image.url || image.dataUrl;
+    if (isPublicMediaUrl(directUrl) || directUrl.startsWith("data:")) return directUrl;
+    const dataUrl = await imageToDataUrl(image);
+    if (!dataUrl) throw new Error("MiniMax 参考图读取失败，请换一张图片或重新上传");
+    return dataUrl;
+}
+
+async function resolveMiniMaxMediaUrl(media: ReferenceVideo | ReferenceAudio, label: string) {
+    if (isPublicMediaUrl(media.url) || media.url?.startsWith("data:")) return media.url;
+    let blob: Blob | null = null;
+    if (media.storageKey) blob = await getMediaBlob(media.storageKey);
+    if (!blob && media.url?.startsWith("blob:")) blob = await (await fetch(media.url)).blob();
+    if (!blob) throw new Error(`MiniMax ${label}必须是公网 URL 或本地已保存素材`);
+    return blobToDataUrl(blob);
 }
 
 function novitaVideoUrl(config: ResolvedAiConfig, path: string) {
@@ -857,28 +735,8 @@ function normalizeVideoResolution(value: string) {
     return `${resolution}p`;
 }
 
-function unwrapVideoResponse(payload: ApiVideoResponse): VideoResponse {
-    return unwrapEnvelope<VideoResponse>(payload as ApiEnvelope<VideoResponse>, "接口没有返回视频任务");
-}
-
-function unwrapGlobalAiOpcVideoResponse(payload: ApiVideoResponse): VideoResponse {
-    if (payload && typeof payload === "object" && "data" in payload) {
-        const envelope = payload as { code?: number | string; data?: VideoResponse | null; msg?: string };
-        if (globalAiOpcResponseCodeFailed(envelope.code)) throw new Error(envelope.msg || "GlobalAiOpc 请求失败");
-        if (!envelope.data) throw new Error("GlobalAiOpc 接口没有返回视频任务");
-        return envelope.data;
-    }
-    return unwrapVideoResponse(payload);
-}
-
-function unwrapGlobalAiOpcRecord(payload: ApiEnvelope<Record<string, unknown>>): Record<string, unknown> {
-    if (payload && typeof payload === "object" && "data" in payload) {
-        const envelope = payload as { code?: number | string; data?: Record<string, unknown> | null; msg?: string };
-        if (globalAiOpcResponseCodeFailed(envelope.code)) throw new Error(envelope.msg || "GlobalAiOpc 请求失败");
-        if (!envelope.data) throw new Error("GlobalAiOpc 接口没有返回任务状态");
-        return envelope.data;
-    }
-    return payload as Record<string, unknown>;
+function unwrapVideoResponse(payload: ApiVideoResponse) {
+    return unwrapEnvelope(payload, "接口没有返回视频任务");
 }
 
 function videoTaskId(payload: VideoResponse) {
@@ -891,8 +749,8 @@ function unwrapSeedanceTask(payload: ApiEnvelope<SeedanceTask>) {
 
 function unwrapEnvelope<T>(payload: ApiEnvelope<T>, emptyMessage: string): T {
     if (!payload) throw new Error(emptyMessage);
-    if (typeof payload === "object" && "code" in payload && payload.code !== undefined) {
-        if (String(payload.code).trim() !== "0") throw new Error(payload.msg || "请求失败");
+    if (typeof payload === "object" && "code" in payload && typeof payload.code === "number") {
+        if (payload.code !== 0) throw new Error(payload.msg || "请求失败");
         if (!payload.data) throw new Error(emptyMessage);
         return payload.data;
     }
@@ -917,13 +775,13 @@ function statusMessage(status: number | undefined, fallback: string) {
 
 async function assertVideoBlob(blob: Blob) {
     if (!blob.type.includes("json")) return;
-    let payload: { code?: number | string; msg?: string; error?: { message?: string } };
+    let payload: { code?: number; msg?: string; error?: { message?: string } };
     try {
-        payload = JSON.parse(await blob.text()) as { code?: number | string; msg?: string; error?: { message?: string } };
+        payload = JSON.parse(await blob.text()) as { code?: number; msg?: string; error?: { message?: string } };
     } catch {
         return;
     }
-    if (payload.code !== undefined && String(payload.code).trim() !== "0") throw new Error(payload.msg || "视频下载失败");
+    if (typeof payload.code === "number" && payload.code !== 0) throw new Error(payload.msg || "视频下载失败");
     if (payload.error?.message) throw new Error(payload.error.message);
 }
 

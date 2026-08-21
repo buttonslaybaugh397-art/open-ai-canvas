@@ -1896,12 +1896,16 @@ func aiStarsLabVideoRequestBody(input canvasGenerationInput) (map[string]interfa
 	if err != nil {
 		return nil, err
 	}
+	quality, err := aiStarsLabRequestQuality(route, config, input.Config.VQuality)
+	if err != nil {
+		return nil, err
+	}
 	body := map[string]interface{}{
 		"channel":     strings.TrimSpace(route.Channel),
 		"model":       aiStarsLabRequestModel(route, input.Config.Model),
 		"prompt":      strings.TrimSpace(input.Prompt),
 		"aspectRatio": strings.TrimSpace(input.Config.Size),
-		"quality":     aiStarsLabRequestQuality(route, config, input.Config.VQuality),
+		"quality":     quality,
 		"duration":    duration,
 		"inputImages": images,
 		"inputVideos": videos,
@@ -1991,12 +1995,16 @@ func aiStarsLabImageRequestBody(input canvasGenerationInput) (map[string]interfa
 		return nil, fmt.Errorf("AIStarsLab 当前模型最多支持 %d 张参考图，当前连接了 %d 张", route.InputImagesMax, len(images))
 	}
 	// n 官方当前仅支持 1；画布的多图需求由上层拆成多个任务，不在这里静默放大。
+	quality, err := aiStarsLabRequestQuality(route, nil, input.Config.Quality)
+	if err != nil {
+		return nil, err
+	}
 	body := map[string]interface{}{
 		"channel":     strings.TrimSpace(route.Channel),
 		"model":       aiStarsLabRequestModel(route, input.Config.Model),
 		"prompt":      withSystemPrompt(input.Config, input.Prompt),
 		"aspectRatio": aiStarsLabImageRatio(input.Config.Size, route),
-		"quality":     aiStarsLabRequestQuality(route, nil, input.Config.Quality),
+		"quality":     quality,
 		"inputImages": images,
 		"n":           1,
 	}
@@ -2070,21 +2078,31 @@ func aiStarsLabMediaURLs(items []providerMedia) ([]string, error) {
 }
 
 // quality 是官方必填项，必须取自目录下发的档位；用户选择不在档位内时回退到首个可用档位。
-func aiStarsLabRequestQuality(route *AIStarsLabCapabilityConfig, config *VideoCapabilityConfig, requested string) string {
+// 前端状态历史上保存的是去掉 p 的裸数字（`720`），而线路声明的档位通常带后缀（`720p`）。
+// 早期实现直接做大小写无关的全串比较，两边永远对不上，于是静默兑现成第一档：
+// 用户选 720 实际出 480，而计费走的是已归一化的 720p 单价，钱与画质对不上。
+// 因此这里按归一化后的分辨率比对，并保留 1K/2K 这类非分辨率档位的原串相等判断。
+func aiStarsLabRequestQuality(route *AIStarsLabCapabilityConfig, config *VideoCapabilityConfig, requested string) (string, error) {
 	supported := route.Qualities
 	if len(supported) == 0 && config != nil {
 		supported = config.Resolutions
 	}
 	normalized := strings.TrimSpace(requested)
+	if len(supported) == 0 {
+		return normalized, nil
+	}
+	// 未选择时才用首档兑现；已明确选过的档位不得静默降级。
+	if normalized == "" || strings.EqualFold(normalized, "auto") || strings.EqualFold(normalized, "default") {
+		return strings.TrimSpace(supported[0]), nil
+	}
+	requestedKey := normalizeResolution(normalized)
 	for _, value := range supported {
-		if strings.EqualFold(strings.TrimSpace(value), normalized) {
-			return strings.TrimSpace(value)
+		candidate := strings.TrimSpace(value)
+		if strings.EqualFold(candidate, normalized) || normalizeResolution(candidate) == requestedKey {
+			return candidate, nil
 		}
 	}
-	if len(supported) > 0 {
-		return strings.TrimSpace(supported[0])
-	}
-	return normalized
+	return "", fmt.Errorf("AIStarsLab 当前线路不支持 %s 画质，可选：%s", normalized, strings.Join(supported, "、"))
 }
 
 // mode 决定上游对参考图的校验规则：2 张图优先首尾帧，否则有图走全能参考、无图走文生视频。
@@ -2191,11 +2209,6 @@ func huiQuYunVideoRequestBody(input canvasGenerationInput) (map[string]interface
 
 func hasHuiQuYunVideoReferences(input canvasGenerationInput) bool {
 	return len(input.ReferenceImages)+len(input.ReferenceVideos)+len(input.ReferenceAudios) > 0
-}
-
-func isHuiQuYunMX933VideoModel(modelName string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(modelName))
-	return strings.HasPrefix(normalized, "sd2-mx933-720-") || strings.HasPrefix(normalized, "sd2-mx933-720-fast-")
 }
 
 func huiQuYunMX933MultipartBody(input canvasGenerationInput) (*bytes.Buffer, string, error) {

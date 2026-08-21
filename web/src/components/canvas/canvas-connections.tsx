@@ -3,7 +3,7 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
-import { STORYBOARD_HEADER_HEIGHT, STORYBOARD_ROW_HEIGHT, storyboardTableHeight } from "@/components/canvas/canvas-script-node";
+import { STORYBOARD_HEADER_HEIGHT, STORYBOARD_ROW_HEIGHT, storyboardTableHeight } from "@/lib/canvas/canvas-storyboard-layout";
 import type { CanvasConnection, CanvasNodeData, ConnectionHandle, Position } from "@/types/canvas";
 
 export const ConnectionPath = React.memo(function ConnectionPath({
@@ -31,7 +31,7 @@ export const ConnectionPath = React.memo(function ConnectionPath({
     const [hovered, setHovered] = useState(false);
     const { pathD, startX, startY, endX, endY } = canvasConnectionPath(connection, from, to, fromScrollTop, toScrollTop);
     const emphasized = active || hovered;
-    const showVisual = visualMode === "full" || hovered || active;
+    const showVisual = visualMode === "full" || hovered;
     const gradientId = `canvas-flow-${connection.id.replace(/[^a-zA-Z0-9_-]/g, "")}`;
 
     return (
@@ -96,15 +96,7 @@ export function canvasConnectionPath(connection: CanvasConnection, from: CanvasN
     const endY = connectionHandleY(to, connection.toHandleId, toScrollTop, connection.toAnchorRatio);
     const dx = Math.abs(endX - startX);
     const curvature = Math.max(dx * 0.5, 50);
-    return {
-        pathD: `M ${startX} ${startY} C ${startX + curvature} ${startY}, ${endX - curvature} ${endY}, ${endX} ${endY}`,
-        startX,
-        startY,
-        endX,
-        endY,
-        midX: (startX + endX) / 2,
-        midY: (startY + endY) / 2,
-    };
+    return { pathD: `M ${startX} ${startY} C ${startX + curvature} ${startY}, ${endX - curvature} ${endY}, ${endX} ${endY}`, startX, startY, endX, endY };
 }
 
 export function activeConnectionPath(node: CanvasNodeData | undefined, handle: ConnectionHandle, mouseWorld: Position, target?: CanvasNodeData, nodeScrollTop = 0, targetAnchorRatio?: number) {
@@ -132,7 +124,7 @@ export function connectionHandleY(node: CanvasNodeData, handleId?: string, scrol
     return node.position.y + STORYBOARD_HEADER_HEIGHT + localY;
 }
 
-export function normalizedAnchorRatio(value?: number) {
+function normalizedAnchorRatio(value?: number) {
     if (typeof value !== "number" || !Number.isFinite(value)) return 0.5;
     return Math.min(0.94, Math.max(0.06, value));
 }

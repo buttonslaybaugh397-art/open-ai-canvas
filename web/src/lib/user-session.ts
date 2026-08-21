@@ -38,7 +38,7 @@ export async function applyUserSession(payload: AuthSessionPayload) {
         if (!persistedConfig) {
             const initialSystemConfig = {
                 ...defaultConfig,
-                channels: payload.systemChannels || [],
+                channels: (payload.logicalModels as any) || [],
                 imageModels: undefined,
                 videoModels: undefined,
                 textModels: undefined,
@@ -46,11 +46,13 @@ export async function applyUserSession(payload: AuthSessionPayload) {
             };
             useConfigStore.getState().replaceConfig(normalizeConfigSnapshot({ config: initialSystemConfig }).config);
         } else {
-            useConfigStore.getState().mergeSystemChannels(payload.systemChannels || []);
+            useConfigStore.getState().mergeSystemChannels((payload.logicalModels as any) || []);
         }
         installRemoteUserDataAutoSync();
-        if (payload.user?.id) await syncRemoteUserData(payload.user.id);
-        else resetRemoteUserDataSync();
+        if (payload.user?.id) {
+            // 认证状态先完成，云端数据在后台合并；远端同步失败不能伪装成登录失败。
+            void syncRemoteUserData(payload.user.id).catch((error) => console.warn("登录后云端数据同步失败，保留本地数据等待重试", error));
+        } else resetRemoteUserDataSync();
     } finally {
         useUserStore.getState().setHydrated(true);
     }
@@ -58,7 +60,7 @@ export async function applyUserSession(payload: AuthSessionPayload) {
 
 export async function refreshSystemChannels() {
     const payload = await getAuthSession();
-    useConfigStore.getState().mergeSystemChannels(payload.systemChannels || []);
+    useConfigStore.getState().mergeSystemChannels((payload.logicalModels as any) || []);
 }
 
 export async function refreshFeatureAvailability() {

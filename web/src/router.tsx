@@ -42,6 +42,7 @@ const ProjectsPage = lazy(loadProjectsPage);
 const ProjectDetailPage = lazy(() => import("@/pages/projects/detail"));
 const SettingsPage = lazy(() => import("@/pages/settings"));
 const TestVoiceRecording = lazy(() => import("@/pages/test-voice-recording"));
+const FolderPreviewLab = lazy(() => import("@/pages/dev/folder-preview-lab"));
 
 function deferred(element: ReactNode) {
     return <Suspense fallback={<WorkspaceRouteLoader />}>{element}</Suspense>;
@@ -61,6 +62,9 @@ export const router = createBrowserRouter([
         ],
     },
     { path: "/share/canvas/:token", element: fullScreenDeferred(<SharedCanvasPage />), errorElement: <RouteErrorPage /> },
+    ...(import.meta.env.DEV
+        ? [{ path: "/dev/folders", element: fullScreenDeferred(<FolderPreviewLab />), errorElement: <RouteErrorPage /> }]
+        : []),
     {
         element: (
             <UserLayout>

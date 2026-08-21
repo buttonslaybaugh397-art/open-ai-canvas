@@ -1,16 +1,17 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { AlertCircle, BookOpenCheck, CheckCircle2, ChevronRight, Clapperboard, Image as ImageIcon, Lock, Maximize2, Music2, Pencil, Plus, Replace, Settings2, Star, Type, Upload, Video } from "lucide-react";
+import { AlertCircle, BookOpenCheck, CheckCircle2, ChevronRight, Clapperboard, Copy, Download, Image as ImageIcon, Lock, Maximize2, Music2, Pencil, Plus, RefreshCw, Replace, Settings2, Star, Trash2, Type, Upload, Video } from "lucide-react";
+
+import { useCanvasNodeActions } from "./canvas-node-action-context";
 
 import { canvasThemes } from "@/lib/canvas-theme";
+import { storyboardMinNodeHeight } from "@/lib/canvas/canvas-storyboard-layout";
 import { resourceStorageLabel, resourceStorageLocation, resourceStorageTitle } from "@/lib/canvas/resource-storage-status";
 import { useThemeStore } from "@/stores/use-theme-store";
-import { storyboardMinNodeHeight } from "./canvas-script-node";
 import { CanvasNodeType, type CanvasNodeData, type Position } from "@/types/canvas";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
-import { MEDIA_NODE_MIN_SIZE } from "@/lib/canvas/canvas-node-size";
+import { getNodeMinSize, shouldKeepAspectRatio } from "@/lib/canvas/node-registry";
 import { CanvasNodeContent, CanvasNodeImageInfo } from "./canvas-node-content";
-import { normalizedAnchorRatio } from "./canvas-connections";
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 type CanvasTheme = (typeof canvasThemes)[keyof typeof canvasThemes];
@@ -23,9 +24,6 @@ type CanvasNodeProps = {
     isRelated: boolean;
     isFocusRelated: boolean;
     isConnectionTarget: boolean;
-    connectionTargetSide?: "left" | "right";
-    connectionTargetAnchorRatio?: number;
-    isConnecting: boolean;
     forceInputVisible?: boolean;
     showImageInfo: boolean;
     reduceMediaEffects?: boolean;
@@ -70,8 +68,6 @@ export const CanvasNode = React.memo(function CanvasNode({
     isRelated,
     isFocusRelated,
     isConnectionTarget,
-    connectionTargetSide = "left",
-    connectionTargetAnchorRatio,
     forceInputVisible = false,
     showImageInfo,
     reduceMediaEffects = false,
@@ -112,6 +108,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     const [isEditingContent, setIsEditingContent] = useState(false);
     const [isEditingTitle, setIsEditingTitle] = useState(false);
     const [titleDraft, setTitleDraft] = useState(data.title);
+    const { download: downloadNode, duplicate: duplicateNode, deleteNode } = useCanvasNodeActions();
     const hasImageContent = data.type === CanvasNodeType.Image && Boolean(data.metadata?.content);
     const hasVideoContent = data.type === CanvasNodeType.Video && Boolean(data.metadata?.content);
     const hasAudioContent = data.type === CanvasNodeType.Audio && Boolean(data.metadata?.content);
@@ -179,9 +176,10 @@ export const CanvasNode = React.memo(function CanvasNode({
 
             const dx = (event.clientX - resizeRef.current.startX) / scale;
             const dy = (event.clientY - resizeRef.current.startY) / scale;
-            const isMediaNode = data.type === CanvasNodeType.Image || data.type === CanvasNodeType.Video;
-            const minWidth = data.type === CanvasNodeType.Script ? 800 : isMediaNode ? MEDIA_NODE_MIN_SIZE.width : 220;
-            const minHeight = scriptMinHeight || (isMediaNode ? MEDIA_NODE_MIN_SIZE.height : 160);
+            const minSize = getNodeMinSize(data.type);
+            const minWidth = minSize.width;
+            // 分镜脚本的高度由表格内容动态撑开，覆盖注册表里的静态下限。
+            const minHeight = scriptMinHeight || minSize.height;
             const startRight = resizeRef.current.startLeft + resizeRef.current.startWidth;
             const startBottom = resizeRef.current.startTop + resizeRef.current.startHeight;
             const fromLeft = resizeRef.current.corner.includes("left");
@@ -233,7 +231,7 @@ export const CanvasNode = React.memo(function CanvasNode({
             startTop: data.position.y,
             startWidth: data.width,
             startHeight: data.height,
-            keepRatio: (data.type === CanvasNodeType.Image && !data.metadata?.freeResize) || data.type === CanvasNodeType.Video,
+            keepRatio: shouldKeepAspectRatio(data),
             ratio: (data.metadata?.naturalWidth || data.width) / (data.metadata?.naturalHeight || data.height || 1),
         };
         window.addEventListener("mousemove", handleResizeMove);
@@ -434,6 +432,30 @@ export const CanvasNode = React.memo(function CanvasNode({
                         {data.metadata?.locked ? <NodeLockBadge theme={theme} /> : null}
                     </div>
                 ) : null}
+                {/* 批次子图操作条：成功子项提供下载/副本/设为主图，失败子项提供重试/删除 */}
+                {isBatchChild && !readOnly && (hasImageContent || data.metadata?.status === "error") && (hovered || isSelected) ? (
+                    <div
+                        className="absolute inset-x-0 bottom-2 z-[var(--node-z-overlay)] flex justify-center"
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
+                    >
+                        <div className="flex items-center gap-0.5 rounded-[var(--r-md)] border px-1 py-1 backdrop-blur-xl" style={{ background: `${theme.toolbar.panel}e6`, borderColor: theme.toolbar.border }}>
+                            {hasImageContent ? <BatchChildActionButton theme={theme} label="下载图片" icon={<Download className="size-3.5" />} onClick={() => downloadNode?.(data)} /> : null}
+                            {hasImageContent ? <BatchChildActionButton theme={theme} label="创建副本" icon={<Copy className="size-3.5" />} onClick={() => duplicateNode?.(data)} /> : null}
+                            {hasImageContent ? (
+                                <BatchChildActionButton theme={theme} label={batchPrimary ? "当前主图" : "设为主图"} icon={<Star className={`size-3.5 ${batchPrimary ? "fill-current" : ""}`} style={{ color: theme.accent.primary }} />} onClick={() => onSetBatchPrimary?.(data)} />
+                            ) : null}
+                            {data.metadata?.status === "error" ? <BatchChildActionButton theme={theme} label="重试" icon={<RefreshCw className="size-3.5" />} onClick={() => onRetry?.(data)} /> : null}
+                            {data.metadata?.status === "error" ? <BatchChildActionButton theme={theme} label="删除" icon={<Trash2 className="size-3.5" />} danger onClick={() => deleteNode?.(data)} /> : null}
+                        </div>
+                    </div>
+                ) : null}
+                {/* 批次主图位（折叠根节点封面）常驻下载按钮 */}
+                {isBatchRoot && hasImageContent && !readOnly ? (
+                    <div className="absolute bottom-2 right-2 z-[var(--node-z-overlay)]" onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+                        <BatchChildActionButton theme={theme} label="下载主图" icon={<Download className="size-3.5" />} onClick={() => downloadNode?.(data)} />
+                    </div>
+                ) : null}
                 {assetTags.length || (showImageInfo && hasImageContent) ? (
                     <div className="pointer-events-none absolute inset-x-3 bottom-3 z-[var(--node-z-overlay)] flex items-end justify-between gap-2">
                         {assetTags.length ? <AssetTagBadges tags={assetTags} theme={theme} /> : null}
@@ -449,8 +471,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                 </> : null}
             </div>
 
-            {!readOnly && data.type !== CanvasNodeType.Script ? <ConnectionSideRail side="left" scale={scale} visible={hovered || forceInputVisible || (isConnectionTarget && connectionTargetSide === "left")} anchorRatio={isConnectionTarget && connectionTargetSide === "left" ? connectionTargetAnchorRatio : undefined} theme={theme} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "target", undefined, anchorRatio)} /> : null}
-            {!readOnly && data.type !== CanvasNodeType.Script && data.type !== CanvasNodeType.Config ? <ConnectionSideRail side="right" scale={scale} visible={hovered || (isConnectionTarget && connectionTargetSide === "right")} anchorRatio={isConnectionTarget && connectionTargetSide === "right" ? connectionTargetAnchorRatio : undefined} theme={theme} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "source", undefined, anchorRatio)} /> : null}
+            {!readOnly && data.type !== CanvasNodeType.Script && (hovered || forceInputVisible) ? <ConnectionSideRail side="left" scale={scale} theme={theme} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "target", undefined, anchorRatio)} /> : null}
+            {!readOnly && data.type !== CanvasNodeType.Script && data.type !== CanvasNodeType.Config && hovered ? <ConnectionSideRail side="right" scale={scale} theme={theme} onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "source", undefined, anchorRatio)} /> : null}
 
         </div>
     );
@@ -541,6 +563,24 @@ function BatchPrimaryBadge({ visible, selected, theme, onSelect }: { visible: bo
         <button type="button" className={`canvas-node-tool-button inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-[var(--fs-tiny)] font-medium backdrop-blur-md transition-opacity ${visible ? "opacity-100" : "pointer-events-none opacity-0"}`} style={{ background: theme.toolbar.panel, borderColor: selected ? theme.accent.primary : theme.toolbar.border, color: selected ? theme.accent.primary : theme.node.text }} aria-label={selected ? "当前主图" : "设置为主图"} aria-pressed={selected} onClick={(event) => { event.stopPropagation(); onSelect(); }} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
             <Star className={`size-3 ${selected ? "fill-current" : ""}`} style={{ color: theme.accent.primary }} />
             {selected ? "当前主图" : "主图"}
+        </button>
+    );
+}
+
+function BatchChildActionButton({ theme, label, icon, onClick, danger = false }: { theme: CanvasTheme; label: string; icon: ReactNode; onClick: () => void; danger?: boolean }) {
+    return (
+        <button
+            type="button"
+            data-canvas-no-zoom
+            className="canvas-node-inline-action grid size-8 place-items-center rounded-[var(--r-sm)] p-0 backdrop-blur-xl transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+            style={{ color: danger ? theme.accent.danger : theme.node.text, outlineColor: theme.accent.primary }}
+            title={label}
+            aria-label={label}
+            onClick={(event) => { event.stopPropagation(); onClick(); }}
+            onMouseDown={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+        >
+            {icon}
         </button>
     );
 }
@@ -678,33 +718,31 @@ function NodeStatusBadge({ status }: { status: "loading" | "success" | "error" }
     );
 }
 
-function ConnectionSideRail({ side, scale, visible, anchorRatio, theme, onPointerDown }: { side: "left" | "right"; scale: number; visible: boolean; anchorRatio?: number; theme: CanvasTheme; onPointerDown: (event: React.PointerEvent, anchorRatio: number) => void }) {
+function ConnectionSideRail({ side, scale, theme, onPointerDown }: { side: "left" | "right"; scale: number; theme: CanvasTheme; onPointerDown: (event: React.PointerEvent, anchorRatio: number) => void }) {
     const handleRef = useRef<HTMLSpanElement>(null);
     const anchorRatioRef = useRef(0.5);
     const inverseScale = 1 / Math.max(scale, 0.05);
 
     const resetAnchor = useCallback(() => {
-        const nextRatio = normalizedAnchorRatio(anchorRatio);
-        anchorRatioRef.current = nextRatio;
-        if (handleRef.current) handleRef.current.style.top = `${nextRatio * 100}%`;
-    }, [anchorRatio]);
-
-    useEffect(() => {
-        resetAnchor();
-    }, [resetAnchor, visible]);
+        anchorRatioRef.current = 0.5;
+        if (handleRef.current) handleRef.current.style.top = "50%";
+    }, []);
 
     const updateAnchor = (event: React.PointerEvent<HTMLButtonElement>) => {
-        const nodeBounds = event.currentTarget.parentElement?.getBoundingClientRect() || event.currentTarget.getBoundingClientRect();
-        const nextRatio = normalizedAnchorRatio((event.clientY - nodeBounds.top) / Math.max(nodeBounds.height, 1));
-        anchorRatioRef.current = nextRatio;
-        if (handleRef.current) handleRef.current.style.top = `${nextRatio * 100}%`;
+        const railBounds = event.currentTarget.getBoundingClientRect();
+        const nodeBounds = event.currentTarget.parentElement?.getBoundingClientRect() || railBounds;
+        const screenPadding = Math.min(railBounds.height * 0.35, 12);
+        const railRatio = Math.min(1 - screenPadding / Math.max(railBounds.height, 1), Math.max(screenPadding / Math.max(railBounds.height, 1), (event.clientY - railBounds.top) / Math.max(railBounds.height, 1)));
+        const anchorY = railBounds.top + railBounds.height * railRatio;
+        anchorRatioRef.current = Math.min(1, Math.max(0, (anchorY - nodeBounds.top) / Math.max(nodeBounds.height, 1)));
+        if (handleRef.current) handleRef.current.style.top = `${railRatio * 100}%`;
     };
 
     return (
         <button
             type="button"
-            className={`group absolute top-0 z-[var(--node-z-overlay)] h-full touch-none outline-none transition-opacity duration-150 ${visible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"}`}
-            style={{ width: 56 * inverseScale, ...(side === "left" ? { right: "100%" } : { left: "100%" }) }}
+            className="group pointer-events-auto absolute top-1/2 z-[var(--node-z-overlay)] touch-none -translate-y-1/2 opacity-100 outline-none transition-opacity duration-150"
+            style={{ width: 56 * inverseScale, height: `min(100%, ${72 * inverseScale}px)`, ...(side === "left" ? { right: "100%" } : { left: "100%" }) }}
             onPointerEnter={updateAnchor}
             onPointerMove={updateAnchor}
             onPointerLeave={resetAnchor}
@@ -715,10 +753,10 @@ function ConnectionSideRail({ side, scale, visible, anchorRatio, theme, onPointe
                 ref={handleRef}
                 className="absolute grid -translate-y-1/2 place-items-center rounded-full border transition-[background-color,box-shadow] duration-150 group-hover:brightness-125 group-focus-visible:brightness-125"
                 style={{
-                    top: `${normalizedAnchorRatio(anchorRatio) * 100}%`,
+                    top: "50%",
                     width: 18 * inverseScale,
                     height: 18 * inverseScale,
-                    ...(side === "left" ? { right: -9 * inverseScale } : { left: -9 * inverseScale }),
+                    ...(side === "left" ? { right: 6 * inverseScale } : { left: 6 * inverseScale }),
                     borderWidth: inverseScale,
                     background: theme.spatial.elevated,
                     borderColor: theme.node.activeStroke,
