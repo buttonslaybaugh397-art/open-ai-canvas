@@ -38,6 +38,7 @@ type AssetBase<T extends AssetKind> = {
     tags: string[];
     category?: AssetCategory;
     status?: AssetStatus;
+    folderId?: string;
     primaryVersionId?: string;
     source?: string;
     note?: string;

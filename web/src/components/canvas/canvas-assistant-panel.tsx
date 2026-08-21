@@ -1090,7 +1090,6 @@ export function CanvasAssistantPanel({
                         <AgentChatComposer
                         prompt={prompt}
                         sending={agentBusy}
-                        collapsed={resizing}
                         placeholder={cinematicEntryActive ? "一句话描述题材、角色和核心冲突" : "描述你想让 Agent 如何操作画布"}
                         theme={theme}
                         onPromptChange={setPrompt}
@@ -1165,7 +1164,7 @@ export function CanvasAssistantPanel({
                 onUndo={undoLastOnlineBatch}
                 onCollapse={collapse}
             />
-            {agentMode === "local" ? <CanvasLocalAgentPanel embedded resizing={resizing} snapshot={snapshot} canUndoOps={canUndoOps} undoOpsCount={undoOpsCount} onApplyOps={onApplyOps} onUndoOps={onUndoOps} autoConnect={autoConnectLocal} /> : onlineContent}
+            {agentMode === "local" ? <CanvasLocalAgentPanel embedded snapshot={snapshot} canUndoOps={canUndoOps} undoOpsCount={undoOpsCount} onApplyOps={onApplyOps} onUndoOps={onUndoOps} autoConnect={autoConnectLocal} /> : onlineContent}
         </motion.aside>
     );
 }

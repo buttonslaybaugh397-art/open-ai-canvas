@@ -7,7 +7,7 @@ export type ModelCapabilityConfig = {
     video?: VideoCapabilityConfig;
     aistarslab?: {
         channel: string;
-        capability: string;
+        capability: "image" | "video";
         model: string;
         qualities?: string[];
         aspectRatios?: string[];

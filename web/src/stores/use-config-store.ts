@@ -502,7 +502,8 @@ export function channelConnectionSignature(channel: ModelChannel) {
 export function resolveModelRequestConfig(config: AiConfig, value: string) {
     const channel = resolveModelChannel(config, value);
     const model = modelOptionName(value || config.model);
-    const modelProtocol = channel.modelCosts?.find((item) => item.model === model)?.protocol;
+    const modelCost = channel.modelCosts?.find((item) => item.model === model);
+    const modelProtocol = modelCost?.protocol;
     const interfaceType = modelProtocol || channel.interfaceType;
     return projectDesktopLocalChannelRuntime({
         ...config,
@@ -515,6 +516,7 @@ export function resolveModelRequestConfig(config: AiConfig, value: string) {
         apiFormat: interfaceType ? (interfaceType === "gemini-veo" || interfaceType === "gemini-image" ? ("gemini" as const) : ("openai" as const)) : channel.apiFormat,
         interfaceType,
         channelId: channel.scope === "system" ? channel.id : "",
+        capabilityConfig: modelCost?.capabilityConfig,
     });
 }
 
