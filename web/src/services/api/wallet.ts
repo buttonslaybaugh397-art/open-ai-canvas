@@ -26,12 +26,20 @@ export type CreditLedgerEntry = {
     createdAt: string;
 };
 
+export type CreditConsumptionStats = {
+    todayMicrocredits: number;
+    yesterdayMicrocredits: number;
+    weekMicrocredits: number;
+    monthMicrocredits: number;
+};
+
 export type WalletSummary = {
     account: CreditAccount;
     entries: CreditLedgerEntry[];
     total: number;
     page: number;
     limit: number;
+    consumption: CreditConsumptionStats;
     policy: {
         signupBonusMicrocredits: number;
         checkinBonusMicrocredits: number;

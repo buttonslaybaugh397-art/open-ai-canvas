@@ -90,6 +90,7 @@ export default function WalletPage() {
     const entries = wallet?.entries || [];
     const account = wallet?.account;
     const totalMicrocredits = (account?.availableMicrocredits || 0) + (account?.reservedMicrocredits || 0);
+    const consumption = wallet?.consumption;
 
     const columns: ColumnsType<CreditLedgerEntry> = [
         { title: "发生时间", dataIndex: "createdAt", width: 180, render: formatTime },
@@ -158,6 +159,12 @@ export default function WalletPage() {
                                 <span className="wallet-account-status"><ShieldCheck />账户正常</span>
                                 <BalanceMetric label="冻结积分" description="调用中或待核对" value={account?.reservedMicrocredits || 0} icon={<TicketCheck className="size-4" />} />
                                 <BalanceMetric label="账户总额" description="可用与冻结合计" value={totalMicrocredits} icon={<Coins className="size-4" />} />
+                            </div>
+                            <div className="wallet-consumption-grid">
+                                <ConsumptionMetric label="当日消耗" value={consumption?.todayMicrocredits || 0} />
+                                <ConsumptionMetric label="昨日消耗" value={consumption?.yesterdayMicrocredits || 0} />
+                                <ConsumptionMetric label="本周消耗" value={consumption?.weekMicrocredits || 0} />
+                                <ConsumptionMetric label="本月消耗" value={consumption?.monthMicrocredits || 0} />
                             </div>
                         </div>
                     </section>
@@ -233,6 +240,10 @@ function BalanceMetric({ label, description, value, icon }: { label: string; des
             <div><span>{label}</span><strong>{formatCredits(value, 6)}</strong><small>{description}</small></div>
         </div>
     );
+}
+
+function ConsumptionMetric({ label, value }: { label: string; value: number }) {
+    return <div className="wallet-consumption-metric"><span>{label}</span><strong>{formatCredits(value, 6)}</strong></div>;
 }
 
 function LedgerMobileRow({ config, entry }: { config: AiConfig; entry: CreditLedgerEntry }) {

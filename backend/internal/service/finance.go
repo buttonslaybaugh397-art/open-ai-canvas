@@ -26,6 +26,47 @@ type WalletSummary struct {
 	Page    int                       `json:"page"`
 	Limit   int                       `json:"limit"`
 	Policy  PublicCreditPolicy        `json:"policy"`
+	Consumption CreditConsumptionStats `json:"consumption"`
+}
+
+type CreditConsumptionStats struct {
+	TodayMicrocredits     int64 `json:"todayMicrocredits"`
+	YesterdayMicrocredits int64 `json:"yesterdayMicrocredits"`
+	WeekMicrocredits      int64 `json:"weekMicrocredits"`
+	MonthMicrocredits     int64 `json:"monthMicrocredits"`
+}
+
+var creditConsumptionLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
+
+func creditConsumptionWindow(now time.Time) repository.CreditConsumptionWindow {
+	localNow := now.In(creditConsumptionLocation)
+	todayStart := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, creditConsumptionLocation)
+	daysSinceMonday := (int(todayStart.Weekday()) + 6) % 7
+	weekStart := todayStart.AddDate(0, 0, -daysSinceMonday)
+	monthStart := time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, creditConsumptionLocation)
+	return repository.CreditConsumptionWindow{
+		TodayFrom: todayStart, YesterdayFrom: todayStart.AddDate(0, 0, -1), TodayTo: localNow,
+		WeekFrom: weekStart, MonthFrom: monthStart,
+	}
+}
+
+func creditConsumptionStatsFromTotals(totals repository.CreditConsumptionTotals) CreditConsumptionStats {
+	return CreditConsumptionStats{
+		TodayMicrocredits: totals.Today, YesterdayMicrocredits: totals.Yesterday,
+		WeekMicrocredits: totals.Week, MonthMicrocredits: totals.Month,
+	}
+}
+
+func (s *Service) creditConsumptionStatsForUsers(userIDs []string) (map[string]CreditConsumptionStats, error) {
+	totals, err := s.repo.CreditConsumptions(userIDs, creditConsumptionWindow(time.Now()))
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]CreditConsumptionStats, len(totals))
+	for userID, value := range totals {
+		result[userID] = creditConsumptionStatsFromTotals(value)
+	}
+	return result, nil
 }
 
 type RedeemBatchPage struct {
@@ -133,7 +174,11 @@ func (s *Service) Wallet(user *model.User, entryType string, page int, limit int
 	if err != nil {
 		return nil, err
 	}
-	return &WalletSummary{Account: *account, Entries: entries, Total: total, Page: page, Limit: limit, Policy: policy}, nil
+	consumption, err := s.creditConsumptionStatsForUsers([]string{user.ID})
+	if err != nil {
+		return nil, err
+	}
+	return &WalletSummary{Account: *account, Entries: entries, Total: total, Page: page, Limit: limit, Policy: policy, Consumption: consumption[user.ID]}, nil
 }
 
 func (s *Service) RedeemCredits(user *model.User, code string, redeemedIP string) (*model.CreditAccount, error) {

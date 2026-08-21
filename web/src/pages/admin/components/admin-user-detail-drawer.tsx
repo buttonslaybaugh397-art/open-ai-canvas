@@ -123,6 +123,10 @@ export function AdminUserDetailDrawer({ userId, onClose, previousUserId, nextUse
                                             { key: "status", label: "状态", children: <AdminStatusBadge label={detail.user.status === "active" ? "启用" : "停用"} tone={detail.user.status === "active" ? "success" : "neutral"} /> },
                                             { key: "available", label: "可用积分", children: formatCredits(detail.account.availableMicrocredits) },
                                             { key: "reserved", label: "冻结积分", children: formatCredits(detail.account.reservedMicrocredits) },
+                                            { key: "today-consumption", label: "当日消耗", children: formatCredits(detail.consumption.todayMicrocredits) },
+                                            { key: "yesterday-consumption", label: "昨日消耗", children: formatCredits(detail.consumption.yesterdayMicrocredits) },
+                                            { key: "week-consumption", label: "本周消耗", children: formatCredits(detail.consumption.weekMicrocredits) },
+                                            { key: "month-consumption", label: "本月消耗", children: formatCredits(detail.consumption.monthMicrocredits) },
                                             { key: "created", label: "注册时间", children: formatTime(detail.user.createdAt) },
                                             { key: "login", label: "最后登录", children: formatTime(detail.user.lastLoginAt) },
                                         ]}

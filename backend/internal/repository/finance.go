@@ -178,6 +178,67 @@ func (r *Repository) CreditAccounts(userIDs []string) ([]model.CreditAccount, er
 	return accounts, err
 }
 
+type CreditConsumptionWindow struct {
+	TodayFrom     time.Time
+	YesterdayFrom time.Time
+	TodayTo       time.Time
+	WeekFrom      time.Time
+	MonthFrom     time.Time
+}
+
+type CreditConsumptionTotals struct {
+	Today     int64
+	Yesterday int64
+	Week      int64
+	Month     int64
+}
+
+func (r *Repository) CreditConsumptions(userIDs []string, window CreditConsumptionWindow) (map[string]CreditConsumptionTotals, error) {
+	result := make(map[string]CreditConsumptionTotals, len(userIDs))
+	if len(userIDs) == 0 {
+		return result, nil
+	}
+	var rows []struct {
+		UserID    string `gorm:"column:user_id"`
+		Today     int64  `gorm:"column:today"`
+		Yesterday int64  `gorm:"column:yesterday"`
+		Week      int64  `gorm:"column:week"`
+		Month     int64  `gorm:"column:month"`
+	}
+	// 消耗以账单结算为准：consume 流水只在部分历史版本中写入，且创建时间不一定等于实际扣费时间。
+	// 优先使用实际结算金额，兼容旧账单中只保存预估金额的记录；结算时间缺失时回退到更新时间和创建时间。
+	amountExpression := "CASE WHEN actual_amount_microcredits > 0 THEN actual_amount_microcredits ELSE amount_microcredits END"
+	settledAtExpression := "COALESCE(settled_at, updated_at, created_at)"
+	comparisonExpression := settledAtExpression
+	parameterExpression := "?"
+	if r.db.Dialector.Name() == "sqlite" {
+		// SQLite 将时间保存为带时区的文本，julianday 可以避免 UTC 与北京时间文本直接比较造成跨日误判。
+		comparisonExpression = "julianday(" + settledAtExpression + ")"
+		parameterExpression = "julianday(?)"
+	}
+	query := r.db.Model(&model.BillingOrder{}).
+		Select(
+			"user_id, "+
+			"COALESCE(SUM(CASE WHEN "+comparisonExpression+" >= "+parameterExpression+" AND "+comparisonExpression+" < "+parameterExpression+" THEN "+amountExpression+" ELSE 0 END), 0) AS today, "+
+			"COALESCE(SUM(CASE WHEN "+comparisonExpression+" >= "+parameterExpression+" AND "+comparisonExpression+" < "+parameterExpression+" THEN "+amountExpression+" ELSE 0 END), 0) AS yesterday, "+
+			"COALESCE(SUM(CASE WHEN "+comparisonExpression+" >= "+parameterExpression+" AND "+comparisonExpression+" < "+parameterExpression+" THEN "+amountExpression+" ELSE 0 END), 0) AS week, "+
+			"COALESCE(SUM(CASE WHEN "+comparisonExpression+" >= "+parameterExpression+" AND "+comparisonExpression+" < "+parameterExpression+" THEN "+amountExpression+" ELSE 0 END), 0) AS month",
+			window.TodayFrom, window.TodayTo,
+			window.YesterdayFrom, window.TodayFrom,
+			window.WeekFrom, window.TodayTo,
+			window.MonthFrom, window.TodayTo,
+		).
+		Where("user_id IN ? AND status = ? AND (actual_amount_microcredits > 0 OR amount_microcredits > 0)", userIDs, model.BillingStatusSettled).
+		Group("user_id")
+	if err := query.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		result[row.UserID] = CreditConsumptionTotals{Today: row.Today, Yesterday: row.Yesterday, Week: row.Week, Month: row.Month}
+	}
+	return result, nil
+}
+
 func (r *Repository) CreditLedger(userID string, entryType string, limit int, offset int) ([]model.CreditLedgerEntry, int64, error) {
 	var items []model.CreditLedgerEntry
 	var total int64

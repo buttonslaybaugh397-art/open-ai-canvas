@@ -56,6 +56,7 @@ type AdminUser struct {
 	model.User
 	AvailableMicrocredits int64 `json:"availableMicrocredits"`
 	ReservedMicrocredits  int64 `json:"reservedMicrocredits"`
+	Consumption            CreditConsumptionStats `json:"consumption"`
 }
 
 type AdminChannelPage struct {
@@ -159,10 +160,14 @@ func (s *Service) AdminUsers(actor *model.User, query AdminListQuery) (*AdminUse
 	for _, account := range accounts {
 		accountByUserID[account.UserID] = account
 	}
+	consumptionByUserID, err := s.creditConsumptionStatsForUsers(userIDs)
+	if err != nil {
+		return nil, err
+	}
 	result := make([]AdminUser, 0, len(users))
 	for _, user := range users {
 		account := accountByUserID[user.ID]
-		result = append(result, AdminUser{User: user, AvailableMicrocredits: account.AvailableMicrocredits, ReservedMicrocredits: account.ReservedMicrocredits})
+		result = append(result, AdminUser{User: user, AvailableMicrocredits: account.AvailableMicrocredits, ReservedMicrocredits: account.ReservedMicrocredits, Consumption: consumptionByUserID[user.ID]})
 	}
 	return &AdminUserPage{Users: result, Total: total, Page: page, Limit: limit}, nil
 }

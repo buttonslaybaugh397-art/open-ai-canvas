@@ -1,5 +1,5 @@
 import type { ModelChannel } from "@/stores/use-config-store";
-import type { CreditLedgerEntry } from "@/services/api/wallet";
+import type { CreditConsumptionStats, CreditLedgerEntry } from "@/services/api/wallet";
 import type { GenerationTask, TaskStatus } from "@/services/api/task-center";
 import type { CanvasDrawingEngineSetting } from "@/lib/canvas/canvas-drawing-engine";
 import type { FeatureAvailability } from "@/stores/use-user-store";
@@ -34,6 +34,7 @@ export type LocalUser = {
 export type AdminUser = LocalUser & {
     availableMicrocredits: number;
     reservedMicrocredits: number;
+    consumption: CreditConsumptionStats;
 };
 
 export type AuthSessionPayload = {
@@ -118,6 +119,7 @@ export type AdminAuditEvent = {
 export type AdminUserDetail = {
     user: LocalUser;
     account: { userId: string; availableMicrocredits: number; reservedMicrocredits: number; version: number };
+    consumption: CreditConsumptionStats;
     counts: { ledgerEntries: number; tasks: number; apiCalls: number; auditEvents: number };
     storageUsage: {
         assetCount: number; assetBytes: number; canvasCount: number; canvasBytes: number;

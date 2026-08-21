@@ -6,12 +6,13 @@ import { IdentityProviderBadge } from "@/components/layout/identity-provider-bad
 import { AdminRowActions, AdminStatusBadge } from "../components/admin-ui";
 import type { AdminUser } from "@/services/api/auth";
 
-export type UserColumnKey = "user" | "email" | "credits" | "role" | "status" | "createdAt" | "actions";
+export type UserColumnKey = "user" | "email" | "credits" | "consumption" | "role" | "status" | "createdAt" | "actions";
 
 export const userColumnOptions: Array<{ key: UserColumnKey; label: string; locked?: boolean }> = [
     { key: "user", label: "用户", locked: true },
     { key: "email", label: "邮箱" },
     { key: "credits", label: "当前积分" },
+    { key: "consumption", label: "周期消耗" },
     { key: "role", label: "角色" },
     { key: "status", label: "状态" },
     { key: "createdAt", label: "注册时间" },
@@ -51,6 +52,12 @@ export function createUserColumns({
             width: 130,
             align: "right",
             render: (value, user) => <span className="tabular-nums" title={`冻结积分：${formatCredits(user.reservedMicrocredits)}`}>{formatCredits(value)}</span>,
+        },
+        {
+            key: "consumption",
+            title: "周期消耗",
+            width: 250,
+            render: (_, user) => <div className="admin-user-consumption-grid"><span title={`当日消耗：${formatCredits(user.consumption.todayMicrocredits)}`}>今 {formatCredits(user.consumption.todayMicrocredits)}</span><span title={`昨日消耗：${formatCredits(user.consumption.yesterdayMicrocredits)}`}>昨 {formatCredits(user.consumption.yesterdayMicrocredits)}</span><span title={`本周消耗：${formatCredits(user.consumption.weekMicrocredits)}`}>周 {formatCredits(user.consumption.weekMicrocredits)}</span><span title={`本月消耗：${formatCredits(user.consumption.monthMicrocredits)}`}>月 {formatCredits(user.consumption.monthMicrocredits)}</span></div>,
         },
         { key: "role", title: "角色", dataIndex: "role", width: 110, render: (role) => <AdminStatusBadge label={role === "admin" ? "管理员" : "普通用户"} tone={role === "admin" ? "info" : "neutral"} /> },
         { key: "status", title: "状态", dataIndex: "status", width: 110, render: (status) => <AdminStatusBadge label={status === "active" ? "已启用" : "已停用"} tone={status === "active" ? "success" : "neutral"} /> },

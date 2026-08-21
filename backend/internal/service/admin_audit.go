@@ -12,6 +12,7 @@ import (
 type AdminUserDetail struct {
 	User             model.User                  `json:"user"`
 	Account          model.CreditAccount         `json:"account"`
+	Consumption      CreditConsumptionStats      `json:"consumption"`
 	Counts           repository.AdminUserCounts  `json:"counts"`
 	StorageUsage     repository.UserStorageUsage `json:"storageUsage"`
 	StoredFileBytes  int64                       `json:"storedFileBytes"`
@@ -79,12 +80,16 @@ func (s *Service) AdminUserDetail(actor *model.User, userID string) (*AdminUserD
 	if err != nil {
 		return nil, err
 	}
+	consumptionByUserID, err := s.creditConsumptionStatsForUsers([]string{user.ID})
+	if err != nil {
+		return nil, err
+	}
 	policy, err := s.RuntimePolicy()
 	if err != nil {
 		return nil, err
 	}
 	return &AdminUserDetail{
-		User: *user, Account: *account, Counts: counts, StorageUsage: usage,
+		User: *user, Account: *account, Consumption: consumptionByUserID[user.ID], Counts: counts, StorageUsage: usage,
 		StoredFileBytes: storedFileBytes, DailyUploadBytes: dailyUploadBytes, Quota: policy.Resource,
 	}, nil
 }
