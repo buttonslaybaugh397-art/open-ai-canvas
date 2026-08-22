@@ -5,7 +5,7 @@ const HUIQUYUN_VIDEO_MARKERS = ["mj-sd", "seedance", "grok-video", "sora", "veo"
 
 export function isHuiQuYunMX933Model(model: string) {
     const normalized = model.trim().toLowerCase();
-    return normalized.startsWith("sd2-mx933-720-") || normalized.startsWith("sd2-mx933-720-fast-");
+    return normalized.startsWith("sd2-mx933-720-") || normalized.startsWith("mj-sd2.0-933-720p");
 }
 
 export function huiQuYunFixedVideoDuration(model: string) {

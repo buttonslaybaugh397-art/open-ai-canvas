@@ -100,7 +100,7 @@ export async function runBackendGenerationTask(
             dependencies,
         );
     }
-    const prepared = await prepareGenerationReferences({ referenceImages, referenceVideos, referenceAudios, mask });
+    const prepared = await prepareGenerationReferences({ referenceImages, referenceVideos, referenceAudios, mask, allowVolcengineAssetUri: isVolcengineArkVideoConfig(config) });
     throwIfAborted(signal);
     return createAndWaitGenerationTask({ projectId, mode, prompt, config, referenceImages, referenceVideos, referenceAudios, textHistory, signal, metadata, onTaskUpdate }, prepared, dependencies);
 }
@@ -131,7 +131,7 @@ export async function runBackendGenerationTaskBatch(options: BackendGenerationTa
             }),
         );
     }
-    const prepared = await prepareGenerationReferences(options);
+    const prepared = await prepareGenerationReferences({ ...options, allowVolcengineAssetUri: isVolcengineArkVideoConfig(options.config) });
     throwIfAborted(options.signal);
     return Promise.allSettled(
         Array.from({ length: count }, (_, batchIndex) =>
@@ -335,11 +335,12 @@ async function prepareGenerationReferences({
     referenceVideos = [],
     referenceAudios = [],
     mask,
-}: Pick<BackendGenerationTaskOptions, "referenceImages" | "referenceVideos" | "referenceAudios" | "mask">): Promise<PreparedGenerationReferences> {
-    const preparedImages = await Promise.all(referenceImages.map(prepareBackendImageReference));
-    const preparedVideos = await Promise.all(referenceVideos.map(prepareBackendMediaReference));
-    const preparedAudios = await Promise.all(referenceAudios.map(prepareBackendMediaReference));
-    const preparedMask = mask ? await prepareBackendImageReference(mask) : undefined;
+    allowVolcengineAssetUri = false,
+}: Pick<BackendGenerationTaskOptions, "referenceImages" | "referenceVideos" | "referenceAudios" | "mask"> & { allowVolcengineAssetUri?: boolean }): Promise<PreparedGenerationReferences> {
+    const preparedImages = await Promise.all(referenceImages.map((image) => prepareBackendImageReference(image, allowVolcengineAssetUri)));
+    const preparedVideos = await Promise.all(referenceVideos.map((video) => prepareBackendMediaReference(video, allowVolcengineAssetUri)));
+    const preparedAudios = await Promise.all(referenceAudios.map((audio) => prepareBackendMediaReference(audio, allowVolcengineAssetUri)));
+    const preparedMask = mask ? await prepareBackendImageReference(mask, allowVolcengineAssetUri) : undefined;
     return { referenceImages: preparedImages, referenceVideos: preparedVideos, referenceAudios: preparedAudios, mask: preparedMask };
 }
 
@@ -369,7 +370,9 @@ async function createAndWaitGenerationTask(options: BackendGenerationTaskOptions
     return parseBackendGenerationResult(completed);
 }
 
-async function prepareBackendMediaReference(media: ReferenceVideo | ReferenceAudio) {
+async function prepareBackendMediaReference(media: ReferenceVideo | ReferenceAudio, allowVolcengineAssetUri = false) {
+    const volcengineAssetUri = allowVolcengineAssetUri ? referenceVolcengineAssetUri(media.volcengineAssetUri || media.url) : undefined;
+    if (volcengineAssetUri) return backendMediaReference(media, { volcengineAssetUri });
     if (resourceIdFromStorageKey(media.storageKey)) return backendMediaReference(media, { storageKey: media.storageKey });
     const url = media.url || "";
     if (/^https?:\/\//i.test(url)) return backendMediaReference(media, { url });
@@ -386,7 +389,9 @@ async function prepareBackendMediaReference(media: ReferenceVideo | ReferenceAud
     }
 }
 
-async function prepareBackendImageReference(image: ReferenceImage) {
+async function prepareBackendImageReference(image: ReferenceImage, allowVolcengineAssetUri = false) {
+    const volcengineAssetUri = allowVolcengineAssetUri ? referenceVolcengineAssetUri(image.volcengineAssetUri || image.url) : undefined;
+    if (volcengineAssetUri) return backendImageReference(image, { volcengineAssetUri });
     if (resourceIdFromStorageKey(image.storageKey)) return backendImageReference(image, { storageKey: image.storageKey });
     const sourceUrl = image.url || image.dataUrl;
     if (/^https?:\/\//i.test(sourceUrl)) return backendImageReference(image, { url: sourceUrl });
@@ -409,6 +414,7 @@ function backendImageReference(image: ReferenceImage, override: Partial<Referenc
         dataUrl: "",
         url: override.url,
         storageKey: override.storageKey,
+        volcengineAssetUri: override.volcengineAssetUri,
         ...(image.bytes ? { bytes: image.bytes } : {}),
         ...(image.width ? { width: image.width } : {}),
         ...(image.height ? { height: image.height } : {}),
@@ -422,11 +428,21 @@ function backendMediaReference<T extends ReferenceVideo | ReferenceAudio>(media:
         type: override.type || media.type,
         url: override.url || "",
         storageKey: override.storageKey,
+        volcengineAssetUri: override.volcengineAssetUri,
         ...("bytes" in media && media.bytes ? { bytes: media.bytes } : {}),
         ...("width" in media && media.width ? { width: media.width } : {}),
         ...("height" in media && media.height ? { height: media.height } : {}),
         ...(media.durationMs ? { durationMs: media.durationMs } : {}),
     } as T;
+}
+
+function referenceVolcengineAssetUri(value: string | undefined) {
+    const normalized = String(value || "").trim();
+    return normalized.startsWith("asset://") && normalized.length > "asset://".length && !/\s/.test(normalized) ? normalized : undefined;
+}
+
+function isVolcengineArkVideoConfig(config: AiConfig) {
+    return resolveModelRequestConfig(config, config.model).interfaceType === "volcengine-ark-video";
 }
 
 export function backendProviderConfig(config: AiConfig) {

@@ -11,6 +11,7 @@ import { useUserStore } from "@/stores/use-user-store";
 import { ModelDefaultGrid } from "./model-default-grid";
 import { LocalCliSettings } from "./local-cli-settings";
 import { PromptPreferencesPane } from "./prompt-preferences-pane";
+export { UserLocalChannelFields, UserLocalChannelSwitch, userLocalChannelChangePatch, userLocalChannelFormOwner } from "./channel-settings-pane";
 
 type ConfigSectionKey = "local-cli" | "models" | "preferences" | "prompts" | "storage";
 
@@ -72,7 +73,11 @@ export default function SettingsPage() {
     };
 
     const panes: Record<ConfigSectionKey, ReactNode> = {
-        "local-cli": <SettingsPane><LocalCliSettings /></SettingsPane>,
+        "local-cli": (
+            <SettingsPane>
+                <LocalCliSettings />
+            </SettingsPane>
+        ),
         models: (
             <SettingsPane>
                 <div className="settings-pane-header">
@@ -152,7 +157,11 @@ export default function SettingsPage() {
                 </div>
             </SettingsPane>
         ),
-        prompts: <SettingsPane fill><PromptPreferencesPane /></SettingsPane>,
+        prompts: (
+            <SettingsPane fill>
+                <PromptPreferencesPane />
+            </SettingsPane>
+        ),
         storage: (
             <SettingsPane>
                 <div className="settings-section">
@@ -173,7 +182,11 @@ export default function SettingsPage() {
                     ) : null}
                     <h1 className="truncate text-sm font-semibold">设置</h1>
                 </div>
-                {shouldPromptContinue ? <Button type="primary" size="small" onClick={finishConfig}>保存并返回</Button> : null}
+                {shouldPromptContinue ? (
+                    <Button type="primary" size="small" onClick={finishConfig}>
+                        保存并返回
+                    </Button>
+                ) : null}
             </header>
             <div className="settings-library-frame flex min-h-0 flex-1 flex-col md:flex-row">
                 <aside className="settings-nav-panel w-full shrink-0 md:w-[200px]">
@@ -200,9 +213,7 @@ export default function SettingsPage() {
                 </aside>
                 <section className="settings-content flex min-h-0 min-w-0 flex-1 flex-col">
                     <div className="app-workspace-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 md:px-6 md:py-5">
-                        <div className={`settings-pane-root ${activeTab === "prompts" ? "h-full w-full" : "mx-auto w-full max-w-none"}`}>
-                            {panes[activeTab]}
-                        </div>
+                        <div className={`settings-pane-root ${activeTab === "prompts" ? "h-full w-full" : "mx-auto w-full max-w-none"}`}>{panes[activeTab]}</div>
                     </div>
                 </section>
             </div>

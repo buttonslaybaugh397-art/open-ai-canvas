@@ -218,13 +218,14 @@ export function buildImageGenerationMetadata(type: CanvasImageGenerationType, co
 }
 
 export function nodeReferenceImage(node: CanvasNodeData): ReferenceImage | null {
-    if (node.type !== CanvasNodeType.Image || !node.metadata?.content) return null;
+    if (node.type !== CanvasNodeType.Image || (!node.metadata?.content && !node.metadata?.volcengineAssetUri)) return null;
     return {
         id: node.id,
         name: `reference-${node.id}.png`,
         type: node.metadata.mimeType || "image/png",
-        dataUrl: node.metadata.content,
+        dataUrl: node.metadata.content || "",
         storageKey: node.metadata.storageKey,
+        volcengineAssetUri: node.metadata.volcengineAssetUri,
     };
 }
 
@@ -239,7 +240,7 @@ export function buildAudioGenerationMetadata(config: AiConfig): CanvasNodeMetada
 }
 
 function referenceUrl(image: ReferenceImage) {
-    return image.storageKey || image.url || (!image.dataUrl.startsWith("data:") ? image.dataUrl : undefined);
+    return image.volcengineAssetUri || image.storageKey || image.url || (!image.dataUrl.startsWith("data:") ? image.dataUrl : undefined);
 }
 
 export async function resolveStoredReferenceImages(references?: string[]) {
@@ -247,9 +248,10 @@ export async function resolveStoredReferenceImages(references?: string[]) {
     const imageReferences = references.filter(isStoredImageReference);
     const images = await Promise.all(
         imageReferences.map(async (url, index) => {
+            const volcengineAssetUri = url.startsWith("asset://") ? url : undefined;
             const storageKey = url.startsWith("image:") || resourceIdFromStorageKey(url) ? url : undefined;
-            const dataUrl = storageKey ? await resolveImageUrl(storageKey, "") : url;
-            if (!dataUrl) return null;
+            const dataUrl = volcengineAssetUri ? "" : storageKey ? await resolveImageUrl(storageKey, "") : url;
+            if (!dataUrl && !volcengineAssetUri) return null;
             return {
                 id: `${index}`,
                 name: `reference-${index + 1}.png`,
@@ -257,6 +259,7 @@ export async function resolveStoredReferenceImages(references?: string[]) {
                 dataUrl,
                 url: /^https?:\/\//i.test(dataUrl) ? dataUrl : undefined,
                 storageKey,
+                volcengineAssetUri,
             };
         }),
     );
@@ -264,18 +267,18 @@ export async function resolveStoredReferenceImages(references?: string[]) {
 }
 
 function isStoredImageReference(url: string) {
-    return resourceIdFromStorageKey(url) || url.startsWith("image:") || url.startsWith("data:image/") || /\.(png|jpe?g|webp|gif|avif)(?:[?#]|$)/i.test(url);
+    return resourceIdFromStorageKey(url) || url.startsWith("image:") || url.startsWith("asset://") || url.startsWith("data:image/") || /\.(png|jpe?g|webp|gif|avif)(?:[?#]|$)/i.test(url);
 }
 
 function imageMimeType(url: string) {
     return url.match(/^data:(image\/[^;,]+)/)?.[1] || "image/png";
 }
 
-export function generationReferenceUrls(context: { referenceImages: ReferenceImage[]; referenceVideos: Array<{ storageKey?: string; url?: string }>; referenceAudios?: Array<{ storageKey?: string; url?: string }> }) {
+export function generationReferenceUrls(context: { referenceImages: ReferenceImage[]; referenceVideos: Array<{ storageKey?: string; url?: string; volcengineAssetUri?: string }>; referenceAudios?: Array<{ storageKey?: string; url?: string; volcengineAssetUri?: string }> }) {
     return [
         ...context.referenceImages.map(referenceUrl).filter((url): url is string => Boolean(url)),
-        ...context.referenceVideos.map((video) => video.storageKey || video.url).filter((url): url is string => Boolean(url)),
-        ...(context.referenceAudios || []).map((audio) => audio.storageKey || audio.url).filter((url): url is string => Boolean(url)),
+        ...context.referenceVideos.map((video) => video.volcengineAssetUri || video.storageKey || video.url).filter((url): url is string => Boolean(url)),
+        ...(context.referenceAudios || []).map((audio) => audio.volcengineAssetUri || audio.storageKey || audio.url).filter((url): url is string => Boolean(url)),
     ];
 }
 

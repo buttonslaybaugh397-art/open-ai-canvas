@@ -32,13 +32,16 @@ export async function syncRemoteUserData(userId?: string | null) {
             // 登录只拉一次聚合快照。摘要列表再逐条请求详情会把 N 条数据放大成 2N+2 个请求，
             // 并且会在登录阶段同时触发大量媒体解析，任何一项失败都会污染登录结果。
             const snapshot = await getRemoteUserDataSnapshot();
-            remoteProjectVersions = versionMap(snapshot.projects);
-            remoteAssetVersions = versionMap(snapshot.assets);
+            // 旧后端或测试适配器可能只返回其中一类数据；读取路径按空列表降级，后续本地数据仍会正常补传。
+            const remoteProjects = Array.isArray(snapshot.projects) ? snapshot.projects : [];
+            const remoteAssets = Array.isArray(snapshot.assets) ? snapshot.assets : [];
+            remoteProjectVersions = versionMap(remoteProjects);
+            remoteAssetVersions = versionMap(remoteAssets);
             const localProjects = useCanvasStore.getState().projects;
             const localAssets = useAssetStore.getState().assets;
-            const mergedProjects = mergeById(localProjects, snapshot.projects);
+            const mergedProjects = mergeById(localProjects, remoteProjects);
             // 这里只合并结构化素材数据，不在登录阶段解析图片/视频/音频 URL；媒体由实际使用方按需解析。
-            const mergedAssets = mergeById(localAssets, snapshot.assets);
+            const mergedAssets = mergeById(localAssets, remoteAssets);
             useCanvasStore.getState().replaceProjects(mergedProjects);
             useAssetStore.getState().replaceAssets(mergedAssets);
         } finally {

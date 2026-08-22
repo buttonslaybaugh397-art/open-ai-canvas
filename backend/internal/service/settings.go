@@ -149,7 +149,7 @@ func (s *Service) UpdateUserOSSSetting(actor *model.User, req OSSSettingRequest)
 	if actor == nil {
 		return nil, Unauthorized("请先登录")
 	}
-	_, currentValue, err := s.readUserOSSSetting(actor.ID)
+	currentSetting, currentValue, err := s.readUserOSSSetting(actor.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +166,14 @@ func (s *Service) UpdateUserOSSSetting(actor *model.User, req OSSSettingRequest)
 		return nil, err
 	}
 	// 配置按版本追加而不是覆盖，资源会固定引用创建时的版本。
-	setting := model.UserOSSSetting{ID: newID(), UserID: actor.ID, Enabled: next.Enabled, ValueJSON: string(valueJSON)}
+	createdAt := time.Now()
+	if currentSetting != nil {
+		minimumCreatedAt := currentSetting.CreatedAt.Add(time.Millisecond)
+		if createdAt.Before(minimumCreatedAt) {
+			createdAt = minimumCreatedAt
+		}
+	}
+	setting := model.UserOSSSetting{ID: newID(), UserID: actor.ID, Enabled: next.Enabled, ValueJSON: string(valueJSON), CreatedAt: createdAt, UpdatedAt: createdAt}
 	if err := s.repo.CreateUserOSSSetting(&setting); err != nil {
 		return nil, err
 	}

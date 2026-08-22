@@ -6,7 +6,7 @@ import { getMediaBlob, uploadMediaFile, type UploadedFile } from "@/services/fil
 import { getResourceOSSUrl } from "@/services/api/resources";
 import { channelRequest } from "@/services/api/custom-channel-relay";
 import { imageToDataUrl } from "@/services/image-storage";
-import { modelCapabilityConfigFor, videoDurationAllowed, videoResolutionRequest } from "@/lib/model-capabilities";
+import { modelCapabilityConfigFor, normalizeVideoValue, videoDurationAllowed, videoResolutionRequest } from "@/lib/model-capabilities";
 import { boolConfig, buildSeedancePromptText, isArkPlanBaseUrl, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceVideoReferenceError, SEEDANCE_REFERENCE_LIMITS } from "@/lib/seedance-video";
 import { buildApiUrl, isSystemProxyBaseUrl, modelOptionName, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
@@ -30,7 +30,7 @@ type ApiEnvelope<T> = T | { code?: number; data?: T | null; msg?: string };
 type RequestOptions = { signal?: AbortSignal };
 
 export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string };
-export type VideoGenerationTask = { id: string; provider: "openai" | "seedance" | "video-generations" | "gemini-veo" | "novita" | "minimax"; model: string };
+export type VideoGenerationTask = { id: string; provider: "openai" | "seedance" | "video-generations" | "huiquyun" | "gemini-veo" | "novita" | "minimax"; model: string };
 export type VideoGenerationTaskState = { status: "pending" } | { status: "completed"; result: VideoGenerationResult } | { status: "failed"; error: string };
 
 function aiApiUrl(config: AiConfig, path: string) {
@@ -63,7 +63,14 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     const selectedModel = (config.model || config.videoModel).trim();
     const requestConfig = resolveModelRequestConfig(config, selectedModel);
     assertVideoConfig(requestConfig, requestConfig.model);
-    assertVideoCapability(modelCapabilityConfigFor(config, selectedModel).video!, references, videoReferences, audioReferences, config.videoSeconds);
+    const profile = modelCapabilityConfigFor(config, selectedModel).video!;
+    const validatedSeconds = requestConfig.interfaceType === "huiquyun-video"
+        ? normalizeVideoValue(profile, { seconds: config.videoSeconds, ratio: config.size, resolution: config.vquality }).seconds
+        : config.videoSeconds;
+    assertVideoCapability(profile, references, videoReferences, audioReferences, validatedSeconds);
+    if (requestConfig.interfaceType === "huiquyun-video") {
+        return createHuiQuYunVideoTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
+    }
     if (requestConfig.interfaceType === "newapi-channel-2") {
         return createVideoGenerationsTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
     }
@@ -106,12 +113,74 @@ function assertVideoCapability(profile: NonNullable<ReturnType<typeof modelCapab
 export async function pollVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
     const requestConfig = resolveModelRequestConfig(config, task.model);
     assertVideoConfig(requestConfig, requestConfig.model);
+    if (task.provider === "huiquyun") return pollHuiQuYunVideoTask(requestConfig, task, options);
     if (task.provider === "seedance") return pollSeedanceTask(requestConfig, task, options);
     if (task.provider === "video-generations") return pollVideoGenerationsTask(requestConfig, task, options);
     if (task.provider === "gemini-veo") return pollGeminiVeoTask(requestConfig, task, options);
     if (task.provider === "novita") return pollNovitaVideoTask(requestConfig, task, options);
     if (task.provider === "minimax") return pollMiniMaxVideoTask(requestConfig, task, options);
     return pollOpenAIVideoTask(requestConfig, task, options);
+}
+
+async function createHuiQuYunVideoTask(config: ResolvedAiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
+    if (audioReferences.length && !references.length && !videoReferences.length) throw new Error("汇取云参考音频必须搭配参考图片或参考视频");
+    const [imageUrls, videoUrls, audioUrls] = await Promise.all([
+        Promise.all(references.map((item) => resolveVideoGenerationsUrl(item.url || item.dataUrl, item.storageKey))),
+        Promise.all(videoReferences.map((item) => resolveVideoGenerationsUrl(item.url, item.storageKey))),
+        Promise.all(audioReferences.map((item) => resolveVideoGenerationsUrl(item.url, item.storageKey))),
+    ]);
+    const modelName = modelOptionName(model);
+    const profile = modelCapabilityConfigFor(config, model).video!;
+    const normalized = normalizeVideoValue(profile, { seconds: config.videoSeconds, ratio: config.size, resolution: config.vquality });
+    const payload: Record<string, unknown> = {
+        model: modelName,
+        prompt: prompt.trim(),
+        seconds: Number(normalized.seconds),
+        resolution: normalized.resolution.toUpperCase(),
+        aspect_ratio: normalized.ratio,
+        audio: boolConfig(config.videoGenerateAudio, profile.generateAudio.default),
+        ...(videoUrls.length ? { video_references: videoUrls } : {}),
+        ...(audioUrls[0] ? { audio_reference: audioUrls[0] } : {}),
+    };
+    if (imageUrls.length === 1) payload.reference_image = imageUrls[0];
+    else if (imageUrls.length === 2) {
+        payload.start_frame = imageUrls[0];
+        payload.end_frame = imageUrls[1];
+    } else if (imageUrls.length > 2) payload.reference_images = imageUrls;
+    try {
+        const created = unwrapVideoResponse(await channelPost<ApiVideoResponse>(config, aiApiUrl(config, "/videos/generations"), payload, options));
+        const id = videoTaskId(created);
+        if (!id) throw new Error("汇取云接口没有返回任务 ID");
+        return { id, provider: "huiquyun", model };
+    } catch (error) {
+        throw new Error(readAxiosError(error, "汇取云视频任务创建失败"));
+    }
+}
+
+async function pollHuiQuYunVideoTask(config: ResolvedAiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
+    try {
+        const state = unwrapEnvelopeRecord(await channelGet<ApiEnvelope<Record<string, unknown>>>(config, aiApiUrl(config, `/videos/${encodeURIComponent(task.id)}`), options));
+        const status = String(state.status || "").toLowerCase();
+        if (status === "completed" || status === "succeeded" || status === "success") {
+            const resultUrl = String(state.video_url || state.url || state.result_url || "");
+            if (resultUrl) return { status: "completed", result: await videoResultFromUrl(resultUrl, options) };
+            const content = await channelGetBlob(config, aiApiUrl(config, `/videos/${encodeURIComponent(task.id)}/content`), options);
+            await assertVideoBlob(content);
+            return { status: "completed", result: { blob: content } };
+        }
+        if (["failed", "cancelled", "canceled", "expired"].includes(status)) return { status: "failed", error: huiQuYunVideoError(state) };
+        return { status: "pending" };
+    } catch (error) {
+        throw new Error(readAxiosError(error, "汇取云视频任务查询失败"));
+    }
+}
+
+function huiQuYunVideoError(state: Record<string, unknown>) {
+    if (state.error && typeof state.error === "object") {
+        const error = state.error as Record<string, unknown>;
+        return String(error.message || error.code || "汇取云视频生成失败");
+    }
+    return String(state.error || state.message || state.msg || "汇取云视频生成失败");
 }
 
 async function createVideoGenerationsTask(config: ResolvedAiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
@@ -580,20 +649,22 @@ async function buildVolcengineArkContent(prompt: string, references: ReferenceIm
     const content: Array<Record<string, unknown>> = [];
     if (prompt.trim()) content.push({ type: "text", text: prompt.trim() });
     for (const image of references.slice(0, SEEDANCE_REFERENCE_LIMITS.images)) {
-        content.push({ type: "image_url", image_url: { url: await resolveVolcengineArkReferenceUrl(image.url || image.dataUrl, image.storageKey) }, role: "reference_image" });
+        content.push({ type: "image_url", image_url: { url: await resolveVolcengineArkReferenceUrl(image.volcengineAssetUri || image.url || image.dataUrl, image.storageKey) }, role: "reference_image" });
     }
     for (const video of videoReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.videos)) {
-        content.push({ type: "video_url", video_url: { url: await resolveVolcengineArkReferenceUrl(video.url, video.storageKey) }, role: "reference_video" });
+        content.push({ type: "video_url", video_url: { url: await resolveVolcengineArkReferenceUrl(video.volcengineAssetUri || video.url, video.storageKey) }, role: "reference_video" });
     }
     for (const audio of audioReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.audios)) {
-        content.push({ type: "audio_url", audio_url: { url: await resolveVolcengineArkReferenceUrl(audio.url, audio.storageKey) }, role: "reference_audio" });
+        content.push({ type: "audio_url", audio_url: { url: await resolveVolcengineArkReferenceUrl(audio.volcengineAssetUri || audio.url, audio.storageKey) }, role: "reference_audio" });
     }
     return content;
 }
 
 async function resolveVolcengineArkReferenceUrl(value: string | undefined, storageKey?: string) {
+    const normalized = String(value || "").trim();
+    if (normalized.startsWith("asset://") && normalized.length > "asset://".length && !/\s/.test(normalized)) return normalized;
     if (storageKey?.startsWith("resource:")) return getResourceOSSUrl(storageKey);
-    if (isPublicMediaUrl(value || "") || String(value || "").startsWith("asset://")) return String(value);
+    if (isPublicMediaUrl(normalized)) return normalized;
     throw new Error("火山方舟视频参考素材需要公网 URL 或 asset:// 素材 ID；请先将本地素材保存到对象存储");
 }
 

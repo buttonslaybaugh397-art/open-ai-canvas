@@ -55,6 +55,17 @@ func (s *Service) EnsureSystemChannelModels() error {
 			if err := s.syncInitialChannelModels(&channels[index], channelModelNames(channels[index])); err != nil {
 				return err
 			}
+		} else {
+			// 启动时修复历史渠道合同，尤其是汇取云曾被保存为普通 NewAPI 视频协议的模型；
+			// 价格和启用状态仍由原记录保留，只纠正协议与能力参数。
+			for itemIndex := range items {
+				if !syncChannelModelContract(channels[index], &items[itemIndex], nil, nil) {
+					continue
+				}
+				if err := s.repo.SaveChannelModel(&items[itemIndex]); err != nil {
+					return err
+				}
+			}
 		}
 		items, err = s.repo.ChannelModels(channels[index].ID, true)
 		if err != nil {
@@ -304,7 +315,12 @@ func syncHuiQuYunModelContract(channel model.ModelChannel, item *model.ChannelMo
 	item.Protocol, item.Capability = protocol, capability
 	configChanged := false
 	if capability == "image" || capability == "video" {
-		if contractChanged || strings.TrimSpace(item.CapabilityConfigJSON) == "" {
+		needsCapabilityRepair := strings.TrimSpace(item.CapabilityConfigJSON) == ""
+		if capability == "video" && isHuiQuYunMX933VideoModel(item.ModelKey) {
+			profile, profileErr := DecodeModelCapabilityConfig(item.CapabilityConfigJSON)
+			needsCapabilityRepair = profileErr != nil || !huiQuYunMX933CapabilityIsComplete(profile, item.ModelKey)
+		}
+		if contractChanged || needsCapabilityRepair {
 			if encoded, err := json.Marshal(DefaultModelCapabilityConfigForModel(string(protocol), item.ModelKey)); err == nil {
 				configChanged = item.CapabilityConfigJSON != string(encoded)
 				item.CapabilityConfigJSON = string(encoded)
@@ -380,7 +396,7 @@ func isHuiQuYunVideoModelName(name string) bool {
 
 func isHuiQuYunMX933VideoModel(modelName string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(modelName))
-	return strings.HasPrefix(normalized, "sd2-mx933-720-") || strings.HasPrefix(normalized, "sd2-mx933-720-fast-")
+	return strings.HasPrefix(normalized, "sd2-mx933-720-") || strings.HasPrefix(normalized, "mj-sd2.0-933-720p")
 }
 
 // huiQuYunFixedVideoDuration 从汇取云模型名解析固定时长后缀（如 "-5s" → 5），未声明时返回 0。
@@ -398,7 +414,49 @@ func huiQuYunFixedVideoDuration(modelName string) int {
 }
 
 func huiQuYunContractNeedsVideoRepair(item *model.ChannelModel) bool {
-	return isHuiQuYunVideoModelName(item.ModelKey) && item.Protocol != model.ChannelInterfaceHuiQuYunVideo
+	if !isHuiQuYunVideoModelName(item.ModelKey) {
+		return false
+	}
+	if item.Protocol != model.ChannelInterfaceHuiQuYunVideo {
+		return true
+	}
+	if !isHuiQuYunMX933VideoModel(item.ModelKey) {
+		return false
+	}
+	profile, err := DecodeModelCapabilityConfig(item.CapabilityConfigJSON)
+	return err != nil || !huiQuYunMX933CapabilityIsComplete(profile, item.ModelKey)
+}
+
+func huiQuYunMX933CapabilityIsComplete(profile *ModelCapabilityConfig, modelName string) bool {
+	if profile == nil || profile.Video == nil {
+		return false
+	}
+	video := profile.Video
+	if video.References.MaxImages < 9 || video.References.MaxVideos < 3 || video.References.MaxAudios < 3 || video.References.MaxVideoBytes < 50*1024*1024 {
+		return false
+	}
+	if !hasHuiQuYunString(video.Resolutions, "480p") || !hasHuiQuYunString(video.Resolutions, "720p") {
+		return false
+	}
+	for _, ratio := range []string{"16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"} {
+		if !hasHuiQuYunString(video.Ratios, ratio) {
+			return false
+		}
+	}
+	fixedDuration := huiQuYunFixedVideoDuration(modelName)
+	if fixedDuration > 0 {
+		return video.Duration.Selection == "enum" && len(video.Duration.Values) == 1 && video.Duration.Values[0] == fixedDuration
+	}
+	return video.Duration.Selection == "range" && video.Duration.Min == 4 && video.Duration.Max == 15
+}
+
+func hasHuiQuYunString(values []string, want string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), want) {
+			return true
+		}
+	}
+	return false
 }
 
 func validHuiQuYunProtocol(protocol model.ChannelInterfaceType) bool {

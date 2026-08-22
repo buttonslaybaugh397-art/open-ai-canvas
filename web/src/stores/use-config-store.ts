@@ -531,7 +531,7 @@ function normalizeChannels(config: AiConfig, ensureDefault = true) {
                 models: uniqueRawModels(channel.models || []),
             }),
         )
-        .filter((channel) => !isEmptyDefaultChannel(channel));
+        .filter((channel) => channel.id !== PUBLIC_MODEL_CATALOG_ID && !isEmptyDefaultChannel(channel));
     if (!channels.length && ensureDefault && config.apiKey.trim()) {
         channels.push(
             createModelChannel({

@@ -4,6 +4,7 @@ export type ReferenceVideo = {
     type: string;
     url: string;
     storageKey?: string;
+    volcengineAssetUri?: string;
     bytes?: number;
     width?: number;
     height?: number;
@@ -16,6 +17,7 @@ export type ReferenceAudio = {
     type: string;
     url: string;
     storageKey?: string;
+    volcengineAssetUri?: string;
     bytes?: number;
     durationMs?: number;
 };

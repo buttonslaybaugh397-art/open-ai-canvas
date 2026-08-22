@@ -184,7 +184,7 @@ func TestHuiQuYunCatalogRefreshPreservesConfiguredContract(t *testing.T) {
 
 func TestHuiQuYunVideoModelNamesResolveToDedicatedProtocol(t *testing.T) {
 	// MX933 家族和固定时长后缀都不含 video 字样，早期只靠关键字会把它们当文本模型。
-	for _, name := range []string{"sd2-mx933-720-5s", "sd2-mx933-720-fast-5s", "sd2-mx933-720-10s"} {
+	for _, name := range []string{"sd2-mx933-720-5s", "sd2-mx933-720-fast-5s", "sd2-mx933-720-10s", "mj-sd2.0-933-720p", "mj-sd2.0-933-720p-fast"} {
 		if protocol := huiQuYunProtocolForModel(name, nil); protocol != model.ChannelInterfaceHuiQuYunVideo {
 			t.Fatalf("huiQuYunProtocolForModel(%q) = %q", name, protocol)
 		}
@@ -203,6 +203,21 @@ func TestHuiQuYunCatalogRefreshRepairsStaleVideoProtocol(t *testing.T) {
 	}
 	if item.Protocol != model.ChannelInterfaceHuiQuYunVideo || item.Capability != "video" {
 		t.Fatalf("repaired HuiQuYun model = %#v", item)
+	}
+}
+
+func TestHuiQuYunCatalogRefreshRepairsMjSd933Contract(t *testing.T) {
+	channel := model.ModelChannel{BaseURL: "https://api.bjhuiqu.net/v1"}
+	item := model.ChannelModel{ModelKey: "mj-sd2.0-933-720p", Capability: "video", Protocol: model.ChannelInterfaceNewAPIChannel2, PriceConfigured: true}
+	if changed := syncHuiQuYunModelContract(channel, &item, nil); !changed {
+		t.Fatal("mj-sd2.0-933-720p stale contract must be repaired on refresh")
+	}
+	if item.Protocol != model.ChannelInterfaceHuiQuYunVideo || item.Capability != "video" {
+		t.Fatalf("repaired mj-sd2.0-933-720p contract = %#v", item)
+	}
+	profile, err := DecodeModelCapabilityConfig(item.CapabilityConfigJSON)
+	if err != nil || profile == nil || profile.Video == nil || len(profile.Video.Resolutions) != 2 || profile.Video.Resolutions[0] != "480p" || profile.Video.Resolutions[1] != "720p" {
+		t.Fatalf("repaired mj-sd2.0-933-720p capability = %#v, error = %v", profile, err)
 	}
 }
 

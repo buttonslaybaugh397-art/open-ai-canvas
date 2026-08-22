@@ -62,4 +62,15 @@ describe("creation library button", () => {
         expect(source).toContain("secondaryAttachments.map((item) => <CreationAttachmentThumbnail");
         expect(source).toContain('className={primary ? "creation-chat-reference is-paper creation-chat-reference-media" : "creation-chat-attachment"}');
     });
+
+    test("exposes removal for references inside the composer", () => {
+        const source = readFileSync(resolve(import.meta.dir, "../src/pages/create/index.tsx"), "utf8");
+        const styles = readFileSync(resolve(import.meta.dir, "../src/styles/globals.css"), "utf8");
+
+        expect(source).toContain('className="creation-chat-attachment-remove"');
+        expect(source).toContain('onClick={() => onRemove(item.id)}');
+        expect(source).toContain('title="移除参考内容"');
+        expect(styles).toContain(".creation-chat-attachment-remove {");
+        expect(styles).toContain("opacity: 1");
+    });
 });

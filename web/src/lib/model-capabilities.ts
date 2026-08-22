@@ -1,4 +1,5 @@
 import type { ModelProtocol } from "@/lib/model-protocols";
+import { isHuiQuYunMX933Model, huiQuYunFixedVideoDuration } from "@/lib/huiquyun-models";
 
 export type ModelCapabilityConfig = {
     version: number;
@@ -295,6 +296,32 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
     if (protocol === "gemini-veo") {
         video.duration = { selection: "enum", values: [4, 6, 8], default: 6 };
         video.resolutions = ["720p", "1080p"];
+    }
+    if (protocol === "huiquyun-video") {
+        video.references.maxImages = 4;
+        video.references.maxVideos = 3;
+        video.references.maxAudios = 1;
+        video.references.maxVideoBytes = 200 * 1024 * 1024;
+        video.references.maxAudioBytes = 15 * 1024 * 1024;
+        video.references.maxVideoDurationSeconds = 15;
+        video.references.maxAudioDurationSeconds = 15;
+        video.ratios = ["21:9", "4:3", "16:9", "1:1", "3:4", "9:16"];
+        video.resolutions = ["720p"];
+        video.defaultResolution = "720p";
+        video.generateAudio = { supported: true, default: true };
+
+        if (isHuiQuYunMX933Model(model)) {
+            video.references.maxImages = 9;
+            video.references.maxAudios = 3;
+            video.references.maxVideoBytes = 50 * 1024 * 1024;
+            video.ratios = ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"];
+            video.resolutions = ["480p", "720p"];
+        }
+
+        const fixedDuration = huiQuYunFixedVideoDuration(model);
+        video.duration = fixedDuration
+            ? { selection: "enum", values: [fixedDuration], default: fixedDuration }
+            : { selection: "range", min: 4, max: 15, step: 1, default: 8 };
     }
     if (protocol === "volcengine-ark-video" || protocol === "newapi-channel-1" || protocol === "newapi-channel-2") {
         video.references.maxVideos = 3;

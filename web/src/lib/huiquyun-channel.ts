@@ -29,7 +29,8 @@ export function syncHuiQuYunModelCosts(channel: ModelChannel, models: string[], 
     const catalogByModel = new Map(catalog.map((item) => [item.id, item.supportedEndpointTypes || []]));
     return models.map((model) => {
         const existing = existingByModel.get(model);
-        const protocol = existing?.protocol || huiQuYunProtocolForModel(model, catalogByModel.get(model));
+        const inferredProtocol = huiQuYunProtocolForModel(model, catalogByModel.get(model));
+        const protocol = existing?.protocol && (!isHuiQuYunVideoModel(model) || existing.protocol === "huiquyun-video") ? existing.protocol : inferredProtocol;
         const capability = modelProtocolCapability(protocol) || "text";
         const capabilityConfig = capability === "image" || capability === "video"
             ? existing?.protocol === protocol && existing.capabilityConfig

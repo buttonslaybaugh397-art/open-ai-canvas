@@ -1339,6 +1339,24 @@ func TestVolcengineArkVideoProtocolUsesContentTaskAndDownloadsResult(t *testing.
 	}
 }
 
+func TestVolcengineArkVideoUsesAssetURIReference(t *testing.T) {
+	content, err := seedanceContent(canvasGenerationInput{
+		Prompt: "use the trusted character asset",
+		Config: providerConfig{InterfaceType: "volcengine-ark-video"},
+		ReferenceImages: []providerMedia{{
+			ID:                 "character-asset",
+			VolcengineAssetURI: "asset://asset-abc123",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("seedanceContent() error = %v", err)
+	}
+	imageContent, ok := content[1]["image_url"].(map[string]interface{})
+	if !ok || imageContent["url"] != "asset://asset-abc123" {
+		t.Fatalf("image content = %#v", content[1])
+	}
+}
+
 func TestNewAPIChannel1VideoBodyMapsFramesAndReferences(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))

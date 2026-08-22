@@ -40,7 +40,7 @@ export type AdminUser = LocalUser & {
 export type AuthSessionPayload = {
     user: LocalUser | null;
     logicalModels?: PublicLogicalModel[];
-    systemChannels?: any[];
+    systemChannels?: ModelChannel[];
     runtimeLimits?: RuntimeLimits;
     drawingEngine?: CanvasDrawingEngineSetting;
     features?: FeatureAvailability;

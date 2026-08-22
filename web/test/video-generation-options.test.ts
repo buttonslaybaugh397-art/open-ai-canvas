@@ -31,6 +31,7 @@ describe("video generation resolution options", () => {
         expect(huiQuYunProtocolForModel("sora-2-pro-15s")).toBe("huiquyun-video");
         expect(huiQuYunProtocolForModel("sd2-mx933-720-5s")).toBe("huiquyun-video");
         expect(huiQuYunProtocolForModel("sd2-mx933-720-fast-5s")).toBe("huiquyun-video");
+        expect(huiQuYunProtocolForModel("mj-sd2.0-933-720p")).toBe("huiquyun-video");
         expect(huiQuYunProtocolForModel("catalog-video", ["openai-video"])).toBe("huiquyun-video");
     });
 
@@ -49,5 +50,14 @@ describe("video generation resolution options", () => {
         expect(profile?.resolutions).toEqual(["480p", "720p"]);
         expect(profile?.ratios).toEqual(["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"]);
         expect(profile?.references).toMatchObject({ maxImages: 9, maxVideos: 3, maxAudios: 3, maxVideoBytes: 50 * 1024 * 1024 });
+    });
+
+    test("汇取云 mj-sd2.0-933-720p 使用 933 专属能力配置", () => {
+        const profile = defaultModelCapabilityConfig("huiquyun-video", "mj-sd2.0-933-720p").video;
+
+        expect(profile?.duration.selection).toBe("range");
+        expect(profile?.resolutions).toEqual(["480p", "720p"]);
+        expect(profile?.references).toMatchObject({ maxImages: 9, maxVideos: 3, maxAudios: 3, maxVideoBytes: 50 * 1024 * 1024 });
+        expect(profile?.ratios).toEqual(["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"]);
     });
 });

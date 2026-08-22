@@ -243,9 +243,9 @@ function buildAssetGenerationInputs(assets: Asset[]): NodeGenerationInput[] {
     return assets.flatMap((asset): NodeGenerationInput[] => {
         const nodeId = `asset:${asset.id}`;
         if (asset.kind === "text") return [{ nodeId, type: "text", title: asset.title, text: asset.data.content }];
-        if (asset.kind === "image") return [{ nodeId, type: "image", title: asset.title, image: { id: asset.id, name: asset.title, type: asset.data.mimeType, dataUrl: asset.data.dataUrl, storageKey: asset.data.storageKey, bytes: asset.data.bytes, width: asset.data.width, height: asset.data.height } }];
-        if (asset.kind === "video") return [{ nodeId, type: "video", title: asset.title, video: { id: asset.id, name: asset.title, type: asset.data.mimeType, url: asset.data.url, storageKey: asset.data.storageKey, bytes: asset.data.bytes, width: asset.data.width, height: asset.data.height, durationMs: asset.data.durationMs } }];
-        if (asset.kind === "audio") return [{ nodeId, type: "audio", title: asset.title, audio: { id: asset.id, name: asset.title, type: asset.data.mimeType, url: asset.data.url, storageKey: asset.data.storageKey, bytes: asset.data.bytes, durationMs: asset.data.durationMs } }];
+        if (asset.kind === "image") return [{ nodeId, type: "image", title: asset.title, image: { id: asset.id, name: asset.title, type: asset.data.mimeType, dataUrl: asset.data.dataUrl, storageKey: asset.data.storageKey, volcengineAssetUri: asset.data.volcengineAssetUri, bytes: asset.data.bytes, width: asset.data.width, height: asset.data.height } }];
+        if (asset.kind === "video") return [{ nodeId, type: "video", title: asset.title, video: { id: asset.id, name: asset.title, type: asset.data.mimeType, url: asset.data.url, storageKey: asset.data.storageKey, volcengineAssetUri: asset.data.volcengineAssetUri, bytes: asset.data.bytes, width: asset.data.width, height: asset.data.height, durationMs: asset.data.durationMs } }];
+        if (asset.kind === "audio") return [{ nodeId, type: "audio", title: asset.title, audio: { id: asset.id, name: asset.title, type: asset.data.mimeType, url: asset.data.url, storageKey: asset.data.storageKey, volcengineAssetUri: asset.data.volcengineAssetUri, bytes: asset.data.bytes, durationMs: asset.data.durationMs } }];
         if (asset.kind === "entity" && asset.category === "character") return [{ nodeId, type: "character", title: asset.title, character: { nodeId, assetId: asset.id, requestedVersionId: asset.primaryVersionId } }];
         return [];
     });
@@ -467,13 +467,14 @@ function readReferenceImage(node: CanvasNodeData): ReferenceImage | null {
 }
 
 function readReferenceVideo(node: CanvasNodeData): ReferenceVideo | null {
-    if (node.type !== CanvasNodeType.Video || !node.metadata?.content) return null;
+    if (node.type !== CanvasNodeType.Video || (!node.metadata?.content && !node.metadata?.volcengineAssetUri)) return null;
     return {
         id: node.id,
         name: `${node.title || node.id}.mp4`,
         type: node.metadata.mimeType || "video/mp4",
-        url: node.metadata.content,
+        url: node.metadata.content || "",
         storageKey: node.metadata.storageKey,
+        volcengineAssetUri: node.metadata.volcengineAssetUri,
         bytes: node.metadata.bytes,
         width: node.metadata.naturalWidth,
         height: node.metadata.naturalHeight,
@@ -482,13 +483,14 @@ function readReferenceVideo(node: CanvasNodeData): ReferenceVideo | null {
 }
 
 function readReferenceAudio(node: CanvasNodeData): ReferenceAudio | null {
-    if (node.type !== CanvasNodeType.Audio || !node.metadata?.content) return null;
+    if (node.type !== CanvasNodeType.Audio || (!node.metadata?.content && !node.metadata?.volcengineAssetUri)) return null;
     return {
         id: node.id,
         name: `${node.title || node.id}.mp3`,
         type: node.metadata.mimeType || "audio/mpeg",
-        url: node.metadata.content,
+        url: node.metadata.content || "",
         storageKey: node.metadata.storageKey,
+        volcengineAssetUri: node.metadata.volcengineAssetUri,
         bytes: node.metadata.bytes,
         durationMs: node.metadata.durationMs,
     };

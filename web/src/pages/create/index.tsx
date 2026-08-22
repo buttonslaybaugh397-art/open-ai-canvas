@@ -1038,7 +1038,7 @@ function CreationAttachmentThumbnail({ item, primary = false, canAddMore = false
             {kind === "video" ? <video src={item.url} poster={item.previewUrl !== item.url ? item.previewUrl : undefined} muted playsInline preload="metadata" aria-label={item.name} /> : kind === "image" ? <img src={item.previewUrl} alt={item.name} /> : <span className="creation-chat-file-icon">{kind === "audio" ? <Music2 /> : <FileText />}<em>{item.name}</em></span>}
             {previewable ? <span aria-hidden="true"><Maximize2 /></span> : null}
         </button>
-        <button type="button" className="creation-chat-attachment-remove" onClick={() => onRemove(item.id)} aria-label={`移除 ${item.name}`}><X /></button>
+        <button type="button" className="creation-chat-attachment-remove" onClick={() => onRemove(item.id)} aria-label={`移除 ${item.name}`} title="移除参考内容"><X /></button>
         {primary && canAddMore && onAdd ? <Tooltip title="添加更多参考内容"><button type="button" className="creation-chat-reference-add" onClick={onAdd} aria-label="添加更多参考内容"><Plus /></button></Tooltip> : null}
     </div>;
 }

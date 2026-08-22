@@ -207,6 +207,7 @@ export type CanvasNodeMetadata = {
     bytes?: number;
     durationMs?: number;
     assetId?: string;
+    volcengineAssetUri?: string;
     assetTags?: string[];
     assetCategory?: "character" | "environment" | "wardrobe" | "prop" | "weapon" | "style" | "other";
     workflowKind?: CanvasWorkflowKind;

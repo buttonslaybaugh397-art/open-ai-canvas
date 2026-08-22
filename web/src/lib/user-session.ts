@@ -38,7 +38,7 @@ export async function applyUserSession(payload: AuthSessionPayload) {
         if (!persistedConfig) {
             const initialSystemConfig = {
                 ...defaultConfig,
-                channels: (payload.logicalModels as any) || [],
+                channels: payload.systemChannels || [],
                 imageModels: undefined,
                 videoModels: undefined,
                 textModels: undefined,
@@ -46,7 +46,7 @@ export async function applyUserSession(payload: AuthSessionPayload) {
             };
             useConfigStore.getState().replaceConfig(normalizeConfigSnapshot({ config: initialSystemConfig }).config);
         } else {
-            useConfigStore.getState().mergeSystemChannels((payload.logicalModels as any) || []);
+            useConfigStore.getState().mergeSystemChannels(payload.systemChannels || []);
         }
         installRemoteUserDataAutoSync();
         if (payload.user?.id) {
@@ -60,7 +60,7 @@ export async function applyUserSession(payload: AuthSessionPayload) {
 
 export async function refreshSystemChannels() {
     const payload = await getAuthSession();
-    useConfigStore.getState().mergeSystemChannels((payload.logicalModels as any) || []);
+    useConfigStore.getState().mergeSystemChannels(payload.systemChannels || []);
 }
 
 export async function refreshFeatureAvailability() {
