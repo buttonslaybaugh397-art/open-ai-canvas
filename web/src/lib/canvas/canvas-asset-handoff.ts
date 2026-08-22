@@ -1,5 +1,6 @@
 import type { InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import type { Asset } from "@/stores/use-asset-store";
+import { volcengineAssetUriForAsset } from "@/lib/volcengine-asset";
 
 const ASSET_PARAM = "asset";
 const unique = (values: Iterable<string>) => Array.from(new Set(Array.from(values, (value) => value.trim()).filter(Boolean)));
@@ -31,7 +32,7 @@ export function canvasAssetHandoffPayloads(assets: Asset[], assetIds: Iterable<s
     unique(assetIds).forEach((assetId) => {
         const asset = byId.get(assetId);
         if (asset?.kind === "image") {
-            payloads.push({ kind: "image", dataUrl: asset.data.dataUrl, storageKey: asset.data.storageKey, title: asset.title, assetId: asset.id });
+            payloads.push({ kind: "image", dataUrl: asset.data.dataUrl, storageKey: asset.data.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(asset), title: asset.title, assetId: asset.id });
             return;
         }
         if (asset?.kind === "video") {
@@ -39,6 +40,7 @@ export function canvasAssetHandoffPayloads(assets: Asset[], assetIds: Iterable<s
                 kind: "video",
                 url: asset.data.url,
                 storageKey: asset.data.storageKey,
+                volcengineAssetUri: volcengineAssetUriForAsset(asset),
                 title: asset.title,
                 width: asset.data.width,
                 height: asset.data.height,

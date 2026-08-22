@@ -7,6 +7,7 @@ import { resourceIdFromStorageKey } from "@/services/api/resources";
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { normalizeVideoDuration, normalizeVideoResolution } from "@/lib/video-generation-options";
 import { isSeedanceVideoConfig } from "@/lib/seedance-video";
+import { normalizeVolcengineAssetUri } from "@/lib/volcengine-asset";
 import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
 import { modelRequestOptions, resolveCompatibleModel, resolveModelGenerationDefaults, resolveVideoOperation, type ModelRequirements } from "@/lib/model-selection";
 import { imageMetadata } from "@/lib/canvas/canvas-generation-task-sync";
@@ -218,14 +219,16 @@ export function buildImageGenerationMetadata(type: CanvasImageGenerationType, co
 }
 
 export function nodeReferenceImage(node: CanvasNodeData): ReferenceImage | null {
-    if (node.type !== CanvasNodeType.Image || (!node.metadata?.content && !node.metadata?.volcengineAssetUri)) return null;
+    const metadata = node.metadata || {};
+    const volcengineAssetUri = normalizeVolcengineAssetUri(metadata.volcengineAssetUri) || normalizeVolcengineAssetUri(metadata.assetId);
+    if (node.type !== CanvasNodeType.Image || (!metadata.content && !volcengineAssetUri)) return null;
     return {
         id: node.id,
         name: `reference-${node.id}.png`,
-        type: node.metadata.mimeType || "image/png",
-        dataUrl: node.metadata.content || "",
-        storageKey: node.metadata.storageKey,
-        volcengineAssetUri: node.metadata.volcengineAssetUri,
+        type: metadata.mimeType || "image/png",
+        dataUrl: metadata.content || "",
+        storageKey: metadata.storageKey,
+        volcengineAssetUri,
     };
 }
 
@@ -248,7 +251,7 @@ export async function resolveStoredReferenceImages(references?: string[]) {
     const imageReferences = references.filter(isStoredImageReference);
     const images = await Promise.all(
         imageReferences.map(async (url, index) => {
-            const volcengineAssetUri = url.startsWith("asset://") ? url : undefined;
+            const volcengineAssetUri = normalizeVolcengineAssetUri(url);
             const storageKey = url.startsWith("image:") || resourceIdFromStorageKey(url) ? url : undefined;
             const dataUrl = volcengineAssetUri ? "" : storageKey ? await resolveImageUrl(storageKey, "") : url;
             if (!dataUrl && !volcengineAssetUri) return null;
@@ -267,7 +270,7 @@ export async function resolveStoredReferenceImages(references?: string[]) {
 }
 
 function isStoredImageReference(url: string) {
-    return resourceIdFromStorageKey(url) || url.startsWith("image:") || url.startsWith("asset://") || url.startsWith("data:image/") || /\.(png|jpe?g|webp|gif|avif)(?:[?#]|$)/i.test(url);
+    return resourceIdFromStorageKey(url) || url.startsWith("image:") || Boolean(normalizeVolcengineAssetUri(url)) || url.startsWith("data:image/") || /\.(png|jpe?g|webp|gif|avif)(?:[?#]|$)/i.test(url);
 }
 
 function imageMimeType(url: string) {

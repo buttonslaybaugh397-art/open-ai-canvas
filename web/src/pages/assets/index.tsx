@@ -14,6 +14,7 @@ import { saveAs } from "file-saver";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { resourceStorageLabel, resourceStorageLocation, resourceStorageTitle } from "@/lib/canvas/resource-storage-status";
 import { formatBytes, readFileAsDataUrl } from "@/lib/image-utils";
+import { normalizeVolcengineAssetUri, volcengineAssetUriForAsset } from "@/lib/volcengine-asset";
 import { isAssetFolderEntity, newPersonalAssetFolder, personalAssetFolders, renamedPersonalAssetFolder, type PersonalAssetFolder } from "@/lib/asset-folders";
 import { uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
@@ -34,6 +35,7 @@ type AssetFormValues = {
     source?: string;
     note?: string;
     content?: string;
+    volcengineAssetUri?: string;
 };
 
 type ImageDraft = ImageAsset["data"] | null;
@@ -137,7 +139,7 @@ export default function AssetsPage() {
         setEditingAsset(null);
         setImageDraft(null);
         setFormKind("text");
-        form.setFieldsValue({ kind: "text", category: "other", title: "", coverUrl: "", tags: [], source: "手动添加", note: "", content: "" });
+        form.setFieldsValue({ kind: "text", category: "other", title: "", coverUrl: "", tags: [], source: "手动添加", note: "", content: "", volcengineAssetUri: "" });
         setIsAssetOpen(true);
     };
 
@@ -154,12 +156,19 @@ export default function AssetsPage() {
             source: asset.source,
             note: asset.note,
             content: asset.kind === "text" ? asset.data.content : "",
+            volcengineAssetUri: asset.kind === "image" ? volcengineAssetUriForAsset(asset) || "" : "",
         });
         setIsAssetOpen(true);
     };
 
     const saveAsset = async () => {
         const values = await form.validateFields();
+        const rawVolcengineAssetUri = values.volcengineAssetUri?.trim() || "";
+        const volcengineAssetUri = normalizeVolcengineAssetUri(rawVolcengineAssetUri);
+        if (rawVolcengineAssetUri && !volcengineAssetUri) {
+            message.error("火山 Asset ID 必须是 asset- 开头，或使用 asset://asset-... 格式");
+            return;
+        }
         const base = {
             title: values.title.trim(),
             category: values.category,
@@ -181,7 +190,7 @@ export default function AssetsPage() {
                 message.error("请选择图片文件");
                 return;
             }
-            const asset = { ...base, kind: "image" as const, data: imageDraft };
+            const asset = { ...base, kind: "image" as const, data: { ...imageDraft, volcengineAssetUri } };
             editingAsset ? updateAsset(editingAsset.id, asset) : addAsset(asset);
         }
 
@@ -438,6 +447,11 @@ export default function AssetsPage() {
                                 </Button>
                             </Space.Compact>
                         </Form.Item>
+                        {formKind === "image" ? (
+                            <Form.Item name="volcengineAssetUri" label="火山 Asset URI（可选）">
+                                <Input placeholder="例如 asset://asset-xxxxxxxx；需先在火山方舟创建素材" />
+                            </Form.Item>
+                        ) : null}
                         <Form.Item name="tags" label="标签">
                             <Select mode="tags" tokenSeparators={[",", "，"]} placeholder="输入标签后回车" />
                         </Form.Item>

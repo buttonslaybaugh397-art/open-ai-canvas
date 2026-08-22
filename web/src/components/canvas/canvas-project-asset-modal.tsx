@@ -3,6 +3,7 @@ import { useMemo } from "react";
 import { AssetLibraryPickerModal, type AssetLibraryPickerItem } from "@/components/assets/asset-library-picker-modal";
 import type { InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { compileCharacterReferencePrompt } from "@/lib/canvas/canvas-character-reference";
+import { volcengineAssetUriForAsset } from "@/lib/volcengine-asset";
 import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 import type { ProjectAsset, ProjectDetail } from "@/services/api/projects";
 import { getRemoteAsset } from "@/services/api/user-data";
@@ -90,16 +91,16 @@ function toInsertPayload(item: ProjectPickerItem): InsertAssetPayload {
         const resourceId = resourceIdFromStorageKey(project.storageKey);
         const remoteUrl = resourceId ? resourceFileUrl(resourceId) : "";
         if (project.mediaType === "text" && project.previewText) return { kind: "text", content: project.previewText, title: project.title, assetId: project.id };
-        if (project.mediaType === "video" && remoteUrl) return { kind: "video", url: remoteUrl, storageKey: project.storageKey, title: project.title, assetId: project.id };
-        if (project.mediaType === "audio" && remoteUrl) return { kind: "audio", url: remoteUrl, storageKey: project.storageKey, title: project.title, assetId: project.id };
-        if (project.mediaType === "image" && remoteUrl) return { kind: "image", dataUrl: remoteUrl, storageKey: project.storageKey, title: project.title, assetId: project.id };
+        if (project.mediaType === "video" && remoteUrl) return { kind: "video", url: remoteUrl, storageKey: project.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(project), title: project.title, assetId: project.id };
+        if (project.mediaType === "audio" && remoteUrl) return { kind: "audio", url: remoteUrl, storageKey: project.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(project), title: project.title, assetId: project.id };
+        if (project.mediaType === "image" && remoteUrl) return { kind: "image", dataUrl: remoteUrl, storageKey: project.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(project), title: project.title, assetId: project.id };
         throw new Error(`“${project.title}”缺少可读取的内容`);
     }
     if (!asset) throw new Error("项目资产不可用");
     if (asset.kind === "text") return { kind: "text", content: asset.data.content, title: asset.title, assetId: asset.id };
-    if (asset.kind === "video") return { kind: "video", url: projectAssetMediaUrl(asset.data.storageKey, asset.data.url), storageKey: asset.data.storageKey, title: asset.title, width: asset.data.width, height: asset.data.height, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
-    if (asset.kind === "audio") return { kind: "audio", url: projectAssetMediaUrl(asset.data.storageKey, asset.data.url), storageKey: asset.data.storageKey, title: asset.title, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
-    if (asset.kind === "image") return { kind: "image", dataUrl: projectAssetMediaUrl(asset.data.storageKey, asset.data.dataUrl), storageKey: asset.data.storageKey, title: asset.title, assetId: asset.id };
+    if (asset.kind === "video") return { kind: "video", url: projectAssetMediaUrl(asset.data.storageKey, asset.data.url), storageKey: asset.data.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(asset), title: asset.title, width: asset.data.width, height: asset.data.height, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
+    if (asset.kind === "audio") return { kind: "audio", url: projectAssetMediaUrl(asset.data.storageKey, asset.data.url), storageKey: asset.data.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(asset), title: asset.title, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
+    if (asset.kind === "image") return { kind: "image", dataUrl: projectAssetMediaUrl(asset.data.storageKey, asset.data.dataUrl), storageKey: asset.data.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(asset), title: asset.title, assetId: asset.id };
     throw new Error("当前项目资产不能直接插入画布");
 }
 

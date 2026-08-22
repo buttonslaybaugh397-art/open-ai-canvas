@@ -8,6 +8,7 @@ import { getGenerationResourceNodes } from "@/lib/canvas/canvas-resource-referen
 import { resolveCanvasDrawingReference } from "@/lib/canvas/canvas-drawing-reference";
 import { compileCharacterReferencePrompt } from "@/lib/canvas/canvas-character-reference";
 import { nodeReferenceImage } from "@/lib/canvas/canvas-project-generation";
+import { normalizeVolcengineAssetUri, volcengineAssetUriForAsset } from "@/lib/volcengine-asset";
 import type { ModelReferenceLimits } from "@/lib/model-selection";
 import type { Asset } from "@/stores/use-asset-store";
 
@@ -243,9 +244,9 @@ function buildAssetGenerationInputs(assets: Asset[]): NodeGenerationInput[] {
     return assets.flatMap((asset): NodeGenerationInput[] => {
         const nodeId = `asset:${asset.id}`;
         if (asset.kind === "text") return [{ nodeId, type: "text", title: asset.title, text: asset.data.content }];
-        if (asset.kind === "image") return [{ nodeId, type: "image", title: asset.title, image: { id: asset.id, name: asset.title, type: asset.data.mimeType, dataUrl: asset.data.dataUrl, storageKey: asset.data.storageKey, volcengineAssetUri: asset.data.volcengineAssetUri, bytes: asset.data.bytes, width: asset.data.width, height: asset.data.height } }];
-        if (asset.kind === "video") return [{ nodeId, type: "video", title: asset.title, video: { id: asset.id, name: asset.title, type: asset.data.mimeType, url: asset.data.url, storageKey: asset.data.storageKey, volcengineAssetUri: asset.data.volcengineAssetUri, bytes: asset.data.bytes, width: asset.data.width, height: asset.data.height, durationMs: asset.data.durationMs } }];
-        if (asset.kind === "audio") return [{ nodeId, type: "audio", title: asset.title, audio: { id: asset.id, name: asset.title, type: asset.data.mimeType, url: asset.data.url, storageKey: asset.data.storageKey, volcengineAssetUri: asset.data.volcengineAssetUri, bytes: asset.data.bytes, durationMs: asset.data.durationMs } }];
+        if (asset.kind === "image") return [{ nodeId, type: "image", title: asset.title, image: { id: asset.id, name: asset.title, type: asset.data.mimeType, dataUrl: asset.data.dataUrl, storageKey: asset.data.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(asset), bytes: asset.data.bytes, width: asset.data.width, height: asset.data.height } }];
+        if (asset.kind === "video") return [{ nodeId, type: "video", title: asset.title, video: { id: asset.id, name: asset.title, type: asset.data.mimeType, url: asset.data.url, storageKey: asset.data.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(asset), bytes: asset.data.bytes, width: asset.data.width, height: asset.data.height, durationMs: asset.data.durationMs } }];
+        if (asset.kind === "audio") return [{ nodeId, type: "audio", title: asset.title, audio: { id: asset.id, name: asset.title, type: asset.data.mimeType, url: asset.data.url, storageKey: asset.data.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(asset), bytes: asset.data.bytes, durationMs: asset.data.durationMs } }];
         if (asset.kind === "entity" && asset.category === "character") return [{ nodeId, type: "character", title: asset.title, character: { nodeId, assetId: asset.id, requestedVersionId: asset.primaryVersionId } }];
         return [];
     });
@@ -467,31 +468,35 @@ function readReferenceImage(node: CanvasNodeData): ReferenceImage | null {
 }
 
 function readReferenceVideo(node: CanvasNodeData): ReferenceVideo | null {
-    if (node.type !== CanvasNodeType.Video || (!node.metadata?.content && !node.metadata?.volcengineAssetUri)) return null;
+    const metadata = node.metadata || {};
+    const volcengineAssetUri = normalizeVolcengineAssetUri(metadata.volcengineAssetUri) || normalizeVolcengineAssetUri(metadata.assetId);
+    if (node.type !== CanvasNodeType.Video || (!node.metadata?.content && !volcengineAssetUri)) return null;
     return {
         id: node.id,
         name: `${node.title || node.id}.mp4`,
-        type: node.metadata.mimeType || "video/mp4",
-        url: node.metadata.content || "",
-        storageKey: node.metadata.storageKey,
-        volcengineAssetUri: node.metadata.volcengineAssetUri,
-        bytes: node.metadata.bytes,
-        width: node.metadata.naturalWidth,
-        height: node.metadata.naturalHeight,
-        durationMs: node.metadata.durationMs,
+        type: metadata.mimeType || "video/mp4",
+        url: metadata.content || "",
+        storageKey: metadata.storageKey,
+        volcengineAssetUri,
+        bytes: metadata.bytes,
+        width: metadata.naturalWidth,
+        height: metadata.naturalHeight,
+        durationMs: metadata.durationMs,
     };
 }
 
 function readReferenceAudio(node: CanvasNodeData): ReferenceAudio | null {
-    if (node.type !== CanvasNodeType.Audio || (!node.metadata?.content && !node.metadata?.volcengineAssetUri)) return null;
+    const metadata = node.metadata || {};
+    const volcengineAssetUri = normalizeVolcengineAssetUri(metadata.volcengineAssetUri) || normalizeVolcengineAssetUri(metadata.assetId);
+    if (node.type !== CanvasNodeType.Audio || (!node.metadata?.content && !volcengineAssetUri)) return null;
     return {
         id: node.id,
         name: `${node.title || node.id}.mp3`,
-        type: node.metadata.mimeType || "audio/mpeg",
-        url: node.metadata.content || "",
-        storageKey: node.metadata.storageKey,
-        volcengineAssetUri: node.metadata.volcengineAssetUri,
-        bytes: node.metadata.bytes,
-        durationMs: node.metadata.durationMs,
+        type: metadata.mimeType || "audio/mpeg",
+        url: metadata.content || "",
+        storageKey: metadata.storageKey,
+        volcengineAssetUri,
+        bytes: metadata.bytes,
+        durationMs: metadata.durationMs,
     };
 }

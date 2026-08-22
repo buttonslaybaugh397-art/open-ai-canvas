@@ -639,6 +639,7 @@ function InfiniteCanvasPage() {
                 title: payload.title,
                 storageKey: payload.storageKey,
                 url: payload.url,
+                volcengineAssetUri: payload.volcengineAssetUri,
                 width: payload.width,
                 height: payload.height,
                 durationMs: payload.durationMs,
@@ -647,7 +648,7 @@ function InfiniteCanvasPage() {
             };
         }
         if (payload.kind === "audio") {
-            return { id: payload.assetId || `asset-${randomSuffix}`, kind: "audio", title: payload.title, storageKey: payload.storageKey, url: payload.url, durationMs: payload.durationMs, bytes: payload.bytes, mimeType: payload.mimeType };
+            return { id: payload.assetId || `asset-${randomSuffix}`, kind: "audio", title: payload.title, storageKey: payload.storageKey, url: payload.url, volcengineAssetUri: payload.volcengineAssetUri, durationMs: payload.durationMs, bytes: payload.bytes, mimeType: payload.mimeType };
         }
         return null;
     };

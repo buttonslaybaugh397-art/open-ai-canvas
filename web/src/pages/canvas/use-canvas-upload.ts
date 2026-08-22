@@ -7,6 +7,7 @@ import type { InsertAssetPayload } from "@/components/canvas/asset-picker-modal"
 import { CANVAS_PROJECT_CHAPTER_DND_TYPE, type CanvasProjectChapterPayload } from "@/components/canvas/canvas-project-sidebar";
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
+import { volcengineAssetUriForAsset } from "@/lib/volcengine-asset";
 import { audioMetadata, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-generation-task-sync";
 import { createCanvasNode } from "@/lib/canvas/canvas-project-domain";
 import { isAudioFile } from "@/lib/canvas/canvas-project-generation";
@@ -174,6 +175,7 @@ export function useCanvasUpload({
                     mimeType: asset.data.mimeType || "image/png",
                     prompt: typeof asset.metadata?.prompt === "string" ? asset.metadata.prompt : asset.title,
                     assetId: asset.id,
+                    volcengineAssetUri: volcengineAssetUriForAsset(asset),
                     assetTags: asset.tags || [],
                 },
             };
@@ -698,19 +700,19 @@ export function useCanvasUpload({
         if (payload.kind === "audio") {
             const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Audio];
             const id = `audio-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-            return { id, type: CanvasNodeType.Audio, title: payload.title, position: { x: center.x - spec.width / 2, y: center.y - spec.height / 2 }, width: spec.width, height: spec.height, metadata: { content: payload.url, storageKey: payload.storageKey, durationMs: payload.durationMs, bytes: payload.bytes, mimeType: payload.mimeType || "audio/mpeg", assetId: payload.assetId, status: NODE_STATUS_SUCCESS } } satisfies CanvasNodeData;
+            return { id, type: CanvasNodeType.Audio, title: payload.title, position: { x: center.x - spec.width / 2, y: center.y - spec.height / 2 }, width: spec.width, height: spec.height, metadata: { content: payload.url, storageKey: payload.storageKey, volcengineAssetUri: payload.volcengineAssetUri, durationMs: payload.durationMs, bytes: payload.bytes, mimeType: payload.mimeType || "audio/mpeg", assetId: payload.assetId, status: NODE_STATUS_SUCCESS } } satisfies CanvasNodeData;
         }
         if (payload.kind === "video") {
             const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Video];
             const size = fitNodeSize(payload.width || spec.width, payload.height || spec.height, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
             const id = `video-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-            return { id, type: CanvasNodeType.Video, title: payload.title, position: { x: center.x - size.width / 2, y: center.y - size.height / 2 }, width: size.width, height: size.height, metadata: { content: payload.url, storageKey: payload.storageKey, status: NODE_STATUS_SUCCESS, naturalWidth: payload.width, naturalHeight: payload.height, durationMs: payload.durationMs, bytes: payload.bytes, mimeType: payload.mimeType || "video/mp4", assetId: payload.assetId } } satisfies CanvasNodeData;
+            return { id, type: CanvasNodeType.Video, title: payload.title, position: { x: center.x - size.width / 2, y: center.y - size.height / 2 }, width: size.width, height: size.height, metadata: { content: payload.url, storageKey: payload.storageKey, volcengineAssetUri: payload.volcengineAssetUri, status: NODE_STATUS_SUCCESS, naturalWidth: payload.width, naturalHeight: payload.height, durationMs: payload.durationMs, bytes: payload.bytes, mimeType: payload.mimeType || "video/mp4", assetId: payload.assetId } } satisfies CanvasNodeData;
         }
         const storedImage = payload.storageKey ? { url: payload.dataUrl, storageKey: payload.storageKey, width: 1, height: 1, bytes: 0, mimeType: "image/png" } : await uploadImage(payload.dataUrl);
         const meta = storedImage.width === 1 && storedImage.height === 1 ? await readImageMeta(storedImage.url) : storedImage;
         const size = fitNodeSize(meta.width, meta.height);
         const id = `image-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-        return { id, type: CanvasNodeType.Image, title: payload.title.slice(0, 32) || "Generated Image", position: { x: center.x - size.width / 2, y: center.y - size.height / 2 }, width: size.width, height: size.height, metadata: { ...imageMetadata({ ...storedImage, width: meta.width, height: meta.height }), prompt: payload.title, assetId: payload.assetId } } satisfies CanvasNodeData;
+        return { id, type: CanvasNodeType.Image, title: payload.title.slice(0, 32) || "Generated Image", position: { x: center.x - size.width / 2, y: center.y - size.height / 2 }, width: size.width, height: size.height, metadata: { ...imageMetadata({ ...storedImage, width: meta.width, height: meta.height }), prompt: payload.title, assetId: payload.assetId, volcengineAssetUri: payload.volcengineAssetUri } } satisfies CanvasNodeData;
     }, []);
 
     const handleAssetInsert = useCallback(async (payload: InsertAssetPayload, options: { openDialog?: boolean } = {}): Promise<CanvasNodeData | null> => {

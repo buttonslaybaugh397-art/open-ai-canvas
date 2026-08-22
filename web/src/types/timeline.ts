@@ -71,6 +71,7 @@ export type TimelineDirectMedia = {
     kind: "video" | "audio" | "image" | "text";
     title: string;
     storageKey?: string;
+    volcengineAssetUri?: string;
     url?: string;
     dataUrl?: string;
     content?: string;

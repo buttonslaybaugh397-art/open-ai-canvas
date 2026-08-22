@@ -37,7 +37,7 @@ import { modelDisplayName, modelOptionName, resolveModelChannel, selectableModel
 import { useAssetStore, type Asset } from "@/stores/use-asset-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { buildCreationMentionReferences, creationReferenceMetadata, displayCreationPrompt, expandCreationPrompt, reconcileCreationAttachmentLimit, removeCreationReferenceTokens, selectedCreationReferences, type CreationReference } from "./creation-references";
-import { creationAttachmentFromAsset, creationAttachmentFromAudio, creationAttachmentFromAudioAsset, creationAttachmentFromDocument, creationAttachmentFromImage, creationAttachmentFromVideo, creationAttachmentFromVideoAsset, creationAttachmentKind, creationAudioAsset, creationFileAccepted, creationImageAsset, creationMediaAspectRatio, creationUploadAccept, creationVideoAsset, splitCreationAttachments, type CreationAttachment } from "./creation-assets";
+import { creationAttachmentFromAsset, creationAttachmentFromAudio, creationAttachmentFromAudioAsset, creationAttachmentFromDocument, creationAttachmentFromImage, creationAttachmentFromVideo, creationAttachmentFromVideoAsset, creationAttachmentKind, creationAudioAsset, creationFileAccepted, creationImageAsset, creationMediaAspectRatio, creationUploadAccept, creationVideoAsset, removeCreationAttachment, splitCreationAttachments, type CreationAttachment } from "./creation-assets";
 
 type CreationMode = "text" | "image" | "video";
 type CreationViewMode = "chat" | "storyboard";
@@ -434,7 +434,7 @@ export default function CreatePage() {
 
     const removeAttachment = (id: string) => {
         const reference = mentionReferences.find((item) => item.attachmentId === id);
-        setAttachments((current) => current.filter((item) => item.id !== id));
+        setAttachments((current) => removeCreationAttachment(current, id));
         if (reference) setPrompt((current) => removeCreationReferenceTokens(current, [reference]));
     };
 
@@ -1022,10 +1022,11 @@ function CreationMediaPreviewModal({ url, type, onClose }: { url: string; type: 
     return <Modal open={Boolean(url)} title={null} footer={null} centered destroyOnHidden width={type === "video" ? "min(1160px, calc(100vw - 32px))" : "min(980px, calc(100vw - 32px))"} onCancel={onClose} className="creation-media-preview-modal" styles={{ body: { padding: 0 } }}>{url ? type === "video" ? <video controls autoPlay className="creation-media-preview-video" src={url} /> : <img className="creation-media-preview-image" src={url} alt="媒体预览" /> : null}</Modal>;
 }
 
-function CreationAttachmentThumbnail({ item, primary = false, canAddMore = false, onPreview, onRemove, onAdd }: {
+function CreationAttachmentThumbnail({ item, primary = false, canAddMore = false, disabled = false, onPreview, onRemove, onAdd }: {
     item: CreationAttachment;
     primary?: boolean;
     canAddMore?: boolean;
+    disabled?: boolean;
     onPreview: (type: "image" | "video", url: string) => void;
     onRemove: (id: string) => void;
     onAdd?: () => void;
@@ -1033,13 +1034,15 @@ function CreationAttachmentThumbnail({ item, primary = false, canAddMore = false
     const kind = creationAttachmentKind(item);
     const previewable = kind === "image" || kind === "video";
     const url = (kind === "video" ? item.url : item.previewUrl) || "";
-    return <div className={primary ? "creation-chat-reference is-paper creation-chat-reference-media" : "creation-chat-attachment"}>
-        <button type="button" className={`creation-chat-attachment-preview${previewable ? "" : " is-file"}`} onClick={() => { if (previewable) onPreview(kind === "video" ? "video" : "image", url); }} aria-label={previewable ? `放大预览 ${item.name}` : item.name} disabled={previewable && !url}>
-            {kind === "video" ? <video src={item.url} poster={item.previewUrl !== item.url ? item.previewUrl : undefined} muted playsInline preload="metadata" aria-label={item.name} /> : kind === "image" ? <img src={item.previewUrl} alt={item.name} /> : <span className="creation-chat-file-icon">{kind === "audio" ? <Music2 /> : <FileText />}<em>{item.name}</em></span>}
-            {previewable ? <span aria-hidden="true"><Maximize2 /></span> : null}
-        </button>
-        <button type="button" className="creation-chat-attachment-remove" onClick={() => onRemove(item.id)} aria-label={`移除 ${item.name}`} title="移除参考内容"><X /></button>
-        {primary && canAddMore && onAdd ? <Tooltip title="添加更多参考内容"><button type="button" className="creation-chat-reference-add" onClick={onAdd} aria-label="添加更多参考内容"><Plus /></button></Tooltip> : null}
+    return <div className={`creation-chat-attachment${primary ? " is-primary" : ""}`}>
+        <div className="creation-chat-attachment-media">
+            <button type="button" className={`creation-chat-attachment-preview${previewable ? "" : " is-file"}`} onClick={() => { if (previewable) onPreview(kind === "video" ? "video" : "image", url); }} aria-label={previewable ? `放大预览 ${item.name}` : item.name} disabled={previewable && !url}>
+                {kind === "video" ? <video src={item.url} poster={item.previewUrl !== item.url ? item.previewUrl : undefined} muted playsInline preload="metadata" aria-label={item.name} /> : kind === "image" ? <img src={item.previewUrl} alt={item.name} /> : <span className="creation-chat-file-icon">{kind === "audio" ? <Music2 /> : <FileText />}<em>{item.name}</em></span>}
+                {previewable ? <span aria-hidden="true"><Maximize2 /></span> : null}
+            </button>
+            {primary && canAddMore && onAdd ? <Tooltip title="添加更多参考内容"><button type="button" className="creation-chat-reference-add" onClick={onAdd} aria-label="添加更多参考内容"><Plus /></button></Tooltip> : null}
+        </div>
+        <button type="button" className="creation-chat-attachment-remove" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onRemove(item.id); }} disabled={disabled} aria-label={`删除参考素材 ${item.name}`} title="删除参考素材"><X /><span>删除参考</span></button>
     </div>;
 }
 
@@ -1113,10 +1116,10 @@ function CreationComposer(props: ComposerProps) {
     return <section className={`creation-chat-composer is-${props.variant}`}>
         <div className="creation-chat-writing-surface">
             <input ref={props.fileInputRef} type="file" hidden accept={creationUploadAccept(props.mode)} multiple onChange={props.onFileChange} />
-            {primaryAttachment ? <CreationAttachmentThumbnail item={primaryAttachment} primary canAddMore={canAddMoreReferences && !props.busy} onPreview={previewAttachment} onRemove={props.onRemoveAttachment} onAdd={props.onOpenLibrary} /> : <Tooltip title={!referencesSupported ? "当前模型不支持参考媒体" : "从素材库选择参考内容"}><button type="button" className="creation-chat-reference is-paper" onClick={props.onOpenLibrary} disabled={props.busy || !referencesSupported} aria-label="打开素材库选择参考内容"><Plus /><span>参考内容</span></button></Tooltip>}
+            {primaryAttachment ? <CreationAttachmentThumbnail item={primaryAttachment} primary disabled={props.busy} canAddMore={canAddMoreReferences && !props.busy} onPreview={previewAttachment} onRemove={props.onRemoveAttachment} onAdd={props.onOpenLibrary} /> : <Tooltip title={!referencesSupported ? "当前模型不支持参考媒体" : "从素材库选择参考内容"}><button type="button" className="creation-chat-reference is-paper" onClick={props.onOpenLibrary} disabled={props.busy || !referencesSupported} aria-label="打开素材库选择参考内容"><Plus /><span>参考内容</span></button></Tooltip>}
             <div className="creation-chat-editor">
                 <CanvasResourceMentionTextarea ref={props.composerFocusRef} value={props.prompt} references={props.references} mentionMenuWidth={400} sendOnEnter={false} onChange={props.setPrompt} onSubmit={props.onSubmit} containerClassName="creation-chat-mention-container" className="creation-chat-mention-editor creation-scrollbar" style={{ color: "var(--creation-text)" }} placeholder={props.placeholderOverride || (props.variant === "empty" ? emptyPlaceholder : placeholder)} aria-label="创作提示词，可使用 @ 引用当前参考内容或技能" spellCheck disabled={props.busy} />
-                {secondaryAttachments.length ? <div className="creation-chat-attachment-strip">{secondaryAttachments.map((item) => <CreationAttachmentThumbnail key={item.id} item={item} onPreview={previewAttachment} onRemove={props.onRemoveAttachment} />)}</div> : null}
+                {secondaryAttachments.length ? <div className="creation-chat-attachment-strip">{secondaryAttachments.map((item) => <CreationAttachmentThumbnail key={item.id} item={item} disabled={props.busy} onPreview={previewAttachment} onRemove={props.onRemoveAttachment} />)}</div> : null}
             </div>
         </div>
         <footer className="creation-chat-dock">

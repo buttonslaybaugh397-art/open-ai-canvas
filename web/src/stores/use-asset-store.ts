@@ -6,6 +6,7 @@ import { parseAssetStorageDocument, rebaseAssetSnapshot, serializeAssetStorageDo
 import { parseCanvasStorageDocument } from "@/lib/canvas/canvas-storage-revision";
 import { localForageStorageForScope } from "@/lib/localforage-storage";
 import { getActiveUserScope } from "@/lib/user-scope";
+import { volcengineAssetUriForAsset } from "@/lib/volcengine-asset";
 import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 import { cleanupUnusedImages, collectImageStorageKeys, resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { cleanupUnusedMedia, collectMediaStorageKeys, resolveMediaUrl } from "@/services/file-storage";
@@ -231,30 +232,47 @@ const assetStorage: PersistStorage<AssetStore> = {
 };
 
 async function normalizePersistedAsset(asset: Asset): Promise<Asset> {
-    const storageKey = "data" in asset && asset.data && "storageKey" in asset.data ? asset.data.storageKey : undefined;
+    const normalizedAsset = normalizePersistedVolcengineAsset(asset);
+    const storageKey = "data" in normalizedAsset && normalizedAsset.data && "storageKey" in normalizedAsset.data ? normalizedAsset.data.storageKey : undefined;
     const resourceId = resourceIdFromStorageKey(storageKey);
     if (resourceId) {
         const url = resourceFileUrl(resourceId);
-        if (asset.kind === "video" || asset.kind === "audio" || asset.kind === "model") return { ...asset, data: { ...asset.data, url } } as Asset;
-        if (asset.kind === "image") return { ...asset, coverUrl: asset.coverUrl.startsWith("blob:") ? url : asset.coverUrl, data: { ...asset.data, dataUrl: url } };
+        if (normalizedAsset.kind === "video" || normalizedAsset.kind === "audio" || normalizedAsset.kind === "model") return { ...normalizedAsset, data: { ...normalizedAsset.data, url } } as Asset;
+        if (normalizedAsset.kind === "image") return { ...normalizedAsset, coverUrl: normalizedAsset.coverUrl.startsWith("blob:") ? url : normalizedAsset.coverUrl, data: { ...normalizedAsset.data, dataUrl: url } };
     }
 
     // 非 resource: key 是早期本地存储格式，必须继续从 localForage 恢复，
     // 但只在确有本地 key 时读取，不让远程资源重新走逐条网络查询。
-    if (asset.kind === "video" && storageKey) return { ...asset, data: { ...asset.data, url: await resolveMediaUrl(storageKey, asset.data.url) } };
-    if (asset.kind === "audio" && storageKey) return { ...asset, data: { ...asset.data, url: await resolveMediaUrl(storageKey, asset.data.url) } };
-    if (asset.kind === "model" && storageKey) return { ...asset, data: { ...asset.data, url: await resolveMediaUrl(storageKey, asset.data.url) } };
-    if (asset.kind !== "image") return asset;
+    if (normalizedAsset.kind === "video" && storageKey) return { ...normalizedAsset, data: { ...normalizedAsset.data, url: await resolveMediaUrl(storageKey, normalizedAsset.data.url) } };
+    if (normalizedAsset.kind === "audio" && storageKey) return { ...normalizedAsset, data: { ...normalizedAsset.data, url: await resolveMediaUrl(storageKey, normalizedAsset.data.url) } };
+    if (normalizedAsset.kind === "model" && storageKey) return { ...normalizedAsset, data: { ...normalizedAsset.data, url: await resolveMediaUrl(storageKey, normalizedAsset.data.url) } };
+    if (normalizedAsset.kind !== "image") return normalizedAsset;
     if (storageKey) {
         return {
-            ...asset,
-            coverUrl: asset.coverUrl.startsWith("blob:") ? await resolveImageUrl(storageKey, asset.coverUrl) : asset.coverUrl,
-            data: { ...asset.data, dataUrl: await resolveImageUrl(storageKey, asset.data.dataUrl) },
+            ...normalizedAsset,
+            coverUrl: normalizedAsset.coverUrl.startsWith("blob:") ? await resolveImageUrl(storageKey, normalizedAsset.coverUrl) : normalizedAsset.coverUrl,
+            data: { ...normalizedAsset.data, dataUrl: await resolveImageUrl(storageKey, normalizedAsset.data.dataUrl) },
         };
     }
-    if (!asset.data.dataUrl.startsWith("data:image/")) return asset;
-    const image = await uploadImage(asset.data.dataUrl);
-    return { ...asset, coverUrl: asset.coverUrl.startsWith("data:image/") ? image.url : asset.coverUrl, data: { ...asset.data, dataUrl: image.url, storageKey: image.storageKey, bytes: image.bytes, mimeType: image.mimeType } };
+    if (!normalizedAsset.data.dataUrl.startsWith("data:image/")) return normalizedAsset;
+    const image = await uploadImage(normalizedAsset.data.dataUrl);
+    return { ...normalizedAsset, coverUrl: normalizedAsset.coverUrl.startsWith("data:image/") ? image.url : normalizedAsset.coverUrl, data: { ...normalizedAsset.data, dataUrl: image.url, storageKey: image.storageKey, bytes: image.bytes, mimeType: image.mimeType } };
+}
+
+function normalizePersistedVolcengineAsset(asset: Asset): Asset {
+    if (asset.kind === "image") {
+        const volcengineAssetUri = volcengineAssetUriForAsset(asset);
+        return volcengineAssetUri ? { ...asset, data: { ...asset.data, volcengineAssetUri } } : asset;
+    }
+    if (asset.kind === "video") {
+        const volcengineAssetUri = volcengineAssetUriForAsset(asset);
+        return volcengineAssetUri ? { ...asset, data: { ...asset.data, volcengineAssetUri } } : asset;
+    }
+    if (asset.kind === "audio") {
+        const volcengineAssetUri = volcengineAssetUriForAsset(asset);
+        return volcengineAssetUri ? { ...asset, data: { ...asset.data, volcengineAssetUri } } : asset;
+    }
+    return asset;
 }
 
 async function generationAssetId(effectKey: string) {

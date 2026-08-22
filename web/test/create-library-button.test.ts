@@ -60,7 +60,7 @@ describe("creation library button", () => {
         expect(source).toContain("const [primaryAttachment, ...secondaryAttachments] = props.attachments");
         expect(source).toContain("<CreationAttachmentThumbnail item={primaryAttachment} primary");
         expect(source).toContain("secondaryAttachments.map((item) => <CreationAttachmentThumbnail");
-        expect(source).toContain('className={primary ? "creation-chat-reference is-paper creation-chat-reference-media" : "creation-chat-attachment"}');
+        expect(source).toContain('className={`creation-chat-attachment${primary ? " is-primary" : ""}`}');
     });
 
     test("exposes removal for references inside the composer", () => {
@@ -68,8 +68,9 @@ describe("creation library button", () => {
         const styles = readFileSync(resolve(import.meta.dir, "../src/styles/globals.css"), "utf8");
 
         expect(source).toContain('className="creation-chat-attachment-remove"');
-        expect(source).toContain('onClick={() => onRemove(item.id)}');
-        expect(source).toContain('title="移除参考内容"');
+        expect(source).toContain('onRemove(item.id)');
+        expect(source).toContain('title="删除参考素材"');
+        expect(source).toContain('<span>删除参考</span>');
         expect(styles).toContain(".creation-chat-attachment-remove {");
         expect(styles).toContain("opacity: 1");
     });

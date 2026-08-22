@@ -4,6 +4,7 @@ import { createClientId } from "@/lib/client-id";
 import { dataUrlToFile } from "@/lib/image-utils";
 import { getMediaBlob, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { getResourceOSSUrl } from "@/services/api/resources";
+import { normalizeVolcengineAssetUri } from "@/lib/volcengine-asset";
 import { channelRequest } from "@/services/api/custom-channel-relay";
 import { imageToDataUrl } from "@/services/image-storage";
 import { modelCapabilityConfigFor, normalizeVideoValue, videoDurationAllowed, videoResolutionRequest } from "@/lib/model-capabilities";
@@ -631,7 +632,8 @@ async function buildSeedanceAgentPlanPayload(config: ResolvedAiConfig, model: st
     if (config.interfaceType !== "volcengine-ark-video" && audioReferences.length && !references.length && !videoReferences.length) {
         throw new Error("Seedance 参考音频不能单独使用，请同时添加参考图或参考视频");
     }
-    const content = config.interfaceType === "volcengine-ark-video" ? await buildVolcengineArkContent(prompt, references, videoReferences, audioReferences) : await buildSeedanceContent(config, prompt, references, videoReferences, audioReferences);
+    const isVolcengineArk = config.interfaceType === "volcengine-ark-video" || isArkPlanBaseUrl(config.baseUrl);
+    const content = isVolcengineArk ? await buildVolcengineArkContent(prompt, references, videoReferences, audioReferences) : await buildSeedanceContent(config, prompt, references, videoReferences, audioReferences);
     if (!content.length) throw new Error("请输入视频提示词，或连接参考图片/视频/音频");
     const profile = modelCapabilityConfigFor(config, model).video!;
     return {
@@ -649,22 +651,24 @@ async function buildVolcengineArkContent(prompt: string, references: ReferenceIm
     const content: Array<Record<string, unknown>> = [];
     if (prompt.trim()) content.push({ type: "text", text: prompt.trim() });
     for (const image of references.slice(0, SEEDANCE_REFERENCE_LIMITS.images)) {
-        content.push({ type: "image_url", image_url: { url: await resolveVolcengineArkReferenceUrl(image.volcengineAssetUri || image.url || image.dataUrl, image.storageKey) }, role: "reference_image" });
+        content.push({ type: "image_url", image_url: { url: await resolveVolcengineArkReferenceUrl(image.volcengineAssetUri, image.id, image.url, image.dataUrl, image.storageKey) }, role: "reference_image" });
     }
     for (const video of videoReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.videos)) {
-        content.push({ type: "video_url", video_url: { url: await resolveVolcengineArkReferenceUrl(video.volcengineAssetUri || video.url, video.storageKey) }, role: "reference_video" });
+        content.push({ type: "video_url", video_url: { url: await resolveVolcengineArkReferenceUrl(video.volcengineAssetUri, video.id, video.url, undefined, video.storageKey) }, role: "reference_video" });
     }
     for (const audio of audioReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.audios)) {
-        content.push({ type: "audio_url", audio_url: { url: await resolveVolcengineArkReferenceUrl(audio.volcengineAssetUri || audio.url, audio.storageKey) }, role: "reference_audio" });
+        content.push({ type: "audio_url", audio_url: { url: await resolveVolcengineArkReferenceUrl(audio.volcengineAssetUri, audio.id, audio.url, undefined, audio.storageKey) }, role: "reference_audio" });
     }
     return content;
 }
 
-async function resolveVolcengineArkReferenceUrl(value: string | undefined, storageKey?: string) {
-    const normalized = String(value || "").trim();
-    if (normalized.startsWith("asset://") && normalized.length > "asset://".length && !/\s/.test(normalized)) return normalized;
+async function resolveVolcengineArkReferenceUrl(...values: [string | undefined, string | undefined, string | undefined, string | undefined, string | undefined]) {
+    const assetUri = values.slice(0, 4).map((value) => normalizeVolcengineAssetUri(value)).find((value): value is string => Boolean(value));
+    if (assetUri) return assetUri;
+    const storageKey = values[4];
     if (storageKey?.startsWith("resource:")) return getResourceOSSUrl(storageKey);
-    if (isPublicMediaUrl(normalized)) return normalized;
+    const publicUrl = values.slice(0, 4).map((value) => String(value || "").trim()).find((value) => isPublicMediaUrl(value));
+    if (publicUrl) return publicUrl;
     throw new Error("火山方舟视频参考素材需要公网 URL 或 asset:// 素材 ID；请先将本地素材保存到对象存储");
 }
 

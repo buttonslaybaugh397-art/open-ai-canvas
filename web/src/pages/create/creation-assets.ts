@@ -1,5 +1,6 @@
 import type { UploadedFile } from "@/services/file-storage";
 import type { UploadedImage } from "@/services/image-storage";
+import { volcengineAssetUriForAsset } from "@/lib/volcengine-asset";
 import type { Asset, AudioAsset, ImageAsset, NewAsset } from "@/stores/use-asset-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -157,7 +158,7 @@ export function creationAttachmentFromAsset(asset: ImageAsset): CreationAttachme
         dataUrl: url,
         url,
         storageKey: asset.data.storageKey,
-        volcengineAssetUri: asset.data.volcengineAssetUri,
+        volcengineAssetUri: volcengineAssetUriForAsset(asset),
         bytes: asset.data.bytes,
         width: asset.data.width,
         height: asset.data.height,
@@ -172,7 +173,7 @@ export function creationAttachmentFromVideoAsset(asset: Extract<Asset, { kind: "
         type: asset.data.mimeType || "video/mp4",
         url: asset.data.url,
         storageKey: asset.data.storageKey,
-        volcengineAssetUri: asset.data.volcengineAssetUri,
+        volcengineAssetUri: volcengineAssetUriForAsset(asset),
         bytes: asset.data.bytes,
         width: asset.data.width,
         height: asset.data.height,
@@ -188,7 +189,7 @@ export function creationAttachmentFromAudioAsset(asset: AudioAsset): CreationAtt
         type: asset.data.mimeType || "audio/mpeg",
         url: asset.data.url,
         storageKey: asset.data.storageKey,
-        volcengineAssetUri: asset.data.volcengineAssetUri,
+        volcengineAssetUri: volcengineAssetUriForAsset(asset),
         bytes: asset.data.bytes,
         durationMs: asset.data.durationMs,
         previewUrl: asset.data.url,

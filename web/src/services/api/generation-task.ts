@@ -1,11 +1,13 @@
 import { getMediaBlob } from "@/services/file-storage";
 import { getImageBlob } from "@/services/image-storage";
 import { resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
+import { firstVolcengineAssetUri } from "@/lib/volcengine-asset";
 import { createGenerationTask, waitForGenerationTask, type GenerationTask } from "@/services/api/task-center";
 import { LOCAL_DREAMINA_WAIT_STOPPED_CODE, LocalDreaminaGenerationClientError, runLocalDreaminaGenerationTask, type LocalDreaminaGenerationInput, type LocalDreaminaGenerationTask } from "@/services/local-dreamina-generation";
 import { isLocalDreaminaBackgroundTask, localDreaminaTaskId, projectLocalDreaminaTask, stripLocalDreaminaTaskPrefix } from "@/services/local-dreamina-task-projection";
 import { modelCapabilityConfigFor, normalizeVideoValue } from "@/lib/model-capabilities";
 import { grokImagePromptLimitError } from "@/lib/grok-image-prompt-limit";
+import { isArkPlanBaseUrl } from "@/lib/seedance-video";
 import { resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import { useLocalDreaminaModelStore } from "@/stores/use-local-dreamina-model-store";
 import type { ReferenceImage } from "@/types/image";
@@ -371,7 +373,7 @@ async function createAndWaitGenerationTask(options: BackendGenerationTaskOptions
 }
 
 async function prepareBackendMediaReference(media: ReferenceVideo | ReferenceAudio, allowVolcengineAssetUri = false) {
-    const volcengineAssetUri = allowVolcengineAssetUri ? referenceVolcengineAssetUri(media.volcengineAssetUri || media.url) : undefined;
+    const volcengineAssetUri = allowVolcengineAssetUri ? referenceVolcengineAssetUri(media.volcengineAssetUri, media.id, media.url) : undefined;
     if (volcengineAssetUri) return backendMediaReference(media, { volcengineAssetUri });
     if (resourceIdFromStorageKey(media.storageKey)) return backendMediaReference(media, { storageKey: media.storageKey });
     const url = media.url || "";
@@ -390,7 +392,7 @@ async function prepareBackendMediaReference(media: ReferenceVideo | ReferenceAud
 }
 
 async function prepareBackendImageReference(image: ReferenceImage, allowVolcengineAssetUri = false) {
-    const volcengineAssetUri = allowVolcengineAssetUri ? referenceVolcengineAssetUri(image.volcengineAssetUri || image.url) : undefined;
+    const volcengineAssetUri = allowVolcengineAssetUri ? referenceVolcengineAssetUri(image.volcengineAssetUri, image.id, image.url, image.dataUrl) : undefined;
     if (volcengineAssetUri) return backendImageReference(image, { volcengineAssetUri });
     if (resourceIdFromStorageKey(image.storageKey)) return backendImageReference(image, { storageKey: image.storageKey });
     const sourceUrl = image.url || image.dataUrl;
@@ -436,13 +438,13 @@ function backendMediaReference<T extends ReferenceVideo | ReferenceAudio>(media:
     } as T;
 }
 
-function referenceVolcengineAssetUri(value: string | undefined) {
-    const normalized = String(value || "").trim();
-    return normalized.startsWith("asset://") && normalized.length > "asset://".length && !/\s/.test(normalized) ? normalized : undefined;
+function referenceVolcengineAssetUri(...values: Array<string | undefined>) {
+    return firstVolcengineAssetUri(...values);
 }
 
 function isVolcengineArkVideoConfig(config: AiConfig) {
-    return resolveModelRequestConfig(config, config.model).interfaceType === "volcengine-ark-video";
+    const requestConfig = resolveModelRequestConfig(config, config.model);
+    return requestConfig.interfaceType === "volcengine-ark-video" || isArkPlanBaseUrl(requestConfig.baseUrl);
 }
 
 export function backendProviderConfig(config: AiConfig) {

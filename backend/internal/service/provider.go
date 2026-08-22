@@ -661,7 +661,7 @@ func protocolRequiresPublicReferenceURL(interfaceType string) bool {
 }
 
 func (s *Service) hydrateGenerationMedia(userID string, input *canvasGenerationInput, requirePublicURL bool) error {
-	allowVolcengineAssetURI := input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo)
+	allowVolcengineAssetURI := input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo) || isArkPlanVideoConfig(input.Config)
 	groups := [][]providerMedia{input.ReferenceImages, input.ReferenceVideos, input.ReferenceAudios}
 	for _, group := range groups {
 		for index := range group {
@@ -679,7 +679,7 @@ func (s *Service) hydrateGenerationMedia(userID string, input *canvasGenerationI
 func (s *Service) hydrateProviderMedia(userID string, media *providerMedia, requirePublicURL bool, allowVolcengineAssetURI ...bool) error {
 	allowAssetURI := len(allowVolcengineAssetURI) > 0 && allowVolcengineAssetURI[0]
 	if allowAssetURI {
-		if assetURI := volcengineAssetURI(media); assetURI != "" {
+		if assetURI := volcengineAssetURI(*media); assetURI != "" {
 			media.VolcengineAssetURI = assetURI
 			return nil
 		}
@@ -4593,7 +4593,7 @@ func withSystemPrompt(config providerConfig, prompt string) string {
 
 func seedanceContent(input canvasGenerationInput) ([]map[string]interface{}, error) {
 	content := make([]map[string]interface{}, 0, 1+len(input.ReferenceImages)+len(input.ReferenceVideos)+len(input.ReferenceAudios))
-	allowVolcengineAssetURI := input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo)
+	allowVolcengineAssetURI := input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo) || isArkPlanVideoConfig(input.Config)
 	text := seedancePromptText(input)
 	if strings.TrimSpace(text) != "" {
 		content = append(content, map[string]interface{}{"type": "text", "text": text})
@@ -4795,14 +4795,37 @@ func mediaReferenceURL(media providerMedia, allowVolcengineAssetURI bool) (strin
 }
 
 func volcengineAssetURI(media providerMedia) string {
-	value := strings.TrimSpace(media.VolcengineAssetURI)
-	if value == "" {
-		value = strings.TrimSpace(media.URL)
+	return normalizeVolcengineAssetURI(media.VolcengineAssetURI, media.ID, media.URL, media.DataURL)
+}
+
+func normalizeVolcengineAssetURI(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if strings.HasPrefix(value, "asset://") {
+			assetID := strings.TrimPrefix(value, "asset://")
+			if isVolcengineAssetID(assetID) {
+				return "asset://" + assetID
+			}
+			continue
+		}
+		if isVolcengineAssetID(value) {
+			return "asset://" + value
+		}
 	}
-	if !strings.HasPrefix(value, "asset://") || len(value) <= len("asset://") || strings.IndexFunc(value, unicode.IsSpace) >= 0 {
-		return ""
+	return ""
+}
+
+func isVolcengineAssetID(value string) bool {
+	if !strings.HasPrefix(value, "asset-") || len(value) <= len("asset-") || strings.IndexFunc(value, unicode.IsSpace) >= 0 {
+		return false
 	}
-	return value
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func seedanceVideosMediaURL(media providerMedia) (string, error) {

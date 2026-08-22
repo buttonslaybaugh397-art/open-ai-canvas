@@ -6,15 +6,16 @@ import { TeamAssetBrowser, type TeamLibraryAsset } from "@/components/assets/tea
 import { WorkspaceState } from "@/components/layout/workspace-state";
 import { AssetMediaPreview } from "@/components/asset-media-preview";
 import { cn } from "@/lib/utils";
+import { volcengineAssetUriForAsset } from "@/lib/volcengine-asset";
 import { useAssetStore, type Asset } from "@/stores/use-asset-store";
 
 type InsertableAsset = Extract<Asset, { kind: "text" | "image" | "video" | "audio" }>;
 
 export type InsertAssetPayload =
     | { kind: "text"; content: string; title: string; assetId?: string }
-    | { kind: "image"; dataUrl: string; title: string; storageKey?: string; assetId?: string }
-    | { kind: "video"; url: string; title: string; storageKey?: string; width?: number; height?: number; durationMs?: number; bytes?: number; mimeType?: string; assetId?: string }
-    | { kind: "audio"; url: string; title: string; storageKey?: string; durationMs?: number; bytes?: number; mimeType?: string; assetId?: string }
+    | { kind: "image"; dataUrl: string; title: string; storageKey?: string; volcengineAssetUri?: string; assetId?: string }
+    | { kind: "video"; url: string; title: string; storageKey?: string; volcengineAssetUri?: string; width?: number; height?: number; durationMs?: number; bytes?: number; mimeType?: string; assetId?: string }
+    | { kind: "audio"; url: string; title: string; storageKey?: string; volcengineAssetUri?: string; durationMs?: number; bytes?: number; mimeType?: string; assetId?: string }
     | { kind: "character"; title: string; assetId: string; versionId: string; prompt: string; aliases: string[]; definition: Record<string, unknown>; coverUrl?: string; visualStatus: string; voiceStatus: string; voiceName?: string; voiceProfile?: { name: string; provider: string; language: string; timbre: string }; voiceInstructions?: string };
 
 type Props = {
@@ -157,7 +158,7 @@ function isInsertableAsset(asset: Asset): asset is InsertableAsset {
 
 function toInsertPayload(asset: InsertableAsset): InsertAssetPayload {
     if (asset.kind === "text") return { kind: "text", content: asset.data.content, title: asset.title, assetId: asset.id };
-    if (asset.kind === "image") return { kind: "image", dataUrl: asset.data.dataUrl, storageKey: asset.data.storageKey, title: asset.title, assetId: asset.id };
-    if (asset.kind === "video") return { kind: "video", url: asset.data.url, storageKey: asset.data.storageKey, title: asset.title, width: asset.data.width, height: asset.data.height, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
-    return { kind: "audio", url: asset.data.url, storageKey: asset.data.storageKey, title: asset.title, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
+    if (asset.kind === "image") return { kind: "image", dataUrl: asset.data.dataUrl, storageKey: asset.data.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(asset), title: asset.title, assetId: asset.id };
+    if (asset.kind === "video") return { kind: "video", url: asset.data.url, storageKey: asset.data.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(asset), title: asset.title, width: asset.data.width, height: asset.data.height, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
+    return { kind: "audio", url: asset.data.url, storageKey: asset.data.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(asset), title: asset.title, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
 }
