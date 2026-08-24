@@ -1695,13 +1695,30 @@ func TestNewAPIChannel2SendsOnlyDeclaredResolution(t *testing.T) {
 	}
 }
 
-func TestNewAPIChannel2RejectsAudioWithoutReferenceVideo(t *testing.T) {
+func TestNewAPIChannel2RejectsAudioWithoutReferenceImage(t *testing.T) {
 	_, err := newAPIChannel2VideoRequestBody(canvasGenerationInput{
 		Config:          providerConfig{Model: "grok-image-video", VideoSeconds: "6"},
 		ReferenceAudios: []providerMedia{{ID: "audio-1", URL: "https://example.com/reference.mp3"}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "必须同时提供至少 1 个参考视频") {
+	if err == nil || !strings.Contains(err.Error(), "必须同时提供至少 1 张参考图片") {
 		t.Fatalf("newAPIChannel2VideoRequestBody() error = %v", err)
+	}
+}
+
+func TestNewAPIChannel2AllowsAudioWithReferenceImage(t *testing.T) {
+	body, err := newAPIChannel2VideoRequestBody(canvasGenerationInput{
+		Config:          providerConfig{Model: "grok-image-video", VideoSeconds: "6"},
+		ReferenceImages: []providerMedia{{ID: "image-1", URL: "https://example.com/reference.png"}},
+		ReferenceAudios: []providerMedia{{ID: "audio-1", URL: "https://example.com/reference.mp3"}},
+	})
+	if err != nil {
+		t.Fatalf("newAPIChannel2VideoRequestBody() error = %v", err)
+	}
+	if len(body.ImageURLs) != 1 || body.ImageURLs[0] != "https://example.com/reference.png" {
+		t.Fatalf("image_urls = %#v", body.ImageURLs)
+	}
+	if len(body.AudioURLs) != 1 || body.AudioURLs[0] != "https://example.com/reference.mp3" {
+		t.Fatalf("audio_urls = %#v", body.AudioURLs)
 	}
 }
 

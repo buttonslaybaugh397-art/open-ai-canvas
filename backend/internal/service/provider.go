@@ -3062,8 +3062,8 @@ func newAPIChannel2VideoRequestBody(input canvasGenerationInput) (newAPIVideoReq
 	if len(input.ReferenceImages) > 9 || len(input.ReferenceVideos) > 3 || len(input.ReferenceAudios) > 3 {
 		return newAPIVideoRequest{}, errors.New("NewAPI Video Generations 最多支持 9 张参考图、3 个参考视频和 3 个参考音频")
 	}
-	if len(input.ReferenceAudios) > 0 && len(input.ReferenceVideos) == 0 {
-		return newAPIVideoRequest{}, errors.New("NewAPI Video Generations 的参考音频必须同时提供至少 1 个参考视频；纯音频生视频请切换到支持该模式的渠道")
+	if len(input.ReferenceAudios) > 0 && len(input.ReferenceImages) == 0 {
+		return newAPIVideoRequest{}, errors.New("NewAPI Video Generations 的参考音频必须同时提供至少 1 张参考图片")
 	}
 	modelName := strings.ToLower(strings.TrimSpace(input.Config.Model))
 	requiresSingleImage := modelName == "grok-video-1.5" || modelName == "grok-video-1.5-1080p"
