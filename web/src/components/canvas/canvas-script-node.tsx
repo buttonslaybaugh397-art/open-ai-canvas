@@ -535,7 +535,7 @@ function GenerationBatchDetails({ batch, rows, onRetryItem, onCancelItem }: { ba
             </div>
             <div className="thin-scrollbar max-h-72 overflow-y-auto">
                 {batch.items.map((item) => {
-                    const cancellable = Boolean(item.taskId && (item.status === "queued" || item.status === "running"));
+                    const cancellable = Boolean(item.taskId && item.status === "queued");
                     const requiresPromptChange = isContentModerationError(item.errorDetails);
                     return (
                         <div key={item.id} className="flex min-h-9 items-center gap-2 border-t border-foreground/10 py-1.5 first:border-t-0">

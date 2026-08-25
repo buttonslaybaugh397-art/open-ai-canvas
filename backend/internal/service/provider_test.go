@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -764,17 +765,14 @@ func TestSeedanceVideosBodyUsesVideosEndpointFields(t *testing.T) {
 	if body.GenerateAudio == nil || !*body.GenerateAudio {
 		t.Fatalf("generate_audio = %#v, want true", body.GenerateAudio)
 	}
-	if body.ImageURL != testReferenceImageDataURL {
-		t.Fatalf("image_url = %#v", body.ImageURL)
+	if len(body.Images) != 2 || body.Images[0] != testReferenceImageDataURL || body.Images[1] != "data:image/png;base64,d29ybGQ=" {
+		t.Fatalf("images = %#v", body.Images)
 	}
-	if len(body.ReferenceImageURLs) != 1 || body.ReferenceImageURLs[0] != "data:image/png;base64,d29ybGQ=" {
-		t.Fatalf("reference_image_urls = %#v", body.ReferenceImageURLs)
+	if len(body.Videos) != 1 || body.Videos[0] != "https://example.com/ref.mp4" {
+		t.Fatalf("videos = %#v", body.Videos)
 	}
-	if len(body.ReferenceVideos) != 1 || body.ReferenceVideos[0] != "https://example.com/ref.mp4" {
-		t.Fatalf("reference_videos = %#v", body.ReferenceVideos)
-	}
-	if len(body.ReferenceAudios) != 1 || body.ReferenceAudios[0] != "data:audio/mpeg;base64,AAAA" {
-		t.Fatalf("reference_audios = %#v", body.ReferenceAudios)
+	if len(body.Audios) != 1 || body.Audios[0] != "data:audio/mpeg;base64,AAAA" {
+		t.Fatalf("audios = %#v", body.Audios)
 	}
 }
 
@@ -820,7 +818,7 @@ func TestSeedanceVideosBodyUsesOrderedFrameImageURLsWhenConfigured(t *testing.T)
 	if err != nil {
 		t.Fatalf("seedanceVideosBody() error = %v", err)
 	}
-	imageURLs := body.ImageURLs
+	imageURLs := body.Images
 	if len(imageURLs) != 3 {
 		t.Fatalf("image_urls = %#v", imageURLs)
 	}
@@ -829,9 +827,6 @@ func TestSeedanceVideosBodyUsesOrderedFrameImageURLsWhenConfigured(t *testing.T)
 		if imageURLs[index] != want[index] {
 			t.Fatalf("image_urls = %#v, want %#v", imageURLs, want)
 		}
-	}
-	if body.ImageURL != "" || body.ReferenceImageURLs != nil {
-		t.Fatalf("unexpected legacy image fields in body: %#v", body)
 	}
 	if body.Prompt != "make it move" {
 		t.Fatalf("prompt = %#v", body.Prompt)
@@ -1266,14 +1261,78 @@ func TestNewAPIVideoOmitsImagesForTextToVideoOperation(t *testing.T) {
 	}
 }
 
-func TestSeedanceVideosBodyRequiresImageForVideoOrAudioReferences(t *testing.T) {
-	_, err := seedanceVideosRequestBody(canvasGenerationInput{
+func TestSeedanceVideosBodyAllowsVideoWithoutImageWhenBackendCapabilityAllowsIt(t *testing.T) {
+	body, err := seedanceVideosRequestBody(canvasGenerationInput{
 		Prompt:          "make it move",
 		Config:          providerConfig{Model: "seedance-2.0-mini-480p"},
 		ReferenceVideos: []providerMedia{{ID: "video-1", URL: "https://example.com/ref.mp4"}},
 	})
-	if err == nil {
-		t.Fatal("seedanceVideosBody() error = nil, want error")
+	if err != nil {
+		t.Fatalf("seedanceVideosBody() error = %v", err)
+	}
+	if len(body.Videos) != 1 || body.Videos[0] != "https://example.com/ref.mp4" {
+		t.Fatalf("videos = %#v", body.Videos)
+	}
+}
+
+func TestSeedanceVideosProtocolPostsAllConfiguredReferences(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	paths := make([]string, 0, 3)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/videos":
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			images, _ := body["images"].([]interface{})
+			videos, _ := body["videos"].([]interface{})
+			audios, _ := body["audios"].([]interface{})
+			if len(images) != 18 || len(videos) != 1 || len(audios) != 1 {
+				t.Errorf("references = images:%d videos:%d audios:%d; body = %#v", len(images), len(videos), len(audios), body)
+			}
+			for _, legacy := range []string{"image_urls", "image_url", "reference_image_urls", "reference_videos", "reference_audios"} {
+				if _, exists := body[legacy]; exists {
+					t.Errorf("unexpected legacy field %q in body %#v", legacy, body)
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "seedance-task", "status": "queued"})
+		case "GET /v1/videos/seedance-task":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "seedance-task", "status": "completed", "video_url": server.URL + "/video.mp4"})
+		case "GET /video.mp4":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("video"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	images := make([]providerMedia, 18)
+	for index := range images {
+		images[index] = providerMedia{ID: fmt.Sprintf("image-%d", index), URL: server.URL + fmt.Sprintf("/reference-%d.png", index)}
+	}
+	result, err := runVideoTask(context.Background(), canvasGenerationInput{
+		Prompt:          "make it move",
+		Config:          providerConfig{BaseURL: server.URL, APIKey: "test-key", Model: "seedance2.5-480p", InterfaceType: string(model.ChannelInterfaceSeedanceVideos), VideoSeconds: "6", Size: "16:9"},
+		ReferenceImages: images,
+		ReferenceVideos: []providerMedia{{ID: "video-1", URL: server.URL + "/reference.mp4"}},
+		ReferenceAudios: []providerMedia{{ID: "audio-1", URL: server.URL + "/reference.mp3"}},
+	})
+	if err != nil {
+		t.Fatalf("runVideoTask() error = %v", err)
+	}
+	video := result["video"].(map[string]interface{})
+	if video["dataUrl"] != "data:video/mp4;base64,dmlkZW8=" {
+		t.Fatalf("video = %#v", video)
+	}
+	want := "POST /v1/videos,GET /v1/videos/seedance-task,GET /video.mp4"
+	if got := strings.Join(paths, ","); got != want {
+		t.Fatalf("paths = %q, want %q", got, want)
 	}
 }
 
@@ -1284,6 +1343,13 @@ func TestArkPlanConfigStaysSeparateFromSeedanceVideosEndpoint(t *testing.T) {
 	}
 	if !isSeedanceVideoConfig(config) {
 		t.Fatal("isSeedanceVideoConfig() = false, want true")
+	}
+}
+
+func TestSeedanceModelNameDoesNotOverrideConfiguredProtocol(t *testing.T) {
+	config := providerConfig{InterfaceType: "newapi-channel-2", BaseURL: "https://example.com", Model: "seedance2.5-480p"}
+	if isSeedanceVideoConfig(config) {
+		t.Fatal("Seedance model name must not override the administrator-selected protocol")
 	}
 }
 
@@ -1737,6 +1803,24 @@ func TestNewAPIChannel2SingleImageModelUsesReferenceForStaleTextToVideoMetadata(
 	}
 }
 
+func TestNewAPIChannel2PreservesConfiguredReferenceImages(t *testing.T) {
+	images := make([]providerMedia, 18)
+	for index := range images {
+		images[index] = providerMedia{ID: fmt.Sprintf("image-%d", index), DataURL: testReferenceImageDataURL}
+	}
+	body, err := newAPIChannel2VideoRequestBody(canvasGenerationInput{
+		Config:          providerConfig{Model: "seedance2.5-480p", VideoSeconds: "6"},
+		ReferenceImages: images,
+		Metadata:        map[string]interface{}{"videoEditOperation": "image_to_video"},
+	})
+	if err != nil {
+		t.Fatalf("newAPIChannel2VideoRequestBody() error = %v", err)
+	}
+	if len(body.ImageURLs) != 18 {
+		t.Fatalf("image_urls count = %d, want 18", len(body.ImageURLs))
+	}
+}
+
 func TestNewAPIChannel2OrdersFramesBeforeReferenceImages(t *testing.T) {
 	body, err := newAPIChannel2VideoRequestBody(canvasGenerationInput{
 		Config: providerConfig{Model: "Seedance 2 Mini", VideoSeconds: "10"},
@@ -1776,6 +1860,9 @@ func TestValidateGenerationInterfaceRejectsMismatchedType(t *testing.T) {
 		t.Fatalf("validateGenerationInterface() error = %v", err)
 	}
 	if err := validateGenerationInterface("video", "newapi-channel-2"); err != nil {
+		t.Fatalf("validateGenerationInterface() error = %v", err)
+	}
+	if err := validateGenerationInterface("video", "seedance-videos"); err != nil {
 		t.Fatalf("validateGenerationInterface() error = %v", err)
 	}
 	if err := validateGenerationInterface("video", "xai-video"); err != nil {

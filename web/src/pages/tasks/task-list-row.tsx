@@ -93,8 +93,8 @@ export function TaskListRow({
                     </Tooltip>
                 ) : null}
                 {isActive ? (
-                    <Tooltip title="取消任务">
-                        <Button type="text" size="small" danger icon={<X className="size-3.5" />} aria-label="取消任务" loading={actingId === task.id} onClick={onCancel} />
+                    <Tooltip title={task.status === "running" ? "生成中，无法取消" : "取消任务"}>
+                        <Button type="text" size="small" danger icon={<X className="size-3.5" />} aria-label="取消任务" loading={actingId === task.id} disabled={task.status === "running"} onClick={onCancel} />
                     </Tooltip>
                 ) : null}
             </div>

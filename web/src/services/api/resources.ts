@@ -25,7 +25,7 @@ export type RemoteResource = {
 
 export type UserOSSSetting = {
     enabled: boolean;
-    provider: "aliyun" | "tencent" | "qiniu";
+    provider: "aliyun" | "tencent" | "qiniu" | "rainyun";
     region: string;
     endpoint: string;
     cdnBaseUrl: string;

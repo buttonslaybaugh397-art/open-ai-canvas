@@ -13,8 +13,7 @@ func isPublicMediaURL(value string) bool {
 }
 
 func isSeedanceVideoConfig(config providerConfig) bool {
-	model := strings.ToLower(config.Model)
-	return strings.Contains(model, "seedance") || strings.Contains(model, "doubao-seedance") || isArkPlanVideoConfig(config)
+	return config.InterfaceType == "seedance-videos" || config.InterfaceType == "volcengine-ark-video" || isArkPlanVideoConfig(config)
 }
 
 func isGrokVideoConfig(config providerConfig) bool {

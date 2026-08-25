@@ -26,6 +26,7 @@ const (
 	aliyunOSSProvider  = "aliyun"
 	tencentCOSProvider = "tencent"
 	qiniuKodoProvider  = "qiniu"
+	rainyunROSProvider = "rainyun"
 )
 
 type OSSSettingRequest struct {
@@ -465,8 +466,8 @@ func ossSettingFromRequest(req OSSSettingRequest, current ossSettingValue) (ossS
 		PublicBaseURL:   strings.TrimRight(strings.TrimSpace(req.PublicBaseURL), "/"),
 		PathPrefix:      strings.Trim(strings.TrimSpace(req.PathPrefix), "/"),
 	})
-	if next.Provider != aliyunOSSProvider && next.Provider != tencentCOSProvider && next.Provider != qiniuKodoProvider {
-		return next, BadAuthRequest("仅支持阿里云 OSS、腾讯云 COS 和七牛云 Kodo")
+	if !supportedOSSProvider(next.Provider) {
+		return next, BadAuthRequest("仅支持阿里云 OSS、腾讯云 COS、七牛云 Kodo 和雨云 ROS")
 	}
 	current = normalizeOSSSetting(current)
 	// 不同云厂商的密钥不能复用；只有继续使用同一厂商时，留空才表示保留原密钥。
@@ -484,10 +485,18 @@ func ossSettingFromRequest(req OSSSettingRequest, current ossSettingValue) (ossS
 			if next.Provider == qiniuKodoProvider {
 				return next, BadAuthRequest("请填写七牛云 Kodo 上传 Endpoint")
 			}
+			if next.Provider == rainyunROSProvider {
+				return next, BadAuthRequest("请填写雨云 ROS S3 Endpoint")
+			}
 			return next, BadAuthRequest("请填写阿里云 OSS Endpoint")
 		}
 		if _, err := ValidateOutboundURL(next.Endpoint); err != nil {
 			return next, err
+		}
+		if next.Provider == rainyunROSProvider {
+			if _, err := rainyunS3Endpoint(next); err != nil {
+				return next, BadAuthRequest(err.Error())
+			}
 		}
 		if next.CDNBaseURL != "" {
 			if _, err := ossCDNBaseURL(next.CDNBaseURL); err != nil {
@@ -543,6 +552,9 @@ func normalizeOSSSetting(value ossSettingValue) ossSettingValue {
 	if value.Provider == tencentCOSProvider && value.Endpoint == "" && value.Region != "" {
 		value.Endpoint = "https://cos." + value.Region + ".myqcloud.com"
 	}
+	if value.Provider == rainyunROSProvider && value.Region == "" {
+		value.Region = "us-east-1"
+	}
 	value.CDNBaseURL = strings.TrimRight(strings.TrimSpace(value.CDNBaseURL), "/")
 	value.Bucket = strings.TrimSpace(value.Bucket)
 	value.AccessKeyID = strings.TrimSpace(value.AccessKeyID)
@@ -551,6 +563,15 @@ func normalizeOSSSetting(value ossSettingValue) ossSettingValue {
 	value.PathPrefix = strings.Trim(strings.TrimSpace(value.PathPrefix), "/")
 	value.ArchivedCredentials = cloneOSSProviderCredentials(value.ArchivedCredentials)
 	return value
+}
+
+func supportedOSSProvider(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case aliyunOSSProvider, tencentCOSProvider, qiniuKodoProvider, rainyunROSProvider:
+		return true
+	default:
+		return false
+	}
 }
 
 func defaultOSSSetting() ossSettingValue {

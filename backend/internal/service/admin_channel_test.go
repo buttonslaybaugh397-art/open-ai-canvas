@@ -221,6 +221,36 @@ func TestHuiQuYunCatalogRefreshRepairsMjSd933Contract(t *testing.T) {
 	}
 }
 
+func TestStartupPreservesConfiguredAICostVideoProtocolAndCapability(t *testing.T) {
+	channel := model.ModelChannel{BaseURL: "https://www.aicost.me"}
+	item := model.ChannelModel{
+		ModelKey:              "seedance2.5-480p",
+		Capability:            "video",
+		Protocol:              model.ChannelInterfaceNewAPIChannel2,
+		CapabilityConfigJSON:  "{\"version\":1,\"video\":{\"references\":{\"maxImages\":30}}}",
+		UnitPriceMicrocredits: 123,
+		Enabled:               true,
+		PriceConfigured:       true,
+	}
+	protocol := item.Protocol
+	capability := item.Capability
+	capabilityConfig := item.CapabilityConfigJSON
+	if changed := syncChannelModelContract(channel, &item, nil, nil); changed {
+		t.Fatal("configured aicost protocol must not be inferred from the host or model name")
+	}
+	if item.Protocol != protocol || item.Capability != capability || item.CapabilityConfigJSON != capabilityConfig || item.UnitPriceMicrocredits != 123 || !item.Enabled || !item.PriceConfigured {
+		t.Fatalf("startup changed administrator settings: %#v", item)
+	}
+}
+
+func TestStartupDoesNotRewriteOtherAICostVideoProtocols(t *testing.T) {
+	channel := model.ModelChannel{BaseURL: "https://www.aicost.me"}
+	item := model.ChannelModel{ModelKey: "grok-image-video", Capability: "video", Protocol: model.ChannelInterfaceNewAPIChannel2}
+	if changed := syncChannelModelContract(channel, &item, nil, nil); changed {
+		t.Fatalf("unrelated aicost model was rewritten: %#v", item)
+	}
+}
+
 func TestSaveAdminChannelModelRejectsActiveDuplicateKey(t *testing.T) {
 	svc, db := newChannelModelTestService(t)
 	admin := &model.User{ID: "admin", Role: model.UserRoleAdmin}

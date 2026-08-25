@@ -90,6 +90,24 @@ func TestModelRequestIntentNormalizesLegacyReferenceVideoOperation(t *testing.T)
 	}
 }
 
+func TestModelRequestIntentKeepsReferenceVideoSeparateFromExtend(t *testing.T) {
+	input := map[string]any{
+		"mode":            "video",
+		"referenceVideos": []any{map[string]any{"id": "video-1"}},
+	}
+	intent := ModelRequestIntentFromTaskInput(input, "canvas_video", "reference_to_video")
+	if intent.Operation != "reference_to_video" {
+		t.Fatalf("operation = %q, want reference_to_video", intent.Operation)
+	}
+	if explicit := ModelRequestIntentFromTaskInput(input, "canvas_video", "extend"); explicit.Operation != "extend" {
+		t.Fatalf("explicit operation = %q, want extend", explicit.Operation)
+	}
+	spec := CapabilitySpec{Version: 1, Capability: "video", Operations: []string{"image_to_video"}, Inputs: map[string]InputConstraint{"video": {Min: 0, Max: 3}}}
+	if match := MatchCapability(spec, intent); !match.Matched {
+		t.Fatalf("reference video should use the image-capable route alias: %#v", match.Reasons)
+	}
+}
+
 func TestValidateProductSpecWithinRoutesRejectsUnsupportedCapabilityValue(t *testing.T) {
 	routes := []CapabilitySpec{
 		{

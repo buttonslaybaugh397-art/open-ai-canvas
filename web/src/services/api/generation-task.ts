@@ -6,6 +6,7 @@ import { createGenerationTask, waitForGenerationTask, type GenerationTask } from
 import { LOCAL_DREAMINA_WAIT_STOPPED_CODE, LocalDreaminaGenerationClientError, runLocalDreaminaGenerationTask, type LocalDreaminaGenerationInput, type LocalDreaminaGenerationTask } from "@/services/local-dreamina-generation";
 import { isLocalDreaminaBackgroundTask, localDreaminaTaskId, projectLocalDreaminaTask, stripLocalDreaminaTaskPrefix } from "@/services/local-dreamina-task-projection";
 import { modelCapabilityConfigFor, normalizeVideoValue } from "@/lib/model-capabilities";
+import { inferVideoOperation } from "@/lib/model-selection";
 import { grokImagePromptLimitError } from "@/lib/grok-image-prompt-limit";
 import { isArkPlanBaseUrl } from "@/lib/seedance-video";
 import { resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
@@ -237,11 +238,9 @@ function generationOperation(options: BackendGenerationTaskOptions) {
     const videoCount = options.referenceVideos?.length ?? 0;
     const audioCount = options.referenceAudios?.length ?? 0;
     const explicitOperation = typeof options.metadata?.videoEditOperation === "string" ? options.metadata.videoEditOperation.trim() : "";
-    if (explicitOperation && explicitOperation !== "reference_to_video") return explicitOperation;
-    if (audioCount > 0 && imageCount === 0 && videoCount === 0) return "audio_to_video";
-    if (videoCount > 0) return "extend";
-    if (imageCount > 0) return "image_to_video";
-    return "text_to_video";
+    if (explicitOperation === "extend") return explicitOperation;
+    if (explicitOperation && !["reference_to_video", "text_to_video", "image_to_video", "audio_to_video"].includes(explicitOperation)) return explicitOperation;
+    return inferVideoOperation({ textCount: 0, imageCount, videoCount, audioCount, characterCount: 0 });
 }
 
 export function isGenerationTaskCancelled(error: unknown, signal?: AbortSignal) {
@@ -449,7 +448,8 @@ function isVolcengineArkVideoConfig(config: AiConfig) {
 
 export function backendProviderConfig(config: AiConfig) {
     const requestConfig = resolveModelRequestConfig(config, config.model);
-    const capabilityConfig = modelCapabilityConfigFor(config, requestConfig.model);
+    // 保留带渠道前缀的选中值；同名模型可能存在于多个渠道，裸模型名会误取第一条渠道能力。
+    const capabilityConfig = modelCapabilityConfigFor(config, config.model);
     const normalizedHuiQuYunVideo = requestConfig.interfaceType === "huiquyun-video" && capabilityConfig.video
         ? normalizeVideoValue(capabilityConfig.video, { seconds: config.videoSeconds, ratio: config.size, resolution: config.vquality })
         : undefined;

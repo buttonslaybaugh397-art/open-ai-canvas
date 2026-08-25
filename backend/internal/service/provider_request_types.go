@@ -27,16 +27,14 @@ type newAPIVideoRequest struct {
 }
 
 type seedanceVideosRequest struct {
-	Model              string   `json:"model"`
-	Prompt             string   `json:"prompt"`
-	AspectRatio        string   `json:"aspect_ratio"`
-	Duration           int      `json:"duration"`
-	GenerateAudio      *bool    `json:"generate_audio,omitempty"`
-	ImageURL           string   `json:"image_url,omitempty"`
-	ReferenceImageURLs []string `json:"reference_image_urls,omitempty"`
-	ImageURLs          []string `json:"image_urls,omitempty"`
-	ReferenceVideos    []string `json:"reference_videos,omitempty"`
-	ReferenceAudios    []string `json:"reference_audios,omitempty"`
+	Model         string   `json:"model"`
+	Prompt        string   `json:"prompt"`
+	AspectRatio   string   `json:"aspect_ratio"`
+	Duration      int      `json:"duration"`
+	GenerateAudio *bool    `json:"generate_audio,omitempty"`
+	Images        []string `json:"images,omitempty"`
+	Videos        []string `json:"videos,omitempty"`
+	Audios        []string `json:"audios,omitempty"`
 }
 
 type xaiVideoRequest struct {

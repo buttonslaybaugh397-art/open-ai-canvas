@@ -83,18 +83,18 @@ const videoPollTimeout = 30 * time.Minute
 const maxProviderResponseBytes int64 = 64 << 20
 
 type providerMedia struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Type       string `json:"type"`
-	DataURL    string `json:"dataUrl"`
-	URL        string `json:"url"`
-	StorageKey string `json:"storageKey"`
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	Type               string `json:"type"`
+	DataURL            string `json:"dataUrl"`
+	URL                string `json:"url"`
+	StorageKey         string `json:"storageKey"`
 	VolcengineAssetURI string `json:"volcengineAssetUri"`
-	MimeType   string `json:"mimeType"`
-	Bytes      int64  `json:"bytes"`
-	Width      int    `json:"width"`
-	Height     int    `json:"height"`
-	DurationMs int64  `json:"durationMs"`
+	MimeType           string `json:"mimeType"`
+	Bytes              int64  `json:"bytes"`
+	Width              int    `json:"width"`
+	Height             int    `json:"height"`
+	DurationMs         int64  `json:"durationMs"`
 }
 
 type imageResponse struct {
@@ -647,7 +647,7 @@ func metadataStringValues(value any) map[string]string {
 // 素材库资源必须先签成可回源的临时地址，否则上游拉不到文件。
 func protocolRequiresPublicReferenceURL(interfaceType string) bool {
 	switch interfaceType {
-	case "newapi-channel-1", "newapi-channel-2":
+	case "newapi-channel-1", "newapi-channel-2", string(model.ChannelInterfaceSeedanceVideos):
 		return true
 	case string(model.ChannelInterfaceGlobalAiOpcImage), string(model.ChannelInterfaceGlobalAiOpcVideo):
 		return true
@@ -1775,6 +1775,9 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 	if input.Config.InterfaceType == "newapi-channel-1" {
 		return runNewAPIChannel1VideoTask(ctx, input)
 	}
+	if input.Config.InterfaceType == string(model.ChannelInterfaceSeedanceVideos) {
+		return runSeedanceVideosTask(ctx, input)
+	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo) {
 		return runSeedanceAgentPlanVideoTask(ctx, input)
 	}
@@ -1892,9 +1895,6 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 func runMiniMaxVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
 	if strings.TrimSpace(input.Prompt) == "" {
 		return nil, errors.New("MiniMax 视频提示词不能为空")
-	}
-	if len(input.ReferenceImages) > 9 || len(input.ReferenceVideos) > 3 || len(input.ReferenceAudios) > 3 {
-		return nil, errors.New("MiniMax 视频最多支持 9 张参考图、3 个参考视频和 3 个参考音频")
 	}
 	content := []miniMaxVideoContent{{Type: "text", Text: strings.TrimSpace(input.Prompt)}}
 	for index, image := range input.ReferenceImages {
@@ -3059,9 +3059,6 @@ func logNewAPIChannel2QueryRetry(ctx context.Context, providerTaskID string, ret
 }
 
 func newAPIChannel2VideoRequestBody(input canvasGenerationInput) (newAPIVideoRequest, error) {
-	if len(input.ReferenceImages) > 9 || len(input.ReferenceVideos) > 3 || len(input.ReferenceAudios) > 3 {
-		return newAPIVideoRequest{}, errors.New("NewAPI Video Generations 最多支持 9 张参考图、3 个参考视频和 3 个参考音频")
-	}
 	if len(input.ReferenceAudios) > 0 && len(input.ReferenceImages) == 0 {
 		return newAPIVideoRequest{}, errors.New("NewAPI Video Generations 的参考音频必须同时提供至少 1 张参考图片")
 	}
@@ -3264,9 +3261,6 @@ func runNewAPIChannel1VideoTask(ctx context.Context, input canvasGenerationInput
 }
 
 func newAPIChannel1VideoBody(input canvasGenerationInput) (map[string]interface{}, error) {
-	if len(input.ReferenceImages) > 9 || len(input.ReferenceVideos) > 3 || len(input.ReferenceAudios) > 3 {
-		return nil, errors.New("NewAPI 媒体任务最多支持 9 张参考图、3 个参考视频和 3 个参考音频")
-	}
 	media := make([]map[string]string, 0, len(input.ReferenceImages)+len(input.ReferenceVideos)+len(input.ReferenceAudios))
 	if shouldSendNewAPIVideoImages(input) {
 		for _, image := range input.ReferenceImages {
@@ -3653,7 +3647,7 @@ func validateGenerationInterface(mode string, interfaceType string) error {
 	allowed := map[string]map[string]bool{
 		"text":  {"chat-completion": true, "openai-response": true},
 		"image": {"openai-image": true, "grok-image": true, "globalaiopc-image": true, "aistarslab-image": true, "volcengine-ark-image": true, "volcengine-jimeng-image": true, "gemini-image": true},
-		"video": {"newapi": true, "newapi-channel-1": true, "newapi-channel-2": true, "globalaiopc-video": true, "huiquyun-video": true, "aistarslab-video": true, "xai-video": true, "volcengine-ark-video": true, "volcengine-jimeng-video": true, "gemini-veo": true, "novita-video": true},
+		"video": {"newapi": true, "newapi-channel-1": true, "newapi-channel-2": true, "seedance-videos": true, "globalaiopc-video": true, "huiquyun-video": true, "aistarslab-video": true, "xai-video": true, "volcengine-ark-video": true, "volcengine-jimeng-video": true, "gemini-veo": true, "novita-video": true},
 		"audio": {"openai-audio": true, "async-audio": true},
 	}
 	if allowed[mode] != nil && !allowed[mode][interfaceType] {
@@ -4647,9 +4641,6 @@ func newAPIVideoPromptText(input canvasGenerationInput) string {
 }
 
 func seedanceVideosRequestBody(input canvasGenerationInput) (seedanceVideosRequest, error) {
-	if (len(input.ReferenceVideos) > 0 || len(input.ReferenceAudios) > 0) && len(input.ReferenceImages) == 0 {
-		return seedanceVideosRequest{}, errors.New("Seedance 参考视频或参考音频需要同时连接至少 1 张主参考图")
-	}
 	body := seedanceVideosRequest{
 		Model:       input.Config.Model,
 		Prompt:      seedanceVideosPromptText(input),
@@ -4668,17 +4659,14 @@ func seedanceVideosRequestBody(input canvasGenerationInput) (seedanceVideosReque
 		}
 		imageURLs = append(imageURLs, url)
 	}
-	frameImageURLs, err := videoFrameImageURLs(input, imageURLs)
+	orderedImageURLs, err := videoFrameImageURLs(input, imageURLs)
 	if err != nil {
 		return seedanceVideosRequest{}, err
 	}
-	if len(frameImageURLs) > 0 {
-		body.ImageURLs = frameImageURLs
+	if len(orderedImageURLs) > 0 {
+		body.Images = orderedImageURLs
 	} else if len(imageURLs) > 0 {
-		body.ImageURL = imageURLs[0]
-		if len(imageURLs) > 1 {
-			body.ReferenceImageURLs = imageURLs[1:]
-		}
+		body.Images = imageURLs
 	}
 	videoURLs := make([]string, 0, len(input.ReferenceVideos))
 	for _, video := range input.ReferenceVideos {
@@ -4689,7 +4677,7 @@ func seedanceVideosRequestBody(input canvasGenerationInput) (seedanceVideosReque
 		videoURLs = append(videoURLs, url)
 	}
 	if len(videoURLs) > 0 {
-		body.ReferenceVideos = videoURLs
+		body.Videos = videoURLs
 	}
 	audioURLs := make([]string, 0, len(input.ReferenceAudios))
 	for _, audio := range input.ReferenceAudios {
@@ -4700,7 +4688,7 @@ func seedanceVideosRequestBody(input canvasGenerationInput) (seedanceVideosReque
 		audioURLs = append(audioURLs, url)
 	}
 	if len(audioURLs) > 0 {
-		body.ReferenceAudios = audioURLs
+		body.Audios = audioURLs
 	}
 	return body, nil
 }

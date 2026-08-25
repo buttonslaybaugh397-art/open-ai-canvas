@@ -3175,6 +3175,7 @@
     .creation-chat-attachment-remove:hover:not(:disabled) { background: color-mix(in srgb, var(--status-error) 16%, transparent); color: var(--status-error); transform: translateY(-1px); }
     .creation-chat-attachment-remove:focus-visible { outline: 2px solid var(--control-focus-ring); outline-offset: 2px; }
     .creation-chat-attachment-remove span { display: inline; white-space: nowrap; }
+    .creation-chat-attachment-label { max-width: 64px; }
     .creation-chat-attachment button svg { width: 10px; height: 10px; }
 
     .creation-chat-dock {

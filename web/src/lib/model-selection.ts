@@ -88,7 +88,7 @@ export function modelCompatibilityError(config: AiConfig, model: string, require
         if (input.videoCount > profile.references.maxVideos) return `最多支持 ${profile.references.maxVideos} 个参考视频`;
         if (input.audioCount > profile.references.maxAudios) return `最多支持 ${profile.references.maxAudios} 个参考音频`;
         const operation = resolveVideoOperation(input, requirements.videoOperation);
-        if (operation !== "concat" && !profile.operations.includes(operation)) return `不支持${videoOperationLabel(operation)}`;
+        if (operation !== "concat" && !videoOperationSupported(profile.operations, operation)) return `不支持${videoOperationLabel(operation)}`;
         return "";
     }
 
@@ -130,7 +130,7 @@ function logicalModelCompatibilityError(spec: NonNullable<NonNullable<AiConfig["
         if (constraint && (count < constraint.min || count > constraint.max)) return `${kind}输入需为 ${constraint.min}-${constraint.max} 个`;
     }
     const operation = requirements.capability === "video" && input ? resolveVideoOperation(input, requirements.videoOperation) : requirements.videoOperation;
-    if (operation && spec.operations?.length && !spec.operations.includes(operation)) return "不支持当前生成模式";
+    if (operation && spec.operations?.length && !videoOperationSupported(spec.operations, operation)) return "不支持当前生成模式";
     // 图片创作状态也会携带全局默认视频时长；这个字段只对视频模型有意义，
     // 不能把它拼进图片逻辑模型的能力匹配，否则图片模型会被误判为“不支持当前时长”。
     const options = {
@@ -315,20 +315,40 @@ export function modelGroupReferenceLimits(config: AiConfig, selected: string, ca
 export function inferVideoOperation(input: ModelInputSummary) {
     const visualInputCount = input.imageCount + input.characterCount;
     if (input.audioCount > 0 && visualInputCount === 0 && input.videoCount === 0) return "audio_to_video";
-    if (input.videoCount > 0) return "extend";
+    if (input.videoCount > 0) return "reference_to_video";
     if (visualInputCount > 0) return "image_to_video";
     return "text_to_video";
 }
 
 export function resolveVideoOperation(input: ModelInputSummary, storedOperation?: string) {
-    if (storedOperation && !["text_to_video", "image_to_video", "audio_to_video", "extend"].includes(storedOperation)) return storedOperation;
+    const normalizedStoredOperation = storedOperation?.trim();
+    if (normalizedStoredOperation === "extend" || normalizedStoredOperation === "concat") return normalizedStoredOperation;
+    if (input.videoCount > 0) return "reference_to_video";
+    if (normalizedStoredOperation && !["text_to_video", "image_to_video", "audio_to_video", "reference_to_video"].includes(normalizedStoredOperation)) return normalizedStoredOperation;
     return inferVideoOperation(input);
+}
+
+export function modelReferenceLimits(config: AiConfig, selected: string, capability: ModelCapability): ModelReferenceLimits | undefined {
+    if (capability !== "image" && capability !== "video") return undefined;
+    const profile = modelCapabilityConfigFor(config, selected);
+    if (capability === "image") return { maxImages: profile.image!.references.maxImages, maxVideos: 0, maxAudios: 0 };
+    return {
+        maxImages: profile.video!.references.maxImages,
+        maxVideos: profile.video!.references.maxVideos,
+        maxAudios: profile.video!.references.maxAudios,
+    };
 }
 
 function videoOperationLabel(operation: string) {
     if (operation === "text_to_video") return "文生视频";
     if (operation === "image_to_video") return "图生视频";
+    if (operation === "reference_to_video") return "参考视频生视频";
     if (operation === "audio_to_video") return "音频生视频";
     if (operation === "extend") return "视频续写";
     return "当前生成模式";
+}
+
+function videoOperationSupported(operations: string[], operation: string) {
+    if (operations.includes(operation)) return true;
+    return operation === "reference_to_video" && operations.includes("image_to_video");
 }

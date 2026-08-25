@@ -32,6 +32,7 @@ export function volcengineAssetUriForAsset(asset: AssetRecordLike) {
         asset.providerAssetId,
         asset.arkAssetUri,
         asset.arkAssetId,
+        asset.id,
         data?.volcengineAssetUri,
         data?.volcengineAssetId,
         data?.assetId,

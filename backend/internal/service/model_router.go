@@ -57,14 +57,13 @@ func ModelRequestIntentFromTaskInput(input map[string]any, taskType string, oper
 			intent.Inputs[inputType] = len(values)
 		}
 	}
-	// reference_to_video 是旧前端按参考数量拼出的内部标签，不是正式视频操作。
-	// 历史任务重试时按真实输入还原，避免在逻辑模型能力校验阶段误判供应商不支持。
+	// reference_to_video 表示参考视频生成，不是视频续写；只有显式的 extend 才进入续写能力校验。
 	if normalizeCapabilityValue(intent.Operation) == "reference_to_video" {
 		switch {
 		case intent.Inputs["audio"] > 0 && intent.Inputs["image"] == 0 && intent.Inputs["video"] == 0:
 			intent.Operation = "audio_to_video"
 		case intent.Inputs["video"] > 0:
-			intent.Operation = "extend"
+			intent.Operation = "reference_to_video"
 		case intent.Inputs["image"] > 0:
 			intent.Operation = "image_to_video"
 		default:
@@ -223,7 +222,7 @@ func MatchCapability(spec CapabilitySpec, intent ModelRequestIntent) CapabilityM
 	if normalizeCapability(intent.Capability) != normalizeCapability(spec.Capability) {
 		reasons = append(reasons, "能力类型不匹配")
 	}
-	if operation := normalizeCapabilityValue(intent.Operation); operation != "" && len(spec.Operations) > 0 && !containsNormalized(spec.Operations, operation) {
+	if operation := normalizeCapabilityValue(intent.Operation); operation != "" && len(spec.Operations) > 0 && !capabilityOperationSupported(spec.Operations, operation) {
 		reasons = append(reasons, "不支持操作 "+intent.Operation)
 	}
 	for inputType, count := range intent.Inputs {
@@ -258,6 +257,13 @@ func MatchCapability(spec CapabilitySpec, intent ModelRequestIntent) CapabilityM
 		}
 	}
 	return CapabilityMatch{Matched: len(reasons) == 0, Reasons: reasons}
+}
+
+func capabilityOperationSupported(operations []string, operation string) bool {
+	if containsNormalized(operations, operation) {
+		return true
+	}
+	return operation == "reference_to_video" && containsNormalized(operations, "image_to_video")
 }
 
 func capabilityInputLabel(name string) string {

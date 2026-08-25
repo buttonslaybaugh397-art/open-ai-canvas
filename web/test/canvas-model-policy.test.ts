@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { canvasConnectionError } from "../src/lib/canvas/canvas-connection-policy";
 import { assertCanvasImageReferenceLimit, buildGenerationConfig, canvasImageReferenceLimitError, resolveCanvasGenerationModel } from "../src/lib/canvas/canvas-project-generation";
 import { defaultModelCapabilityConfig } from "../src/lib/model-capabilities";
-import { groupModelsByDisplayName, modelCompatibilityError, modelGroupReferenceLimits, resolveCompatibleModel, resolveModelGenerationDefaults } from "../src/lib/model-selection";
+import { groupModelsByDisplayName, inferVideoOperation, modelCompatibilityError, modelGroupReferenceLimits, modelReferenceLimits, resolveCompatibleModel, resolveModelGenerationDefaults, resolveVideoOperation } from "../src/lib/model-selection";
 import { DEFAULT_CANVAS_GENERATION_RATIO, isCanvasGenerationRatio, resolveCanvasGenerationRatio } from "../src/lib/canvas/canvas-generation-ratio";
 import { defaultConfig, type AiConfig, type ModelChannel } from "../src/stores/use-config-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "../src/types/canvas";
@@ -177,9 +177,28 @@ describe("逻辑模型选择", () => {
         expect(modelCompatibilityError(config, "relay::cinema-image", requirements)).toContain("参考音频");
     });
 
+    test("参考视频默认使用参考视频生成而不是视频续写", () => {
+        const input = { textCount: 1, imageCount: 0, videoCount: 1, audioCount: 0, characterCount: 0 };
+        expect(inferVideoOperation(input)).toBe("reference_to_video");
+        expect(resolveVideoOperation(input)).toBe("reference_to_video");
+        expect(resolveVideoOperation(input, "extend")).toBe("extend");
+    });
+
     test("逻辑模型容量使用同名细分模型的最大值", () => {
         const config = policyConfig();
         expect(modelGroupReferenceLimits(config, "relay::cinema-text", "video")).toEqual({ maxImages: 1, maxVideos: 0, maxAudios: 1 });
+    });
+
+    test("生成补图预算使用最终具体模型而不是同组最大值", () => {
+        const config = policyConfig();
+        const imageModel = config.channels[0]?.modelCosts?.find((item) => item.model === "cinema-image");
+        const textModel = config.channels[0]?.modelCosts?.find((item) => item.model === "cinema-text");
+        if (!imageModel?.capabilityConfig?.video || !textModel?.capabilityConfig?.video) throw new Error("缺少视频能力配置");
+        imageModel.capabilityConfig.video.references.maxImages = 16;
+        textModel.capabilityConfig.video.references.maxImages = 9;
+
+        expect(modelGroupReferenceLimits(config, "relay::cinema-text", "video")).toMatchObject({ maxImages: 16 });
+        expect(modelReferenceLimits(config, "relay::cinema-text", "video")).toMatchObject({ maxImages: 9 });
     });
 });
 

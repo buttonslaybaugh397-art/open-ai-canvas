@@ -8,7 +8,7 @@ import { normalizeVolcengineAssetUri } from "@/lib/volcengine-asset";
 import { channelRequest } from "@/services/api/custom-channel-relay";
 import { imageToDataUrl } from "@/services/image-storage";
 import { modelCapabilityConfigFor, normalizeVideoValue, videoDurationAllowed, videoResolutionRequest } from "@/lib/model-capabilities";
-import { boolConfig, buildSeedancePromptText, isArkPlanBaseUrl, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceVideoReferenceError, SEEDANCE_REFERENCE_LIMITS } from "@/lib/seedance-video";
+import { boolConfig, buildSeedancePromptText, isArkPlanBaseUrl, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution } from "@/lib/seedance-video";
 import { buildApiUrl, isSystemProxyBaseUrl, modelOptionName, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -74,6 +74,9 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     }
     if (requestConfig.interfaceType === "newapi-channel-2") {
         return createVideoGenerationsTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
+    }
+    if (requestConfig.interfaceType === "seedance-videos") {
+        return createSeedanceTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
     }
     if (requestConfig.interfaceType === "gemini-veo") {
         return createGeminiVeoTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
@@ -185,7 +188,6 @@ function huiQuYunVideoError(state: Record<string, unknown>) {
 }
 
 async function createVideoGenerationsTask(config: ResolvedAiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
-    if (references.length > 9 || videoReferences.length > 3 || audioReferences.length > 3) throw new Error("NewAPI Video Generations 最多支持 9 张参考图、3 个参考视频和 3 个参考音频");
     if (audioReferences.length > 0 && references.length === 0) throw new Error("NewAPI Video Generations 的参考音频必须同时提供至少 1 张参考图片");
     const [imageUrls, videoUrls, audioUrls] = await Promise.all([
         Promise.all(references.map((item) => resolveVideoGenerationsUrl(item.url || item.dataUrl, item.storageKey))),
@@ -349,9 +351,9 @@ async function pollNovitaVideoTask(config: ResolvedAiConfig, task: VideoGenerati
 }
 
 async function createMiniMaxVideoTask(config: ResolvedAiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
-    const imageUrls = await Promise.all(references.slice(0, 9).map((image) => resolveMiniMaxImageUrl(image)));
-    const videoUrls = await Promise.all(videoReferences.slice(0, 3).map((video) => resolveMiniMaxMediaUrl(video, "参考视频")));
-    const audioUrls = await Promise.all(audioReferences.slice(0, 3).map((audio) => resolveMiniMaxMediaUrl(audio, "参考音频")));
+    const imageUrls = await Promise.all(references.map((image) => resolveMiniMaxImageUrl(image)));
+    const videoUrls = await Promise.all(videoReferences.map((video) => resolveMiniMaxMediaUrl(video, "参考视频")));
+    const audioUrls = await Promise.all(audioReferences.map((audio) => resolveMiniMaxMediaUrl(audio, "参考音频")));
     const content: Array<Record<string, unknown>> = [{ type: "text", text: prompt.trim() }];
     imageUrls.forEach((url, index) => {
         // 首尾帧只允许成对出现；三张及以上图片统一作为多模态参考图，避免提交 first/last 与 reference 混合的非法组合。
@@ -506,7 +508,7 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
 async function createOpenAIVideoTask(config: ResolvedAiConfig, model: string, prompt: string, references: ReferenceImage[], options?: RequestOptions): Promise<VideoGenerationTask> {
     const modelName = modelOptionName(model);
     if (config.interfaceType === "xai-video" || modelName.toLowerCase().includes("grok")) {
-        const images = await Promise.all(references.slice(0, 7).map((image) => imageToDataUrl(image)));
+        const images = await Promise.all(references.map((image) => imageToDataUrl(image)));
         const seconds = normalizeVideoSeconds(config.videoSeconds);
         const payload = {
             model: modelName,
@@ -534,7 +536,7 @@ async function createOpenAIVideoTask(config: ResolvedAiConfig, model: string, pr
     const resolution = videoResolutionRequest(modelCapabilityConfigFor(config, model).video!, config.vquality);
     if (resolution) body.append("resolution_name", resolution);
     body.append("preset", "normal");
-    const files = await Promise.all(references.slice(0, 7).map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
+    const files = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
     files.forEach((file) => body.append("input_reference[]", file));
     try {
         const created = unwrapVideoResponse(await channelPostForm<ApiVideoResponse>(config, aiApiUrl(config, "/videos"), body, options));
@@ -563,8 +565,6 @@ async function pollOpenAIVideoTask(config: ResolvedAiConfig, task: VideoGenerati
 }
 
 async function createSeedanceTask(config: ResolvedAiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
-    assertSeedanceVideoReferences(videoReferences);
-    assertSeedanceAudioReferences(audioReferences);
     const isVolcengineArk = config.interfaceType === "volcengine-ark-video";
     const payload =
         isVolcengineArk || isArkPlanBaseUrl(config.baseUrl)
@@ -601,28 +601,6 @@ async function pollSeedanceTask(config: ResolvedAiConfig, task: VideoGenerationT
     }
 }
 
-function assertSeedanceVideoReferences(videoReferences: ReferenceVideo[]) {
-    const error = seedanceVideoReferenceError(videoReferences);
-    if (error) throw new Error(error);
-    let total = 0;
-    for (const video of videoReferences) {
-        if (!video.durationMs) continue;
-        if (video.durationMs < 2000 || video.durationMs > 15000) throw new Error("Seedance 参考视频单个时长需要在 2-15 秒之间");
-        total += video.durationMs;
-    }
-    if (total > 15000) throw new Error("Seedance 参考视频总时长不能超过 15 秒");
-}
-
-function assertSeedanceAudioReferences(audioReferences: ReferenceAudio[]) {
-    let total = 0;
-    for (const audio of audioReferences) {
-        if (!audio.durationMs) continue;
-        if (audio.durationMs < 2000 || audio.durationMs > 15000) throw new Error("Seedance 参考音频单个时长需要在 2-15 秒之间");
-        total += audio.durationMs;
-    }
-    if (total > 15000) throw new Error("Seedance 参考音频总时长不能超过 15 秒");
-}
-
 function seedanceApiUrl(config: ResolvedAiConfig, taskId?: string) {
     if (config.interfaceType === "volcengine-ark-video" || isArkPlanBaseUrl(config.baseUrl)) return buildApiUrl(config.baseUrl, `/contents/generations/tasks${taskId ? `/${encodeURIComponent(taskId)}` : ""}`);
     return buildApiUrl(config.baseUrl, `/videos${taskId ? `/${encodeURIComponent(taskId)}` : ""}`);
@@ -650,13 +628,13 @@ async function buildSeedanceAgentPlanPayload(config: ResolvedAiConfig, model: st
 async function buildVolcengineArkContent(prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[]) {
     const content: Array<Record<string, unknown>> = [];
     if (prompt.trim()) content.push({ type: "text", text: prompt.trim() });
-    for (const image of references.slice(0, SEEDANCE_REFERENCE_LIMITS.images)) {
+    for (const image of references) {
         content.push({ type: "image_url", image_url: { url: await resolveVolcengineArkReferenceUrl(image.volcengineAssetUri, image.id, image.url, image.dataUrl, image.storageKey) }, role: "reference_image" });
     }
-    for (const video of videoReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.videos)) {
+    for (const video of videoReferences) {
         content.push({ type: "video_url", video_url: { url: await resolveVolcengineArkReferenceUrl(video.volcengineAssetUri, video.id, video.url, undefined, video.storageKey) }, role: "reference_video" });
     }
-    for (const audio of audioReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.audios)) {
+    for (const audio of audioReferences) {
         content.push({ type: "audio_url", audio_url: { url: await resolveVolcengineArkReferenceUrl(audio.volcengineAssetUri, audio.id, audio.url, undefined, audio.storageKey) }, role: "reference_audio" });
     }
     return content;
@@ -673,12 +651,9 @@ async function resolveVolcengineArkReferenceUrl(...values: [string | undefined, 
 }
 
 async function buildSeedanceVideosPayload(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[]) {
-    if ((videoReferences.length || audioReferences.length) && !references.length) {
-        throw new Error("Seedance 参考视频或参考音频需要同时连接至少 1 张主参考图");
-    }
-    const imageUrls = await Promise.all(references.slice(0, SEEDANCE_REFERENCE_LIMITS.images).map(resolveSeedanceVideosImageUrl));
-    const videoUrls = await Promise.all(videoReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.videos).map(resolveSeedanceVideosMediaUrl));
-    const audioUrls = await Promise.all(audioReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.audios).map(resolveSeedanceVideosMediaUrl));
+    const imageUrls = await Promise.all(references.map(resolveSeedanceVideosImageUrl));
+    const videoUrls = await Promise.all(videoReferences.map(resolveSeedanceVideosMediaUrl));
+    const audioUrls = await Promise.all(audioReferences.map(resolveSeedanceVideosMediaUrl));
     const ratio = normalizeSeedanceRatio(config.size);
     const duration = normalizeSeedanceDuration(config.videoSeconds);
     const profile = modelCapabilityConfigFor(config, model).video!;
@@ -688,10 +663,9 @@ async function buildSeedanceVideosPayload(config: AiConfig, model: string, promp
         aspect_ratio: ratio === "adaptive" ? "16:9" : ratio,
         duration,
         ...(profile.generateAudio.supported ? { generate_audio: boolConfig(config.videoGenerateAudio, profile.generateAudio.default) } : {}),
-        ...(imageUrls[0] ? { image_url: imageUrls[0] } : {}),
-        ...(imageUrls.length > 1 ? { reference_image_urls: imageUrls.slice(1) } : {}),
-        ...(videoUrls.length ? { reference_videos: videoUrls } : {}),
-        ...(audioUrls.length ? { reference_audios: audioUrls } : {}),
+        ...(imageUrls.length ? { images: imageUrls } : {}),
+        ...(videoUrls.length ? { videos: videoUrls } : {}),
+        ...(audioUrls.length ? { audios: audioUrls } : {}),
     };
 }
 
@@ -699,13 +673,13 @@ async function buildSeedanceContent(config: AiConfig, prompt: string, references
     const content: Array<Record<string, unknown>> = [];
     const text = buildSeedancePromptText(prompt, references, videoReferences, audioReferences);
     if (text) content.push({ type: "text", text });
-    for (const image of references.slice(0, SEEDANCE_REFERENCE_LIMITS.images)) {
+    for (const image of references) {
         content.push({ type: "image_url", image_url: { url: await resolveSeedanceImageUrl(config, image) }, role: "reference_image" });
     }
-    for (const video of videoReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.videos)) {
+    for (const video of videoReferences) {
         content.push({ type: "video_url", video_url: { url: await resolveSeedanceVideoUrl(video) }, role: "reference_video" });
     }
-    for (const audio of audioReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.audios)) {
+    for (const audio of audioReferences) {
         content.push({ type: "audio_url", audio_url: { url: await resolveSeedanceAudioUrl(audio) }, role: "reference_audio" });
     }
     return content;

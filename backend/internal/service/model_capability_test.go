@@ -105,7 +105,7 @@ func TestHuiQuYunMX933CapabilityMatchesDocumentation(t *testing.T) {
 	if profile.Duration.Selection != "enum" || len(profile.Duration.Values) != 1 || profile.Duration.Values[0] != 10 {
 		t.Fatalf("HuiQuYun MX933 duration = %#v", profile.Duration)
 	}
-	if profile.References.MaxImages != 9 || profile.References.MaxVideos != 3 || profile.References.MaxAudios != 3 || profile.References.MaxVideoBytes != 50*1024*1024 {
+	if profile.References.MaxImages != 100 || profile.References.MaxVideos != 3 || profile.References.MaxAudios != 3 || profile.References.MaxVideoBytes != 50*1024*1024 {
 		t.Fatalf("HuiQuYun MX933 reference limits = %#v", profile.References)
 	}
 	if fmt.Sprint(profile.Ratios) != fmt.Sprint([]string{"16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"}) {
@@ -177,6 +177,46 @@ func TestValidateVideoTaskIgnoresGlobalResolutionWhenCatalogDeclaresNone(t *test
 	})
 	if err != nil {
 		t.Fatalf("validateVideoTask() error = %v", err)
+	}
+}
+
+func TestValidateVideoTaskEnforcesReferenceLimitsByMediaType(t *testing.T) {
+	profile := DefaultModelCapabilityConfigForModel("newapi-channel-2", "custom-video-model").Video
+	profile.References = VideoReferenceConfig{MaxImages: 1, MaxVideos: 2, MaxAudios: 1}
+	profile.Duration = VideoDurationConfig{Selection: "enum", Values: []int{5}, Default: 5}
+	profile.Ratios = []string{"16:9"}
+	profile.Resolutions = []string{"720p"}
+	profile.Operations = []string{"image_to_video", "reference_to_video"}
+
+	tests := []struct {
+		name  string
+		input canvasGenerationInput
+		want  string
+	}{
+		{name: "images", input: canvasGenerationInput{ReferenceImages: []providerMedia{{}, {}}}, want: "最多支持 1 张参考图"},
+		{name: "videos", input: canvasGenerationInput{ReferenceVideos: []providerMedia{{}, {}, {}}}, want: "最多支持 2 个参考视频"},
+		{name: "audios", input: canvasGenerationInput{ReferenceAudios: []providerMedia{{}, {}}}, want: "最多支持 1 个参考音频"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.input.Config = providerConfig{Model: "custom-video-model", VideoSeconds: "5", Size: "16:9", VQuality: "720"}
+			err := validateVideoTask(profile, test.input)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validateVideoTask() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeVideoCapabilityPreservesConfiguredReferenceLimit(t *testing.T) {
+	profile := DefaultModelCapabilityConfigForModel("newapi-channel-2", "seedance2.5-480p")
+	profile.Video.References.MaxImages = 30
+	result, err := NormalizeModelCapabilityConfig("video", "newapi-channel-2", profile)
+	if err != nil {
+		t.Fatalf("NormalizeModelCapabilityConfig() error = %v", err)
+	}
+	if result.Video == nil || result.Video.References.MaxImages != 30 {
+		t.Fatalf("normalized max images = %#v, want 30", result.Video)
 	}
 }
 

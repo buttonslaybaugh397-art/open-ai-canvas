@@ -457,7 +457,7 @@ export function resolveCanvasGenerationModel(config: AiConfig, model: string | u
 
 export function supportsVideoReferenceAudio(config: AiConfig) {
     const interfaceType = resolveModelRequestConfig(config, config.model).interfaceType;
-    return interfaceType === "globalaiopc-video" || interfaceType === "huiquyun-video" || interfaceType === "newapi-channel-1" || interfaceType === "newapi-channel-2" || isSeedanceVideoConfig(config);
+    return interfaceType === "globalaiopc-video" || interfaceType === "huiquyun-video" || interfaceType === "newapi-channel-1" || interfaceType === "newapi-channel-2" || interfaceType === "seedance-videos" || isSeedanceVideoConfig(config);
 }
 
 export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {

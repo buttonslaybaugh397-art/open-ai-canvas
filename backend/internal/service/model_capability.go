@@ -203,7 +203,7 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 	// 文本模型是否支持视觉输入不能从协议或模型名可靠推断，默认关闭，由管理员按真实上游能力开启。
 	text := &TextCapabilityConfig{References: TextReferenceConfig{PromptMaxChars: 32000}}
 	video := &VideoCapabilityConfig{
-		References:        VideoReferenceConfig{PromptMaxChars: 1000, MinImages: 0, MaxImages: 9, MaxImageBytes: 30 * 1024 * 1024, MaxVideos: 0, MaxVideoBytes: 0, MaxVideoDuration: 0, MaxAudios: 0, MaxAudioBytes: 0, MaxAudioDuration: 0},
+		References:        VideoReferenceConfig{PromptMaxChars: 1000, MinImages: 0, MaxImages: 100, MaxImageBytes: 30 * 1024 * 1024, MaxVideos: 0, MaxVideoBytes: 0, MaxVideoDuration: 0, MaxAudios: 0, MaxAudioBytes: 0, MaxAudioDuration: 0},
 		Duration:          VideoDurationConfig{Selection: "range", Min: 1, Max: 15, Step: 1, Default: 6},
 		Ratios:            []string{"16:9", "9:16", "1:1", "4:3", "3:4", "21:9"},
 		DefaultRatio:      "16:9",
@@ -228,12 +228,12 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
 		video.Watermark = VideoBooleanConfig{Supported: true, Default: false}
 		video.Resolutions = []string{"480p", "720p", "1080p"}
-	case model.ChannelInterfaceNewAPIChannel1, model.ChannelInterfaceNewAPIChannel2:
+	case model.ChannelInterfaceNewAPIChannel1, model.ChannelInterfaceNewAPIChannel2, model.ChannelInterfaceSeedanceVideos:
 		video.References.MaxVideos, video.References.MaxAudios = 3, 3
 		video.References.MaxVideoBytes, video.References.MaxAudioBytes = 200*1024*1024, 15*1024*1024
 		video.References.MaxVideoDuration, video.References.MaxAudioDuration = 15, 15
 		video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
-		if model.ChannelInterfaceType(protocol) == model.ChannelInterfaceNewAPIChannel1 {
+		if model.ChannelInterfaceType(protocol) == model.ChannelInterfaceNewAPIChannel1 || model.ChannelInterfaceType(protocol) == model.ChannelInterfaceSeedanceVideos {
 			video.Resolutions = []string{"480p", "720p", "1080p"}
 		}
 	case model.ChannelInterfaceHuiQuYunVideo:
@@ -244,7 +244,8 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		video.Resolutions, video.DefaultResolution = []string{"720p"}, "720p"
 		video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
 		if isHuiQuYunMX933VideoModel(modelName) {
-			video.References.MaxImages, video.References.MaxVideos, video.References.MaxAudios = 9, 3, 3
+			video.References.MaxImages = 100
+			video.References.MaxVideos, video.References.MaxAudios = 3, 3
 			video.References.MaxVideoBytes = 50 * 1024 * 1024
 			video.Ratios = []string{"16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"}
 			video.Resolutions, video.DefaultResolution = []string{"480p", "720p"}, "720p"
@@ -265,7 +266,6 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		video.DefaultResolution = "1080p"
 	case model.ChannelInterfaceMiniMaxVideo:
 		video.Operations = append(video.Operations, "reference_to_video")
-		video.References.MaxImages = 9
 		video.References.MaxImageBytes = 30 * 1024 * 1024
 		video.References.MaxVideos = 3
 		video.References.MaxVideoBytes = 50 * 1024 * 1024
@@ -279,6 +279,9 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		video.Resolutions = []string{"768P", "2K"}
 		video.DefaultResolution = "768P"
 		video.Watermark = VideoBooleanConfig{Supported: true, Default: false}
+	}
+	if video.References.MaxVideos > 0 && !containsCapabilityString(video.Operations, "reference_to_video") {
+		video.Operations = append(video.Operations, "reference_to_video")
 	}
 	return &ModelCapabilityConfig{Version: 1, Text: text, Image: DefaultImageCapabilityConfig(protocol, modelName), Video: video}
 }
@@ -320,6 +323,9 @@ func NormalizeModelCapabilityConfig(capability string, _ string, input *ModelCap
 	}
 	if input == nil || input.Video == nil {
 		return nil, BadAuthRequest("请配置视频模型能力参数")
+	}
+	if input.Video.References.MaxVideos > 0 && !containsCapabilityString(input.Video.Operations, "reference_to_video") {
+		input.Video.Operations = append(input.Video.Operations, "reference_to_video")
 	}
 	value := &ModelCapabilityConfig{Version: 1, Video: input.Video}
 	if err := validateVideoCapabilityConfig(value.Video); err != nil {
@@ -382,6 +388,9 @@ func CapabilitySpecFromModelCapabilityConfig(config *ModelCapabilityConfig, capa
 		}
 		video := config.Video
 		spec.Operations = append([]string(nil), video.Operations...)
+		if video.References.MaxVideos > 0 && !containsCapabilityString(spec.Operations, "reference_to_video") {
+			spec.Operations = append(spec.Operations, "reference_to_video")
+		}
 		addInputConstraint(spec.Inputs, "image", video.References.MinImages, video.References.MaxImages)
 		addInputConstraint(spec.Inputs, "video", 0, video.References.MaxVideos)
 		addInputConstraint(spec.Inputs, "audio", 0, video.References.MaxAudios)
@@ -611,8 +620,14 @@ func (s *Service) ValidateTaskCapability(input map[string]any) error {
 }
 
 func validateVideoTask(profile *VideoCapabilityConfig, input canvasGenerationInput) error {
-	if len(input.ReferenceImages) > profile.References.MaxImages || len(input.ReferenceVideos) > profile.References.MaxVideos || len(input.ReferenceAudios) > profile.References.MaxAudios {
-		return BadAuthRequest("参考素材数量超过当前模型限制")
+	if len(input.ReferenceImages) > profile.References.MaxImages {
+		return BadAuthRequest(fmt.Sprintf("当前视频模型最多支持 %d 张参考图，当前已连接 %d 张", profile.References.MaxImages, len(input.ReferenceImages)))
+	}
+	if len(input.ReferenceVideos) > profile.References.MaxVideos {
+		return BadAuthRequest(fmt.Sprintf("当前视频模型最多支持 %d 个参考视频，当前已连接 %d 个", profile.References.MaxVideos, len(input.ReferenceVideos)))
+	}
+	if len(input.ReferenceAudios) > profile.References.MaxAudios {
+		return BadAuthRequest(fmt.Sprintf("当前视频模型最多支持 %d 个参考音频，当前已连接 %d 个", profile.References.MaxAudios, len(input.ReferenceAudios)))
 	}
 	if len(input.ReferenceImages) < profile.References.MinImages {
 		return BadAuthRequest(fmt.Sprintf("当前视频模型至少需要 %d 张参考图", profile.References.MinImages))
@@ -650,13 +665,17 @@ func validateVideoTask(profile *VideoCapabilityConfig, input canvasGenerationInp
 	}
 	operation := metadataString(input.Metadata, "videoEditOperation")
 	if operation == "" {
-		if len(input.ReferenceImages) > 0 {
+		if len(input.ReferenceVideos) > 0 {
+			operation = "reference_to_video"
+		} else if len(input.ReferenceAudios) > 0 && len(input.ReferenceImages) == 0 {
+			operation = "audio_to_video"
+		} else if len(input.ReferenceImages) > 0 {
 			operation = "image_to_video"
 		} else {
 			operation = profile.DefaultOperation
 		}
 	}
-	if !containsCapabilityString(profile.Operations, operation) {
+	if !containsCapabilityString(profile.Operations, operation) && !(operation == "reference_to_video" && containsCapabilityString(profile.Operations, "image_to_video")) {
 		return BadAuthRequest("当前视频模型不支持该生成模式")
 	}
 	return nil

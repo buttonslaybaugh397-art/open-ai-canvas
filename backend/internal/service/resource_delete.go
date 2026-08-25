@@ -15,6 +15,9 @@ import (
 
 	"infinite-canvas/backend/internal/model"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/service/s3"
 	qiniuAuth "github.com/qiniu/go-sdk/v7/auth"
 	qiniuStorage "github.com/qiniu/go-sdk/v7/storage"
 )
@@ -297,6 +300,12 @@ func (s *Service) deleteStoredResourceObject(userID string, resource *model.Reso
 			return fmt.Errorf("无法读取七牛云 Kodo 配置：%w", err)
 		}
 		return deleteQiniuObject(setting, resource.ObjectKey)
+	case rainyunROSProvider:
+		setting, err := s.ossSettingForResource(userID, resource)
+		if err != nil {
+			return fmt.Errorf("无法读取雨云 ROS 配置：%w", err)
+		}
+		return deleteRainyunS3Object(setting, resource.ObjectKey)
 	default:
 		return fmt.Errorf("资源 %s 使用了不支持的存储类型 %q", resource.ID, resource.Provider)
 	}
@@ -393,4 +402,26 @@ func deleteQiniuObject(setting ossSettingValue, objectKey string) error {
 		return fmt.Errorf("删除七牛云 Kodo 对象失败：%w", err)
 	}
 	return nil
+}
+
+func deleteRainyunS3Object(setting ossSettingValue, objectKey string) error {
+	objectKey = strings.TrimLeft(strings.TrimSpace(objectKey), "/")
+	if objectKey == "" {
+		return errors.New("雨云 ROS 对象路径为空")
+	}
+	client, err := newRainyunS3Client(setting, 2*time.Minute)
+	if err != nil {
+		return err
+	}
+	_, err = client.DeleteObjectWithContext(context.Background(), &s3.DeleteObjectInput{
+		Bucket: aws.String(setting.Bucket),
+		Key:    aws.String(objectKey),
+	})
+	if err == nil {
+		return nil
+	}
+	if awsError, ok := err.(awserr.Error); ok && awsError.Code() == s3.ErrCodeNoSuchKey {
+		return nil
+	}
+	return fmt.Errorf("删除雨云 ROS 对象失败：%w", err)
 }

@@ -114,6 +114,13 @@ function normalizeCapabilityStrings(values: string[]) {
 }
 
 export function normalizeModelCapabilityConfig(config: ModelCapabilityConfig): ModelCapabilityConfig {
+    const normalizedVideo = config.video
+        ? {
+              ...config.video,
+              operations: normalizeCapabilityStrings(config.video.operations),
+          }
+        : undefined;
+    if (normalizedVideo && normalizedVideo.references.maxVideos > 0 && !normalizedVideo.operations.includes("reference_to_video")) normalizedVideo.operations.push("reference_to_video");
     return {
         ...config,
         image: config.image
@@ -131,15 +138,15 @@ export function normalizeModelCapabilityConfig(config: ModelCapabilityConfig): M
                   },
               }
             : undefined,
-        video: config.video
+        video: normalizedVideo
             ? {
-                  ...config.video,
-                  ratios: normalizeCapabilityStrings(config.video.ratios),
-                  defaultRatio: normalizeCapabilityString(config.video.defaultRatio),
-                  resolutions: normalizeCapabilityStrings(config.video.resolutions),
-                  defaultResolution: normalizeCapabilityString(config.video.defaultResolution),
-                  operations: normalizeCapabilityStrings(config.video.operations),
-                  defaultOperation: normalizeCapabilityString(config.video.defaultOperation),
+                  ...normalizedVideo,
+                  ratios: normalizeCapabilityStrings(normalizedVideo.ratios),
+                  defaultRatio: normalizeCapabilityString(normalizedVideo.defaultRatio),
+                  resolutions: normalizeCapabilityStrings(normalizedVideo.resolutions),
+                  defaultResolution: normalizeCapabilityString(normalizedVideo.defaultResolution),
+                  operations: normalizedVideo.operations,
+                  defaultOperation: normalizeCapabilityString(normalizedVideo.defaultOperation),
               }
             : undefined,
     };
@@ -270,7 +277,7 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         references: {
             promptMaxChars: 1000,
             minImages: 0,
-            maxImages: 9,
+            maxImages: 100,
             maxImageBytes: 30 * 1024 * 1024,
             maxVideos: 0,
             maxVideoBytes: 0,
@@ -311,7 +318,7 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.generateAudio = { supported: true, default: true };
 
         if (isHuiQuYunMX933Model(model)) {
-            video.references.maxImages = 9;
+            video.references.maxImages = 100;
             video.references.maxAudios = 3;
             video.references.maxVideoBytes = 50 * 1024 * 1024;
             video.ratios = ["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"];
@@ -323,7 +330,7 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
             ? { selection: "enum", values: [fixedDuration], default: fixedDuration }
             : { selection: "range", min: 4, max: 15, step: 1, default: 8 };
     }
-    if (protocol === "volcengine-ark-video" || protocol === "newapi-channel-1" || protocol === "newapi-channel-2") {
+    if (protocol === "volcengine-ark-video" || protocol === "newapi-channel-1" || protocol === "newapi-channel-2" || protocol === "seedance-videos") {
         video.references.maxVideos = 3;
         video.references.maxAudios = 3;
         video.references.maxVideoBytes = 200 * 1024 * 1024;
@@ -332,7 +339,7 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.references.maxAudioDurationSeconds = 15;
         video.generateAudio = { supported: true, default: true };
     }
-    if (protocol === "volcengine-ark-video" || protocol === "newapi-channel-1") video.resolutions = ["480p", "720p", "1080p"];
+    if (protocol === "volcengine-ark-video" || protocol === "newapi-channel-1" || protocol === "seedance-videos") video.resolutions = ["480p", "720p", "1080p"];
     if (protocol === "volcengine-ark-video") video.watermark = { supported: true, default: false };
     if (protocol === "novita-video") {
         video.references.maxImages = 1;
@@ -343,7 +350,6 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.defaultResolution = "1080p";
     }
     if (protocol === "minimax-video") {
-        video.references.maxImages = 9;
         video.references.maxImageBytes = 30 * 1024 * 1024;
         video.references.maxVideos = 3;
         video.references.maxVideoBytes = 50 * 1024 * 1024;
@@ -361,17 +367,24 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
     return { version: 1, text, image: defaultImageCapabilityConfig(protocol, model), video };
 }
 
-export function modelCapabilityConfigFor(config: { channels: Array<{ id: string; models: string[]; modelCosts?: Array<{ model: string; capabilityConfig?: ModelCapabilityConfig; protocol?: ModelProtocol }> }> }, model: string) {
+export function modelCapabilityConfigFor(config: { channels: Array<{ id: string; models: string[]; interfaceType?: ModelProtocol; modelCosts?: Array<{ model: string; capabilityConfig?: ModelCapabilityConfig; protocol?: ModelProtocol }> }> }, model: string) {
     const separator = model.indexOf("::");
     const channelId = separator >= 0 ? model.slice(0, separator) : "";
     const modelName = separator >= 0 ? model.slice(separator + 2) : model;
     const channel = config.channels.find((item) => item.id === channelId) || config.channels.find((item) => item.models.includes(modelName));
     const cost = channel?.modelCosts?.find((item) => item.model === modelName);
-    const fallback = defaultModelCapabilityConfig(cost?.protocol, modelName);
+    const protocol = cost?.protocol || channel?.interfaceType;
+    const fallback = defaultModelCapabilityConfig(protocol, modelName);
     if (!cost?.capabilityConfig) return fallback;
     const capabilityConfig = normalizeModelCapabilityConfig(cost.capabilityConfig);
     const text = capabilityConfig.text ? { ...fallback.text!, ...capabilityConfig.text, references: { ...fallback.text!.references, ...capabilityConfig.text.references } } : fallback.text;
-    const video = capabilityConfig.video ? { ...fallback.video!, ...capabilityConfig.video, references: { ...fallback.video!.references, ...capabilityConfig.video.references } } : fallback.video;
+    const video = capabilityConfig.video
+        ? {
+              ...fallback.video!,
+              ...capabilityConfig.video,
+              references: { ...fallback.video!.references, ...capabilityConfig.video.references },
+          }
+        : fallback.video;
     const configuredImage = capabilityConfig.image;
     const image = configuredImage
         ? (() => {

@@ -11,6 +11,7 @@ export type ModelProtocol =
     | "newapi"
     | "newapi-channel-1"
     | "newapi-channel-2"
+    | "seedance-videos"
     | "globalaiopc-image"
     | "globalaiopc-video"
     | "huiquyun-video"
@@ -47,6 +48,7 @@ export const MODEL_PROTOCOLS: ModelProtocolDefinition[] = [
     { value: "async-audio", label: "异步音频任务", capability: "audio", create: "POST /v1/audio/tasks", poll: "GET /v1/audio/tasks/{task_id}", contentType: "application/json", media: "语音、音效与音乐生成" },
     { value: "newapi", label: "OpenAI / NewAPI Videos", capability: "video", create: "POST /v1/videos", poll: "GET /v1/videos/{task_id}", contentType: "multipart/form-data", media: "input_reference[] 参考图" },
     { value: "newapi-channel-1", label: "NewAPI 媒体任务", capability: "video", create: "POST /v1/videos", poll: "GET /v1/videos/{task_id}", contentType: "application/json", media: "图片、视频、音频公网 URL" },
+    { value: "seedance-videos", label: "Seedance Videos JSON", capability: "video", create: "POST /v1/videos", poll: "GET /v1/videos/{task_id}", contentType: "application/json", media: "images / videos / audios 公网 URL" },
     {
         value: "newapi-channel-2",
         label: "NewAPI Video Generations",

@@ -291,6 +291,7 @@ export default function TasksPage() {
 
     const runAction = async (id: string, action: "retry" | "cancel") => {
         const currentTask = tasksRef.current.find((task) => task.id === id);
+        if (action === "cancel" && currentTask?.status !== "queued") return;
         if (action === "retry" && currentTask && isGenerationTaskSubmissionUncertain(currentTask)) {
             message.warning("提交结果尚未确认，不能自动重试；请先核对官方状态，避免重复生成。");
             return;
@@ -550,7 +551,7 @@ export default function TasksPage() {
                                 </Button>
                             ) : null}
                             {detailTask.provider === "dreamina-cli" && (detailTask.status === "queued" || detailTask.status === "running") ? (
-                                <Button danger loading={actingId === detailTask.id} onClick={() => void runAction(detailTask.id, "cancel")}>
+                                <Button danger loading={actingId === detailTask.id} disabled={detailTask.status === "running"} onClick={() => void runAction(detailTask.id, "cancel")}>
                                     {localDreaminaCancellationCopy(detailTask)?.action || "取消任务"}
                                 </Button>
                             ) : null}

@@ -75,6 +75,7 @@ const (
 	ChannelInterfaceNewAPIVideo           ChannelInterfaceType = "newapi"
 	ChannelInterfaceNewAPIChannel1        ChannelInterfaceType = "newapi-channel-1"
 	ChannelInterfaceNewAPIChannel2        ChannelInterfaceType = "newapi-channel-2"
+	ChannelInterfaceSeedanceVideos        ChannelInterfaceType = "seedance-videos"
 	ChannelInterfaceGlobalAiOpcVideo      ChannelInterfaceType = "globalaiopc-video"
 	ChannelInterfaceHuiQuYunVideo         ChannelInterfaceType = "huiquyun-video"
 	ChannelInterfaceAIStarsLabImage       ChannelInterfaceType = "aistarslab-image"

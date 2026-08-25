@@ -9,7 +9,7 @@ import { buildPortraitTexturePrompt } from "@/lib/canvas/canvas-portrait-texture
 import { resolveCanvasStyleExecution } from "@/lib/canvas/canvas-style-execution";
 import { expandSkillMentions } from "@/lib/canvas/canvas-skill-mentions";
 import { generationErrorMessage, generationFailureMetadata } from "@/lib/generation-error";
-import { modelCompatibilityError, modelGroupReferenceLimits, modelRequestOptions, type ModelRequirements } from "@/lib/model-selection";
+import { modelCompatibilityError, modelReferenceLimits, modelRequestOptions, type ModelRequirements } from "@/lib/model-selection";
 import { navigateToSettings } from "@/lib/settings-navigation";
 import type { Skill } from "@/services/api/skills";
 import type { GenerationTask } from "@/services/api/task-center";
@@ -141,7 +141,7 @@ export function useCanvasGenerationExecutor({
                 generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode, requirements);
                 const compatibilityError = modelCompatibilityError(generationConfig, generationConfig.model, requirements);
                 if (compatibilityError) throw new Error(`当前模型无法支持这组输入和参数：${compatibilityError}`);
-                const referenceLimits = modelGroupReferenceLimits(effectiveConfig, generationConfig.model, mode, requirements);
+                const referenceLimits = modelReferenceLimits(generationConfig, generationConfig.model, mode);
                 rawGenerationContext = await hydrateNodeGenerationContext(baseContext, projectId, domainProjectId, mode, mode === "video" && Boolean(referenceLimits?.maxAudios), !promptOnly, referenceLimits);
                 const hydratedRequirements = generationModelRequirements(mode, rawGenerationContext, sourceNode, generationConfig);
                 generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode, hydratedRequirements);

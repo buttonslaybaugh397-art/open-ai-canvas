@@ -174,9 +174,9 @@ func supportsProviderVideoRecovery(interfaceType string) bool {
 	case string(model.ChannelInterfaceGlobalAiOpcVideo), string(model.ChannelInterfaceHuiQuYunVideo),
 		string(model.ChannelInterfaceVolcengineJiMengVideo), string(model.ChannelInterfaceGeminiVeo),
 		string(model.ChannelInterfaceNovitaVideo), string(model.ChannelInterfaceNewAPIChannel1),
-		string(model.ChannelInterfaceNewAPIChannel2), string(model.ChannelInterfaceVolcengineArkVideo),
+		string(model.ChannelInterfaceNewAPIChannel2), string(model.ChannelInterfaceSeedanceVideos), string(model.ChannelInterfaceVolcengineArkVideo),
 		string(model.ChannelInterfaceNewAPIVideo), string(model.ChannelInterfaceXAIVideo),
-		"grok-video", "seedance-videos", "seedance-agent-plan":
+		"grok-video", "seedance-agent-plan":
 		return true
 	default:
 		return false

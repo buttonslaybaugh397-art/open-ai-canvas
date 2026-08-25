@@ -7,7 +7,7 @@ import { useAdminContext } from "../admin-context";
 import { AdminPageFrame } from "../components/admin-shell";
 import { AdminStatusBadge, configuredSecretText, SettingsSectionCard } from "../components/admin-ui";
 
-type StorageMode = "local" | "aliyun" | "tencent" | "qiniu";
+type StorageMode = "local" | "aliyun" | "tencent" | "qiniu" | "rainyun";
 type OSSFormValues = {
     mode: StorageMode;
     publicBaseUrl?: string;
@@ -31,8 +31,9 @@ export default function StorageSettingsPage() {
     const isObjectStorage = mode !== "local";
     const isTencentCOS = mode === "tencent";
     const isQiniuKodo = mode === "qiniu";
-    const accessKeyIdLabel = isTencentCOS ? "SecretId" : isQiniuKodo ? "AccessKey" : "AccessKey ID";
-    const accessKeySecretLabel = isTencentCOS ? "SecretKey" : isQiniuKodo ? "SecretKey" : "AccessKey Secret";
+    const isRainyunROS = mode === "rainyun";
+    const accessKeyIdLabel = isTencentCOS ? "SecretId" : isQiniuKodo ? "AccessKey" : isRainyunROS ? "Access Key" : "AccessKey ID";
+    const accessKeySecretLabel = isRainyunROS ? "Secret Key" : isTencentCOS || isQiniuKodo ? "SecretKey" : "AccessKey Secret";
     const hasCurrentProviderSecret = Boolean(setting && setting.provider === mode && setting.hasAccessKeySecret);
     const userNameById = useMemo(() => new Map(references.users.map((user) => [user.id, user.displayName || user.username])), [references.users]);
 
@@ -56,6 +57,7 @@ export default function StorageSettingsPage() {
         if (values.mode === "aliyun" && !values.endpoint?.trim()) return message.error("请填写阿里云 OSS Endpoint");
         if (values.mode === "tencent" && !values.endpoint?.trim() && !values.region?.trim()) return message.error("请填写腾讯云 COS Region 或 Endpoint");
         if (values.mode === "qiniu" && !values.endpoint?.trim()) return message.error("请填写七牛云 Kodo 上传 Endpoint");
+        if (values.mode === "rainyun" && !values.endpoint?.trim()) return message.error("请填写雨云 ROS S3 Endpoint");
         setSaving(true);
         try {
             const result = await updateAdminOSSSetting({
@@ -112,6 +114,7 @@ export default function StorageSettingsPage() {
                                     { label: <span className="inline-flex items-center gap-2"><Cloud className="size-4" />阿里云 OSS</span>, value: "aliyun" },
                                     { label: <span className="inline-flex items-center gap-2"><Cloud className="size-4" />腾讯云 COS</span>, value: "tencent" },
                                     { label: <span className="inline-flex items-center gap-2"><Cloud className="size-4" />七牛云 Kodo</span>, value: "qiniu" },
+                                    { label: <span className="inline-flex items-center gap-2"><Cloud className="size-4" />雨云 ROS</span>, value: "rainyun" },
                                 ]}
                                 onChange={(value) => {
                                     const nextMode = value as StorageMode;
@@ -125,23 +128,23 @@ export default function StorageSettingsPage() {
                             <div className="space-y-1">
                                 <div className="grid gap-x-4 gap-y-1 md:grid-cols-2 xl:grid-cols-3">
                                     <Form.Item name="region" label="Region">
-                                        <Input autoComplete="off" placeholder={isTencentCOS ? "例如：ap-guangzhou" : isQiniuKodo ? "例如：z0 / cn-east-1" : "例如：oss-cn-hangzhou"} />
+                                        <Input autoComplete="off" placeholder={isTencentCOS ? "例如：ap-guangzhou" : isQiniuKodo ? "例如：z0 / cn-east-1" : isRainyunROS ? "可留空，默认 us-east-1" : "例如：oss-cn-hangzhou"} />
                                     </Form.Item>
                                     <Form.Item name="bucket" label="Bucket">
-                                        <Input autoComplete="off" placeholder={isQiniuKodo ? "七牛云存储空间名称" : "对象存储 Bucket"} />
+                                        <Input autoComplete="off" placeholder={isQiniuKodo ? "七牛云存储空间名称" : isRainyunROS ? "雨云桶名称 name" : "对象存储 Bucket"} />
                                     </Form.Item>
                                     <Form.Item name="pathPrefix" label="路径前缀">
                                         <Input autoComplete="off" placeholder="可选，例如：canvas" />
                                     </Form.Item>
                                 </div>
                                 <div className="grid gap-x-4 gap-y-1 md:grid-cols-2 xl:grid-cols-3">
-                                    <Form.Item className="xl:col-span-2" name="endpoint" label={isQiniuKodo ? "上传 Endpoint" : "Endpoint"}>
-                                        <Input autoComplete="off" inputMode="url" placeholder={isTencentCOS ? "https://cos.ap-guangzhou.myqcloud.com" : isQiniuKodo ? "https://up-z0.qiniup.com" : "https://oss-cn-hangzhou.aliyuncs.com"} />
+                                    <Form.Item className="xl:col-span-2" name="endpoint" label={isQiniuKodo ? "上传 Endpoint" : isRainyunROS ? "雨云 ROS S3 Endpoint" : "Endpoint"} extra={isRainyunROS ? "填写雨云桶详情中的 public_api_url，只填写域名根地址，不要附加 Bucket 或对象路径。" : undefined}>
+                                        <Input autoComplete="off" inputMode="url" placeholder={isTencentCOS ? "https://cos.ap-guangzhou.myqcloud.com" : isQiniuKodo ? "https://up-z0.qiniup.com" : isRainyunROS ? "桶详情中的 public_api_url" : "https://oss-cn-hangzhou.aliyuncs.com"} />
                                     </Form.Item>
                                     <Form.Item
                                         name="cdnBaseUrl"
-                                        label={isQiniuKodo ? "绑定域名（可选）" : "CDN 加速域名"}
-                                        extra={isQiniuKodo ? "可选。填写后浏览器直连七牛私有下载地址；留空时采用“浏览器 → 当前后端 /api/resources/:id/file → 七牛 S3 Endpoint”的代理链路，后端使用 AK/SK 读取并返回文件，无需绑定域名。" : undefined}
+                                        label={isQiniuKodo || isRainyunROS ? "绑定域名（可选）" : "CDN 加速域名"}
+                                        extra={isQiniuKodo ? "可选。填写后浏览器直连七牛私有下载地址；留空时采用“浏览器 → 当前后端 /api/resources/:id/file → 七牛 S3 Endpoint”的代理链路，后端使用 AK/SK 读取并返回文件，无需绑定域名。" : isRainyunROS ? "可选。留空时私有资源由当前后端代理读取，或使用雨云 S3 短时签名地址，不会把 Secret Key 暴露给浏览器。" : undefined}
                                         rules={[{ type: "url", message: "请填写完整的 http/https 地址" }]}
                                     >
                                         <Input autoComplete="off" inputMode="url" placeholder="https://media.example.com" />
@@ -149,10 +152,10 @@ export default function StorageSettingsPage() {
                                 </div>
                                 <div className="grid gap-x-4 gap-y-1 md:grid-cols-2">
                                     <Form.Item name="accessKeyId" label={accessKeyIdLabel}>
-                                        <Input autoComplete="off" placeholder={isQiniuKodo ? "七牛云 AccessKey" : accessKeyIdLabel} />
+                                        <Input autoComplete="off" placeholder={isQiniuKodo ? "七牛云 AccessKey" : isRainyunROS ? "桶详情中的 access_key" : accessKeyIdLabel} />
                                     </Form.Item>
                                     <Form.Item name="accessKeySecret" label={hasCurrentProviderSecret ? `${accessKeySecretLabel}（${configuredSecretText}）` : accessKeySecretLabel}>
-                                        <Input.Password autoComplete="new-password" placeholder={hasCurrentProviderSecret ? "留空保留原密钥" : accessKeySecretLabel} />
+                                        <Input.Password autoComplete="new-password" placeholder={hasCurrentProviderSecret ? "留空保留原密钥" : isRainyunROS ? "桶详情中的 secret_key" : accessKeySecretLabel} />
                                     </Form.Item>
                                 </div>
                             </div>
@@ -192,7 +195,7 @@ function formValues(setting?: AdminOSSSetting | null): OSSFormValues {
 }
 
 function storageProviderLabel(provider?: AdminOSSSetting["provider"] | StorageMode) {
-    return provider === "tencent" ? "腾讯云 COS" : provider === "qiniu" ? "七牛云 Kodo" : provider === "aliyun" ? "阿里云 OSS" : "服务器本地";
+    return provider === "tencent" ? "腾讯云 COS" : provider === "qiniu" ? "七牛云 Kodo" : provider === "rainyun" ? "雨云 ROS" : provider === "aliyun" ? "阿里云 OSS" : "服务器本地";
 }
 
 function formatTime(value?: string) {

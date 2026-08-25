@@ -320,6 +320,97 @@ func TestSignedQiniuS3ObjectURL(t *testing.T) {
 	}
 }
 
+func TestRainyunS3EndpointRejectsNonOriginParts(t *testing.T) {
+	for _, value := range []string{
+		"ftp://s3.example.com",
+		"https://s3.example.com/assets",
+		"https://s3.example.com?token=value",
+		"https://user@s3.example.com",
+		"https://s3.example.com#section",
+	} {
+		if _, err := rainyunS3Endpoint(ossSettingValue{Endpoint: value}); err == nil {
+			t.Fatalf("rainyunS3Endpoint(%q) should fail", value)
+		}
+	}
+}
+
+func TestSignedRainyunS3ObjectURLUsesPathStyle(t *testing.T) {
+	value, err := signedRainyunS3ObjectURL(ossSettingValue{
+		Provider: rainyunROSProvider, Endpoint: "https://s3.example.com", Region: "us-east-1", Bucket: "private-bucket",
+		AccessKeyID: "access-id", AccessKeySecret: "secret-value",
+	}, "users/u-1/image/test image.png", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("signedRainyunS3ObjectURL() error = %v", err)
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := parsed.Query()
+	if parsed.Host != "s3.example.com" || parsed.Path != "/private-bucket/users/u-1/image/test image.png" || query.Get("X-Amz-Algorithm") != "AWS4-HMAC-SHA256" || query.Get("X-Amz-Credential") == "" || query.Get("X-Amz-Signature") == "" {
+		t.Fatalf("signed Rainyun S3 URL = %q", value)
+	}
+	if strings.Contains(value, "secret-value") {
+		t.Fatalf("signed URL leaked secret key: %q", value)
+	}
+}
+
+func TestDeleteRainyunS3ObjectUsesPathStyle(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodDelete || request.URL.Path != "/private-bucket/users/u-1/image/test.png" {
+			t.Errorf("request = %s %s", request.Method, request.URL.Path)
+		}
+		if authorization := request.Header.Get("Authorization"); !strings.Contains(authorization, "AWS4-HMAC-SHA256") || !strings.Contains(authorization, "Credential=access-id/") {
+			t.Errorf("Authorization = %q", authorization)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	err := deleteRainyunS3Object(ossSettingValue{
+		Provider: rainyunROSProvider, Endpoint: server.URL, Region: "us-east-1", Bucket: "private-bucket",
+		AccessKeyID: "access-id", AccessKeySecret: "secret-value",
+	}, "/users/u-1/image/test.png")
+	if err != nil {
+		t.Fatalf("deleteRainyunS3Object() error = %v", err)
+	}
+}
+
+func TestDeleteRainyunS3ObjectTreatsMissingObjectAsDeleted(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `<Error><Code>NoSuchKey</Code><Message>missing</Message></Error>`)
+	}))
+	defer server.Close()
+
+	err := deleteRainyunS3Object(ossSettingValue{
+		Provider: rainyunROSProvider, Endpoint: server.URL, Region: "us-east-1", Bucket: "private-bucket",
+		AccessKeyID: "access-id", AccessKeySecret: "secret-value",
+	}, "users/u-1/image/missing.png")
+	if err != nil {
+		t.Fatalf("deleteRainyunS3Object() missing object error = %v", err)
+	}
+}
+
+func TestRainyunROSSettingDefaultsRegion(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+	next, err := ossSettingFromRequest(OSSSettingRequest{
+		Enabled: true, Provider: rainyunROSProvider, Endpoint: server.URL, Bucket: "private-bucket",
+		AccessKeyID: "access-id", AccessKeySecret: "secret-value",
+	}, ossSettingValue{})
+	if err != nil {
+		t.Fatalf("ossSettingFromRequest() error = %v", err)
+	}
+	if next.Region != "us-east-1" {
+		t.Fatalf("Region = %q, want us-east-1", next.Region)
+	}
+}
+
 func TestOSSCDNBaseURLRejectsNonDomainParts(t *testing.T) {
 	for _, value := range []string{"ftp://media.example.com", "https://media.example.com/assets", "https://media.example.com?token=value", "https://user@media.example.com"} {
 		if _, err := ossCDNBaseURL(value); err == nil {

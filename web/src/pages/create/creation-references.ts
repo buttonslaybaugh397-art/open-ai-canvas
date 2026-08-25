@@ -7,8 +7,21 @@ export type CreationReference = CanvasResourceReference & {
     attachmentId?: string;
 };
 
+export type CreationAttachmentLimits = {
+    total?: number;
+    image?: number;
+    video?: number;
+    audio?: number;
+    file?: number;
+};
+
 export function buildCreationMentionReferences(skills: Skill[], attachments: CreationAttachment[] = [], snapshots: CreationReference[] = []) {
-    const attachmentReferences = attachments.map(attachmentReference);
+    const attachmentCounts = { image: 0, video: 0, audio: 0, file: 0 };
+    const attachmentReferences = attachments.map((attachment) => {
+        const kind = creationAttachmentKind(attachment);
+        const index = attachmentCounts[kind]++;
+        return attachmentReference(attachment, index);
+    });
     const skillReferences = buildSkillMentionReferences(skills) as CreationReference[];
     const current = [...attachmentReferences, ...skillReferences];
     const currentIDs = new Set(current.map((reference) => reference.id));
@@ -20,14 +33,55 @@ export function selectedCreationReferences(prompt: string, references: CreationR
     return references.filter((reference) => prompt.includes(canvasResourceMentionToken(reference)));
 }
 
-export function reconcileCreationAttachmentLimit(attachments: CreationAttachment[], references: CreationReference[], maxReferences: number) {
-    const limit = Math.max(0, Math.floor(maxReferences));
-    if (attachments.length <= limit) return { attachments, removedReferences: [] as CreationReference[] };
+export function limitCreationAttachments(attachments: CreationAttachment[], limits: number | CreationAttachmentLimits) {
+    const normalized = typeof limits === "number" ? { total: limits } : limits;
+    const totalLimit = normalizeAttachmentLimit(normalized.total);
+    const counts = { image: 0, video: 0, audio: 0, file: 0 };
+    let retainedCount = 0;
+    return attachments.filter((attachment) => {
+        if (retainedCount >= totalLimit) return false;
+        const kind = creationAttachmentKind(attachment);
+        const kindLimit = normalizeAttachmentLimit(normalized[kind]);
+        if (counts[kind] >= kindLimit) return false;
+        counts[kind] += 1;
+        retainedCount += 1;
+        return true;
+    });
+}
 
-    const nextAttachments = attachments.slice(0, limit);
-    const removedAttachmentIds = new Set(attachments.slice(limit).map((attachment) => attachment.id));
+export function limitCreationAttachmentCandidates<T extends Pick<CreationAttachment, "type">>(attachments: CreationAttachment[], candidates: T[], limits: number | CreationAttachmentLimits) {
+    const retainedAttachments = limitCreationAttachments(attachments, limits);
+    const normalized = typeof limits === "number" ? { total: limits } : limits;
+    const totalLimit = normalizeAttachmentLimit(normalized.total);
+    const counts = { image: 0, video: 0, audio: 0, file: 0 };
+    retainedAttachments.forEach((attachment) => {
+        counts[creationAttachmentKind(attachment)] += 1;
+    });
+    let retainedCount = retainedAttachments.length;
+    return candidates.filter((candidate) => {
+        if (retainedCount >= totalLimit) return false;
+        const kind = creationAttachmentKind(candidate);
+        const kindLimit = normalizeAttachmentLimit(normalized[kind]);
+        if (counts[kind] >= kindLimit) return false;
+        counts[kind] += 1;
+        retainedCount += 1;
+        return true;
+    });
+}
+
+export function reconcileCreationAttachmentLimit(attachments: CreationAttachment[], references: CreationReference[], limits: number | CreationAttachmentLimits) {
+    const nextAttachments = limitCreationAttachments(attachments, limits);
+    if (nextAttachments.length === attachments.length) return { attachments, removedReferences: [] as CreationReference[] };
+
+    const retained = new Set(nextAttachments);
+    const removedAttachmentIds = new Set(attachments.filter((attachment) => !retained.has(attachment)).map((attachment) => attachment.id));
     const removedReferences = references.filter((reference) => reference.attachmentId && removedAttachmentIds.has(reference.attachmentId));
     return { attachments: nextAttachments, removedReferences };
+}
+
+function normalizeAttachmentLimit(value: number | undefined) {
+    if (value === undefined) return Number.POSITIVE_INFINITY;
+    return Math.max(0, Math.floor(value));
 }
 
 export function removeCreationReferenceTokens(value: string, references: CreationReference[]) {
@@ -44,7 +98,12 @@ export function expandCreationPrompt(prompt: string, references: CreationReferen
 
     const contexts: string[] = [];
     const mediaMappings: string[] = [];
-    const attachmentPositions = new Map(attachments.map((attachment, index) => [attachment.id, index + 1]));
+    const attachmentPositions = new Map<string, number>();
+    const attachmentCounts = { image: 0, video: 0, audio: 0, file: 0 };
+    attachments.forEach((attachment) => {
+        const kind = creationAttachmentKind(attachment);
+        attachmentPositions.set(attachment.id, ++attachmentCounts[kind]);
+    });
     references.forEach((reference) => {
         if (reference.kind === "skill" && reference.skill) {
             contexts.push(renderSkillPrompt(reference.skill));

@@ -335,7 +335,7 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
             const item = batch?.items.find((candidate) => candidate.id === itemId);
             const node = item ? nodesRef.current.find((candidate) => candidate.id === item.nodeId) : undefined;
             const taskId = item?.taskId || node?.metadata?.taskId;
-            if (!item || !taskId) return;
+            if (!item || !taskId || item.status !== "queued") return;
             const cancellationCopy = localDreaminaCancellationCopy({
                 id: taskId,
                 status: node?.metadata?.taskStatus === "queued" ? "queued" : "running",

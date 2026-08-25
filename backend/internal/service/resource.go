@@ -28,8 +28,12 @@ import (
 
 	"infinite-canvas/backend/internal/model"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
 	awsv4 "github.com/aws/aws-sdk-go/aws/signer/v4"
+	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	qiniuAuth "github.com/qiniu/go-sdk/v7/auth"
 	qiniuStorage "github.com/qiniu/go-sdk/v7/storage"
 	cos "github.com/tencentyun/cos-go-sdk-v5"
@@ -854,8 +858,8 @@ func validateActiveOSSSetting(setting ossSettingValue, disabledMessage string, i
 	if !setting.Enabled {
 		return ossSettingValue{}, BadAuthRequest(disabledMessage)
 	}
-	if setting.Provider != aliyunOSSProvider && setting.Provider != tencentCOSProvider && setting.Provider != qiniuKodoProvider {
-		return ossSettingValue{}, BadAuthRequest("仅支持阿里云 OSS、腾讯云 COS 和七牛云 Kodo")
+	if !supportedOSSProvider(setting.Provider) {
+		return ossSettingValue{}, BadAuthRequest("仅支持阿里云 OSS、腾讯云 COS、七牛云 Kodo 和雨云 ROS")
 	}
 	if setting.Bucket == "" || setting.Endpoint == "" || setting.AccessKeyID == "" || setting.AccessKeySecret == "" {
 		return ossSettingValue{}, BadAuthRequest(incompleteMessage)
@@ -895,6 +899,9 @@ func putOSSObject(setting ossSettingValue, objectKey string, mimeType string, si
 	}
 	if setting.Provider == qiniuKodoProvider {
 		return putQiniuObject(setting, objectKey, mimeType, size, body)
+	}
+	if setting.Provider == rainyunROSProvider {
+		return putRainyunS3Object(setting, objectKey, mimeType, body)
 	}
 	return putAliyunOSSObject(setting, objectKey, mimeType, size, body)
 }
@@ -941,6 +948,9 @@ func getOSSObjectRange(setting ossSettingValue, objectKey string, rangeHeader st
 	}
 	if setting.Provider == qiniuKodoProvider {
 		return getQiniuObjectRange(setting, objectKey, rangeHeader)
+	}
+	if setting.Provider == rainyunROSProvider {
+		return getRainyunS3ObjectRange(setting, objectKey, rangeHeader)
 	}
 	return getAliyunOSSObjectRange(setting, objectKey, rangeHeader)
 }
@@ -996,6 +1006,9 @@ func signedOSSObjectURL(setting ossSettingValue, objectKey string, expiresAt tim
 	}
 	if setting.Provider == tencentCOSProvider {
 		return signedCOSObjectURL(setting, objectKey, expiresAt)
+	}
+	if setting.Provider == rainyunROSProvider {
+		return signedRainyunS3ObjectURL(setting, objectKey, expiresAt)
 	}
 	return signedAliyunOSSObjectURL(setting, objectKey, expiresAt)
 }
@@ -1065,6 +1078,23 @@ func putQiniuObject(setting ossSettingValue, objectKey string, mimeType string, 
 	return ret.Hash, nil
 }
 
+func putRainyunS3Object(setting ossSettingValue, objectKey string, mimeType string, body io.Reader) (string, error) {
+	client, err := newRainyunS3Client(setting, 2*time.Minute)
+	if err != nil {
+		return "", err
+	}
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	output, err := s3manager.NewUploaderWithClient(client).UploadWithContext(context.Background(), &s3manager.UploadInput{
+		Bucket: aws.String(setting.Bucket), ContentType: aws.String(mimeType), Key: aws.String(strings.TrimLeft(objectKey, "/")), Body: body,
+	})
+	if err != nil {
+		return "", fmt.Errorf("雨云 ROS 上传失败：%w", err)
+	}
+	return strings.Trim(aws.StringValue(output.ETag), `"`), nil
+}
+
 func getCOSObjectRange(setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
 	client, err := newCOSClient(setting, 2*time.Minute)
 	if err != nil {
@@ -1104,6 +1134,26 @@ func getQiniuObjectRange(setting ossSettingValue, objectKey string, rangeHeader 
 		return nil, fmt.Errorf("七牛云 Kodo 读取失败：%s %s", resp.Status, strings.TrimSpace(string(detail)))
 	}
 	return &ossObjectStream{body: resp.Body, statusCode: resp.StatusCode, contentLength: resp.ContentLength, contentRange: resp.Header.Get("Content-Range"), acceptRanges: firstNonEmpty(resp.Header.Get("Accept-Ranges"), "bytes")}, nil
+}
+
+func getRainyunS3ObjectRange(setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
+	client, err := newRainyunS3Client(setting, 2*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	input := &s3.GetObjectInput{Bucket: aws.String(setting.Bucket), Key: aws.String(strings.TrimLeft(objectKey, "/"))}
+	if rangeHeader != "" {
+		input.Range = aws.String(rangeHeader)
+	}
+	output, err := client.GetObjectWithContext(context.Background(), input)
+	if err != nil {
+		return nil, fmt.Errorf("雨云 ROS 读取失败：%w", err)
+	}
+	statusCode := http.StatusOK
+	if rangeHeader != "" && aws.StringValue(output.ContentRange) != "" {
+		statusCode = http.StatusPartialContent
+	}
+	return &ossObjectStream{body: output.Body, statusCode: statusCode, contentLength: aws.Int64Value(output.ContentLength), contentRange: aws.StringValue(output.ContentRange), acceptRanges: firstNonEmpty(aws.StringValue(output.AcceptRanges), "bytes")}, nil
 }
 
 func getOSSObjectRangeViaCDN(setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
@@ -1171,6 +1221,64 @@ func signedQiniuObjectURL(setting ossSettingValue, objectKey string, expiresAt t
 	}
 	mac := qiniuAuth.New(setting.AccessKeyID, setting.AccessKeySecret)
 	return qiniuStorage.MakePrivateURLv2(mac, strings.TrimRight(setting.CDNBaseURL, "/"), objectKey, deadline), nil
+}
+
+func signedRainyunS3ObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time) (string, error) {
+	objectKey = strings.TrimLeft(strings.TrimSpace(objectKey), "/")
+	if objectKey == "" {
+		return "", errors.New("雨云 ROS 对象路径为空")
+	}
+	expires := time.Until(expiresAt)
+	if expires <= 0 {
+		return "", errors.New("雨云 ROS 签名有效期必须晚于当前时间")
+	}
+	client, err := newRainyunS3Client(setting, 2*time.Minute)
+	if err != nil {
+		return "", err
+	}
+	request, _ := client.GetObjectRequest(&s3.GetObjectInput{Bucket: aws.String(setting.Bucket), Key: aws.String(objectKey)})
+	value, err := request.Presign(expires)
+	if err != nil {
+		return "", fmt.Errorf("雨云 ROS 下载签名失败：%w", err)
+	}
+	return value, nil
+}
+
+func newRainyunS3Client(setting ossSettingValue, timeout time.Duration) (*s3.S3, error) {
+	endpoint, err := rainyunS3Endpoint(setting)
+	if err != nil {
+		return nil, err
+	}
+	setting = normalizeOSSSetting(setting)
+	if setting.Bucket == "" || setting.AccessKeyID == "" || setting.AccessKeySecret == "" {
+		return nil, errors.New("雨云 ROS Bucket 或访问密钥不可用")
+	}
+	configuration := aws.NewConfig().
+		WithCredentials(credentials.NewStaticCredentials(setting.AccessKeyID, setting.AccessKeySecret, "")).
+		WithEndpoint(endpoint).
+		WithRegion(defaultString(setting.Region, "us-east-1")).
+		WithS3ForcePathStyle(true).
+		WithHTTPClient(OutboundHTTPClient(timeout))
+	sessionValue, err := session.NewSession(configuration)
+	if err != nil {
+		return nil, fmt.Errorf("创建雨云 ROS 客户端失败：%w", err)
+	}
+	return s3.New(sessionValue), nil
+}
+
+func rainyunS3Endpoint(setting ossSettingValue) (string, error) {
+	endpoint := strings.TrimRight(strings.TrimSpace(setting.Endpoint), "/")
+	if endpoint == "" {
+		return "", errors.New("雨云 ROS S3 Endpoint 为空")
+	}
+	if !strings.Contains(endpoint, "://") {
+		endpoint = "https://" + endpoint
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || strings.Trim(parsed.Path, "/") != "" {
+		return "", errors.New("雨云 ROS S3 Endpoint 不能包含认证信息、路径、查询参数或片段")
+	}
+	return parsed.String(), nil
 }
 
 // signedQiniuS3ObjectURL 用七牛兼容 S3 的 AWS Signature V4 访问私有空间。

@@ -58,7 +58,8 @@ describe("creation library button", () => {
         const source = readFileSync(resolve(import.meta.dir, "../src/pages/create/index.tsx"), "utf8");
 
         expect(source).toContain("const [primaryAttachment, ...secondaryAttachments] = props.attachments");
-        expect(source).toContain("<CreationAttachmentThumbnail item={primaryAttachment} primary");
+        expect(source).toContain("<CreationAttachmentThumbnail item={primaryAttachment} reference={props.references.find");
+        expect(source).toContain("primary disabled={props.busy}");
         expect(source).toContain("secondaryAttachments.map((item) => <CreationAttachmentThumbnail");
         expect(source).toContain('className={`creation-chat-attachment${primary ? " is-primary" : ""}`}');
     });

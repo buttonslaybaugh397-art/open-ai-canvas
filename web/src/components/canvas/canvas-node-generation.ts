@@ -320,7 +320,8 @@ export async function hydrateNodeGenerationContext(context: NodeGenerationContex
     const { getProjectCharacter } = await import("@/services/api/projects");
     const { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey } = await import("@/services/api/resources");
     const details = await Promise.all(context.characterReferences.map((reference) => getProjectCharacter(domainProjectId, reference.assetId)));
-    const remainingBudget = Math.max(0, (referenceLimits?.maxImages ?? 9) - referenceImages.length);
+    // 参考素材容量只能来自后台下发的模型能力；缺失时不再擅自套用固定九图上限。
+    const remainingBudget = referenceLimits ? Math.max(0, referenceLimits.maxImages - referenceImages.length) : Number.MAX_SAFE_INTEGER;
     const selected = details.flatMap((detail) => {
         const representation = preferredCharacterRepresentation(detail.character.representations);
         return representation ? [representation] : [];
@@ -374,8 +375,9 @@ export async function hydrateNodeGenerationContext(context: NodeGenerationContex
             voiceSamples.push(voice);
         });
     }
-    const maxAudios = referenceLimits?.maxAudios ?? 3;
-    if (context.referenceAudios.length + voiceSamples.length > maxAudios) throw new Error(`当前模型参考音频容量不足：已连接 ${context.referenceAudios.length} 个音频，角色声音样本还需要 ${voiceSamples.length} 个名额`);
+    if (referenceLimits && context.referenceAudios.length + voiceSamples.length > referenceLimits.maxAudios) {
+        throw new Error(`当前模型参考音频容量不足：已连接 ${context.referenceAudios.length} 个音频，角色声音样本还需要 ${voiceSamples.length} 个名额`);
+    }
     const characterVoiceAudios = voiceSamples.map((voice) => ({
         id: `character-voice-${voice.assetId}`,
         name: `${voice.characterName}-声音样本.mp3`,

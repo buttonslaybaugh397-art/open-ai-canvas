@@ -260,7 +260,7 @@ export type UserPromptPreference = {
 
 export type AdminOSSSetting = {
     enabled: boolean;
-    provider: "aliyun" | "tencent" | "qiniu";
+    provider: "aliyun" | "tencent" | "qiniu" | "rainyun";
     region: string;
     endpoint: string;
     cdnBaseUrl: string;

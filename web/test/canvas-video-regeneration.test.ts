@@ -49,9 +49,9 @@ describe("videoReferenceRegenerationError", () => {
         expect(videoReferenceRegenerationError(config)).toContain("不支持参考视频");
     });
 
-    test("模型没有可用生成模式时返回提示", () => {
+    test("模型声明参考视频上限时自动补全参考视频生成模式", () => {
         const config = supportedVideoConfig({ operations: [] });
-        expect(videoReferenceRegenerationError(config)).toContain("没有可用的视频生成模式");
+        expect(videoReferenceRegenerationError(config)).toBe("");
     });
 
     test("模型支持参考视频且有可用模式时无错误", () => {
@@ -80,9 +80,9 @@ describe("listVideoReferenceModels", () => {
         expect(listVideoReferenceModels(supportedVideoConfig())).toEqual(["test::seedance-1.0-pro"]);
     });
 
-    test("过滤掉没有可用生成模式的模型", () => {
+    test("保留声明参考视频上限但缺少旧操作字段的模型", () => {
         const config = supportedVideoConfig({ operations: [] });
-        expect(listVideoReferenceModels(config)).toEqual([]);
+        expect(listVideoReferenceModels(config)).toEqual(["test::seedance-1.0-pro"]);
     });
 
     test("过滤掉未配置 API Key 的渠道模型", () => {

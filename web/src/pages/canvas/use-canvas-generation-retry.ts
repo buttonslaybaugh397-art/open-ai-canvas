@@ -26,6 +26,7 @@ import { buildPortraitTexturePrompt } from "@/lib/canvas/canvas-portrait-texture
 import { resolveCanvasStyleExecution } from "@/lib/canvas/canvas-style-execution";
 import { generationFailureMetadata, unchangedModeratedPrompt } from "@/lib/generation-error";
 import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
+import { modelReferenceLimits } from "@/lib/model-selection";
 import { navigateToSettings } from "@/lib/settings-navigation";
 import type { Skill } from "@/services/api/skills";
 import type { GenerationTask } from "@/services/api/task-center";
@@ -108,10 +109,19 @@ export function useCanvasGenerationRetry({
             try {
                 const promptOnly = retryMode === "video";
                 const baseContext = buildNodeGenerationContext(sourceNode.id, nodesRef.current, connectionsRef.current, retryContextPrompt, assets, promptOnly);
+                const referenceLimits = modelReferenceLimits(generationConfig, generationConfig.model, retryMode);
                 rawContext =
                     hasSavedImageMetadata && !baseContext.characterReferences.length
                         ? null
-                        : await hydrateNodeGenerationContext(baseContext, projectId, domainProjectId, retryMode, retryMode === "video" && supportsVideoReferenceAudio(generationConfig), !promptOnly);
+                        : await hydrateNodeGenerationContext(
+                              baseContext,
+                              projectId,
+                              domainProjectId,
+                              retryMode,
+                              retryMode === "video" && supportsVideoReferenceAudio(generationConfig),
+                              !promptOnly,
+                              referenceLimits,
+                          );
             } catch (error) {
                 const failure = generationFailureMetadata(error, retryPromptSource);
                 message.error(failure.errorDetails);

@@ -219,44 +219,10 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
         if (request?.controller === controller) generationRequestsRef.current.delete(targetNodeId);
     }, []);
 
-    const stopGenerationByRunningId = useCallback(
-        (runningId: string) => {
-            const affectedNodeIds = new Set<string>();
-            generationRequestsRef.current.forEach((request) => {
-                if (request.runningNodeId !== runningId) return;
-                abortGenerationTask(request.controller);
-                generationRequestsRef.current.delete(request.targetNodeId);
-                affectedNodeIds.add(request.targetNodeId);
-                affectedNodeIds.add(request.originNodeId);
-            });
-            setRunningNodeId((current) => (current === runningId ? null : current));
-            if (!affectedNodeIds.size) return;
-            setNodes((current) => current.map((node) => (affectedNodeIds.has(node.id) && node.metadata?.status === NODE_STATUS_LOADING ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_IDLE, errorDetails: undefined } } : node)));
-        },
-        [setNodes],
-    );
-
-    const confirmStopGeneration = useCallback(
-        (nodeId: string) => {
-            modal.confirm({
-                title: "停止生成？",
-                content: "当前生成请求会被中断，已经生成完成的内容会保留。",
-                okText: "停止",
-                cancelText: "继续生成",
-                okButtonProps: { danger: true },
-                onOk: () => stopGenerationByRunningId(nodeId),
-            });
-        },
-        [modal, stopGenerationByRunningId],
-    );
-
     const cancelNodeTask = useCallback(
         (node: CanvasNodeData) => {
             const taskId = node.metadata?.taskId;
-            if (!taskId) {
-                confirmStopGeneration(node.id);
-                return;
-            }
+            if (!taskId || node.metadata?.taskStatus !== "queued") return;
             const cancellationCopy = localDreaminaCancellationCopy({
                 id: taskId,
                 status: node.metadata?.taskStatus === "queued" ? "queued" : "running",
@@ -294,7 +260,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                 },
             });
         },
-        [confirmStopGeneration, message, modal, setNodes],
+        [message, modal, setNodes],
     );
 
     const openNodeTaskDetails = useCallback(
@@ -585,7 +551,6 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
         applyGenerationTaskResult,
         bindGenerationTask,
         cancelNodeTask,
-        confirmStopGeneration,
         finishGenerationRequest,
         openNodeTaskDetails,
         runningNodeId,

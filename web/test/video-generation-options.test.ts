@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
 import { huiQuYunProtocolForModel } from "../src/lib/huiquyun-channel";
-import { defaultModelCapabilityConfig } from "../src/lib/model-capabilities";
+import { defaultModelCapabilityConfig, modelCapabilityConfigFor } from "../src/lib/model-capabilities";
+import { defaultConfig } from "../src/stores/use-config-store";
 import { normalizeVideoResolution, VIDEO_RESOLUTION_CAPABILITY_OPTIONS, VIDEO_RESOLUTION_OPTIONS } from "../src/lib/video-generation-options";
 
 describe("video generation resolution options", () => {
@@ -43,13 +44,27 @@ describe("video generation resolution options", () => {
         expect(profile?.references).toMatchObject({ maxImages: 4, maxVideos: 3, maxAudios: 1 });
     });
 
+    test("NewAPI Video Generations 保留后台配置的参考图上限", () => {
+        const capabilityConfig = defaultModelCapabilityConfig("newapi-channel-2", "seedance2.5-480p");
+        capabilityConfig.video!.references.maxImages = 30;
+        const model = "relay::seedance2.5-480p";
+        const config = {
+            ...defaultConfig,
+            channels: [{ id: "relay", name: "relay", baseUrl: "/api", apiKey: "system", apiFormat: "openai" as const, models: ["seedance2.5-480p"], modelCosts: [{ model: "seedance2.5-480p", capability: "video" as const, protocol: "newapi-channel-2" as const, billingMode: "per_second" as const, unitPriceMicrocredits: 1, capabilityConfig }] }],
+            models: [model],
+            videoModels: [model],
+        };
+
+        expect(modelCapabilityConfigFor(config, model).video?.references.maxImages).toBe(30);
+    });
+
     test("汇取云 MX933 使用官方多媒体能力", () => {
         const profile = defaultModelCapabilityConfig("huiquyun-video", "sd2-mx933-720-10s").video;
 
         expect(profile?.duration).toEqual({ selection: "enum", values: [10], default: 10 });
         expect(profile?.resolutions).toEqual(["480p", "720p"]);
         expect(profile?.ratios).toEqual(["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"]);
-        expect(profile?.references).toMatchObject({ maxImages: 9, maxVideos: 3, maxAudios: 3, maxVideoBytes: 50 * 1024 * 1024 });
+        expect(profile?.references).toMatchObject({ maxImages: 100, maxVideos: 3, maxAudios: 3, maxVideoBytes: 50 * 1024 * 1024 });
     });
 
     test("汇取云 mj-sd2.0-933-720p 使用 933 专属能力配置", () => {
@@ -57,7 +72,7 @@ describe("video generation resolution options", () => {
 
         expect(profile?.duration.selection).toBe("range");
         expect(profile?.resolutions).toEqual(["480p", "720p"]);
-        expect(profile?.references).toMatchObject({ maxImages: 9, maxVideos: 3, maxAudios: 3, maxVideoBytes: 50 * 1024 * 1024 });
+        expect(profile?.references).toMatchObject({ maxImages: 100, maxVideos: 3, maxAudios: 3, maxVideoBytes: 50 * 1024 * 1024 });
         expect(profile?.ratios).toEqual(["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"]);
     });
 });
