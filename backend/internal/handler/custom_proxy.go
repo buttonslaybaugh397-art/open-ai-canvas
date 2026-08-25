@@ -69,6 +69,12 @@ func proxyCustomRelayRequestWithService(c *gin.Context, policy service.RuntimeRe
 	if apiFormat == "" {
 		apiFormat = "openai"
 	}
+	normalizedFormat, validFormat := service.NormalizeCustomRelayFormat(apiFormat)
+	if !validFormat {
+		fail(c, http.StatusForbidden, errors.New("自定义渠道调用格式无效"))
+		return
+	}
+	apiFormat = normalizedFormat
 	if err := authorizeCustomRelay(c.Request.Method, target, apiFormat, c.GetHeader("Content-Type")); err != nil {
 		fail(c, http.StatusForbidden, err)
 		return

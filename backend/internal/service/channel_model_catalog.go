@@ -218,8 +218,13 @@ func (s *Service) FetchChannelModelCatalog(ctx context.Context, actor *model.Use
 	if apiKey == "" {
 		return nil, BadAuthRequest("请填写 API Key")
 	}
-	if strings.EqualFold(strings.TrimSpace(input.ConnectionType), "aistarslab") {
-		return s.fetchAiStarsLabCatalog(ctx, baseURL, apiKey, input.AllowLocalChannel, input.Headers)
+	if plugin := ChannelPluginFor(baseURL, input.ConnectionType); plugin != nil {
+		if plugin.StaticCatalog != nil {
+			return plugin.StaticCatalog(), nil
+		}
+		if plugin.FetchCatalog != nil {
+			return plugin.FetchCatalog(s, ctx, baseURL, apiKey, input.AllowLocalChannel, input.Headers)
+		}
 	}
 	apiFormat := strings.ToLower(strings.TrimSpace(input.APIFormat))
 	if apiFormat == "" {

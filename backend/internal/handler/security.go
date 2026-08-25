@@ -60,10 +60,11 @@ func authorizeCustomRelay(method string, target *url.URL, apiFormat string, cont
 		}
 	}
 
-	apiFormat = strings.ToLower(strings.TrimSpace(apiFormat))
-	if apiFormat != "openai" && apiFormat != "gemini" {
+	normalizedFormat, validFormat := service.NormalizeCustomRelayFormat(apiFormat)
+	if !validFormat {
 		return errors.New("自定义渠道调用格式无效")
 	}
+	apiFormat = normalizedFormat
 	if method == http.MethodGet {
 		if customNovitaTaskResultPath.MatchString(requestPath) {
 			if len(query) == 1 && len(query["task_id"]) == 1 && strings.TrimSpace(query.Get("task_id")) != "" {

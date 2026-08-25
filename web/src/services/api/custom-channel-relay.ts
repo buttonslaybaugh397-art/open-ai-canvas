@@ -1,4 +1,5 @@
 import { projectDesktopLocalChannelRuntime } from "@/lib/desktop-local-channel";
+import { channelPluginRelayFormat } from "@/lib/channel-plugins";
 import { isSystemProxyBaseUrl, resolveBackendApiUrl, type AiConfig, type ChannelHeader, type ChannelInterfaceType } from "@/stores/use-config-store";
 
 type RelayConfig = Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat"> & {
@@ -28,9 +29,7 @@ export function channelRequest(config: RelayConfig, upstreamUrl: string, headers
     normalizedHeaders.delete("x-goog-api-key");
     normalizedHeaders.set("Authorization", `Bearer ${runtimeConfig.apiKey}`);
     normalizedHeaders.set("X-Canvas-Upstream-URL", normalizedUpstreamUrl);
-    const isGlobalAiOpc = runtimeConfig.interfaceType === "globalaiopc-image" || runtimeConfig.interfaceType === "globalaiopc-video";
-    const isAiStarsLab = runtimeConfig.connectionType === "aistarslab" || runtimeConfig.interfaceType === "aistarslab-image" || runtimeConfig.interfaceType === "aistarslab-video";
-    normalizedHeaders.set("X-Canvas-Upstream-Format", isGlobalAiOpc ? "globalaiopc" : isAiStarsLab ? "aistarslab" : runtimeConfig.apiFormat === "gemini" ? "gemini" : "openai");
+    normalizedHeaders.set("X-Canvas-Upstream-Format", channelPluginRelayFormat(runtimeConfig) || (runtimeConfig.apiFormat === "gemini" ? "gemini" : "openai"));
     if (runtimeConfig.allowLocalChannel === true) {
         normalizedHeaders.set("X-Canvas-Allow-Local-Channel", "1");
         normalizedHeaders.set("X-Canvas-Upstream-Base-URL", normalizedBaseUrl);

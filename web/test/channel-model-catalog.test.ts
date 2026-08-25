@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { CanvasVideoSettingsPopover } from "../src/components/canvas/canvas-video-settings-popover";
 import { mergeFetchedChannelModelCosts, type ChannelModelCatalogItem } from "../src/lib/channel-model-catalog";
 import { defaultModelCapabilityConfig } from "../src/lib/model-capabilities";
+import { channelPluginAllowedProtocols, channelPluginProtocolForModel, getChannelPlugin, mergeChannelPluginModelCosts } from "../src/lib/channel-plugins";
 import { ChannelModelSettings } from "../src/pages/settings/channel-video-pricing";
 import { fetchChannelModels } from "../src/services/api/image";
 import { createVideoGenerationTask } from "../src/services/api/video";
@@ -379,5 +380,22 @@ describe("public channel model catalog", () => {
         expect(body.model).toBe("veo-public");
         expect(body.seconds).toBe("8");
         expect(body.size).toBe("1280x720");
+    });
+
+    test("resolves dedicated channel behavior from the shared plugin registry", () => {
+        const channel = createModelChannel({
+            id: "plugin-channel",
+            name: "AIStarsLab",
+            baseUrl: "https://api.video.aistarslab.com/openapi",
+            apiKey: "synthetic-test-key",
+            apiFormat: "openai",
+            connectionType: "aistarslab",
+            models: ["54:seedance-2.5"],
+        });
+
+        expect(getChannelPlugin(channel)?.id).toBe("aistarslab");
+        expect(channelPluginProtocolForModel(channel, "54:seedance-2.5")).toBe("aistarslab-video");
+        expect(channelPluginAllowedProtocols(channel)).toEqual(["aistarslab-image", "aistarslab-video"]);
+        expect(mergeChannelPluginModelCosts(channel, [{ id: "54:seedance-2.5", modelType: "video", supportedEndpointTypes: ["aistarslab-video"], aistarslab: { channel: "54", capability: "video", model: "seedance-2.5" } }])[0]?.protocol).toBe("aistarslab-video");
     });
 });

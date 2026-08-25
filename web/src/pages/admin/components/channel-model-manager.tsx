@@ -7,8 +7,7 @@ import { PaginationBar } from "@/components/layout/workspace-page";
 import { ModelIcon } from "@/components/model-picker";
 import { ModelCapabilityEditor } from "@/components/model-capability-editor";
 import { CapabilityCardPicker, ProtocolCardPicker, type ModelCapabilityChoice } from "@/components/model-protocol-picker";
-import { isAiStarsLabBaseUrl } from "@/lib/aistarslab-channel";
-import { huiQuYunProtocolForModel, isHuiQuYunBaseUrl } from "@/lib/huiquyun-channel";
+import { channelPluginAllowedProtocols, channelPluginProtocolForModel, getChannelPlugin } from "@/lib/channel-plugins";
 import { defaultModelCapabilityConfig, normalizeModelCapabilityConfig, type ModelCapabilityConfig } from "@/lib/model-capabilities";
 import { MODEL_PROTOCOLS, modelProtocolCapability, modelProtocolDefinition, modelProtocolLabel, modelProtocolSupportsTokenBilling, type ModelProtocol } from "@/lib/model-protocols";
 import { createAdminChannelModel, deleteAdminChannelModel, fetchAdminChannelModels, listAdminChannelModels, testAdminChannelModel, updateAdminChannelModel, type ChannelModel } from "@/services/api/wallet";
@@ -17,8 +16,6 @@ import { AdminPageFrame } from "./admin-shell";
 import { AdminDataTable, AdminFilterChip, AdminStatusBadge } from "./admin-ui";
 
 type EditableCapability = ModelCapabilityChoice;
-const HUIQUYUN_PROTOCOLS: ModelProtocol[] = ["chat-completion", "openai-response", "openai-image", "openai-audio", "huiquyun-video"];
-const AISTARSLAB_PROTOCOLS: ModelProtocol[] = ["aistarslab-image", "aistarslab-video"];
 
 type FormValues = {
     modelKey: string;
@@ -56,8 +53,7 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
     const modelKey = Form.useWatch("modelKey", form) || "";
     const capabilityConfig = Form.useWatch("capabilityConfig", form);
     const videoResolutions = capabilityConfig?.video?.resolutions || [];
-    const huiQuYun = isHuiQuYunBaseUrl(channel.baseUrl);
-    const aiStarsLab = isAiStarsLabBaseUrl(channel.baseUrl);
+    const channelPlugin = getChannelPlugin(channel);
 
     const reload = async () => {
         if (!channel) return;
@@ -100,11 +96,13 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
 
     const startCreate = () => {
         setEditing(null);
+        const defaultProtocol = channelPluginProtocolForModel(channel, "") || "chat-completion";
+        const defaultCapability = modelProtocolCapability(defaultProtocol) || "text";
         form.setFieldsValue({
             modelKey: "",
             displayName: "",
-            capability: aiStarsLab ? "video" : "text",
-            protocol: aiStarsLab ? "aistarslab-video" : "chat-completion",
+            capability: defaultCapability,
+            protocol: defaultProtocol,
             billingMode: "fixed_request",
             unitPrice: 0,
             inputTokenPrice: 0,
@@ -112,14 +110,14 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
             cachedTokenPrice: 0,
             resolutionPrices: {},
             enabled: true,
-            capabilityConfig: defaultModelCapabilityConfig(aiStarsLab ? "aistarslab-video" : "chat-completion", ""),
+            capabilityConfig: defaultCapability === "image" || defaultCapability === "video" ? defaultModelCapabilityConfig(defaultProtocol, "") : undefined,
         });
         setEditorOpen(true);
     };
 
     const startEdit = (item: ChannelModel) => {
         setEditing(item);
-        const protocol = item.protocol || (huiQuYun ? huiQuYunProtocolForModel(item.modelKey) : aiStarsLab ? "aistarslab-video" : "chat-completion");
+        const protocol = item.protocol || channelPluginProtocolForModel(channel, item.modelKey) || "chat-completion";
         const capability = item.capability || modelProtocolCapability(protocol) || "text";
         form.setFieldsValue({
             modelKey: item.modelKey,
@@ -201,8 +199,8 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
     };
 
     const handleFormValuesChange = (changed: Partial<FormValues>) => {
-        if (huiQuYun && !editing && changed.modelKey !== undefined) {
-            const protocol = huiQuYunProtocolForModel(changed.modelKey);
+        if (channelPlugin && !editing && changed.modelKey !== undefined) {
+            const protocol = channelPluginProtocolForModel(channel, changed.modelKey) || "chat-completion";
             const capability = modelProtocolCapability(protocol) || "text";
             form.setFieldsValue({ capability, protocol, capabilityConfig: capability === "image" || capability === "video" ? defaultModelCapabilityConfig(protocol, changed.modelKey) : undefined });
         }
@@ -218,7 +216,7 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
         if (!changed.capability) return;
         const current = form.getFieldValue("protocol") as ModelProtocol | undefined;
         if (modelProtocolCapability(current) !== changed.capability) {
-            const allowedProtocols = aiStarsLab ? AISTARSLAB_PROTOCOLS : huiQuYun ? HUIQUYUN_PROTOCOLS : undefined;
+            const allowedProtocols = channelPluginAllowedProtocols(channel);
             const nextProtocol = MODEL_PROTOCOLS.find((item) => item.capability === changed.capability && (!allowedProtocols || allowedProtocols.includes(item.value)))?.value;
             form.setFieldValue("protocol", nextProtocol);
             form.setFieldValue("capabilityConfig", changed.capability === "text" || changed.capability === "image" || changed.capability === "video" ? defaultModelCapabilityConfig(nextProtocol, form.getFieldValue("modelKey")) : undefined);
@@ -407,7 +405,7 @@ export function ChannelModelManager({ channel, onClose, onChanged }: { channel: 
                                 <CapabilityCardPicker density="compact" />
                             </Form.Item>
                             <Form.Item className="mb-0" name="protocol" label="请求协议" rules={[{ required: true, message: "请选择模型请求协议" }]}>
-                                <ProtocolCardPicker capability={modelCapability} density="compact" allowedProtocols={aiStarsLab ? AISTARSLAB_PROTOCOLS : huiQuYun ? HUIQUYUN_PROTOCOLS : undefined} />
+                                <ProtocolCardPicker capability={modelCapability} density="compact" allowedProtocols={channelPluginAllowedProtocols(channel) ? [...channelPluginAllowedProtocols(channel)!] : undefined} />
                             </Form.Item>
                         </div>
                         {modelCapability === "text" || modelCapability === "image" || modelCapability === "video" ? (

@@ -4,11 +4,8 @@ import { useState } from "react";
 
 import { ChannelHeadersEditor, validateChannelHeaders } from "@/components/channel-headers-editor";
 import { WorkspaceState } from "@/components/layout/workspace-state";
-import { mergeFetchedChannelModelCosts as mergeGenericFetchedChannelModelCosts, type ChannelModelCatalogItem } from "@/lib/channel-model-catalog";
+import { channelPluginBaseUrls, getChannelPlugin, getChannelPluginById, listChannelPlugins, mergeChannelPluginModelCosts, syncChannelPluginModelCosts, type ChannelPluginId } from "@/lib/channel-plugins";
 import { desktopLocalChannelFormState, desktopLocalChannelPayloadValue, DESKTOP_LOCAL_CHANNEL_EXAMPLE_BASE_URL } from "@/lib/desktop-local-channel";
-import { applyGlobalAiOpcPreset, GLOBALAIOPC_BASE_URL } from "@/lib/globalaiopc-channel";
-import { applyHuiQuYunPreset, HUIQUYUN_BASE_URL, syncHuiQuYunModelCosts } from "@/lib/huiquyun-channel";
-import { applyAiStarsLabPreset, AISTARSLAB_BASE_URL } from "@/lib/aistarslab-channel";
 import { fetchChannelModels } from "@/services/api/image";
 import {
     createModelChannel,
@@ -22,7 +19,7 @@ import {
 import { ChannelModelSettings } from "./channel-video-pricing";
 import { useUserStore } from "@/stores/use-user-store";
 
-type UserChannelConnection = "openai" | "gemini" | "globalaiopc" | "huiquyun" | "aistarslab";
+type UserChannelConnection = "openai" | "gemini" | ChannelPluginId;
 type ChannelModelCost = NonNullable<ModelChannel["modelCosts"]>[number];
 export function ChannelSettingsPane({ onOpenModels }: { onOpenModels: () => void }) {
     const { message } = App.useApp();
@@ -48,28 +45,20 @@ export function ChannelSettingsPane({ onOpenModels }: { onOpenModels: () => void
                 models,
                 modelCosts: patch.modelCosts !== undefined ? patch.modelCosts : (patch.models ? channel.modelCosts?.filter((item) => models.includes(item.model)) : channel.modelCosts),
             };
-            return nextChannel.connectionType === "huiquyun" && patch.models && patch.modelCosts === undefined
-                ? { ...nextChannel, modelCosts: syncHuiQuYunModelCosts(nextChannel, models) }
-                : nextChannel;
+            const syncedModelCosts = patch.models && patch.modelCosts === undefined ? syncChannelPluginModelCosts(nextChannel, models) : undefined;
+            return syncedModelCosts ? { ...nextChannel, modelCosts: syncedModelCosts } : nextChannel;
         }));
     };
 
     const updateChannelConnection = (channel: ModelChannel, connection: UserChannelConnection) => {
-        if (connection === "globalaiopc") {
-            updateChannel(channel.id, applyGlobalAiOpcPreset(channel));
+        const plugin = getChannelPluginById(connection);
+        if (plugin) {
+            updateChannel(channel.id, plugin.applyPreset(channel));
             return;
         }
-        if (connection === "huiquyun") {
-            updateChannel(channel.id, applyHuiQuYunPreset(channel));
-            return;
-        }
-        if (connection === "aistarslab") {
-            updateChannel(channel.id, applyAiStarsLabPreset(channel));
-            return;
-        }
-        const apiFormat = connection;
+        const apiFormat = connection === "gemini" ? "gemini" : "openai";
         const defaultBaseUrl = defaultBaseUrlForApiFormat(apiFormat);
-        const specialConnection = channel.connectionType === "globalaiopc" || channel.connectionType === "huiquyun" || channel.connectionType === "aistarslab";
+        const specialConnection = Boolean(getChannelPlugin(channel));
         const baseUrl = specialConnection || isKnownDefaultBaseUrl(channel.baseUrl) ? defaultBaseUrl : channel.baseUrl;
         // 渠道只负责连接类型；具体模型能力和请求协议由下方共享能力卡片维护。
         updateChannel(channel.id, {
@@ -237,7 +226,7 @@ export function ChannelSettingsPane({ onOpenModels }: { onOpenModels: () => void
                                     <div className="grid gap-x-3 gap-y-2 lg:grid-cols-12">
                                         <div className="settings-field-group-label lg:col-span-12">连接信息</div>
                                         <Form.Item label="渠道名称" htmlFor={`channel-${channel.id}-name`} className="mb-0 lg:col-span-3"><Input id={`channel-${channel.id}-name`} value={channel.name} placeholder="例如：我的 NewAPI" onChange={(event) => updateChannel(channel.id, { name: event.target.value })} onBlur={(event) => updateChannel(channel.id, { name: event.target.value.trim() || "未命名渠道" })} /></Form.Item>
-                                        <Form.Item label="渠道连接类型" className="mb-0 lg:col-span-5" extra="GlobalAiOpc、汇取云与 AIStarsLab 使用独立预设；其他渠道的模型能力和请求协议在下方配置。"><Segmented<UserChannelConnection> block value={channelConnectionMode(channel)} options={[{ label: "OpenAI 兼容", value: "openai" }, { label: "Gemini 原生", value: "gemini" }, { label: "GlobalAiOpc", value: "globalaiopc" }, { label: "汇取云", value: "huiquyun" }, { label: "AIStarsLab", value: "aistarslab" }]} onChange={(value) => updateChannelConnection(channel, value)} /></Form.Item>
+                                        <Form.Item label="渠道连接类型" className="mb-0 lg:col-span-5" extra="专用渠道由插件提供固定预设；其他渠道的模型能力和请求协议在下方配置。"><Segmented<UserChannelConnection> block value={channelConnectionMode(channel)} options={[{ label: "OpenAI 兼容", value: "openai" }, { label: "Gemini 原生", value: "gemini" }, ...listChannelPlugins().map((plugin) => ({ label: plugin.label, value: plugin.id }))]} onChange={(value) => updateChannelConnection(channel, value)} /></Form.Item>
                                         <UserLocalChannelFields
                                             channel={channel}
                                             visible={userLocalChannelFormOwner(desktopLocalChannelsEnabled, desktopLocalChannelHostname, channel.allowLocalChannel).visible}
@@ -278,14 +267,11 @@ export function UserLocalChannelSwitch({ visible, checked, onChange }: { visible
 }
 
 export function UserLocalChannelFields({ channel, visible, checked, desktopLocalChannelsEnabled, hostname, updateChannel }: { channel: ModelChannel; visible: boolean; checked: boolean; desktopLocalChannelsEnabled: boolean; hostname: string; updateChannel: (id: string, patch: Partial<ModelChannel>) => void }) {
-    const globalAiOpc = channel.connectionType === "globalaiopc";
-    const huiQuYun = channel.connectionType === "huiquyun";
-    const aiStarsLab = channel.connectionType === "aistarslab";
-    const dedicatedPreset = globalAiOpc || huiQuYun || aiStarsLab;
+    const dedicatedPreset = Boolean(getChannelPlugin(channel)?.dedicated);
     return (
         <>
             <Form.Item label="Base URL" htmlFor={`channel-${channel.id}-base-url`} className="mb-0 lg:col-span-6">
-                <Input id={`channel-${channel.id}-base-url`} inputMode="url" value={channel.baseUrl} placeholder={globalAiOpc ? GLOBALAIOPC_BASE_URL : huiQuYun ? HUIQUYUN_BASE_URL : aiStarsLab ? AISTARSLAB_BASE_URL : checked ? DESKTOP_LOCAL_CHANNEL_EXAMPLE_BASE_URL : "填写渠道 Base URL"} disabled={dedicatedPreset} onChange={(event) => updateChannel(channel.id, { baseUrl: event.target.value })} onBlur={(event) => updateChannel(channel.id, { baseUrl: event.target.value.trim().replace(/\/+$/, "") })} />
+                                        <Input id={`channel-${channel.id}-base-url`} inputMode="url" value={channel.baseUrl} placeholder={getChannelPlugin(channel)?.baseUrl || (checked ? DESKTOP_LOCAL_CHANNEL_EXAMPLE_BASE_URL : "填写渠道 Base URL")} disabled={dedicatedPreset} onChange={(event) => updateChannel(channel.id, { baseUrl: event.target.value })} onBlur={(event) => updateChannel(channel.id, { baseUrl: event.target.value.trim().replace(/\/+$/, "") })} />
             </Form.Item>
             <UserLocalChannelSwitch visible={visible && !dedicatedPreset} checked={checked} onChange={(value) => updateChannel(channel.id, userLocalChannelChangePatch(desktopLocalChannelsEnabled, hostname, value))} />
         </>
@@ -337,10 +323,8 @@ function normalizeDefaultModel(value: string, options: string[]) {
     return options.includes(value) ? value : options[0] || "";
 }
 
-function mergeFetchedChannelModelCosts(channel: ModelChannel, catalog: ChannelModelCatalogItem[]): ChannelModelCost[] {
-    return channel.connectionType === "huiquyun"
-        ? syncHuiQuYunModelCosts(channel, catalog.map((item) => item.id), catalog)
-        : mergeGenericFetchedChannelModelCosts(channel, catalog);
+function mergeFetchedChannelModelCosts(channel: ModelChannel, catalog: Parameters<typeof mergeChannelPluginModelCosts>[1]): ChannelModelCost[] {
+    return mergeChannelPluginModelCosts(channel, catalog);
 }
 
 function uniqueModels(models: string[]) {
@@ -354,9 +338,8 @@ function channelModelFetchErrorMessage(error: unknown) {
 }
 
 function channelConnectionMode(channel: ModelChannel): UserChannelConnection {
-    if (channel.connectionType === "globalaiopc") return "globalaiopc";
-    if (channel.connectionType === "huiquyun") return "huiquyun";
-    if (channel.connectionType === "aistarslab") return "aistarslab";
+    const plugin = getChannelPlugin(channel);
+    if (plugin) return plugin.id;
     return channel.apiFormat === "gemini" ? "gemini" : "openai";
 }
 
@@ -380,16 +363,15 @@ function channelConnectionSignature(channel: ModelChannel) {
 
 function channelProtocolLabel(channel: ModelChannel) {
     const mode = channelConnectionMode(channel);
-    if (mode === "globalaiopc") return "GlobalAiOpc";
-    if (mode === "huiquyun") return "汇取云";
-    if (mode === "aistarslab") return "AIStarsLab";
+    const plugin = getChannelPlugin(channel);
+    if (plugin) return plugin.label;
     return mode === "gemini" ? "Gemini 原生" : "OpenAI 兼容";
 }
 
 function isKnownDefaultBaseUrl(value: string) {
     const normalized = value.trim().replace(/\/+$/, "");
     if (!normalized) return true;
-    return [defaultBaseUrlForApiFormat("openai"), defaultBaseUrlForApiFormat("gemini"), GLOBALAIOPC_BASE_URL, HUIQUYUN_BASE_URL, AISTARSLAB_BASE_URL].some((candidate) => candidate.replace(/\/+$/, "") === normalized);
+    return [defaultBaseUrlForApiFormat("openai"), defaultBaseUrlForApiFormat("gemini"), ...channelPluginBaseUrls()].some((candidate) => candidate.replace(/\/+$/, "") === normalized);
 }
 
 function requiresSecretKey(channel: ModelChannel) {

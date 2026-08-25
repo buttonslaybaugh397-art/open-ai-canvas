@@ -9,8 +9,7 @@ import { ChannelHeadersEditor, validateChannelHeaders } from "@/components/chann
 import { PaginationBar } from "@/components/layout/workspace-page";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { desktopLocalChannelFormState, desktopLocalChannelPayloadValue, DESKTOP_LOCAL_CHANNEL_EXAMPLE_BASE_URL } from "@/lib/desktop-local-channel";
-import { HUIQUYUN_BASE_URL, isHuiQuYunBaseUrl } from "@/lib/huiquyun-channel";
-import { AISTARSLAB_BASE_URL, isAiStarsLabBaseUrl } from "@/lib/aistarslab-channel";
+import { getChannelPlugin, getChannelPluginById, listChannelPlugins, type ChannelPluginId } from "@/lib/channel-plugins";
 import { refreshSystemChannels } from "@/lib/user-session";
 import { createAdminChannel, deleteAdminChannel, listAdminChannels, updateAdminChannel } from "@/services/api/auth";
 import { type ChannelHeader, type ModelChannel } from "@/stores/use-config-store";
@@ -20,7 +19,7 @@ import { AdminPageFrame } from "../components/admin-shell";
 import { AdminDataTable, AdminFilterChip, AdminRowActions, AdminStatusBadge, AdminTableEmpty, configuredSecretText } from "../components/admin-ui";
 import { ChannelModelManager } from "../components/channel-model-manager";
 
-type AdminChannelConnection = "openai" | "huiquyun" | "aistarslab";
+type AdminChannelConnection = "openai" | ChannelPluginId;
 type ChannelFormValues = { name: string; connectionType?: AdminChannelConnection; baseUrl: string; allowLocalChannel?: boolean; apiKey?: string; secretKey?: string; headers?: ChannelHeader[]; useGlobalConcurrency?: boolean; concurrencyLimit?: number; enabled?: boolean };
 
 export function adminLocalChannelFormOwner(desktopLocalChannelsEnabled: boolean, hostname: string, requestedAllowLocalChannel?: boolean) {
@@ -38,23 +37,23 @@ export function AdminLocalChannelSwitch({ visible, checked, onChange }: { visibl
 }
 
 export function AdminLocalChannelFields({ visible, checked, form, connectionType = "openai" }: { visible: boolean; checked: boolean; form: Pick<FormInstance<ChannelFormValues>, "setFieldValue">; connectionType?: AdminChannelConnection }) {
-    const huiQuYun = connectionType === "huiquyun";
-    const aiStarsLab = connectionType === "aistarslab";
+    const plugin = getChannelPluginById(connectionType);
+    const dedicated = Boolean(plugin?.dedicated);
     return (
         <>
-            <Form.Item name="baseUrl" label="Base URL" rules={[{ required: true, message: "请填写 Base URL" }]} extra={huiQuYun ? "汇取云专用预设使用固定地址，由模型名称自动识别请求协议。" : aiStarsLab ? "AIStarsLab 专用预设使用固定地址，模型管理中拉取图片和视频目录。" : undefined}><Input disabled={huiQuYun || aiStarsLab} placeholder={huiQuYun ? HUIQUYUN_BASE_URL : aiStarsLab ? AISTARSLAB_BASE_URL : checked ? DESKTOP_LOCAL_CHANNEL_EXAMPLE_BASE_URL : "填写渠道 Base URL"} /></Form.Item>
-            <AdminLocalChannelSwitch visible={visible && !huiQuYun && !aiStarsLab} checked={checked} onChange={(value) => form.setFieldValue("allowLocalChannel", value)} />
+            <Form.Item name="baseUrl" label="Base URL" rules={[{ required: true, message: "请填写 Base URL" }]} extra={plugin?.id === "huiquyun" ? "汇取云专用预设使用固定地址，由模型名称自动识别请求协议。" : plugin?.id === "aistarslab" ? "AIStarsLab 专用预设使用固定地址，模型管理中拉取图片和视频目录。" : undefined}><Input disabled={dedicated} placeholder={plugin?.baseUrl || (checked ? DESKTOP_LOCAL_CHANNEL_EXAMPLE_BASE_URL : "填写渠道 Base URL")} /></Form.Item>
+            <AdminLocalChannelSwitch visible={visible && !dedicated} checked={checked} onChange={(value) => form.setFieldValue("allowLocalChannel", value)} />
         </>
     );
 }
 
 export function adminChannelSavePayload(values: ChannelFormValues, desktopLocalChannelsEnabled: boolean, hostname: string) {
-    const huiQuYun = values.connectionType === "huiquyun";
-    const aiStarsLab = values.connectionType === "aistarslab";
+    const plugin = getChannelPluginById(values.connectionType);
+    const dedicated = Boolean(plugin?.dedicated);
     return {
         name: values.name.trim(),
-        baseUrl: huiQuYun ? HUIQUYUN_BASE_URL : aiStarsLab ? AISTARSLAB_BASE_URL : values.baseUrl.trim(),
-        allowLocalChannel: huiQuYun || aiStarsLab ? false : adminLocalChannelFormOwner(desktopLocalChannelsEnabled, hostname, values.allowLocalChannel).payloadValue,
+        baseUrl: plugin?.baseUrl || values.baseUrl.trim(),
+        allowLocalChannel: dedicated ? false : adminLocalChannelFormOwner(desktopLocalChannelsEnabled, hostname, values.allowLocalChannel).payloadValue,
         apiKey: values.apiKey?.trim() || "",
         secretKey: values.secretKey?.trim() || "",
         headers: values.headers || [],
@@ -87,7 +86,7 @@ export default function ChannelsPage() {
     const requestedAllowLocalChannel = Form.useWatch("allowLocalChannel", form) === true;
     const desktopLocalChannelsEnabled = useUserStore((state) => state.features.desktopLocalChannelsEnabled);
     const desktopLocalChannelHostname = typeof window === "undefined" ? "" : window.location.hostname;
-    const desktopLocalChannelControl = adminLocalChannelFormOwner(desktopLocalChannelsEnabled, desktopLocalChannelHostname, connectionType === "huiquyun" ? false : requestedAllowLocalChannel);
+    const desktopLocalChannelControl = adminLocalChannelFormOwner(desktopLocalChannelsEnabled, desktopLocalChannelHostname, getChannelPluginById(connectionType)?.dedicated ? false : requestedAllowLocalChannel);
     const allowLocalChannel = desktopLocalChannelControl.checked;
     const showDesktopLocalChannelControl = desktopLocalChannelControl.visible;
     const hasFilters = Boolean(keyword || status !== "all");
@@ -134,18 +133,19 @@ export default function ChannelsPage() {
     const openDrawer = (channel?: ModelChannel) => {
         setEditingChannel(channel || null);
         form.resetFields();
-        form.setFieldsValue(channel ? { name: channel.name, connectionType: isHuiQuYunBaseUrl(channel.baseUrl) ? "huiquyun" : isAiStarsLabBaseUrl(channel.baseUrl) ? "aistarslab" : "openai", baseUrl: channel.baseUrl, allowLocalChannel: adminLocalChannelFormOwner(desktopLocalChannelsEnabled, desktopLocalChannelHostname, channel.allowLocalChannel).checked, apiKey: "", secretKey: "", headers: channel.headers || [], useGlobalConcurrency: !channel.concurrencyLimit, concurrencyLimit: channel.concurrencyLimit || undefined, enabled: channel.enabled !== false } : { name: "", connectionType: "openai", baseUrl: "", allowLocalChannel: false, apiKey: "", secretKey: "", headers: [], useGlobalConcurrency: true, concurrencyLimit: undefined, enabled: true });
+        const plugin = channel ? getChannelPlugin(channel) : undefined;
+        const connection = plugin?.id || "openai";
+        form.setFieldsValue(channel ? { name: channel.name, connectionType: connection, baseUrl: channel.baseUrl, allowLocalChannel: adminLocalChannelFormOwner(desktopLocalChannelsEnabled, desktopLocalChannelHostname, channel.allowLocalChannel).checked, apiKey: "", secretKey: "", headers: channel.headers || [], useGlobalConcurrency: !channel.concurrencyLimit, concurrencyLimit: channel.concurrencyLimit || undefined, enabled: channel.enabled !== false } : { name: "", connectionType: "openai", baseUrl: "", allowLocalChannel: false, apiKey: "", secretKey: "", headers: [], useGlobalConcurrency: true, concurrencyLimit: undefined, enabled: true });
         setDrawerOpen(true);
     };
 
     const selectChannelConnection = (value: AdminChannelConnection) => {
         const currentBaseUrl = form.getFieldValue("baseUrl") || "";
         const currentName = form.getFieldValue("name") || "";
-        form.setFieldsValue(value === "huiquyun"
-            ? { connectionType: value, baseUrl: HUIQUYUN_BASE_URL, allowLocalChannel: false, ...(!editingChannel && !currentName.trim() ? { name: "汇取云" } : {}) }
-            : value === "aistarslab"
-                ? { connectionType: value, baseUrl: AISTARSLAB_BASE_URL, allowLocalChannel: false, ...(!editingChannel && !currentName.trim() ? { name: "AIStarsLab" } : {}) }
-                : { connectionType: value, baseUrl: isHuiQuYunBaseUrl(currentBaseUrl) || isAiStarsLabBaseUrl(currentBaseUrl) ? "" : currentBaseUrl });
+        const plugin = getChannelPluginById(value);
+        form.setFieldsValue(plugin
+            ? { connectionType: value, baseUrl: plugin.baseUrl, allowLocalChannel: false, ...(!editingChannel && !currentName.trim() ? { name: plugin.label } : {}) }
+            : { connectionType: value, baseUrl: getChannelPlugin({ baseUrl: currentBaseUrl, connectionType: undefined }) ? "" : currentBaseUrl });
     };
 
     const closeDrawer = () => {
@@ -244,7 +244,7 @@ export default function ChannelsPage() {
             >
                 <Form form={form} layout="vertical" requiredMark={false}>
                     <Form.Item name="name" label="渠道名称" rules={[{ required: true, message: "请填写渠道名称" }]}><Input placeholder="例如：OpenAI 官方渠道" /></Form.Item>
-                    <Form.Item name="connectionType" label="渠道连接类型" extra="汇取云与 AIStarsLab 使用独立固定预设；其他服务保持 OpenAI 兼容配置。"><Segmented<AdminChannelConnection> block options={[{ label: "OpenAI 兼容", value: "openai" }, { label: "汇取云", value: "huiquyun" }, { label: "AIStarsLab", value: "aistarslab" }]} onChange={selectChannelConnection} /></Form.Item>
+                    <Form.Item name="connectionType" label="渠道连接类型" extra="专用渠道由插件提供固定预设；其他服务保持 OpenAI 兼容配置。"><Segmented<AdminChannelConnection> block options={[{ label: "OpenAI 兼容", value: "openai" }, ...listChannelPlugins().map((plugin) => ({ label: plugin.label, value: plugin.id }))]} onChange={selectChannelConnection} /></Form.Item>
                     <AdminLocalChannelFields visible={showDesktopLocalChannelControl} checked={allowLocalChannel} form={form} connectionType={connectionType} />
                     <Form.Item name="apiKey" label={editingChannel ? `API Key / Access Key（${configuredSecretText}）` : "API Key / Access Key"} rules={editingChannel ? [] : [{ required: true, message: "请填写 API Key 或 Access Key" }]} extra="OpenAI 兼容协议填写 API Key；即梦官方协议填写 IAM Access Key。"><Input.Password autoComplete="new-password" placeholder={editingChannel ? "留空保留原凭证" : "API Key 或 Access Key"} /></Form.Item>
                     <Form.Item name="secretKey" label={editingChannel ? `Secret Key（${channelSecretText(editingChannel)}）` : "Secret Key（可选）"} extra="仅即梦官方等 AK/SK 签名协议需要；其他渠道留空。"><Input.Password autoComplete="new-password" placeholder={editingChannel ? "留空保留原 Secret Key" : "IAM Secret Key"} /></Form.Item>

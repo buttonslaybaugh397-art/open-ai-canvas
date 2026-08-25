@@ -12,9 +12,10 @@ import { imageToDataUrl } from "@/services/image-storage";
 import type { ReferenceImage } from "@/types/image";
 import { withOpenAIPromptCacheKey } from "@/lib/openai-prompt-cache";
 import { imageSizeRequest, modelCapabilityConfigFor, normalizeImageValue, type ImageCapabilityConfig } from "@/lib/model-capabilities";
-import { globalAiOpcResponseCodeFailed, globalAiOpcTaskUrl, GLOBALAIOPC_IMAGE_MODELS, GLOBALAIOPC_VIDEO_MODELS } from "@/lib/globalaiopc-channel";
+import { globalAiOpcResponseCodeFailed, globalAiOpcTaskUrl } from "@/lib/globalaiopc-channel";
+import { getChannelPlugin, validateChannelPlugin } from "@/lib/channel-plugins";
 import { getResourceOSSUrl } from "@/services/api/resources";
-import { aiStarsLabModelRoute, isAiStarsLabBaseUrl } from "@/lib/aistarslab-channel";
+import { aiStarsLabModelRoute } from "@/lib/aistarslab-channel";
 import { buildGeminiImageGenerationConfig, parseGeminiImageDataUrl, type GeminiImageGenerationConfig } from "@/lib/gemini-image";
 
 export type AiTextMessage = {
@@ -1367,13 +1368,11 @@ export type ChannelModelFetchResult = { models: string[]; catalog: ChannelModelC
 
 export async function fetchChannelModels(channel: ModelChannel, viaBackend = false): Promise<ChannelModelFetchResult> {
     const runtimeChannel = projectDesktopLocalChannelRuntime(channel);
-    if (channel.connectionType === "globalaiopc") {
-        const imageModels = GLOBALAIOPC_IMAGE_MODELS.map((id) => ({ id, supportedEndpointTypes: ["globalaiopc-image"] }));
-        const videoModels = GLOBALAIOPC_VIDEO_MODELS.map((id) => ({ id, supportedEndpointTypes: ["globalaiopc-video"] }));
-        const catalog = [...imageModels, ...videoModels];
-        return { models: catalog.map((item) => item.id), catalog };
-    }
-    if (channel.connectionType === "aistarslab" && !isAiStarsLabBaseUrl(runtimeChannel.baseUrl)) throw new Error("AIStarsLab 渠道地址不正确");
+    const plugin = getChannelPlugin(runtimeChannel);
+    const pluginError = validateChannelPlugin(runtimeChannel);
+    if (pluginError) throw new Error(pluginError);
+    const staticCatalog = plugin?.staticCatalog?.();
+    if (staticCatalog) return { models: staticCatalog.map((item) => item.id), catalog: staticCatalog };
     if (!viaBackend) {
         const models = await fetchImageModels({ baseUrl: runtimeChannel.baseUrl, allowLocalChannel: runtimeChannel.allowLocalChannel === true, apiKey: runtimeChannel.apiKey, apiFormat: runtimeChannel.apiFormat });
         return { models, catalog: models.map((id) => ({ id })) };

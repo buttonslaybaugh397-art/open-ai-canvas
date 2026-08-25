@@ -247,8 +247,10 @@ func aiStarsLabCatalogItemForLegacyKey(items []ChannelModelCatalogItem, modelKey
 }
 
 func channelConnectionType(channel *model.ModelChannel) string {
-	if channel != nil && isAiStarsLabBaseURL(channel.BaseURL) {
-		return "aistarslab"
+	if channel != nil {
+		if plugin := ChannelPluginFor(channel.BaseURL, ""); plugin != nil {
+			return plugin.ID
+		}
 	}
 	return ""
 }
