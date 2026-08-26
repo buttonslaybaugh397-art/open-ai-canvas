@@ -7,7 +7,7 @@ import { useUserStore } from "@/stores/use-user-store";
 
 type OSSFormValues = {
     enabled?: boolean;
-    provider: "aliyun" | "tencent" | "qiniu" | "rainyun";
+    provider: "aliyun" | "tencent" | "qiniu";
     region?: string;
     endpoint?: string;
     cdnBaseUrl?: string;
@@ -28,10 +28,9 @@ export function UserOSSSettingsForm() {
     const provider = Form.useWatch("provider", form) || "aliyun";
     const isTencentCOS = provider === "tencent";
     const isQiniuKodo = provider === "qiniu";
-    const isRainyunROS = provider === "rainyun";
     const hasCurrentProviderSecret = Boolean(setting && setting.provider === provider && setting.hasAccessKeySecret);
-    const accessKeyIdLabel = isTencentCOS ? "SecretId" : isQiniuKodo ? "AccessKey" : isRainyunROS ? "Access Key" : "AccessKey ID";
-    const accessKeySecretLabel = isRainyunROS ? "Secret Key" : isTencentCOS || isQiniuKodo ? "SecretKey" : "AccessKey Secret";
+    const accessKeyIdLabel = isTencentCOS ? "SecretId" : isQiniuKodo ? "AccessKey" : "AccessKey ID";
+    const accessKeySecretLabel = isTencentCOS ? "SecretKey" : isQiniuKodo ? "SecretKey" : "AccessKey Secret";
 
     useEffect(() => {
         if (!actor?.id) return;
@@ -103,27 +102,25 @@ export function UserOSSSettingsForm() {
                 </Form.Item>
                 <Form.Item name="provider" label="存储服务" rules={[{ required: true, message: "请选择存储服务" }]} className="mb-3">
                     <Select
-                        options={[{ label: "阿里云 OSS", value: "aliyun" }, { label: "腾讯云 COS", value: "tencent" }, { label: "七牛云 Kodo", value: "qiniu" }, { label: "雨云 ROS", value: "rainyun" }]}
+                        options={[{ label: "阿里云 OSS", value: "aliyun" }, { label: "腾讯云 COS", value: "tencent" }, { label: "七牛云 Kodo", value: "qiniu" }]}
                         onChange={(nextProvider: OSSFormValues["provider"]) => {
                             if (nextProvider !== provider) form.setFieldsValue({ region: "", endpoint: "", cdnBaseUrl: "", bucket: "", accessKeyId: "", accessKeySecret: "" });
                         }}
                     />
                 </Form.Item>
                 <Form.Item name="region" label="Region" className="mb-3">
-                    <Input spellCheck={false} placeholder={isTencentCOS ? "ap-guangzhou" : isQiniuKodo ? "z0 / cn-east-1" : isRainyunROS ? "可留空，默认 us-east-1" : "oss-cn-hangzhou"} />
+                    <Input spellCheck={false} placeholder={isTencentCOS ? "ap-guangzhou" : isQiniuKodo ? "z0 / cn-east-1" : "oss-cn-hangzhou"} />
                 </Form.Item>
-                <Form.Item name="endpoint" label={isQiniuKodo ? "上传 Endpoint" : isRainyunROS ? "雨云 ROS S3 Endpoint" : "Endpoint"} extra={isTencentCOS ? "可留空，系统会根据 Region 生成标准 COS Endpoint。" : isRainyunROS ? "填写雨云桶详情中的 public_api_url，只填写域名根地址，不要附加 Bucket 或对象路径。" : undefined} className="mb-3">
-                    <Input inputMode="url" spellCheck={false} placeholder={isTencentCOS ? "https://cos.ap-guangzhou.myqcloud.com" : isQiniuKodo ? "https://up-z0.qiniup.com" : isRainyunROS ? "桶详情中的 public_api_url" : "https://oss-cn-hangzhou.aliyuncs.com"} />
+                <Form.Item name="endpoint" label={isQiniuKodo ? "上传 Endpoint" : "Endpoint"} extra={isTencentCOS ? "可留空，系统会根据 Region 生成标准 COS Endpoint。" : undefined} className="mb-3">
+                    <Input inputMode="url" spellCheck={false} placeholder={isTencentCOS ? "https://cos.ap-guangzhou.myqcloud.com" : isQiniuKodo ? "https://up-z0.qiniup.com" : "https://oss-cn-hangzhou.aliyuncs.com"} />
                 </Form.Item>
                 <Form.Item
                     name="cdnBaseUrl"
-                    label={isQiniuKodo || isRainyunROS ? "绑定域名（可选）" : "CDN 加速域名"}
+                    label={isQiniuKodo ? "绑定域名（可选）" : "CDN 加速域名"}
                     extra={isTencentCOS
                         ? "选填。上传仍走 Endpoint，下载与预览改走 CDN；私有桶需开启 CDN 私有存储桶访问。CDN URL 不附带 COS 签名，未配置 CDN URL 鉴权时链接将长期可访问。"
                         : isQiniuKodo
                             ? "选填。填写后浏览器直连七牛私有下载地址；留空时采用“浏览器 → 当前后端 /api/resources/:id/file → 七牛 S3 Endpoint”的代理链路，后端使用 AK/SK 读取并返回文件，无需绑定域名。"
-                            : isRainyunROS
-                                ? "选填。留空时私有资源由当前后端代理读取，或使用雨云 S3 短时签名地址，不会把 Secret Key 暴露给浏览器。"
                             : "选填。上传仍走 Endpoint，下载与预览改走 CDN；阿里云私有 Bucket 需开启 CDN 私有 Bucket 回源。CDN URL 不附带 OSS 签名，未配置 CDN URL 鉴权时链接将长期可访问。"}
                     rules={[{ type: "url", message: "请填写完整的 http/https CDN 加速域名" }]}
                     className="mb-3"
@@ -131,16 +128,16 @@ export function UserOSSSettingsForm() {
                     <Input inputMode="url" spellCheck={false} placeholder="https://media.example.com" />
                 </Form.Item>
                 <Form.Item name="bucket" label="Bucket" className="mb-3">
-                    <Input spellCheck={false} placeholder={isTencentCOS ? "my-canvas-assets-1250000000" : isQiniuKodo ? "七牛云存储空间名称" : isRainyunROS ? "雨云桶名称 name" : "my-canvas-assets"} />
+                    <Input spellCheck={false} placeholder={isTencentCOS ? "my-canvas-assets-1250000000" : isQiniuKodo ? "七牛云存储空间名称" : "my-canvas-assets"} />
                 </Form.Item>
                 <Form.Item name="pathPrefix" label="路径前缀" className="mb-3">
                     <Input spellCheck={false} placeholder="infinite-canvas" />
                 </Form.Item>
                 <Form.Item name="accessKeyId" label={accessKeyIdLabel} className="mb-3 xl:col-span-1">
-                    <Input autoComplete="off" spellCheck={false} placeholder={isTencentCOS ? "腾讯云 SecretId" : isQiniuKodo ? "七牛云 AccessKey" : isRainyunROS ? "桶详情中的 access_key" : "阿里云 AccessKey ID"} />
+                    <Input autoComplete="off" spellCheck={false} placeholder={isTencentCOS ? "腾讯云 SecretId" : isQiniuKodo ? "七牛云 AccessKey" : "阿里云 AccessKey ID"} />
                 </Form.Item>
                 <Form.Item name="accessKeySecret" label={hasCurrentProviderSecret ? `${accessKeySecretLabel}（留空保留）` : accessKeySecretLabel} className="mb-3 xl:col-span-2">
-                    <Input.Password autoComplete="new-password" spellCheck={false} placeholder={hasCurrentProviderSecret ? "留空保留已加密密钥" : isTencentCOS ? "腾讯云 SecretKey" : isQiniuKodo ? "七牛云 SecretKey" : isRainyunROS ? "桶详情中的 secret_key" : "阿里云 AccessKey Secret"} />
+                    <Input.Password autoComplete="new-password" spellCheck={false} placeholder={hasCurrentProviderSecret ? "留空保留已加密密钥" : isTencentCOS ? "腾讯云 SecretKey" : isQiniuKodo ? "七牛云 SecretKey" : "阿里云 AccessKey Secret"} />
                 </Form.Item>
             </div>
 

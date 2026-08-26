@@ -1,6 +1,6 @@
 import type { UploadedFile } from "@/services/file-storage";
 import type { UploadedImage } from "@/services/image-storage";
-import { volcengineAssetUriForAsset } from "@/lib/volcengine-asset";
+import type { ExternalAssetPickerReference } from "@/lib/plugins/plugin-types";
 import type { Asset, AudioAsset, ImageAsset, NewAsset } from "@/stores/use-asset-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -158,7 +158,6 @@ export function creationAttachmentFromAsset(asset: ImageAsset): CreationAttachme
         dataUrl: url,
         url,
         storageKey: asset.data.storageKey,
-        volcengineAssetUri: volcengineAssetUriForAsset(asset),
         bytes: asset.data.bytes,
         width: asset.data.width,
         height: asset.data.height,
@@ -173,7 +172,6 @@ export function creationAttachmentFromVideoAsset(asset: Extract<Asset, { kind: "
         type: asset.data.mimeType || "video/mp4",
         url: asset.data.url,
         storageKey: asset.data.storageKey,
-        volcengineAssetUri: volcengineAssetUriForAsset(asset),
         bytes: asset.data.bytes,
         width: asset.data.width,
         height: asset.data.height,
@@ -189,13 +187,55 @@ export function creationAttachmentFromAudioAsset(asset: AudioAsset): CreationAtt
         type: asset.data.mimeType || "audio/mpeg",
         url: asset.data.url,
         storageKey: asset.data.storageKey,
-        volcengineAssetUri: volcengineAssetUriForAsset(asset),
         bytes: asset.data.bytes,
         durationMs: asset.data.durationMs,
         previewUrl: asset.data.url,
     };
 }
 
+export function creationAttachmentFromExternalAsset(reference: ExternalAssetPickerReference): CreationAttachment {
+    const item = reference.item;
+    const url = item.fileUrl || "";
+    if (!url) throw new Error("“" + item.title + "”暂时无法读取，请先在 Eagle 中确认文件可用");
+    const id = "external:" + reference.sourceId + ":" + item.id;
+    const type = item.mimeType || (item.kind === "image" ? "image/png" : item.kind === "video" ? "video/mp4" : "audio/mpeg");
+    if (item.kind === "image") {
+        return {
+            id,
+            name: item.title || "素材图片",
+            type,
+            dataUrl: url,
+            url,
+            bytes: item.bytes,
+            width: item.width,
+            height: item.height,
+            previewUrl: item.thumbnailUrl || url,
+        };
+    }
+    if (item.kind === "video") {
+        return {
+            id,
+            name: item.title || "素材视频",
+            type,
+            url,
+            bytes: item.bytes,
+            width: item.width,
+            height: item.height,
+            previewUrl: item.thumbnailUrl || url,
+        };
+    }
+    if (item.kind === "audio") {
+        return {
+            id,
+            name: item.title || "素材音频",
+            type,
+            url,
+            bytes: item.bytes,
+            previewUrl: item.thumbnailUrl || url,
+        };
+    }
+    throw new Error("“" + item.title + "”不是可用于创作参考的媒体文件");
+}
 export function creationImageAsset({ title, uploaded, metadata }: { title: string; uploaded: UploadedImage; metadata?: Record<string, unknown> }): NewAsset {
     return {
         kind: "image",

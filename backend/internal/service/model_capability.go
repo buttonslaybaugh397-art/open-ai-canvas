@@ -13,26 +13,10 @@ import (
 
 // ModelCapabilityConfig 是模型能力声明，不包含供应商字段名；协议适配器负责把统一参数映射到上游请求。
 type ModelCapabilityConfig struct {
-	Version    int                         `json:"version"`
-	Text       *TextCapabilityConfig       `json:"text,omitempty"`
-	Image      *ImageCapabilityConfig      `json:"image,omitempty"`
-	Video      *VideoCapabilityConfig      `json:"video,omitempty"`
-	AIStarsLab *AIStarsLabCapabilityConfig `json:"aistarslab,omitempty"`
-}
-
-type AIStarsLabCapabilityConfig struct {
-	Channel        string   `json:"channel"`
-	Capability     string   `json:"capability"`
-	Model          string   `json:"model"`
-	Qualities      []string `json:"qualities,omitempty"`
-	AspectRatios   []string `json:"aspectRatios,omitempty"`
-	Duration       []int    `json:"duration,omitempty"`
-	DurationMin    int      `json:"durationMin,omitempty"`
-	DurationMax    int      `json:"durationMax,omitempty"`
-	Modes          []string `json:"modes,omitempty"`
-	InputImagesMax int      `json:"inputImagesMax,omitempty"`
-	InputVideosMax int      `json:"inputVideosMax,omitempty"`
-	InputAudiosMax int      `json:"inputAudiosMax,omitempty"`
+	Version int                    `json:"version"`
+	Text    *TextCapabilityConfig  `json:"text,omitempty"`
+	Image   *ImageCapabilityConfig `json:"image,omitempty"`
+	Video   *VideoCapabilityConfig `json:"video,omitempty"`
 }
 
 type TextCapabilityConfig struct {
@@ -203,7 +187,7 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 	// 文本模型是否支持视觉输入不能从协议或模型名可靠推断，默认关闭，由管理员按真实上游能力开启。
 	text := &TextCapabilityConfig{References: TextReferenceConfig{PromptMaxChars: 32000}}
 	video := &VideoCapabilityConfig{
-		References:        VideoReferenceConfig{PromptMaxChars: 1000, MinImages: 0, MaxImages: 100, MaxImageBytes: 30 * 1024 * 1024, MaxVideos: 0, MaxVideoBytes: 0, MaxVideoDuration: 0, MaxAudios: 0, MaxAudioBytes: 0, MaxAudioDuration: 0},
+		References:        VideoReferenceConfig{PromptMaxChars: 1000, MinImages: 0, MaxImages: 9, MaxImageBytes: 30 * 1024 * 1024, MaxVideos: 0, MaxVideoBytes: 0, MaxVideoDuration: 0, MaxAudios: 0, MaxAudioBytes: 0, MaxAudioDuration: 0},
 		Duration:          VideoDurationConfig{Selection: "range", Min: 1, Max: 15, Step: 1, Default: 6},
 		Ratios:            []string{"16:9", "9:16", "1:1", "4:3", "3:4", "21:9"},
 		DefaultRatio:      "16:9",
@@ -222,39 +206,20 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		video.Duration = VideoDurationConfig{Selection: "enum", Values: []int{4, 6, 8}, Default: 6}
 		video.Resolutions = []string{"720p", "1080p"}
 	case model.ChannelInterfaceVolcengineArkVideo:
+		video.Operations = append(video.Operations, "reference_to_video", "audio_to_video")
 		video.References.MaxVideos, video.References.MaxAudios = 3, 3
 		video.References.MaxVideoBytes, video.References.MaxAudioBytes = 200*1024*1024, 15*1024*1024
 		video.References.MaxVideoDuration, video.References.MaxAudioDuration = 15, 15
 		video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
 		video.Watermark = VideoBooleanConfig{Supported: true, Default: false}
 		video.Resolutions = []string{"480p", "720p", "1080p"}
-	case model.ChannelInterfaceNewAPIChannel1, model.ChannelInterfaceNewAPIChannel2, model.ChannelInterfaceSeedanceVideos:
+	case model.ChannelInterfaceNewAPIChannel1, model.ChannelInterfaceNewAPIChannel2:
 		video.References.MaxVideos, video.References.MaxAudios = 3, 3
 		video.References.MaxVideoBytes, video.References.MaxAudioBytes = 200*1024*1024, 15*1024*1024
 		video.References.MaxVideoDuration, video.References.MaxAudioDuration = 15, 15
 		video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
-		if model.ChannelInterfaceType(protocol) == model.ChannelInterfaceNewAPIChannel1 || model.ChannelInterfaceType(protocol) == model.ChannelInterfaceSeedanceVideos {
+		if model.ChannelInterfaceType(protocol) == model.ChannelInterfaceNewAPIChannel1 {
 			video.Resolutions = []string{"480p", "720p", "1080p"}
-		}
-	case model.ChannelInterfaceHuiQuYunVideo:
-		video.References.MaxImages, video.References.MaxVideos, video.References.MaxAudios = 4, 3, 1
-		video.References.MaxVideoBytes, video.References.MaxAudioBytes = 200*1024*1024, 15*1024*1024
-		video.References.MaxVideoDuration, video.References.MaxAudioDuration = 15, 15
-		video.Ratios, video.DefaultRatio = []string{"21:9", "4:3", "16:9", "1:1", "3:4", "9:16"}, "16:9"
-		video.Resolutions, video.DefaultResolution = []string{"720p"}, "720p"
-		video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
-		if isHuiQuYunMX933VideoModel(modelName) {
-			video.References.MaxImages = 100
-			video.References.MaxVideos, video.References.MaxAudios = 3, 3
-			video.References.MaxVideoBytes = 50 * 1024 * 1024
-			video.Ratios = []string{"16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"}
-			video.Resolutions, video.DefaultResolution = []string{"480p", "720p"}, "720p"
-		}
-		fixedDuration := huiQuYunFixedVideoDuration(modelName)
-		if fixedDuration > 0 {
-			video.Duration = VideoDurationConfig{Selection: "enum", Values: []int{fixedDuration}, Default: fixedDuration}
-		} else {
-			video.Duration = VideoDurationConfig{Selection: "range", Min: 4, Max: 15, Step: 1, Default: 8}
 		}
 	case model.ChannelInterfaceNewAPIVideo, model.ChannelInterfaceXAIVideo:
 		video.GenerateAudio = VideoBooleanConfig{Supported: false, Default: false}
@@ -266,6 +231,7 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		video.DefaultResolution = "1080p"
 	case model.ChannelInterfaceMiniMaxVideo:
 		video.Operations = append(video.Operations, "reference_to_video")
+		video.References.MaxImages = 9
 		video.References.MaxImageBytes = 30 * 1024 * 1024
 		video.References.MaxVideos = 3
 		video.References.MaxVideoBytes = 50 * 1024 * 1024
@@ -279,9 +245,6 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		video.Resolutions = []string{"768P", "2K"}
 		video.DefaultResolution = "768P"
 		video.Watermark = VideoBooleanConfig{Supported: true, Default: false}
-	}
-	if video.References.MaxVideos > 0 && !containsCapabilityString(video.Operations, "reference_to_video") {
-		video.Operations = append(video.Operations, "reference_to_video")
 	}
 	return &ModelCapabilityConfig{Version: 1, Text: text, Image: DefaultImageCapabilityConfig(protocol, modelName), Video: video}
 }
@@ -323,9 +286,6 @@ func NormalizeModelCapabilityConfig(capability string, _ string, input *ModelCap
 	}
 	if input == nil || input.Video == nil {
 		return nil, BadAuthRequest("请配置视频模型能力参数")
-	}
-	if input.Video.References.MaxVideos > 0 && !containsCapabilityString(input.Video.Operations, "reference_to_video") {
-		input.Video.Operations = append(input.Video.Operations, "reference_to_video")
 	}
 	value := &ModelCapabilityConfig{Version: 1, Video: input.Video}
 	if err := validateVideoCapabilityConfig(value.Video); err != nil {
@@ -388,9 +348,6 @@ func CapabilitySpecFromModelCapabilityConfig(config *ModelCapabilityConfig, capa
 		}
 		video := config.Video
 		spec.Operations = append([]string(nil), video.Operations...)
-		if video.References.MaxVideos > 0 && !containsCapabilityString(spec.Operations, "reference_to_video") {
-			spec.Operations = append(spec.Operations, "reference_to_video")
-		}
 		addInputConstraint(spec.Inputs, "image", video.References.MinImages, video.References.MaxImages)
 		addInputConstraint(spec.Inputs, "video", 0, video.References.MaxVideos)
 		addInputConstraint(spec.Inputs, "audio", 0, video.References.MaxAudios)
@@ -578,7 +535,14 @@ func (s *Service) ValidateTaskCapability(input map[string]any) error {
 		return BadAuthRequest("任务输入格式无效")
 	}
 	var taskInput canvasGenerationInput
-	if err := json.Unmarshal(encoded, &taskInput); err != nil || (taskInput.Mode != "image" && taskInput.Mode != "video") {
+	if err := json.Unmarshal(encoded, &taskInput); err != nil || (taskInput.Mode != "image" && taskInput.Mode != "video" && taskInput.Mode != "audio") {
+		return nil
+	}
+	if isWorkflowProviderInterface(taskInput.Config.InterfaceType) {
+		return validateWorkflowProviderConfig(taskInput.Mode, taskInput.Config)
+	}
+	// 普通音频模型沿用主线的能力校验路径；当前专用能力表只覆盖图片和视频。
+	if taskInput.Mode == "audio" {
 		return nil
 	}
 	channelID := strings.TrimSpace(taskInput.Config.ChannelID)
@@ -598,7 +562,7 @@ func (s *Service) ValidateTaskCapability(input map[string]any) error {
 		}
 		return validateVideoTask(taskInput.Config.CapabilityConfig.Video, taskInput)
 	}
-	item, err := s.repo.ChannelModelByKey(channelID, strings.TrimPrefix(strings.TrimSpace(taskInput.Config.Model), "models/"))
+	item, err := s.repo.ChannelModelByKey(channelID, providerChannelModelKey(taskInput.Config))
 	if err != nil {
 		return BadAuthRequest("当前系统渠道模型未配置或已停用")
 	}
@@ -607,27 +571,46 @@ func (s *Service) ValidateTaskCapability(input map[string]any) error {
 		if err != nil {
 			return BadAuthRequest("当前图片模型能力参数无效")
 		}
-		imageProfile := DefaultImageCapabilityConfig(string(item.Protocol), item.ModelKey)
+		imageProfile := DefaultImageCapabilityConfig(string(item.Protocol), firstNonEmpty(item.ProviderModelKey, item.ModelKey))
 		if profile != nil && profile.Image != nil {
 			imageProfile = profile.Image
 		}
-		return validateImageTask(imageProfile, taskInput)
+		return validateImageTask(applyModelSpecificImageCapability(imageProfile, string(item.Protocol), firstNonEmpty(item.ProviderModelKey, item.ModelKey), taskInput.Config.APIFormat), taskInput)
 	}
 	if err != nil || profile == nil || profile.Video == nil {
 		return BadAuthRequest("当前视频模型尚未配置能力参数")
 	}
+	applyFixedVideoResolution(&taskInput, profile.Video)
+	if config, ok := input["config"].(map[string]any); ok {
+		config["vquality"] = taskInput.Config.VQuality
+	}
 	return validateVideoTask(profile.Video, taskInput)
 }
 
+// applyModelSpecificImageCapability is retained as a narrow normalization hook
+// for provider-specific image validation. The stored capability profile is
+// already normalized when the channel model is saved, so no second override is
+// needed here.
+func applyModelSpecificImageCapability(profile *ImageCapabilityConfig, _ string, _ string, _ string) *ImageCapabilityConfig {
+	return profile
+}
+
+// applyFixedVideoResolution 让单档位 SKU 的预扣、恢复和上游请求保持同一分辨率。
+func applyFixedVideoResolution(input *canvasGenerationInput, profile *VideoCapabilityConfig) {
+	if input == nil || profile == nil || len(profile.Resolutions) != 1 {
+		return
+	}
+	if resolution := videoResolutionNameRequest(profile, profile.Resolutions[0]); resolution != "" {
+		input.Config.VQuality = resolution
+	}
+}
+
 func validateVideoTask(profile *VideoCapabilityConfig, input canvasGenerationInput) error {
-	if len(input.ReferenceImages) > profile.References.MaxImages {
-		return BadAuthRequest(fmt.Sprintf("当前视频模型最多支持 %d 张参考图，当前已连接 %d 张", profile.References.MaxImages, len(input.ReferenceImages)))
+	if len(input.ReferenceImages) > profile.References.MaxImages || len(input.ReferenceVideos) > profile.References.MaxVideos || len(input.ReferenceAudios) > profile.References.MaxAudios {
+		return BadAuthRequest("参考素材数量超过当前模型限制")
 	}
-	if len(input.ReferenceVideos) > profile.References.MaxVideos {
-		return BadAuthRequest(fmt.Sprintf("当前视频模型最多支持 %d 个参考视频，当前已连接 %d 个", profile.References.MaxVideos, len(input.ReferenceVideos)))
-	}
-	if len(input.ReferenceAudios) > profile.References.MaxAudios {
-		return BadAuthRequest(fmt.Sprintf("当前视频模型最多支持 %d 个参考音频，当前已连接 %d 个", profile.References.MaxAudios, len(input.ReferenceAudios)))
+	if input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo) && len(input.ReferenceAudios) > 0 && len(input.ReferenceImages) == 0 && len(input.ReferenceVideos) == 0 {
+		return BadAuthRequest("火山方舟全模态参考不支持纯音频或文本+音频，请同时添加参考图片或参考视频")
 	}
 	if len(input.ReferenceImages) < profile.References.MinImages {
 		return BadAuthRequest(fmt.Sprintf("当前视频模型至少需要 %d 张参考图", profile.References.MinImages))
@@ -665,17 +648,13 @@ func validateVideoTask(profile *VideoCapabilityConfig, input canvasGenerationInp
 	}
 	operation := metadataString(input.Metadata, "videoEditOperation")
 	if operation == "" {
-		if len(input.ReferenceVideos) > 0 {
-			operation = "reference_to_video"
-		} else if len(input.ReferenceAudios) > 0 && len(input.ReferenceImages) == 0 {
-			operation = "audio_to_video"
-		} else if len(input.ReferenceImages) > 0 {
+		if len(input.ReferenceImages) > 0 {
 			operation = "image_to_video"
 		} else {
 			operation = profile.DefaultOperation
 		}
 	}
-	if !containsCapabilityString(profile.Operations, operation) && !(operation == "reference_to_video" && containsCapabilityString(profile.Operations, "image_to_video")) {
+	if !containsCapabilityString(profile.Operations, operation) {
 		return BadAuthRequest("当前视频模型不支持该生成模式")
 	}
 	return nil

@@ -1,5 +1,5 @@
 import { App, Button, Form, Input, InputNumber, Select } from "antd";
-import { ArrowLeft, Boxes, Cloud, MessageSquareText, SlidersHorizontal, SquareTerminal } from "lucide-react";
+import { ArrowLeft, Boxes, Bug, Cloud, MessageSquareText, MonitorUp, RadioTower, SlidersHorizontal, SquareTerminal, Workflow } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
@@ -8,19 +8,27 @@ import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from 
 import { refreshSystemChannels } from "@/lib/user-session";
 import { defaultConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
+import { ChannelSettingsPane, channelValidationError, focusInvalidChannelField, isChannelReady } from "./channel-settings-pane";
+export { UserLocalChannelFields, UserLocalChannelSwitch, userLocalChannelChangePatch, userLocalChannelFormOwner } from "./channel-settings-pane";
+import { ComfyUIBridgeSettingsPane } from "./comfyui-bridge-settings-pane";
 import { ModelDefaultGrid } from "./model-default-grid";
 import { LocalCliSettings } from "./local-cli-settings";
 import { PromptPreferencesPane } from "./prompt-preferences-pane";
-export { UserLocalChannelFields, UserLocalChannelSwitch, userLocalChannelChangePatch, userLocalChannelFormOwner } from "./channel-settings-pane";
+import DiagnosticsPanel from "./diagnostics-panel";
+import { RunningHubSettingsPane } from "./runninghub-settings-pane";
 
-type ConfigSectionKey = "local-cli" | "models" | "preferences" | "prompts" | "storage";
+type ConfigSectionKey = "local-cli" | "channels" | "models" | "runninghub" | "comfyui" | "preferences" | "prompts" | "storage" | "diagnostics";
 
 const configSections: Array<{ key: ConfigSectionKey; label: string; description: string; icon: ReactNode }> = [
     { key: "local-cli", label: "本机工具", description: "连接 Runtime 与官方 CLI", icon: <SquareTerminal className="size-4" /> },
+    { key: "channels", label: "个人渠道", description: "模型服务与个人工作流", icon: <RadioTower className="size-4" /> },
+    { key: "runninghub", label: "RunningHub 工作流", description: "个人渠道的云端工作流配置", icon: <Workflow className="size-4" /> },
+    { key: "comfyui", label: "ComfyUI Bridge", description: "个人渠道的 Bridge 工作流配置", icon: <MonitorUp className="size-4" /> },
     { key: "models", label: "模型选择", description: "按领域选择默认模型", icon: <Boxes className="size-4" /> },
     { key: "preferences", label: "生成偏好", description: "画布、视频与音频默认值", icon: <SlidersHorizontal className="size-4" /> },
     { key: "prompts", label: "提示词偏好", description: "按任务定制平台模板", icon: <MessageSquareText className="size-4" /> },
     { key: "storage", label: "我的对象存储", description: "管理个人媒体存储", icon: <Cloud className="size-4" /> },
+    { key: "diagnostics", label: "问题诊断", description: "导出日志协助排查", icon: <Bug className="size-4" /> },
 ];
 
 export function isConfigSection(value: string | null): value is ConfigSectionKey {
@@ -32,17 +40,24 @@ export default function SettingsPage() {
     const navigate = useNavigate();
     const [searchParams, setSearchParams] = useSearchParams();
     const requestedSection = searchParams.get("section");
-    const initialSection = isConfigSection(requestedSection) ? requestedSection : "models";
-    const [activeTab, setActiveTab] = useState<ConfigSectionKey>(initialSection);
+    const customChannelsEnabled = useUserStore((state) => state.features.customChannelsEnabled);
+    const initialSection = isConfigSection(requestedSection) ? requestedSection : customChannelsEnabled ? "channels" : "models";
+    const [activeTab, setActiveTab] = useState<ConfigSectionKey>(initialSection === "channels" && !customChannelsEnabled ? "models" : initialSection);
     const config = useConfigStore((state) => state.config);
     const effectiveConfig = useEffectiveConfig();
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const shouldPromptContinue = searchParams.get("continue") === "1";
     const userId = useUserStore((state) => state.user?.id);
+    const userChannels = config.channels.filter((channel) => channel.scope !== "system");
+    const visibleConfigSections = customChannelsEnabled ? configSections : configSections.filter((section) => section.key !== "channels");
 
     useEffect(() => {
-        setActiveTab(isConfigSection(requestedSection) ? requestedSection : "models");
-    }, [requestedSection]);
+        if (isConfigSection(requestedSection) && (requestedSection !== "channels" || customChannelsEnabled)) {
+            setActiveTab(requestedSection);
+            return;
+        }
+        if (!customChannelsEnabled) setActiveTab((current) => (current === "channels" ? "models" : current));
+    }, [customChannelsEnabled, requestedSection]);
 
     useEffect(() => {
         if (!userId) return;
@@ -63,9 +78,21 @@ export default function SettingsPage() {
     };
 
     const finishConfig = () => {
-        if (!effectiveConfig.models.length) {
-            selectSection("models");
-            message.error("当前没有可用的系统模型，请联系管理员配置系统渠道");
+        const invalidChannel = customChannelsEnabled ? userChannels.find((channel) => channelValidationError(channel)) : undefined;
+        if (invalidChannel) {
+            selectSection("channels");
+            message.warning(`${invalidChannel.name || "未命名渠道"}：${channelValidationError(invalidChannel)}`);
+            focusInvalidChannelField(invalidChannel);
+            return;
+        }
+        const hasReadyLocalRuntime = effectiveConfig.channels.some((channel) => channel.transport === "local-runtime" && channel.enabled !== false && Boolean(channel.localModels?.length));
+        const workflowReady = Boolean(
+            (config.runningHub.enabled && config.runningHub.workflowId.trim() && config.runningHub.baseUrl.trim() && config.runningHub.apiKey.trim())
+            || (config.comfyBridge.enabled && config.comfyBridge.bridgeId.trim() && config.comfyBridge.workflowId.trim()),
+        );
+        if (!effectiveConfig.channels.some(isChannelReady) && !hasReadyLocalRuntime && !workflowReady) {
+            selectSection(customChannelsEnabled ? "channels" : "models");
+            message.error(customChannelsEnabled ? (shouldPromptContinue ? "请先完成至少一个渠道的 Base URL、API Key 和模型配置" : "当前没有可用渠道，请先完成连接信息和模型配置") : "当前没有可用的系统模型，请联系管理员配置系统渠道");
             return;
         }
         message.success("配置已保存，正在返回创作页面");
@@ -73,11 +100,8 @@ export default function SettingsPage() {
     };
 
     const panes: Record<ConfigSectionKey, ReactNode> = {
-        "local-cli": (
-            <SettingsPane>
-                <LocalCliSettings />
-            </SettingsPane>
-        ),
+        "local-cli": <SettingsPane><LocalCliSettings /></SettingsPane>,
+        channels: <SettingsPane><ChannelSettingsPane onOpenModels={() => selectSection("models")} onOpenRunningHub={() => selectSection("runninghub")} onOpenComfyUI={() => selectSection("comfyui")} /></SettingsPane>,
         models: (
             <SettingsPane>
                 <div className="settings-pane-header">
@@ -91,6 +115,8 @@ export default function SettingsPage() {
                 </div>
             </SettingsPane>
         ),
+        runninghub: <SettingsPane><RunningHubSettingsPane /></SettingsPane>,
+        comfyui: <SettingsPane><ComfyUIBridgeSettingsPane /></SettingsPane>,
         preferences: (
             <SettingsPane>
                 <div className="settings-pane-header">
@@ -157,11 +183,8 @@ export default function SettingsPage() {
                 </div>
             </SettingsPane>
         ),
-        prompts: (
-            <SettingsPane fill>
-                <PromptPreferencesPane />
-            </SettingsPane>
-        ),
+        prompts: <SettingsPane fill><PromptPreferencesPane /></SettingsPane>,
+        diagnostics: <SettingsPane><DiagnosticsPanel taskId={searchParams.get("taskId") || undefined} projectId={searchParams.get("projectId") || undefined} /></SettingsPane>,
         storage: (
             <SettingsPane>
                 <div className="settings-section">
@@ -182,16 +205,12 @@ export default function SettingsPage() {
                     ) : null}
                     <h1 className="truncate text-sm font-semibold">设置</h1>
                 </div>
-                {shouldPromptContinue ? (
-                    <Button type="primary" size="small" onClick={finishConfig}>
-                        保存并返回
-                    </Button>
-                ) : null}
+                {shouldPromptContinue ? <Button type="primary" size="small" onClick={finishConfig}>保存并返回</Button> : null}
             </header>
             <div className="settings-library-frame flex min-h-0 flex-1 flex-col md:flex-row">
                 <aside className="settings-nav-panel w-full shrink-0 md:w-[200px]">
                     <nav className="thin-scrollbar flex gap-1 overflow-x-auto p-2 md:block md:space-y-1 md:p-2.5" aria-label="配置分类">
-                        {configSections.map((item) => {
+                        {visibleConfigSections.map((item) => {
                             const selected = item.key === activeTab;
                             return (
                                 <button
@@ -213,7 +232,9 @@ export default function SettingsPage() {
                 </aside>
                 <section className="settings-content flex min-h-0 min-w-0 flex-1 flex-col">
                     <div className="app-workspace-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 md:px-6 md:py-5">
-                        <div className={`settings-pane-root ${activeTab === "prompts" ? "h-full w-full" : "mx-auto w-full max-w-none"}`}>{panes[activeTab]}</div>
+                        <div className={`settings-pane-root ${activeTab === "prompts" ? "h-full w-full" : "mx-auto w-full max-w-none"}`}>
+                            {panes[activeTab]}
+                        </div>
                     </div>
                 </section>
             </div>

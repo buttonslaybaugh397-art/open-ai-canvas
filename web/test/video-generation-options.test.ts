@@ -1,8 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { huiQuYunProtocolForModel } from "../src/lib/huiquyun-channel";
-import { defaultModelCapabilityConfig, modelCapabilityConfigFor } from "../src/lib/model-capabilities";
-import { defaultConfig } from "../src/stores/use-config-store";
+import { defaultModelCapabilityConfig } from "../src/lib/model-capabilities";
 import { normalizeVideoResolution, VIDEO_RESOLUTION_CAPABILITY_OPTIONS, VIDEO_RESOLUTION_OPTIONS } from "../src/lib/video-generation-options";
 
 describe("video generation resolution options", () => {
@@ -25,54 +23,7 @@ describe("video generation resolution options", () => {
         expect(defaultModelCapabilityConfig("gemini-veo").video?.resolutions).toEqual(["720p", "1080p"]);
     });
 
-    test("汇取云按模型名自动识别专用协议且不改变通用协议目录", () => {
-        expect(huiQuYunProtocolForModel("gpt-4.1-mini")).toBe("chat-completion");
-        expect(huiQuYunProtocolForModel("gpt-image-1")).toBe("openai-image");
-        expect(huiQuYunProtocolForModel("gpt-4o-mini-tts")).toBe("openai-audio");
-        expect(huiQuYunProtocolForModel("sora-2-pro-15s")).toBe("huiquyun-video");
-        expect(huiQuYunProtocolForModel("sd2-mx933-720-5s")).toBe("huiquyun-video");
-        expect(huiQuYunProtocolForModel("sd2-mx933-720-fast-5s")).toBe("huiquyun-video");
-        expect(huiQuYunProtocolForModel("mj-sd2.0-933-720p")).toBe("huiquyun-video");
-        expect(huiQuYunProtocolForModel("catalog-video", ["openai-video"])).toBe("huiquyun-video");
-    });
-
-    test("汇取云固定时长视频模型锁定文档声明的参数", () => {
-        const profile = defaultModelCapabilityConfig("huiquyun-video", "sora-2-pro-15s").video;
-
-        expect(profile?.duration).toEqual({ selection: "enum", values: [15], default: 15 });
-        expect(profile?.resolutions).toEqual(["720p"]);
-        expect(profile?.references).toMatchObject({ maxImages: 4, maxVideos: 3, maxAudios: 1 });
-    });
-
-    test("NewAPI Video Generations 保留后台配置的参考图上限", () => {
-        const capabilityConfig = defaultModelCapabilityConfig("newapi-channel-2", "seedance2.5-480p");
-        capabilityConfig.video!.references.maxImages = 30;
-        const model = "relay::seedance2.5-480p";
-        const config = {
-            ...defaultConfig,
-            channels: [{ id: "relay", name: "relay", baseUrl: "/api", apiKey: "system", apiFormat: "openai" as const, models: ["seedance2.5-480p"], modelCosts: [{ model: "seedance2.5-480p", capability: "video" as const, protocol: "newapi-channel-2" as const, billingMode: "per_second" as const, unitPriceMicrocredits: 1, capabilityConfig }] }],
-            models: [model],
-            videoModels: [model],
-        };
-
-        expect(modelCapabilityConfigFor(config, model).video?.references.maxImages).toBe(30);
-    });
-
-    test("汇取云 MX933 使用官方多媒体能力", () => {
-        const profile = defaultModelCapabilityConfig("huiquyun-video", "sd2-mx933-720-10s").video;
-
-        expect(profile?.duration).toEqual({ selection: "enum", values: [10], default: 10 });
-        expect(profile?.resolutions).toEqual(["480p", "720p"]);
-        expect(profile?.ratios).toEqual(["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"]);
-        expect(profile?.references).toMatchObject({ maxImages: 100, maxVideos: 3, maxAudios: 3, maxVideoBytes: 50 * 1024 * 1024 });
-    });
-
-    test("汇取云 mj-sd2.0-933-720p 使用 933 专属能力配置", () => {
-        const profile = defaultModelCapabilityConfig("huiquyun-video", "mj-sd2.0-933-720p").video;
-
-        expect(profile?.duration.selection).toBe("range");
-        expect(profile?.resolutions).toEqual(["480p", "720p"]);
-        expect(profile?.references).toMatchObject({ maxImages: 100, maxVideos: 3, maxAudios: 3, maxVideoBytes: 50 * 1024 * 1024 });
-        expect(profile?.ratios).toEqual(["16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"]);
+    test("火山方舟默认开启全模态参考模式", () => {
+        expect(defaultModelCapabilityConfig("volcengine-ark-video").video?.operations).toEqual(expect.arrayContaining(["reference_to_video", "audio_to_video"]));
     });
 });

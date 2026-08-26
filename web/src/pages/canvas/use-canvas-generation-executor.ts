@@ -9,7 +9,7 @@ import { buildPortraitTexturePrompt } from "@/lib/canvas/canvas-portrait-texture
 import { resolveCanvasStyleExecution } from "@/lib/canvas/canvas-style-execution";
 import { expandSkillMentions } from "@/lib/canvas/canvas-skill-mentions";
 import { generationErrorMessage, generationFailureMetadata } from "@/lib/generation-error";
-import { modelCompatibilityError, modelReferenceLimits, modelRequestOptions, type ModelRequirements } from "@/lib/model-selection";
+import { modelCompatibilityError, modelGroupReferenceLimits, modelRequestOptions, type ModelRequirements } from "@/lib/model-selection";
 import { navigateToSettings } from "@/lib/settings-navigation";
 import type { Skill } from "@/services/api/skills";
 import type { GenerationTask } from "@/services/api/task-center";
@@ -124,6 +124,7 @@ export function useCanvasGenerationExecutor({
                                       taskCreatedAt: new Date().toISOString(),
                                       errorDetails: undefined,
                                       generationErrorCode: undefined,
+                                      resourceReloadAvailable: undefined,
                                       failedPromptFingerprint: undefined,
                                   },
                               }
@@ -135,17 +136,18 @@ export function useCanvasGenerationExecutor({
             let rawGenerationContext: Awaited<ReturnType<typeof hydrateNodeGenerationContext>>;
             // 视频文本只保留输入框内容；连接的媒体仍作为结构化参考传递。
             const promptOnly = mode === "video";
+            const usesWorkflowProvider = Boolean(mode !== "text" && generationConfig.taskWorkflowProvider && generationConfig.taskWorkflowProvider !== "model");
             try {
                 const baseContext = buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, editingTextNode ? `请根据要求修改以下文本。\n\n原文：\n${sourceTextContent}\n\n修改要求：\n${prompt}` : generationPrompt, assets, promptOnly);
                 const requirements = generationModelRequirements(mode, baseContext, sourceNode, generationConfig, true);
                 generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode, requirements);
-                const compatibilityError = modelCompatibilityError(generationConfig, generationConfig.model, requirements);
+                const compatibilityError = usesWorkflowProvider ? "" : modelCompatibilityError(generationConfig, generationConfig.model, requirements);
                 if (compatibilityError) throw new Error(`当前模型无法支持这组输入和参数：${compatibilityError}`);
-                const referenceLimits = modelReferenceLimits(generationConfig, generationConfig.model, mode);
+                const referenceLimits = usesWorkflowProvider ? undefined : modelGroupReferenceLimits(effectiveConfig, generationConfig.model, mode, requirements);
                 rawGenerationContext = await hydrateNodeGenerationContext(baseContext, projectId, domainProjectId, mode, mode === "video" && Boolean(referenceLimits?.maxAudios), !promptOnly, referenceLimits);
                 const hydratedRequirements = generationModelRequirements(mode, rawGenerationContext, sourceNode, generationConfig);
                 generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode, hydratedRequirements);
-                const hydratedCompatibilityError = modelCompatibilityError(generationConfig, generationConfig.model, hydratedRequirements);
+                const hydratedCompatibilityError = usesWorkflowProvider ? "" : modelCompatibilityError(generationConfig, generationConfig.model, hydratedRequirements);
                 if (hydratedCompatibilityError) throw new Error(`当前模型无法支持这组输入和参数：${hydratedCompatibilityError}`);
             } catch (error) {
                 const errorDetails = generationErrorMessage(error);
@@ -161,6 +163,9 @@ export function useCanvasGenerationExecutor({
                                           taskStage: undefined,
                                           taskProgress: undefined,
                                           taskCreatedAt: undefined,
+                                          taskStartedAt: undefined,
+                                          taskCompletedAt: undefined,
+                                          taskDurationMs: undefined,
                                           errorDetails: controller.signal.aborted ? undefined : errorDetails,
                                       },
                                   }
@@ -188,7 +193,7 @@ export function useCanvasGenerationExecutor({
                     const errorDetails = generationErrorMessage(error);
                     if (isPreparingEmptyImage)
                         setNodes((current) =>
-                            current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, taskStage: undefined, taskProgress: undefined, taskCreatedAt: undefined, errorDetails } } : node)),
+                            current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, taskStage: undefined, taskProgress: undefined, taskCreatedAt: undefined, taskStartedAt: undefined, taskCompletedAt: undefined, taskDurationMs: undefined, errorDetails } } : node)),
                         );
                     finishGenerationRequest(nodeId, controller);
                     setRunningNodeId(null);
@@ -215,7 +220,7 @@ export function useCanvasGenerationExecutor({
             }
             if (controller.signal.aborted) {
                 if (isPreparingEmptyImage)
-                    setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_IDLE, taskStage: undefined, taskProgress: undefined, taskCreatedAt: undefined } } : node)));
+                    setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_IDLE, taskStage: undefined, taskProgress: undefined, taskCreatedAt: undefined, taskStartedAt: undefined, taskCompletedAt: undefined, taskDurationMs: undefined } } : node)));
                 finishGenerationRequest(nodeId, controller);
                 setRunningNodeId(null);
                 return;
@@ -232,7 +237,7 @@ export function useCanvasGenerationExecutor({
             if (markSourceStatus)
                 setNodes((current) =>
                     current.map((node) =>
-                        node.id === nodeId ? { ...node, metadata: { ...node.metadata, prompt: statusPrompt, status: NODE_STATUS_LOADING, errorDetails: undefined, generationErrorCode: undefined, failedPromptFingerprint: undefined } } : node,
+                        node.id === nodeId ? { ...node, metadata: { ...node.metadata, prompt: statusPrompt, status: NODE_STATUS_LOADING, errorDetails: undefined, generationErrorCode: undefined, resourceReloadAvailable: undefined, failedPromptFingerprint: undefined } } : node,
                     ),
                 );
 
@@ -289,6 +294,9 @@ export function useCanvasGenerationExecutor({
                             delete metadata.taskStage;
                             delete metadata.taskCreatedAt;
                             delete metadata.taskUpdatedAt;
+                            delete metadata.taskStartedAt;
+                            delete metadata.taskCompletedAt;
+                            delete metadata.taskDurationMs;
                             return { ...node, metadata };
                         }),
                     );
@@ -330,7 +338,7 @@ function generationModelRequirements(
     mode: CanvasNodeGenerationMode,
     input: Pick<Awaited<ReturnType<typeof hydrateNodeGenerationContext>>, "textCount" | "imageCount" | "videoCount" | "audioCount" | "characterReferences">,
     sourceNode: CanvasNodeData | undefined,
-	config: ReturnType<typeof useEffectiveConfig>,
+    config: ReturnType<typeof useEffectiveConfig>,
     includeCharacterMinimum = false,
 ): ModelRequirements {
     return {
@@ -343,7 +351,7 @@ function generationModelRequirements(
             characterCount: includeCharacterMinimum ? input.characterReferences.length : 0,
         },
         videoOperation: sourceNode?.metadata?.videoEditOperation,
-		videoSeconds: config.videoSeconds,
-		options: modelRequestOptions(config, mode),
+        videoSeconds: config.videoSeconds,
+        options: config.taskWorkflowProvider === "model" ? modelRequestOptions(config, mode) : undefined,
     };
 }

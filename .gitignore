@@ -1,16 +1,9 @@
 .next/
 out/
 node_modules/
-docs/
-!docs/
 docs/*
-!docs/content/
-docs/content/*
-!docs/content/docs/
-docs/content/docs/*
-!docs/content/docs/backend/
-!docs/content/docs/backend/backend-database.mdx
-!docs/content/docs/pending-test.mdx
+!docs/design/
+!docs/index.md
 .env*
 !.env.example
 data/
@@ -20,6 +13,9 @@ coverage/
 dist/
 *.log
 *.tsbuildinfo
+/web/public/OpenAICanvas-ComfyBridge.exe
+/web/public/OpenAICanvas-ComfyBridge-linux-amd64
+/web/public/OpenAICanvas-ComfyBridge-linux-arm64
 *.db
 *.db-*
 *.sqlite
@@ -43,3 +39,4 @@ assets/prototypes/.*.drawio.bkp
 .spec-workflow/
 .vscode/
 camera_language_guide.md
+.superdesign

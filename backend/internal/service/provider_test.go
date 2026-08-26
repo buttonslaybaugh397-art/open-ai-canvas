@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -40,6 +39,51 @@ func TestProviderRequestErrorDetails(t *testing.T) {
 				t.Fatalf("providerRequestErrorDetails() = (%q, %q), want (%q, %q)", code, text, tt.code, tt.text)
 			}
 		})
+	}
+}
+
+func TestChannelAPIURLNormalizesConfiguredVersionPrefix(t *testing.T) {
+	tests := []struct {
+		name string
+		base string
+		path string
+		want string
+	}{
+		{name: "host", base: "http://provider.test:8000", path: "/chat/completions", want: "http://provider.test:8000/v1/chat/completions"},
+		{name: "host slash", base: "http://provider.test:8000/", path: "/chat/completions", want: "http://provider.test:8000/v1/chat/completions"},
+		{name: "v1", base: "http://provider.test:8000/v1", path: "/chat/completions", want: "http://provider.test:8000/v1/chat/completions"},
+		{name: "v1 slash", base: "http://provider.test:8000/v1/", path: "/chat/completions", want: "http://provider.test:8000/v1/chat/completions"},
+		{name: "path carries v1beta", base: "http://provider.test:8000", path: "/v1beta/models/model", want: "http://provider.test:8000/v1beta/models/model"},
+		{name: "same v1beta is not duplicated", base: "http://provider.test:8000/v1beta", path: "/v1beta/models/model", want: "http://provider.test:8000/v1beta/models/model"},
+		{name: "path carries v2", base: "http://provider.test:8000/v1", path: "/v2/tasks", want: "http://provider.test:8000/v2/tasks"},
+		{name: "ark v3", base: "https://ark.example.com/api/v3", path: "/images/generations", want: "https://ark.example.com/api/v3/images/generations"},
+		{name: "path carries ark v3", base: "https://ark.example.com", path: "/api/v3/images/generations", want: "https://ark.example.com/api/v3/images/generations"},
+		{name: "path carries autodl api v1", base: "https://autodl.art", path: "/api/v1/comfyui/comfyui_workflow/workflow-1", want: "https://autodl.art/api/v1/comfyui/comfyui_workflow/workflow-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ChannelAPIURL(tt.base, tt.path); got != tt.want {
+				t.Fatalf("ChannelAPIURL(%q, %q) = %q, want %q", tt.base, tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestChannelAPIURLForProtocolUsesGeminiDefault(t *testing.T) {
+	if got := ChannelAPIURLForProtocol("https://generativelanguage.googleapis.com", "/models/gemini:generateContent", model.ChannelInterfaceGeminiVeo); got != "https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent" {
+		t.Fatalf("Gemini URL = %q", got)
+	}
+}
+
+func TestSystemChannelIDFromBaseURLSupportsShortAndLegacyProxyPaths(t *testing.T) {
+	for _, test := range []struct{ base, want string }{
+		{base: "/api/channel-1", want: "channel-1"},
+		{base: "/api/ai/system/channel-2", want: "channel-2"},
+		{base: "https://canvas.example.com/api/channel-3", want: "channel-3"},
+	} {
+		if got := systemChannelIDFromBaseURL(test.base); got != test.want {
+			t.Fatalf("systemChannelIDFromBaseURL(%q) = %q, want %q", test.base, got, test.want)
+		}
 	}
 }
 
@@ -106,6 +150,17 @@ data: [DONE]
 	if got, err := parseTextEventStream(chat, "chat-completion"); err != nil || got != "第一镜：远景" {
 		t.Fatalf("Chat stream = %q, err = %v", got, err)
 	}
+
+	claude := []byte(`event: content_block_delta
+data: {"delta":{"type":"text_delta","text":"第一镜"}}
+
+event: content_block_delta
+data: {"delta":{"type":"text_delta","text":"：远景"}}
+
+`)
+	if got, err := parseTextEventStream(claude, "claude-api"); err != nil || got != "第一镜：远景" {
+		t.Fatalf("Claude stream = %q, err = %v", got, err)
+	}
 }
 
 func TestParseAgentToolPayloadSupportsChatCompletions(t *testing.T) {
@@ -165,6 +220,59 @@ func TestParseAgentToolPayloadSupportsResponses(t *testing.T) {
 	}
 }
 
+func TestParseAgentToolPayloadSupportsClaude(t *testing.T) {
+	result, err := parseAgentToolPayload(map[string]interface{}{
+		"content": []interface{}{
+			map[string]interface{}{"type": "text", "text": "开始操作"},
+			map[string]interface{}{"type": "tool_use", "id": "call-3", "name": "canvas_get_state", "input": map[string]interface{}{}},
+		},
+	}, "claude-api")
+	if err != nil {
+		t.Fatalf("parseAgentToolPayload() error = %v", err)
+	}
+	if result["text"] != "开始操作" {
+		t.Fatalf("text = %v", result["text"])
+	}
+	calls, _ := result["toolCalls"].([]interface{})
+	if len(calls) != 1 {
+		t.Fatalf("toolCalls = %#v", result["toolCalls"])
+	}
+	call, _ := calls[0].(map[string]interface{})
+	function, _ := call["function"].(map[string]interface{})
+	if call["id"] != "call-3" || function["name"] != "canvas_get_state" || function["arguments"] != "{}" {
+		t.Fatalf("tool call = %#v", call)
+	}
+}
+
+func TestClaudeAgentBodyMapsOpenAIStyleTools(t *testing.T) {
+	body := claudeAgentBody(map[string]interface{}{
+		"messages": []interface{}{
+			map[string]interface{}{"role": "system", "content": "You are concise."},
+			map[string]interface{}{"role": "user", "content": "读取画布"},
+			map[string]interface{}{"role": "assistant", "content": nil, "tool_calls": []interface{}{map[string]interface{}{
+				"id": "call-4", "function": map[string]interface{}{"name": "canvas_get_state", "arguments": `{}`},
+			}}},
+			map[string]interface{}{"role": "tool", "tool_call_id": "call-4", "content": `{"nodes":[]}`},
+		},
+		"tools": []interface{}{map[string]interface{}{"type": "function", "function": map[string]interface{}{
+			"name": "canvas_get_state", "description": "读取画布", "parameters": map[string]interface{}{"type": "object"},
+		}}},
+		"tool_choice": "required",
+	})
+	if body["system"] != "You are concise." || body["max_tokens"] != 4096 {
+		t.Fatalf("body = %#v", body)
+	}
+	messages, _ := body["messages"].([]interface{})
+	if len(messages) != 3 {
+		t.Fatalf("messages = %#v", messages)
+	}
+	tools, _ := body["tools"].([]interface{})
+	tool, _ := tools[0].(map[string]interface{})
+	if tool["name"] != "canvas_get_state" || body["tool_choice"].(map[string]interface{})["type"] != "any" {
+		t.Fatalf("tools/choice = %#v / %#v", body["tools"], body["tool_choice"])
+	}
+}
+
 func TestRunAgentToolTaskFallsBackToolChoice(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
 	var choices []interface{}
@@ -188,8 +296,8 @@ func TestRunAgentToolTaskFallsBackToolChoice(t *testing.T) {
 	}))
 	defer server.Close()
 
-	config := providerConfig{BaseURL: server.URL, APIKey: "key", Model: "thinking-model", AllowLocalChannel: true}
-	result, err := runAgentToolTask(withProviderOutboundPolicy(context.Background(), config), canvasGenerationInput{
+	config := providerConfig{BaseURL: server.URL, APIKey: "key", Model: "thinking-model"}
+	result, err := runAgentToolTask(context.Background(), canvasGenerationInput{
 		Config:        config,
 		AgentRequests: &agentToolRequests{ChatCompletion: map[string]interface{}{"messages": []interface{}{}, "tool_choice": "required"}},
 	})
@@ -236,6 +344,44 @@ func TestProviderHTTPErrorWarnsAboutUncertain524Billing(t *testing.T) {
 	message := (providerHTTPError{StatusCode: 524, Status: "524 A Timeout Occurred"}).Error()
 	if !strings.Contains(message, "可能仍在服务端执行并产生费用") || !strings.Contains(message, "请勿立即重试") {
 		t.Fatalf("providerHTTPError.Error() = %q", message)
+	}
+}
+
+func TestProviderHTTPErrorDoesNotExposeResponseBody(t *testing.T) {
+	message := (providerHTTPError{
+		StatusCode: http.StatusBadGateway,
+		Status:     "502 Bad Gateway",
+		Body:       `{"error":{"message":"api-key=secret"}}`,
+	}).Error()
+	if strings.Contains(message, "api-key") || strings.Contains(message, "secret") || strings.Contains(message, `{"error"`) {
+		t.Fatalf("providerHTTPError exposed upstream response body: %q", message)
+	}
+	if !strings.Contains(message, "HTTP 502") {
+		t.Fatalf("providerHTTPError.Error() = %q", message)
+	}
+}
+
+func TestProviderPayloadErrorMessageUsesSafeActionableCategories(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "moderation", raw: "request blocked by content policy: prompt=private", want: "安全审核"},
+		{name: "quota", raw: "insufficient quota for api-key=secret", want: "额度不足"},
+		{name: "model access", raw: "model not found for tenant secret-id", want: "模型不存在"},
+		{name: "unknown", raw: "trace_id=private internal stack", want: "模型服务返回失败"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			message := providerPayloadErrorMessage(tt.raw)
+			if !strings.Contains(message, tt.want) {
+				t.Fatalf("providerPayloadErrorMessage() = %q, want category %q", message, tt.want)
+			}
+			if strings.Contains(message, "secret") || strings.Contains(message, "private") {
+				t.Fatalf("provider payload detail leaked: %q", message)
+			}
+		})
 	}
 }
 
@@ -765,14 +911,17 @@ func TestSeedanceVideosBodyUsesVideosEndpointFields(t *testing.T) {
 	if body.GenerateAudio == nil || !*body.GenerateAudio {
 		t.Fatalf("generate_audio = %#v, want true", body.GenerateAudio)
 	}
-	if len(body.Images) != 2 || body.Images[0] != testReferenceImageDataURL || body.Images[1] != "data:image/png;base64,d29ybGQ=" {
-		t.Fatalf("images = %#v", body.Images)
+	if body.ImageURL != testReferenceImageDataURL {
+		t.Fatalf("image_url = %#v", body.ImageURL)
 	}
-	if len(body.Videos) != 1 || body.Videos[0] != "https://example.com/ref.mp4" {
-		t.Fatalf("videos = %#v", body.Videos)
+	if len(body.ReferenceImageURLs) != 1 || body.ReferenceImageURLs[0] != "data:image/png;base64,d29ybGQ=" {
+		t.Fatalf("reference_image_urls = %#v", body.ReferenceImageURLs)
 	}
-	if len(body.Audios) != 1 || body.Audios[0] != "data:audio/mpeg;base64,AAAA" {
-		t.Fatalf("audios = %#v", body.Audios)
+	if len(body.ReferenceVideos) != 1 || body.ReferenceVideos[0] != "https://example.com/ref.mp4" {
+		t.Fatalf("reference_videos = %#v", body.ReferenceVideos)
+	}
+	if len(body.ReferenceAudios) != 1 || body.ReferenceAudios[0] != "data:audio/mpeg;base64,AAAA" {
+		t.Fatalf("reference_audios = %#v", body.ReferenceAudios)
 	}
 }
 
@@ -818,7 +967,7 @@ func TestSeedanceVideosBodyUsesOrderedFrameImageURLsWhenConfigured(t *testing.T)
 	if err != nil {
 		t.Fatalf("seedanceVideosBody() error = %v", err)
 	}
-	imageURLs := body.Images
+	imageURLs := body.ImageURLs
 	if len(imageURLs) != 3 {
 		t.Fatalf("image_urls = %#v", imageURLs)
 	}
@@ -827,6 +976,9 @@ func TestSeedanceVideosBodyUsesOrderedFrameImageURLsWhenConfigured(t *testing.T)
 		if imageURLs[index] != want[index] {
 			t.Fatalf("image_urls = %#v, want %#v", imageURLs, want)
 		}
+	}
+	if body.ImageURL != "" || body.ReferenceImageURLs != nil {
+		t.Fatalf("unexpected legacy image fields in body: %#v", body)
 	}
 	if body.Prompt != "make it move" {
 		t.Fatalf("prompt = %#v", body.Prompt)
@@ -1261,78 +1413,14 @@ func TestNewAPIVideoOmitsImagesForTextToVideoOperation(t *testing.T) {
 	}
 }
 
-func TestSeedanceVideosBodyAllowsVideoWithoutImageWhenBackendCapabilityAllowsIt(t *testing.T) {
-	body, err := seedanceVideosRequestBody(canvasGenerationInput{
+func TestSeedanceVideosBodyRequiresImageForVideoOrAudioReferences(t *testing.T) {
+	_, err := seedanceVideosRequestBody(canvasGenerationInput{
 		Prompt:          "make it move",
 		Config:          providerConfig{Model: "seedance-2.0-mini-480p"},
 		ReferenceVideos: []providerMedia{{ID: "video-1", URL: "https://example.com/ref.mp4"}},
 	})
-	if err != nil {
-		t.Fatalf("seedanceVideosBody() error = %v", err)
-	}
-	if len(body.Videos) != 1 || body.Videos[0] != "https://example.com/ref.mp4" {
-		t.Fatalf("videos = %#v", body.Videos)
-	}
-}
-
-func TestSeedanceVideosProtocolPostsAllConfiguredReferences(t *testing.T) {
-	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
-	paths := make([]string, 0, 3)
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		paths = append(paths, r.Method+" "+r.URL.Path)
-		switch r.Method + " " + r.URL.Path {
-		case "POST /v1/videos":
-			var body map[string]interface{}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Fatalf("decode request: %v", err)
-			}
-			images, _ := body["images"].([]interface{})
-			videos, _ := body["videos"].([]interface{})
-			audios, _ := body["audios"].([]interface{})
-			if len(images) != 18 || len(videos) != 1 || len(audios) != 1 {
-				t.Errorf("references = images:%d videos:%d audios:%d; body = %#v", len(images), len(videos), len(audios), body)
-			}
-			for _, legacy := range []string{"image_urls", "image_url", "reference_image_urls", "reference_videos", "reference_audios"} {
-				if _, exists := body[legacy]; exists {
-					t.Errorf("unexpected legacy field %q in body %#v", legacy, body)
-				}
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "seedance-task", "status": "queued"})
-		case "GET /v1/videos/seedance-task":
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "seedance-task", "status": "completed", "video_url": server.URL + "/video.mp4"})
-		case "GET /video.mp4":
-			w.Header().Set("Content-Type", "video/mp4")
-			_, _ = w.Write([]byte("video"))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-
-	images := make([]providerMedia, 18)
-	for index := range images {
-		images[index] = providerMedia{ID: fmt.Sprintf("image-%d", index), URL: server.URL + fmt.Sprintf("/reference-%d.png", index)}
-	}
-	result, err := runVideoTask(context.Background(), canvasGenerationInput{
-		Prompt:          "make it move",
-		Config:          providerConfig{BaseURL: server.URL, APIKey: "test-key", Model: "seedance2.5-480p", InterfaceType: string(model.ChannelInterfaceSeedanceVideos), VideoSeconds: "6", Size: "16:9"},
-		ReferenceImages: images,
-		ReferenceVideos: []providerMedia{{ID: "video-1", URL: server.URL + "/reference.mp4"}},
-		ReferenceAudios: []providerMedia{{ID: "audio-1", URL: server.URL + "/reference.mp3"}},
-	})
-	if err != nil {
-		t.Fatalf("runVideoTask() error = %v", err)
-	}
-	video := result["video"].(map[string]interface{})
-	if video["dataUrl"] != "data:video/mp4;base64,dmlkZW8=" {
-		t.Fatalf("video = %#v", video)
-	}
-	want := "POST /v1/videos,GET /v1/videos/seedance-task,GET /video.mp4"
-	if got := strings.Join(paths, ","); got != want {
-		t.Fatalf("paths = %q, want %q", got, want)
+	if err == nil {
+		t.Fatal("seedanceVideosBody() error = nil, want error")
 	}
 }
 
@@ -1343,13 +1431,6 @@ func TestArkPlanConfigStaysSeparateFromSeedanceVideosEndpoint(t *testing.T) {
 	}
 	if !isSeedanceVideoConfig(config) {
 		t.Fatal("isSeedanceVideoConfig() = false, want true")
-	}
-}
-
-func TestSeedanceModelNameDoesNotOverrideConfiguredProtocol(t *testing.T) {
-	config := providerConfig{InterfaceType: "newapi-channel-2", BaseURL: "https://example.com", Model: "seedance2.5-480p"}
-	if isSeedanceVideoConfig(config) {
-		t.Fatal("Seedance model name must not override the administrator-selected protocol")
 	}
 }
 
@@ -1366,12 +1447,19 @@ func TestVolcengineArkVideoProtocolUsesContentTaskAndDownloadsResult(t *testing.
 				t.Fatalf("decode request: %v", err)
 			}
 			content, _ := body["content"].([]interface{})
-			if len(content) != 2 {
+			if len(content) != 4 {
 				t.Errorf("body = %#v", body)
 				return
 			}
-			imageContent, _ := content[1].(map[string]interface{})
-			if body["model"] != "doubao-seedance-test" || imageContent["role"] != "reference_image" {
+			wantTypes := []string{"text", "image_url", "video_url", "audio_url"}
+			wantRoles := []string{"", "reference_image", "reference_video", "reference_audio"}
+			for index, item := range content {
+				entry, _ := item.(map[string]interface{})
+				if entry["type"] != wantTypes[index] || (wantRoles[index] != "" && entry["role"] != wantRoles[index]) {
+					t.Errorf("content[%d] = %#v", index, entry)
+				}
+			}
+			if body["model"] != "doubao-seedance-test" {
 				t.Errorf("body = %#v", body)
 			}
 			_, _ = w.Write([]byte(`{"id":"ark-task-1","status":"running"}`))
@@ -1390,6 +1478,8 @@ func TestVolcengineArkVideoProtocolUsesContentTaskAndDownloadsResult(t *testing.
 		Prompt:          "make it move",
 		Config:          providerConfig{BaseURL: server.URL + "/api/v3", APIKey: "test-key", Model: "doubao-seedance-test", InterfaceType: "volcengine-ark-video"},
 		ReferenceImages: []providerMedia{{ID: "start", URL: server.URL + "/reference.png"}},
+		ReferenceVideos: []providerMedia{{ID: "motion", URL: server.URL + "/reference.mp4"}},
+		ReferenceAudios: []providerMedia{{ID: "music", URL: server.URL + "/reference.mp3"}},
 		Metadata:        map[string]interface{}{"videoStartFrameNodeId": "start"},
 	})
 	if err != nil {
@@ -1402,41 +1492,6 @@ func TestVolcengineArkVideoProtocolUsesContentTaskAndDownloadsResult(t *testing.
 	want := "POST /api/v3/contents/generations/tasks,GET /api/v3/contents/generations/tasks/ark-task-1,GET /result.mp4"
 	if got := strings.Join(paths, ","); got != want {
 		t.Fatalf("paths = %q, want %q", got, want)
-	}
-}
-
-func TestVolcengineArkVideoUsesAssetURIReference(t *testing.T) {
-	content, err := seedanceContent(canvasGenerationInput{
-		Prompt: "use the trusted character asset",
-		Config: providerConfig{InterfaceType: "volcengine-ark-video"},
-		ReferenceImages: []providerMedia{{
-			ID:                 "character-asset",
-			VolcengineAssetURI: "asset://asset-abc123",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("seedanceContent() error = %v", err)
-	}
-	imageContent, ok := content[1]["image_url"].(map[string]interface{})
-	if !ok || imageContent["url"] != "asset://asset-abc123" {
-		t.Fatalf("image content = %#v", content[1])
-	}
-}
-
-func TestVolcengineArkVideoUsesAssetIDReference(t *testing.T) {
-	content, err := seedanceContent(canvasGenerationInput{
-		Prompt: "use the imported character asset",
-		Config: providerConfig{InterfaceType: "volcengine-ark-video"},
-		ReferenceImages: []providerMedia{{
-			ID: "asset-20260822124413-4qzzj",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("seedanceContent() error = %v", err)
-	}
-	imageContent, ok := content[1]["image_url"].(map[string]interface{})
-	if !ok || imageContent["url"] != "asset://asset-20260822124413-4qzzj" {
-		t.Fatalf("image content = %#v", content[1])
 	}
 }
 
@@ -1761,30 +1816,13 @@ func TestNewAPIChannel2SendsOnlyDeclaredResolution(t *testing.T) {
 	}
 }
 
-func TestNewAPIChannel2RejectsAudioWithoutReferenceImage(t *testing.T) {
+func TestNewAPIChannel2RejectsAudioWithoutReferenceVideo(t *testing.T) {
 	_, err := newAPIChannel2VideoRequestBody(canvasGenerationInput{
 		Config:          providerConfig{Model: "grok-image-video", VideoSeconds: "6"},
 		ReferenceAudios: []providerMedia{{ID: "audio-1", URL: "https://example.com/reference.mp3"}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "必须同时提供至少 1 张参考图片") {
+	if err == nil || !strings.Contains(err.Error(), "必须同时提供至少 1 个参考视频") {
 		t.Fatalf("newAPIChannel2VideoRequestBody() error = %v", err)
-	}
-}
-
-func TestNewAPIChannel2AllowsAudioWithReferenceImage(t *testing.T) {
-	body, err := newAPIChannel2VideoRequestBody(canvasGenerationInput{
-		Config:          providerConfig{Model: "grok-image-video", VideoSeconds: "6"},
-		ReferenceImages: []providerMedia{{ID: "image-1", URL: "https://example.com/reference.png"}},
-		ReferenceAudios: []providerMedia{{ID: "audio-1", URL: "https://example.com/reference.mp3"}},
-	})
-	if err != nil {
-		t.Fatalf("newAPIChannel2VideoRequestBody() error = %v", err)
-	}
-	if len(body.ImageURLs) != 1 || body.ImageURLs[0] != "https://example.com/reference.png" {
-		t.Fatalf("image_urls = %#v", body.ImageURLs)
-	}
-	if len(body.AudioURLs) != 1 || body.AudioURLs[0] != "https://example.com/reference.mp3" {
-		t.Fatalf("audio_urls = %#v", body.AudioURLs)
 	}
 }
 
@@ -1800,24 +1838,6 @@ func TestNewAPIChannel2SingleImageModelUsesReferenceForStaleTextToVideoMetadata(
 	images := body.ImageURLs
 	if len(images) != 1 || images[0] != testReferenceImageDataURL {
 		t.Fatalf("image_urls = %#v", images)
-	}
-}
-
-func TestNewAPIChannel2PreservesConfiguredReferenceImages(t *testing.T) {
-	images := make([]providerMedia, 18)
-	for index := range images {
-		images[index] = providerMedia{ID: fmt.Sprintf("image-%d", index), DataURL: testReferenceImageDataURL}
-	}
-	body, err := newAPIChannel2VideoRequestBody(canvasGenerationInput{
-		Config:          providerConfig{Model: "seedance2.5-480p", VideoSeconds: "6"},
-		ReferenceImages: images,
-		Metadata:        map[string]interface{}{"videoEditOperation": "image_to_video"},
-	})
-	if err != nil {
-		t.Fatalf("newAPIChannel2VideoRequestBody() error = %v", err)
-	}
-	if len(body.ImageURLs) != 18 {
-		t.Fatalf("image_urls count = %d, want 18", len(body.ImageURLs))
 	}
 }
 
@@ -1860,9 +1880,6 @@ func TestValidateGenerationInterfaceRejectsMismatchedType(t *testing.T) {
 		t.Fatalf("validateGenerationInterface() error = %v", err)
 	}
 	if err := validateGenerationInterface("video", "newapi-channel-2"); err != nil {
-		t.Fatalf("validateGenerationInterface() error = %v", err)
-	}
-	if err := validateGenerationInterface("video", "seedance-videos"); err != nil {
 		t.Fatalf("validateGenerationInterface() error = %v", err)
 	}
 	if err := validateGenerationInterface("video", "xai-video"); err != nil {
@@ -1930,6 +1947,43 @@ func TestResolveGenerationStyleExecutionSkipsPromptAssetForOtherModel(t *testing
 	prompt, status, warnings := resolveGenerationStyleExecution(profile, "other-model", "openai-image")
 	if prompt != "base style" || status != "degraded" || len(warnings) != 1 {
 		t.Fatalf("resolveGenerationStyleExecution() prompt = %q, status = %q, warnings = %#v", prompt, status, warnings)
+	}
+}
+
+func TestApplyGenerationStyleProfileRebuildsStaleClientPlanForResolvedModel(t *testing.T) {
+	enabled := true
+	profile := styleProfileDocument{
+		SchemaVersion:   1,
+		PresetID:        "style-1",
+		Title:           "项目画风",
+		Prompt:          "base style",
+		ExecutionPolicy: "compatible-fallback",
+		Source:          "user",
+		Revision:        1,
+		Assets: []styleProfileAsset{{
+			ID: "template-1", Kind: "template", Title: "旧模型模板", Provider: "workflow", Enabled: &enabled, Status: "validated",
+			BaseModels: []string{"client-model"}, PromptFragment: "client-only fragment",
+		}},
+	}
+	clientPrompt, clientStatus, _ := resolveGenerationStyleExecution(profile, "client-model", "openai-image")
+	input := canvasGenerationInput{
+		Mode:   "image",
+		Prompt: "portrait\n\n【项目画风执行规范】\n" + clientPrompt,
+		Config: providerConfig{Model: "resolved-model", InterfaceType: "openai-image"},
+		Metadata: map[string]interface{}{
+			"styleProfileJson": mustStyleProfileJSON(profile),
+			"styleExecutionPlan": styleExecutionPlanDocument{
+				SchemaVersion: 1, ProfilePresetID: profile.PresetID, ProfileRevision: profile.Revision, Mode: "image",
+				Model: "client-model", InterfaceType: "openai-image", Status: clientStatus, Prompt: clientPrompt,
+			},
+		},
+	}
+
+	if err := (&Service{}).applyGenerationStyleProfile("user-1", "", &input); err != nil {
+		t.Fatalf("applyGenerationStyleProfile() error = %v", err)
+	}
+	if input.Prompt != "portrait\n\n【项目画风执行规范】\nbase style" {
+		t.Fatalf("applyGenerationStyleProfile() prompt = %q", input.Prompt)
 	}
 }
 

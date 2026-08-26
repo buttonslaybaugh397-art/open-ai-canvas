@@ -34,13 +34,11 @@ export type LocalUser = {
 export type AdminUser = LocalUser & {
     availableMicrocredits: number;
     reservedMicrocredits: number;
-    consumption: CreditConsumptionStats;
 };
 
 export type AuthSessionPayload = {
     user: LocalUser | null;
     logicalModels?: PublicLogicalModel[];
-    systemChannels?: ModelChannel[];
     runtimeLimits?: RuntimeLimits;
     drawingEngine?: CanvasDrawingEngineSetting;
     features?: FeatureAvailability;
@@ -260,7 +258,7 @@ export type UserPromptPreference = {
 
 export type AdminOSSSetting = {
     enabled: boolean;
-    provider: "aliyun" | "tencent" | "qiniu" | "rainyun";
+    provider: "aliyun" | "tencent" | "qiniu";
     region: string;
     endpoint: string;
     cdnBaseUrl: string;
@@ -270,6 +268,18 @@ export type AdminOSSSetting = {
     hasAccessKeySecret: boolean;
     publicBaseUrl: string;
     pathPrefix: string;
+    updatedBy?: string;
+    createdAt?: string;
+    updatedAt?: string;
+};
+
+export type AdminArkPrivateAssetSetting = {
+    enabled: boolean;
+    region: string;
+    projectName: string;
+    accessKeyId: string;
+    accessKeySecret?: string;
+    hasAccessKeySecret: boolean;
     updatedBy?: string;
     createdAt?: string;
     updatedAt?: string;
@@ -373,7 +383,7 @@ export function getAdminFeatureAvailability() {
     return request<{ features: FeatureAvailability }>(api.get("/admin/settings/features"));
 }
 
-export function updateAdminFeatureAvailability(features: Pick<FeatureAvailability, "shortDramaEnabled" | "taskCenterEnabled" | "creditsEnabled" | "customChannelsEnabled">) {
+export function updateAdminFeatureAvailability(features: Pick<FeatureAvailability, "shortDramaEnabled" | "taskCenterEnabled" | "creditsEnabled" | "customChannelsEnabled" | "frontendModelsEnabled" | "pluginCenterEnabled" | "systemPluginsVisibleToUsers">) {
     return request<{ features: FeatureAvailability }>(api.patch("/admin/settings/features", features));
 }
 
@@ -490,6 +500,14 @@ export function getAdminOSSSetting() {
 
 export function updateAdminOSSSetting(input: Partial<AdminOSSSetting>) {
     return request<{ setting: AdminOSSSetting }>(api.patch("/admin/settings/oss", input));
+}
+
+export function getAdminArkPrivateAssetSetting() {
+    return request<{ setting: AdminArkPrivateAssetSetting }>(api.get("/admin/settings/ark-private-assets"));
+}
+
+export function updateAdminArkPrivateAssetSetting(input: Partial<AdminArkPrivateAssetSetting>) {
+    return request<{ setting: AdminArkPrivateAssetSetting }>(api.patch("/admin/settings/ark-private-assets", input));
 }
 
 export function getAdminRuntimePolicySetting() {

@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -54,9 +55,8 @@ type AdminUserPage struct {
 
 type AdminUser struct {
 	model.User
-	AvailableMicrocredits int64                  `json:"availableMicrocredits"`
-	ReservedMicrocredits  int64                  `json:"reservedMicrocredits"`
-	Consumption           CreditConsumptionStats `json:"consumption"`
+	AvailableMicrocredits int64 `json:"availableMicrocredits"`
+	ReservedMicrocredits  int64 `json:"reservedMicrocredits"`
 }
 
 type AdminChannelPage struct {
@@ -160,14 +160,10 @@ func (s *Service) AdminUsers(actor *model.User, query AdminListQuery) (*AdminUse
 	for _, account := range accounts {
 		accountByUserID[account.UserID] = account
 	}
-	consumptionByUserID, err := s.creditConsumptionStatsForUsers(userIDs)
-	if err != nil {
-		return nil, err
-	}
 	result := make([]AdminUser, 0, len(users))
 	for _, user := range users {
 		account := accountByUserID[user.ID]
-		result = append(result, AdminUser{User: user, AvailableMicrocredits: account.AvailableMicrocredits, ReservedMicrocredits: account.ReservedMicrocredits, Consumption: consumptionByUserID[user.ID]})
+		result = append(result, AdminUser{User: user, AvailableMicrocredits: account.AvailableMicrocredits, ReservedMicrocredits: account.ReservedMicrocredits})
 	}
 	return &AdminUserPage{Users: result, Total: total, Page: page, Limit: limit}, nil
 }
@@ -340,7 +336,9 @@ func (s *Service) UpdateUser(actor *model.User, userID string, req UpdateUserReq
 			return nil, err
 		}
 		user.PasswordHash = hash
-		_ = s.repo.DeleteUserAuthSessions(user.ID)
+		if err := s.repo.DeleteUserAuthSessions(user.ID); err != nil {
+			return nil, fmt.Errorf("清理旧登录会话失败，密码未更新：%w", err)
+		}
 	}
 	user.Role = nextRole
 	user.Status = nextStatus
@@ -819,15 +817,6 @@ func mergeChannelRequest(req ChannelRequest, channel model.ModelChannel) Channel
 	return req
 }
 
-func validChannelInterfaceType(value model.ChannelInterfaceType) bool {
-	switch value {
-	case model.ChannelInterfaceChatCompletion, model.ChannelInterfaceOpenAIResponse, model.ChannelInterfaceOpenAIImage, model.ChannelInterfaceGrokImage, model.ChannelInterfaceGlobalAiOpcImage, model.ChannelInterfaceAIStarsLabImage, model.ChannelInterfaceVolcengineArkImage, model.ChannelInterfaceVolcengineJiMengImage, model.ChannelInterfaceGeminiImage, model.ChannelInterfaceOpenAIAudio, model.ChannelInterfaceAsyncAudio, model.ChannelInterfaceNewAPIVideo, model.ChannelInterfaceNewAPIChannel1, model.ChannelInterfaceNewAPIChannel2, model.ChannelInterfaceSeedanceVideos, model.ChannelInterfaceGlobalAiOpcVideo, model.ChannelInterfaceHuiQuYunVideo, model.ChannelInterfaceAIStarsLabVideo, model.ChannelInterfaceXAIVideo, model.ChannelInterfaceVolcengineArkVideo, model.ChannelInterfaceVolcengineJiMengVideo, model.ChannelInterfaceGeminiVeo, model.ChannelInterfaceNovitaVideo, model.ChannelInterfaceMiniMaxVideo:
-		return true
-	default:
-		return false
-	}
-}
-
 func publicChannel(channel model.ModelChannel, admin bool, channelModels []model.ChannelModel) PublicModelChannel {
 	models := make([]string, 0, len(channelModels))
 	modelCosts := make([]PublicChannelModelPrice, 0, len(channelModels))
@@ -837,7 +826,12 @@ func publicChannel(channel model.ModelChannel, admin bool, channelModels []model
 		}
 		models = append(models, item.ModelKey)
 		if item.Enabled && item.PriceConfigured {
-			capabilityConfig, _ := DecodeModelCapabilityConfig(item.CapabilityConfigJSON)
+			capabilityConfig, decodeErr := DecodeModelCapabilityConfig(item.CapabilityConfigJSON)
+			if decodeErr == nil && capabilityConfig != nil {
+				if normalized, normalizeErr := NormalizeModelCapabilityConfig(item.Capability, string(item.Protocol), capabilityConfig); normalizeErr == nil {
+					capabilityConfig = normalized
+				}
+			}
 			modelCosts = append(modelCosts, PublicChannelModelPrice{Model: item.ModelKey, DisplayName: item.DisplayName, Capability: item.Capability, Protocol: item.Protocol, BillingMode: item.BillingMode, UnitPriceMicrocredits: item.UnitPriceMicrocredits, InputTokenPriceMicrocredits: item.InputTokenPriceMicrocredits, OutputTokenPriceMicrocredits: item.OutputTokenPriceMicrocredits, CachedTokenPriceMicrocredits: item.CachedTokenPriceMicrocredits, CapabilityConfig: capabilityConfig})
 		}
 	}

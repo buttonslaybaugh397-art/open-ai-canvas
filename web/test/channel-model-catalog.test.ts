@@ -7,7 +7,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { CanvasVideoSettingsPopover } from "../src/components/canvas/canvas-video-settings-popover";
 import { mergeFetchedChannelModelCosts, type ChannelModelCatalogItem } from "../src/lib/channel-model-catalog";
 import { defaultModelCapabilityConfig } from "../src/lib/model-capabilities";
-import { channelPluginAllowedProtocols, channelPluginProtocolForModel, getChannelPlugin, mergeChannelPluginModelCosts } from "../src/lib/channel-plugins";
 import { ChannelModelSettings } from "../src/pages/settings/channel-video-pricing";
 import { fetchChannelModels } from "../src/services/api/image";
 import { createVideoGenerationTask } from "../src/services/api/video";
@@ -106,36 +105,14 @@ describe("public channel model catalog", () => {
         });
     });
 
-    test("treats endpoint-only video metadata as authoritative without inventing 720P", async () => {
+    test("does not infer a protocol from endpoint-only video metadata", () => {
         const catalog: ChannelModelCatalogItem = {
             id: "endpoint-video",
             supportedEndpointTypes: ["openai-video"],
         };
         const config = configForCatalog([catalog], { videoSeconds: "6", size: "16:9", vquality: "720" });
-        const model = "flow::endpoint-video";
-        const cost = config.channels[0]!.modelCosts![0]!;
 
-        expect(cost.capability).toBe("video");
-        expect(cost.protocol).toBe("newapi-channel-2");
-        expect(cost.capabilityConfig?.video?.resolutions).toEqual([]);
-        expect(cost.capabilityConfig?.video?.defaultResolution).toBe("");
-        expect(selectableModelsByCapability(config, "video")).toEqual([model]);
-        expect(resolveModelRequestConfig(config, model).interfaceType).toBe("newapi-channel-2");
-
-        const canvasHtml = renderToStaticMarkup(React.createElement(CanvasVideoSettingsPopover, { config, onConfigChange: () => undefined }));
-        expect(canvasHtml).not.toContain("720P");
-
-        const createSource = await Bun.file(new URL("../src/pages/create/index.tsx", import.meta.url)).text();
-        expect(createSource).toContain('const videoResolutionSupported = props.mode === "video" && resolutions.length > 0;');
-        expect(createSource).toContain("...(videoResolutionSupported ? [videoResolutionLabel(props.videoQuality)] : [])");
-
-        let requestBody: Record<string, unknown> = {};
-        axios.post = (async (_url: string, body: Record<string, unknown>) => {
-            requestBody = body;
-            return { data: { id: "endpoint-video-task" } };
-        }) as typeof axios.post;
-        await createVideoGenerationTask(config, "synthetic prompt");
-        expect(requestBody).not.toHaveProperty("resolution");
+        expect(config.channels[0]!.modelCosts).toEqual([]);
     });
 
     test("preserves a manually configured capability profile when a catalog only returns an ID", () => {
@@ -260,7 +237,7 @@ describe("public channel model catalog", () => {
 
         const html = renderToStaticMarkup(React.createElement(CanvasVideoSettingsPopover, { config, onConfigChange: () => undefined }));
 
-        expect(html).toContain("横屏 · 10s");
+        expect(html).toContain("16:9 · 10s");
         expect(html).not.toContain("720P");
     });
 
@@ -291,11 +268,7 @@ describe("public channel model catalog", () => {
         const normalized = normalizeConfigSnapshot({
             config: {
                 ...defaultConfig,
-                channels: [
-                    platform,
-                    custom,
-                    createModelChannel({ id: "default", name: "默认渠道", apiKey: "", models: ["gpt-image-2"] }),
-                ],
+                channels: [platform, custom, createModelChannel({ id: "default", name: "默认渠道", apiKey: "", models: ["gpt-image-2"] })],
                 models: ["default::gpt-image-2", "ghost-image"],
                 imageModels: ["default::gpt-image-2", "ghost-image"],
                 imageModel: "default::gpt-image-2",
@@ -303,36 +276,10 @@ describe("public channel model catalog", () => {
         }).config;
         const staleSnapshot = { ...normalized, models: [...normalized.models, "ghost-image"], imageModels: [...normalized.imageModels, "ghost-image"] };
 
-        expect(selectableModelsByCapability(staleSnapshot, "image")).toEqual([
-            "public-logical-models::frontend-image",
-            "custom-channel::custom-image-v1",
-        ]);
+        expect(selectableModelsByCapability(staleSnapshot, "image")).toEqual(["public-logical-models::frontend-image", "custom-channel::custom-image-v1"]);
         expect(staleSnapshot.channels.some((channel) => channel.id === "default")).toBe(false);
         expect(selectableModelsByCapability(staleSnapshot, "image")).not.toContain("default::gpt-image-2");
         expect(selectableModelsByCapability(staleSnapshot, "image")).not.toContain("ghost-image");
-    });
-
-    test("removes the retired frontend model catalog from persisted config", () => {
-        const normalized = normalizeConfigSnapshot({
-            config: {
-                ...defaultConfig,
-                channels: [
-                    createModelChannel({ id: "managed", name: "平台模型", scope: "system", apiKey: "system", models: ["legacy-image"] }),
-                    createModelChannel({
-                        id: "backend-channel",
-                        name: "后台渠道",
-                        scope: "system",
-                        apiKey: "system",
-                        models: ["backend-image"],
-                        modelCosts: [{ model: "backend-image", capability: "image", billingMode: "fixed_request", unitPriceMicrocredits: 1 }],
-                    }),
-                ],
-                imageModel: "managed::legacy-image",
-            },
-        }).config;
-
-        expect(normalized.channels.map((channel) => channel.id)).toEqual(["backend-channel"]);
-        expect(selectableModelsByCapability(normalized, "image")).toEqual(["backend-channel::backend-image"]);
     });
 
     test("omits resolution_name for Omni and for auto instead of inventing 720p", async () => {
@@ -380,22 +327,5 @@ describe("public channel model catalog", () => {
         expect(body.model).toBe("veo-public");
         expect(body.seconds).toBe("8");
         expect(body.size).toBe("1280x720");
-    });
-
-    test("resolves dedicated channel behavior from the shared plugin registry", () => {
-        const channel = createModelChannel({
-            id: "plugin-channel",
-            name: "AIStarsLab",
-            baseUrl: "https://api.video.aistarslab.com/openapi",
-            apiKey: "synthetic-test-key",
-            apiFormat: "openai",
-            connectionType: "aistarslab",
-            models: ["54:seedance-2.5"],
-        });
-
-        expect(getChannelPlugin(channel)?.id).toBe("aistarslab");
-        expect(channelPluginProtocolForModel(channel, "54:seedance-2.5")).toBe("aistarslab-video");
-        expect(channelPluginAllowedProtocols(channel)).toEqual(["aistarslab-image", "aistarslab-video"]);
-        expect(mergeChannelPluginModelCosts(channel, [{ id: "54:seedance-2.5", modelType: "video", supportedEndpointTypes: ["aistarslab-video"], aistarslab: { channel: "54", capability: "video", model: "seedance-2.5" } }])[0]?.protocol).toBe("aistarslab-video");
     });
 });

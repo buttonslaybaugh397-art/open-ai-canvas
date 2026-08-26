@@ -66,7 +66,6 @@ func TestValidateImageTaskEnforcesGPTImage2CustomSizeLimits(t *testing.T) {
 func TestDefaultVideoCapabilityUsesProtocolSpecificResolutionTiers(t *testing.T) {
 	tests := map[string][]string{
 		"newapi-channel-2":        {"480p", "720p", "1080p", "1440p", "2160p"},
-		"huiquyun-video":          {"720p"},
 		"volcengine-ark-video":    {"480p", "720p", "1080p"},
 		"volcengine-jimeng-video": {"720p"},
 		"gemini-veo":              {"720p", "1080p"},
@@ -84,35 +83,47 @@ func TestDefaultVideoCapabilityUsesProtocolSpecificResolutionTiers(t *testing.T)
 	}
 }
 
-func TestHuiQuYunFixedDurationCapabilityMatchesModelName(t *testing.T) {
-	profile := DefaultModelCapabilityConfigForModel("huiquyun-video", "sora-2-pro-15s").Video
-	if profile == nil {
-		t.Fatal("HuiQuYun video capability = nil")
+func TestDefaultMiniMaxVideoCapabilitySupportsReferenceGeneration(t *testing.T) {
+	profile := DefaultModelCapabilityConfigForModel("minimax-video", "MiniMax-H3")
+	if profile == nil || profile.Video == nil {
+		t.Fatal("MiniMax video profile = nil")
 	}
-	if profile.Duration.Selection != "enum" || len(profile.Duration.Values) != 1 || profile.Duration.Values[0] != 15 || profile.Duration.Default != 15 {
-		t.Fatalf("HuiQuYun duration = %#v", profile.Duration)
-	}
-	if profile.References.MaxImages != 4 || profile.References.MaxVideos != 3 || profile.References.MaxAudios != 1 {
-		t.Fatalf("HuiQuYun reference limits = %#v", profile.References)
+	if !containsCapabilityString(profile.Video.Operations, "reference_to_video") {
+		t.Fatalf("operations = %v, want reference_to_video", profile.Video.Operations)
 	}
 }
 
-func TestHuiQuYunMX933CapabilityMatchesDocumentation(t *testing.T) {
-	profile := DefaultModelCapabilityConfigForModel("huiquyun-video", "sd2-mx933-720-10s").Video
-	if profile == nil {
-		t.Fatal("HuiQuYun MX933 video capability = nil")
+func TestDefaultVolcengineArkVideoCapabilitySupportsFullModalReference(t *testing.T) {
+	profile := DefaultModelCapabilityConfigForModel("volcengine-ark-video", "doubao-seedance-2-0-260128")
+	if profile == nil || profile.Video == nil {
+		t.Fatal("Volcengine Ark video profile = nil")
 	}
-	if profile.Duration.Selection != "enum" || len(profile.Duration.Values) != 1 || profile.Duration.Values[0] != 10 {
-		t.Fatalf("HuiQuYun MX933 duration = %#v", profile.Duration)
+	for _, operation := range []string{"reference_to_video", "audio_to_video"} {
+		if !containsCapabilityString(profile.Video.Operations, operation) {
+			t.Fatalf("operations = %v, want %s", profile.Video.Operations, operation)
+		}
 	}
-	if profile.References.MaxImages != 100 || profile.References.MaxVideos != 3 || profile.References.MaxAudios != 3 || profile.References.MaxVideoBytes != 50*1024*1024 {
-		t.Fatalf("HuiQuYun MX933 reference limits = %#v", profile.References)
+	if profile.Video.References.MaxImages != 9 || profile.Video.References.MaxVideos != 3 || profile.Video.References.MaxAudios != 3 {
+		t.Fatalf("reference limits = %#v", profile.Video.References)
 	}
-	if fmt.Sprint(profile.Ratios) != fmt.Sprint([]string{"16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3"}) {
-		t.Fatalf("HuiQuYun MX933 ratios = %#v", profile.Ratios)
+}
+
+func TestValidateVolcengineArkFullModalReferenceRejectsTextAndAudioOnly(t *testing.T) {
+	profile := DefaultModelCapabilityConfigForModel("volcengine-ark-video", "doubao-seedance-2-0-260128").Video
+	input := canvasGenerationInput{
+		Prompt:          "follow the soundtrack",
+		Config:          providerConfig{InterfaceType: "volcengine-ark-video", VideoSeconds: "6", Size: "16:9", VQuality: "720p"},
+		ReferenceAudios: []providerMedia{{URL: "https://example.com/music.mp3"}},
+		Metadata:        map[string]interface{}{"videoEditOperation": "audio_to_video"},
 	}
-	if fmt.Sprint(profile.Resolutions) != fmt.Sprint([]string{"480p", "720p"}) || profile.DefaultResolution != "720p" {
-		t.Fatalf("HuiQuYun MX933 resolutions = %#v, default = %q", profile.Resolutions, profile.DefaultResolution)
+	err := validateVideoTask(profile, input)
+	if err == nil || !strings.Contains(err.Error(), "文本+音频") {
+		t.Fatalf("validateVideoTask() error = %v", err)
+	}
+
+	input.ReferenceImages = []providerMedia{{URL: "https://example.com/subject.png"}}
+	if err := validateVideoTask(profile, input); err != nil {
+		t.Fatalf("validateVideoTask(full modal) error = %v", err)
 	}
 }
 
@@ -177,46 +188,6 @@ func TestValidateVideoTaskIgnoresGlobalResolutionWhenCatalogDeclaresNone(t *test
 	})
 	if err != nil {
 		t.Fatalf("validateVideoTask() error = %v", err)
-	}
-}
-
-func TestValidateVideoTaskEnforcesReferenceLimitsByMediaType(t *testing.T) {
-	profile := DefaultModelCapabilityConfigForModel("newapi-channel-2", "custom-video-model").Video
-	profile.References = VideoReferenceConfig{MaxImages: 1, MaxVideos: 2, MaxAudios: 1}
-	profile.Duration = VideoDurationConfig{Selection: "enum", Values: []int{5}, Default: 5}
-	profile.Ratios = []string{"16:9"}
-	profile.Resolutions = []string{"720p"}
-	profile.Operations = []string{"image_to_video", "reference_to_video"}
-
-	tests := []struct {
-		name  string
-		input canvasGenerationInput
-		want  string
-	}{
-		{name: "images", input: canvasGenerationInput{ReferenceImages: []providerMedia{{}, {}}}, want: "最多支持 1 张参考图"},
-		{name: "videos", input: canvasGenerationInput{ReferenceVideos: []providerMedia{{}, {}, {}}}, want: "最多支持 2 个参考视频"},
-		{name: "audios", input: canvasGenerationInput{ReferenceAudios: []providerMedia{{}, {}}}, want: "最多支持 1 个参考音频"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			test.input.Config = providerConfig{Model: "custom-video-model", VideoSeconds: "5", Size: "16:9", VQuality: "720"}
-			err := validateVideoTask(profile, test.input)
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("validateVideoTask() error = %v, want %q", err, test.want)
-			}
-		})
-	}
-}
-
-func TestNormalizeVideoCapabilityPreservesConfiguredReferenceLimit(t *testing.T) {
-	profile := DefaultModelCapabilityConfigForModel("newapi-channel-2", "seedance2.5-480p")
-	profile.Video.References.MaxImages = 30
-	result, err := NormalizeModelCapabilityConfig("video", "newapi-channel-2", profile)
-	if err != nil {
-		t.Fatalf("NormalizeModelCapabilityConfig() error = %v", err)
-	}
-	if result.Video == nil || result.Video.References.MaxImages != 30 {
-		t.Fatalf("normalized max images = %#v, want 30", result.Video)
 	}
 }
 

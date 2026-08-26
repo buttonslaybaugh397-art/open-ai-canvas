@@ -18,13 +18,19 @@ const (
 	FeatureTaskCenter     = "taskCenter"
 	FeatureCredits        = "credits"
 	FeatureCustomChannels = "customChannels"
+	FeatureFrontendModels = "frontendModels"
+	FeaturePluginCenter   = "pluginCenter"
+	FeatureSystemPlugins  = "systemPluginsVisibleToUsers"
 )
 
 type FeatureAvailability struct {
-	ShortDramaEnabled     bool `json:"shortDramaEnabled"`
-	TaskCenterEnabled     bool `json:"taskCenterEnabled"`
-	CreditsEnabled        bool `json:"creditsEnabled"`
-	CustomChannelsEnabled bool `json:"customChannelsEnabled"`
+	ShortDramaEnabled           bool `json:"shortDramaEnabled"`
+	TaskCenterEnabled           bool `json:"taskCenterEnabled"`
+	CreditsEnabled              bool `json:"creditsEnabled"`
+	CustomChannelsEnabled       bool `json:"customChannelsEnabled"`
+	FrontendModelsEnabled       bool `json:"frontendModelsEnabled"`
+	PluginCenterEnabled         bool `json:"pluginCenterEnabled"`
+	SystemPluginsVisibleToUsers bool `json:"systemPluginsVisibleToUsers"`
 }
 
 type PublicFeatureAvailability struct {
@@ -36,8 +42,16 @@ type PublicFeatureAvailability struct {
 }
 
 func defaultFeatureAvailability() FeatureAvailability {
-	// 用户自定义渠道已下线；字段仅保留用于兼容现有配置合同和历史数据。
-	return FeatureAvailability{ShortDramaEnabled: true, TaskCenterEnabled: true, CreditsEnabled: true, CustomChannelsEnabled: false}
+	// 缺少配置代表尚未由运维接管；前台模型需要明确配置后才开放。
+	return FeatureAvailability{
+		ShortDramaEnabled:           true,
+		TaskCenterEnabled:           true,
+		CreditsEnabled:              true,
+		CustomChannelsEnabled:       true,
+		FrontendModelsEnabled:       false,
+		PluginCenterEnabled:         true,
+		SystemPluginsVisibleToUsers: true,
+	}
 }
 
 func (s *Service) FeatureAvailability() (*PublicFeatureAvailability, error) {
@@ -59,7 +73,6 @@ func (s *Service) UpdateFeatureAvailability(actor *model.User, value FeatureAvai
 	if err := s.RequireAdmin(actor); err != nil {
 		return nil, err
 	}
-	value.CustomChannelsEnabled = false
 	current, before, err := s.readFeatureAvailability()
 	if err != nil {
 		return nil, err
@@ -94,7 +107,13 @@ func (s *Service) FeatureEnabled(feature string) (bool, error) {
 	case FeatureCredits:
 		return value.CreditsEnabled, nil
 	case FeatureCustomChannels:
-		return false, nil
+		return value.CustomChannelsEnabled, nil
+	case FeatureFrontendModels:
+		return value.FrontendModelsEnabled, nil
+	case FeaturePluginCenter:
+		return value.PluginCenterEnabled, nil
+	case FeatureSystemPlugins:
+		return value.SystemPluginsVisibleToUsers, nil
 	default:
 		return false, errors.New("未知功能开放配置")
 	}
@@ -117,6 +136,12 @@ func (s *Service) RequireFeature(feature string) error {
 		return Forbidden("积分功能暂未开放")
 	case FeatureCustomChannels:
 		return Forbidden("自定义渠道暂未开放")
+	case FeatureFrontendModels:
+		return Forbidden("前台模型目录暂未开放")
+	case FeaturePluginCenter:
+		return Forbidden("插件中心暂未开放")
+	case FeatureSystemPlugins:
+		return Forbidden("系统插件暂未向普通用户展示")
 	default:
 		return Forbidden("该功能暂未开放")
 	}
@@ -135,7 +160,6 @@ func (s *Service) readFeatureAvailability() (*model.SystemSetting, FeatureAvaila
 	if strings.TrimSpace(setting.ValueJSON) == "" || json.Unmarshal([]byte(setting.ValueJSON), &value) != nil {
 		return nil, FeatureAvailability{}, errors.New("功能开放配置格式无效")
 	}
-	value.CustomChannelsEnabled = false
 	return setting, value, nil
 }
 

@@ -1,82 +1,19 @@
+---
+title: 后端数据库
+description: 影策后端核心持久化表与状态边界
+---
+
 # 后端数据库
 
-## 渠道模型与计费快照
+后端通过 GORM 管理 SQLite 与 PostgreSQL 表结构。服务启动时由 `backend/internal/database/schema.go` 执行迁移；业务写路径必须通过 service 和 repository 的状态约束，不能直接依赖前端状态。
 
-- `channel_models.resolution_prices_json` 保存视频模型按分辨率覆盖的积分单价；未配置的分辨率继续使用 `unit_price_microcredits`，已有模型升级后无需迁移旧价格。
-- `billing_orders.resolution` 保存任务创建时实际命中的规范化分辨率，`unit_price_microcredits` 保存该档最终单价，后续修改模型价格不会追溯改写历史账单。
+## ComfyUI Bridge
 
-## 逻辑模型与路由（历史兼容）
+| 表 | 用途 | 关键边界 |
+| --- | --- | --- |
+| `comfy_bridges` | 保存用户注册的 Bridge 身份、Token 摘要、启用状态和心跳能力 | Token 明文只在注册时返回一次；查询和日志只使用摘要 |
+| `comfy_bridge_requests` | 保存云端任务交给本地 Bridge 的请求、领取状态和完成结果 | `id` 同时作为任务的 `provider_request_id`；状态按 `queued -> claimed -> succeeded/failed/cancelled` 单向流转 |
 
-创作端当前直接使用公开系统渠道和渠道模型。以下逻辑模型与路由表保留用于历史任务、历史数据读取和后续兼容，不再作为新任务的模型选择或路由事实源。
+`comfy_bridge_requests` 是 Bridge 交接的真相源。后端进程重启后，未领取请求继续从数据库投递；已领取请求的迟到结果先落库，任务 worker 恢复后使用原请求 ID 读取结果，不会创建第二次本地工作流执行。请求有效期当前为两小时，过期的排队或执行记录会转为失败。
 
-### `logical_models`
-
-- `code`、`name`、`icon`、`description`：前台模型身份和展示信息。
-- `capability`、`enabled`、`sort_order`：能力分类、启用状态与排序。
-- `revision_sequence`、`active_revision_id`：版本号分配器和当前发布版本。
-- `price_policy`、`billing_mode` 及价格字段：逻辑模型面向用户的统一计费合同。
-
-### `logical_model_revisions`
-
-- `logical_model_id`、`version`：同一逻辑模型内唯一的版本号。
-- `capability_spec_json`：该版本允许的输入、选项与能力约束。
-- `default_options_json`：由逻辑模型声明的前台默认参数，不能由供应商模型隐式覆盖。
-- `created_by`、`created_at`：发布人和发布时间。
-
-启动迁移会根据已有版本最大值回填 `logical_models.revision_sequence`，避免升级后重复分配版本号。
-
-### 历史物理能力变体
-
-旧版 `physical_capability_variants` 已由渠道模型能力配置取代。启动迁移会先把逻辑模型线路改为直接引用 `channel_models`，再删除旧表；新环境不会重新创建该表。
-
-### `logical_model_routes`
-
-- `logical_model_revision_id`、`physical_variant_id`：把逻辑模型版本连接到真实能力变体。
-- `enabled`、`priority`、`weight`：路由开关、优先级和同级权重。
-
-### `route_attempts`
-
-- `task_id`、`route_run`、`attempt_number`：一次生成任务中可追踪的路由运行和尝试序号。
-- `logical_model_id`、`logical_model_revision_id`、`route_id`、`physical_variant_id`：本次路由决策快照。
-- `channel_model_id`、`channel_id`、`provider_request_id`：最终选中的真实渠道与上游任务。
-- `status`、`dispatch_state`、`failure_code`、`failure_message`：派发、执行和失败记录。
-
-### `id_sequences`
-
-- `name`：需要可读 ID 的业务对象类型。
-- `value`：数据库原子递增值。
-- `updated_at`：最近分配时间。
-
-业务关联始终使用独立外键，不从带前缀 ID 中解析父子关系。
-
-## 团队共享素材
-
-团队素材与个人素材分表保存，不迁移或覆盖个人的 `assets` 数据。
-
-### `team_assets`
-
-- `id`：团队素材 ID，与个人素材副本保持一致。
-- `owner_user_id`：上传者账号 ID，用于维护权限和配额归属。
-- `folder_id`：所属团队文件夹 ID；空值表示根目录。
-- `kind`、`category`、`status`、`title`：列表查询和展示字段。
-- `payload_json`：完整素材 JSON；服务端统一重写创建和更新时间。
-- `created_at`、`updated_at`：创建和更新时间。
-
-部署内所有已登录账号可读取团队素材；只有上传者或管理员可修改、取消共享。停用账号的共享素材继续保留，避免破坏其他成员已使用的引用。
-
-### `team_asset_folders`
-
-- `id`：团队文件夹 ID。
-- `owner_user_id`：文件夹创建者账号 ID。
-- `name`：文件夹名称。
-- `created_at`、`updated_at`：创建和更新时间。
-
-任何登录成员均可浏览团队文件夹；创建者或管理员可以重命名、删除。删除文件夹只把其中素材移回根目录，不删除团队素材、个人素材或远端资源文件。
-
-### `team_asset_resources`
-
-- `team_asset_id`：团队素材 ID。
-- `resource_id`：素材引用的后端资源 ID。
-- `created_at`：授权关系创建时间。
-
-该表仅允许已登录成员读取团队素材引用的私有资源，不会把资源改成公开资源。取消共享时删除授权关系，但不会删除个人素材或远端资源文件。
+请求表保存工作流执行 payload 和结果，但不保存 Bridge Token。任务取消时，未领取请求可以确定取消；已经领取的本机工作流无法可靠中止，迟到结果会被丢弃并进入费用核对流程。

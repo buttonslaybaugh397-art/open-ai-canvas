@@ -3,7 +3,7 @@ import { Button, Modal } from "antd";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { ModelIcon } from "@/components/model-picker";
-import { MODEL_PROTOCOLS, modelProtocolLabel, type ModelProtocol, type ModelProtocolDefinition, type ProtocolCapability } from "@/lib/model-protocols";
+import { modelProtocolLabel, type ModelProtocol, type ModelProtocolDefinition, type ProtocolCapability } from "@/lib/model-protocols";
 import { cn } from "@/lib/utils";
 
 export type ModelCapabilityChoice = ProtocolCapability;
@@ -57,15 +57,23 @@ export function CapabilityCardPicker({ value, onChange, density = "comfortable" 
     );
 }
 
-export function ProtocolCardPicker({ capability, value, onChange, density = "comfortable", allowedProtocols }: { capability?: ModelCapabilityChoice; value?: ModelProtocol; onChange?: (value: ModelProtocol) => void; density?: PickerDensity; allowedProtocols?: ModelProtocol[] }) {
-    const protocols = MODEL_PROTOCOLS.filter((item) => {
-        if (item.capability !== capability) return false;
-        if (allowedProtocols) return allowedProtocols.includes(item.value);
-        return item.value !== "globalaiopc-image" && item.value !== "globalaiopc-video" && item.value !== "huiquyun-video";
-    });
+export function ProtocolCardPicker({
+    capability,
+    value,
+    onChange,
+    density = "comfortable",
+    protocols = [],
+}: {
+    capability?: ModelCapabilityChoice;
+    value?: ModelProtocol;
+    onChange?: (value: ModelProtocol) => void;
+    density?: PickerDensity;
+    protocols?: ModelProtocolDefinition[];
+}) {
+    const availableProtocols = protocols.filter((item) => item.capability === capability && item.enabled !== false);
     return (
         <div className={cn("grid grid-cols-1 gap-2 sm:grid-cols-2", density === "compact" && "gap-1.5 xl:grid-cols-3")} role="radiogroup" aria-label="模型请求协议">
-            {protocols.map((protocol) => {
+            {availableProtocols.map((protocol) => {
                 const selected = value === protocol.value;
                 return (
                     <button
@@ -83,8 +91,8 @@ export function ProtocolCardPicker({ capability, value, onChange, density = "com
                         <div className={cn("flex min-w-0 items-start", density === "compact" ? "gap-1.5 pr-4" : "gap-2.5 pr-6")}>
                             <ProtocolBrandMark protocol={protocol} compact={density === "compact"} />
                             <div className="min-w-0 flex-1">
-                                <div className={cn("truncate font-semibold", density === "compact" ? "text-xs" : "text-sm")}>{protocol.label}</div>
-                                <div className={cn("mt-0.5 truncate font-mono text-foreground/48", density === "compact" ? "text-[var(--fs-micro)]" : "text-[var(--fs-tiny)]")}>{protocol.create}</div>
+                                <div className={cn("model-protocol-card-title truncate font-semibold", density === "compact" ? "text-xs" : "text-sm")}>{protocol.label}</div>
+                                <div className={cn("model-protocol-card-endpoint mt-0.5 truncate font-mono text-foreground/48", density === "compact" ? "text-[var(--fs-micro)]" : "text-[var(--fs-tiny)]")}>{protocol.create}</div>
                             </div>
                         </div>
                         {selected ? (
@@ -108,7 +116,15 @@ export function ProtocolCardPicker({ capability, value, onChange, density = "com
     );
 }
 
-export function ModelCapabilityProtocolModal({ value, onChange }: { value: { capability: ModelCapabilityChoice; protocol: ModelProtocol }; onChange: (value: { capability: ModelCapabilityChoice; protocol: ModelProtocol }) => void }) {
+export function ModelCapabilityProtocolModal({
+    value,
+    onChange,
+    protocols = [],
+}: {
+    value: { capability: ModelCapabilityChoice; protocol: ModelProtocol };
+    onChange: (value: { capability: ModelCapabilityChoice; protocol: ModelProtocol }) => void;
+    protocols?: ModelProtocolDefinition[];
+}) {
     const [open, setOpen] = useState(false);
     const [draft, setDraft] = useState(value);
 
@@ -117,7 +133,7 @@ export function ModelCapabilityProtocolModal({ value, onChange }: { value: { cap
     }, [open, value]);
 
     const updateCapability = (capability: ModelCapabilityChoice) => {
-        const protocol = draft.protocol && MODEL_PROTOCOLS.some((item) => item.value === draft.protocol && item.capability === capability) ? draft.protocol : MODEL_PROTOCOLS.find((item) => item.capability === capability)?.value || "chat-completion";
+        const protocol = draft.protocol && protocols.some((item) => item.value === draft.protocol && item.capability === capability) ? draft.protocol : protocols.find((item) => item.capability === capability)?.value || "";
         setDraft({ capability, protocol });
     };
 
@@ -133,7 +149,7 @@ export function ModelCapabilityProtocolModal({ value, onChange }: { value: { cap
                 }}
             >
                 <span className="max-w-[min(56vw,360px)] truncate">
-                    {capabilityLabel(value.capability)} · {modelProtocolLabel(value.protocol)}
+                    {capabilityLabel(value.capability)} · {modelProtocolLabel(value.protocol, protocols)}
                 </span>
             </Button>
             <Modal
@@ -157,7 +173,7 @@ export function ModelCapabilityProtocolModal({ value, onChange }: { value: { cap
                     </section>
                     <section>
                         <div className="mb-2 text-xs font-semibold text-foreground/65">请求协议</div>
-                        <ProtocolCardPicker capability={draft.capability} value={draft.protocol} onChange={(protocol) => setDraft((current) => ({ ...current, protocol }))} />
+                        <ProtocolCardPicker capability={draft.capability} value={draft.protocol} protocols={protocols} onChange={(protocol) => setDraft((current) => ({ ...current, protocol }))} />
                     </section>
                 </div>
             </Modal>
@@ -167,11 +183,26 @@ export function ModelCapabilityProtocolModal({ value, onChange }: { value: { cap
 
 function ProtocolBrandMark({ protocol, compact = false }: { protocol: ModelProtocolDefinition; compact?: boolean }) {
     const iconSize = compact ? "size-6" : "size-8";
-    if (protocol.value === "chat-completion") return <BrandIconRow models={["openai", "deepseek", "glm"]} compact={compact} />;
-    if (protocol.value.startsWith("volcengine-jimeng-")) return <span className={cn("grid shrink-0 place-items-center rounded-md bg-muted text-foreground/65", iconSize)}><Sparkles className={compact ? "size-3" : "size-4"} /></span>;
-    if (protocol.value.startsWith("volcengine-")) return <span className={cn("grid shrink-0 place-items-center rounded-md bg-muted text-foreground/65", iconSize)}><Flame className={compact ? "size-3" : "size-4"} /></span>;
-    if (protocol.value.startsWith("newapi-channel-") || protocol.value === "novita-video" || protocol.value === "huiquyun-video") return <span className={cn("grid shrink-0 place-items-center rounded-md bg-muted text-foreground/65", iconSize)}><Network className={compact ? "size-3" : "size-4"} /></span>;
-    const brand = protocol.value === "gemini-veo" || protocol.value === "gemini-image" ? "gemini" : protocol.value === "grok-image" || protocol.value === "xai-video" ? "grok" : "openai";
+    const vendor = `${protocol.vendor || ""} ${protocol.label}`.toLowerCase();
+    if (vendor.includes("jimeng") || vendor.includes("即梦"))
+        return (
+            <span className={cn("grid shrink-0 place-items-center rounded-md bg-muted text-foreground/65", iconSize)}>
+                <Sparkles className={compact ? "size-3" : "size-4"} />
+            </span>
+        );
+    if (vendor.includes("volcengine") || vendor.includes("火山方舟"))
+        return (
+            <span className={cn("grid shrink-0 place-items-center rounded-md bg-muted text-foreground/65", iconSize)}>
+                <Flame className={compact ? "size-3" : "size-4"} />
+            </span>
+        );
+    if (vendor.includes("newapi") || vendor.includes("novita"))
+        return (
+            <span className={cn("grid shrink-0 place-items-center rounded-md bg-muted text-foreground/65", iconSize)}>
+                <Network className={compact ? "size-3" : "size-4"} />
+            </span>
+        );
+    const brand = vendor.includes("gemini") || vendor.includes("google") ? "gemini" : vendor.includes("grok") || vendor.includes("xai") ? "grok" : vendor.includes("openai") ? "openai" : "openai";
     return <BrandIconRow models={[brand]} compact={compact} />;
 }
 

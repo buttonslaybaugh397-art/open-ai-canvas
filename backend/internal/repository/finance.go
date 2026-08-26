@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,7 +21,6 @@ var (
 	ErrTaskNotRetryable        = errors.New("task is not retryable")
 	ErrBillingStateConflict    = errors.New("billing state conflict")
 	ErrBillingUsageUnavailable = errors.New("billing usage unavailable")
-	ErrBillingUnderreserved    = errors.New("billing amount exceeds reservation")
 	ErrChannelModelInUse       = errors.New("channel model is in use")
 )
 
@@ -73,12 +73,22 @@ func (r *Repository) ChannelModels(channelID string, includeDisabled bool) ([]mo
 	if !includeDisabled {
 		query = query.Where("enabled = ?", true)
 	}
-	return items, query.Find(&items).Error
+	if err := query.Find(&items).Error; err != nil {
+		return nil, err
+	}
+	pointers := make([]*model.ChannelModel, len(items))
+	for index := range items {
+		pointers[index] = &items[index]
+	}
+	return items, r.attachChannelModelPriceTiers(pointers)
 }
 
 func (r *Repository) ChannelModelByID(channelID string, id string) (*model.ChannelModel, error) {
 	var item model.ChannelModel
 	if err := r.db.First(&item, "id = ? AND channel_id = ?", id, channelID).Error; err != nil {
+		return nil, err
+	}
+	if err := r.attachChannelModelPriceTiers([]*model.ChannelModel{&item}); err != nil {
 		return nil, err
 	}
 	return &item, nil
@@ -89,6 +99,9 @@ func (r *Repository) ChannelModelByKey(channelID string, modelKey string) (*mode
 	if err := r.db.First(&item, "channel_id = ? AND model_key = ? AND enabled = ?", channelID, modelKey, true).Error; err != nil {
 		return nil, err
 	}
+	if err := r.attachChannelModelPriceTiers([]*model.ChannelModel{&item}); err != nil {
+		return nil, err
+	}
 	return &item, nil
 }
 
@@ -97,11 +110,124 @@ func (r *Repository) ChannelModelByKeyIncludingDisabled(channelID string, modelK
 	if err := r.db.First(&item, "channel_id = ? AND model_key = ?", channelID, modelKey).Error; err != nil {
 		return nil, err
 	}
+	if err := r.attachChannelModelPriceTiers([]*model.ChannelModel{&item}); err != nil {
+		return nil, err
+	}
 	return &item, nil
 }
 
 func (r *Repository) SaveChannelModel(item *model.ChannelModel) error {
 	return r.db.Save(item).Error
+}
+
+// SaveChannelModelWithPriceTiers 原子保存系统模型与其活动价格档。移除价格档采用软删除，
+// 让已结算订单的 PriceTierID 仍能回溯到原始配置版本。
+func (r *Repository) SaveChannelModelWithPriceTiers(item *model.ChannelModel, tiers []model.ChannelModelPriceTier) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		var existing []model.ChannelModelPriceTier
+		if err := tx.Where("channel_model_id = ?", item.ID).Find(&existing).Error; err != nil {
+			return err
+		}
+		existingByKey := make(map[string]model.ChannelModelPriceTier, len(existing))
+		for _, tier := range existing {
+			existingByKey[channelModelPriceTierKey(tier)] = tier
+		}
+		selected := make(map[string]bool, len(tiers))
+		for index := range tiers {
+			tier := &tiers[index]
+			tier.ChannelModelID = item.ID
+			key := channelModelPriceTierKey(*tier)
+			if existingTier, exists := existingByKey[key]; exists {
+				tier.ID = existingTier.ID
+				tier.PriceVersion = existingTier.PriceVersion + 1
+				if err := tx.Save(tier).Error; err != nil {
+					return err
+				}
+			} else if err := tx.Create(tier).Error; err != nil {
+				return err
+			}
+			selected[tier.ID] = true
+		}
+		for _, tier := range existing {
+			if selected[tier.ID] {
+				continue
+			}
+			if err := tx.Delete(&tier).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Save(item).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+func channelModelPriceTierKey(tier model.ChannelModelPriceTier) string {
+	if strings.TrimSpace(tier.SelectorKey) != "" {
+		return tier.SelectorKey
+	}
+	_, key, err := model.CanonicalSKUSelector(map[string]string{
+		"vquality":     strings.TrimSpace(tier.Resolution),
+		"videoSeconds": strconv.Itoa(tier.VideoSeconds),
+	})
+	if err != nil {
+		return "{}"
+	}
+	return key
+}
+
+func (r *Repository) attachChannelModelPriceTiers(items []*model.ChannelModel) error {
+	if len(items) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	var tiers []model.ChannelModelPriceTier
+	if r.db.Migrator().HasTable(&model.ChannelModelPriceTier{}) {
+		if err := r.db.Where("channel_model_id IN ?", ids).Order("selector_key asc, created_at asc").Find(&tiers).Error; err != nil {
+			return err
+		}
+	}
+	for index := range tiers {
+		tiers[index].Selector = model.DecodeSKUSelector(tiers[index].SelectorJSON)
+	}
+	tiersByModelID := make(map[string][]model.ChannelModelPriceTier, len(items))
+	for _, tier := range tiers {
+		tiersByModelID[tier.ChannelModelID] = append(tiersByModelID[tier.ChannelModelID], tier)
+	}
+	for _, item := range items {
+		item.PriceTiers = tiersByModelID[item.ID]
+		// 兼容尚未执行价格档回填的旧数据库；正式迁移会将同一数据持久化为默认档。
+		if len(item.PriceTiers) == 0 && item.PriceConfigured {
+			item.PriceTiers = []model.ChannelModelPriceTier{{
+				ChannelModelID: item.ID, SelectorKey: "{}", SelectorJSON: "{}", Resolution: "*",
+				ProviderModelKey: item.ProviderModelKey, BillingMode: item.BillingMode,
+				UnitPriceMicrocredits: item.UnitPriceMicrocredits, InputTokenPriceMicrocredits: item.InputTokenPriceMicrocredits,
+				OutputTokenPriceMicrocredits: item.OutputTokenPriceMicrocredits, CachedTokenPriceMicrocredits: item.CachedTokenPriceMicrocredits,
+				PriceConfigured: item.PriceConfigured, Enabled: item.Enabled, PriceVersion: item.PriceVersion,
+			}}
+		}
+	}
+	return nil
+}
+
+// PopulateChannelModelPriceTiers 将价格档附着到已经查询出的渠道模型，供路由关系图批量加载使用。
+func (r *Repository) PopulateChannelModelPriceTiers(items []model.ChannelModel) error {
+	pointers := make([]*model.ChannelModel, len(items))
+	for index := range items {
+		pointers[index] = &items[index]
+	}
+	return r.attachChannelModelPriceTiers(pointers)
+}
+
+func (r *Repository) PopulateChannelModelPriceTier(item *model.ChannelModel) error {
+	if item == nil {
+		return nil
+	}
+	return r.attachChannelModelPriceTiers([]*model.ChannelModel{item})
 }
 
 func (r *Repository) DeleteChannelModel(channelID string, id string, modelsJSON string, now time.Time) error {
@@ -179,11 +305,11 @@ func (r *Repository) CreditAccounts(userIDs []string) ([]model.CreditAccount, er
 }
 
 type CreditConsumptionWindow struct {
-	TodayFrom     time.Time
-	YesterdayFrom time.Time
-	TodayTo       time.Time
-	WeekFrom      time.Time
-	MonthFrom     time.Time
+	TodayFrom      time.Time
+	YesterdayFrom  time.Time
+	TodayTo        time.Time
+	WeekFrom       time.Time
+	MonthFrom      time.Time
 }
 
 type CreditConsumptionTotals struct {
@@ -198,6 +324,7 @@ func (r *Repository) CreditConsumptions(userIDs []string, window CreditConsumpti
 	if len(userIDs) == 0 {
 		return result, nil
 	}
+
 	var rows []struct {
 		UserID    string `gorm:"column:user_id"`
 		Today     int64  `gorm:"column:today"`
@@ -205,14 +332,11 @@ func (r *Repository) CreditConsumptions(userIDs []string, window CreditConsumpti
 		Week      int64  `gorm:"column:week"`
 		Month     int64  `gorm:"column:month"`
 	}
-	// 消耗以账单结算为准：consume 流水只在部分历史版本中写入，且创建时间不一定等于实际扣费时间。
-	// 优先使用实际结算金额，兼容旧账单中只保存预估金额的记录；结算时间缺失时回退到更新时间和创建时间。
 	amountExpression := "CASE WHEN actual_amount_microcredits > 0 THEN actual_amount_microcredits ELSE amount_microcredits END"
 	settledAtExpression := "COALESCE(settled_at, updated_at, created_at)"
 	comparisonExpression := settledAtExpression
 	parameterExpression := "?"
 	if r.db.Dialector.Name() == "sqlite" {
-		// SQLite 将时间保存为带时区的文本，julianday 可以避免 UTC 与北京时间文本直接比较造成跨日误判。
 		comparisonExpression = "julianday(" + settledAtExpression + ")"
 		parameterExpression = "julianday(?)"
 	}
@@ -272,6 +396,9 @@ func (r *Repository) CreditLedgerReferenceExists(referenceKey string) (bool, err
 
 func (r *Repository) CreateTaskWithCreditReservation(task *model.Task, order *model.BillingOrder, activeTaskLimit int) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.requireActiveLogicalModelForTask(tx, task); err != nil {
+			return err
+		}
 		if err := enforceActiveTaskLimit(tx, task.UserID, activeTaskLimit); err != nil {
 			return err
 		}
@@ -284,6 +411,9 @@ func (r *Repository) CreateTaskWithCreditReservation(task *model.Task, order *mo
 
 func (r *Repository) CreateTaskWithActiveLimit(task *model.Task, activeTaskLimit int) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.requireActiveLogicalModelForTask(tx, task); err != nil {
+			return err
+		}
 		if err := enforceActiveTaskLimit(tx, task.UserID, activeTaskLimit); err != nil {
 			return err
 		}
@@ -532,7 +662,10 @@ func (r *Repository) MarkBillingUncertain(id string, errorText string) error {
 }
 
 func (r *Repository) SettleBillingOrder(id string, providerRequestID string) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
+	var observedUsage *BillingUsage
+	var observedActual int64
+	observedActualAvailable := false
+	err := r.db.Transaction(func(tx *gorm.DB) error {
 		var order model.BillingOrder
 		if err := tx.First(&order, "id = ?", id).Error; err != nil {
 			return err
@@ -543,11 +676,12 @@ func (r *Repository) SettleBillingOrder(id string, providerRequestID string) err
 		if order.Status == model.BillingStatusRefunded {
 			return errors.New("billing order already refunded")
 		}
-		if order.BillingMode == "token" {
+		if order.BillingMode == "token" && !zeroPricedTokenOrder(order) {
 			usage, err := billingUsage(tx, id)
 			if err != nil {
 				return err
 			}
+			observedUsage = usage
 			reserved := order.ReservedAmountMicrocredits
 			if reserved <= 0 {
 				reserved = order.AmountMicrocredits
@@ -556,14 +690,14 @@ func (r *Repository) SettleBillingOrder(id string, providerRequestID string) err
 			if err != nil {
 				return err
 			}
-			if actual > reserved {
-				return ErrBillingUnderreserved
-			}
-			refund := reserved - actual
+			observedActual = actual
+			observedActualAvailable = true
+			refund := max(reserved-actual, int64(0))
+			supplement := max(actual-reserved, int64(0))
 			updated := tx.Model(&model.CreditAccount{}).
 				Where("user_id = ? AND reserved_microcredits >= ?", order.UserID, reserved).
 				Updates(map[string]any{
-					"available_microcredits": gorm.Expr("available_microcredits + ?", refund),
+					"available_microcredits": gorm.Expr("available_microcredits + ?", refund-supplement),
 					"reserved_microcredits":  gorm.Expr("reserved_microcredits - ?", reserved),
 					"version":                gorm.Expr("version + 1"), "updated_at": time.Now(),
 				})
@@ -588,10 +722,14 @@ func (r *Repository) SettleBillingOrder(id string, providerRequestID string) err
 			if err := tx.Model(&order).Updates(updates).Error; err != nil {
 				return err
 			}
+			consumeNote := ""
+			if supplement > 0 {
+				consumeNote = "Token 实际用量超过预授权，已补扣差额"
+			}
 			if err := tx.Create(&model.CreditLedgerEntry{ID: newRepositoryID(), UserID: order.UserID, Type: model.CreditLedgerConsume,
-				AmountMicrocredits: -actual, ReservedDeltaMicrocredits: -reserved,
+				AmountMicrocredits: -actual, AvailableDeltaMicrocredits: -supplement, ReservedDeltaMicrocredits: -reserved,
 				AvailableAfterMicrocredits: account.AvailableMicrocredits, ReservedAfterMicrocredits: account.ReservedMicrocredits,
-				BillingOrderID: order.ID, Model: order.Model, ChannelID: order.ChannelID, Scene: order.Scene}).Error; err != nil {
+				BillingOrderID: order.ID, Model: order.Model, ChannelID: order.ChannelID, Scene: order.Scene, Note: consumeNote}).Error; err != nil {
 				return err
 			}
 			if refund > 0 {
@@ -643,6 +781,33 @@ func (r *Repository) SettleBillingOrder(id string, providerRequestID string) err
 			Scene:                      order.Scene,
 		}).Error
 	})
+	if err != nil && observedUsage != nil {
+		// usage 是上游已经确认的事实；即使结算因账户状态异常回滚，也要保留给用户和管理员核对。
+		updates := map[string]any{
+			"input_tokens": observedUsage.InputTokens, "output_tokens": observedUsage.OutputTokens,
+			"cached_tokens": observedUsage.CachedTokens, "usage_available": true, "updated_at": time.Now(),
+		}
+		if observedActualAvailable {
+			updates["actual_amount_microcredits"] = observedActual
+		}
+		if providerRequestID != "" {
+			updates["provider_request_id"] = providerRequestID
+		}
+		usageErr := r.db.Model(&model.BillingOrder{}).
+			Where("id = ? AND status NOT IN ?", id, []model.BillingStatus{model.BillingStatusSettled, model.BillingStatusRefunded}).
+			Updates(updates).Error
+		if usageErr != nil {
+			return errors.Join(err, usageErr)
+		}
+	}
+	return err
+}
+
+func zeroPricedTokenOrder(order model.BillingOrder) bool {
+	return order.BillingMode == "token" &&
+		order.InputTokenPriceMicrocredits == 0 &&
+		order.OutputTokenPriceMicrocredits == 0 &&
+		order.CachedTokenPriceMicrocredits == 0
 }
 
 func (r *Repository) RefundBillingOrder(id string, errorText string) error {
@@ -743,8 +908,11 @@ func (r *Repository) AdjustCredits(userID string, actorUserID string, amount int
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&account).Error; err != nil {
 			return err
 		}
-		updated := tx.Model(&model.CreditAccount{}).
-			Where("user_id = ? AND available_microcredits + ? >= 0", userID, amount).
+		accountQuery := tx.Model(&model.CreditAccount{}).Where("user_id = ?", userID)
+		if amount < 0 {
+			accountQuery = accountQuery.Where("available_microcredits + ? >= 0", amount)
+		}
+		updated := accountQuery.
 			Updates(map[string]any{
 				"available_microcredits": gorm.Expr("available_microcredits + ?", amount),
 				"version":                gorm.Expr("version + 1"),

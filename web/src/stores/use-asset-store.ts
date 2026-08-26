@@ -6,7 +6,6 @@ import { parseAssetStorageDocument, rebaseAssetSnapshot, serializeAssetStorageDo
 import { parseCanvasStorageDocument } from "@/lib/canvas/canvas-storage-revision";
 import { localForageStorageForScope } from "@/lib/localforage-storage";
 import { getActiveUserScope } from "@/lib/user-scope";
-import { volcengineAssetUriForAsset } from "@/lib/volcengine-asset";
 import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 import { cleanupUnusedImages, collectImageStorageKeys, resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { cleanupUnusedMedia, collectMediaStorageKeys, resolveMediaUrl } from "@/services/file-storage";
@@ -17,9 +16,9 @@ export type AssetKind = "text" | "image" | "video" | "audio" | "model" | "entity
 export type AssetCategory = "character" | "environment" | "wardrobe" | "prop" | "weapon" | "style" | "other";
 export type AssetStatus = "draft" | "review" | "confirmed" | "archived";
 export type TextAsset = AssetBase<"text"> & { data: { content: string } };
-export type ImageAsset = AssetBase<"image"> & { data: { dataUrl: string; storageKey?: string; volcengineAssetUri?: string; width: number; height: number; bytes: number; mimeType: string } };
-export type VideoAsset = AssetBase<"video"> & { data: { url: string; storageKey?: string; volcengineAssetUri?: string; width: number; height: number; durationMs?: number; bytes: number; mimeType: string } };
-export type AudioAsset = AssetBase<"audio"> & { data: { url: string; storageKey?: string; volcengineAssetUri?: string; durationMs?: number; bytes: number; mimeType: string } };
+export type ImageAsset = AssetBase<"image"> & { data: { dataUrl: string; storageKey?: string; width: number; height: number; bytes: number; mimeType: string } };
+export type VideoAsset = AssetBase<"video"> & { data: { url: string; storageKey?: string; width: number; height: number; durationMs?: number; bytes: number; mimeType: string } };
+export type AudioAsset = AssetBase<"audio"> & { data: { url: string; storageKey?: string; durationMs?: number; bytes: number; mimeType: string } };
 export type ModelAsset = AssetBase<"model"> & { data: { url: string; storageKey?: string; bytes: number; mimeType: string; fileName: string } };
 export type EntityAsset = AssetBase<"entity"> & { data: { definition: Record<string, unknown> } };
 export type Asset = TextAsset | ImageAsset | VideoAsset | AudioAsset | ModelAsset | EntityAsset;
@@ -39,7 +38,6 @@ type AssetBase<T extends AssetKind> = {
     tags: string[];
     category?: AssetCategory;
     status?: AssetStatus;
-    folderId?: string;
     primaryVersionId?: string;
     source?: string;
     note?: string;
@@ -54,9 +52,9 @@ type AssetStore = {
     addAsset: (asset: NewAsset) => string;
     addGenerationAsset: (effectKey: string, asset: NewAsset, signal?: AbortSignal) => Promise<string>;
     updateAsset: (id: string, patch: Partial<Omit<Asset, "id" | "createdAt">>) => void;
-    removeAsset: (id: string) => void;
+    removeAsset: (id: string) => Promise<void>;
     replaceAssets: (assets: Asset[]) => void;
-    cleanupImages: (extra?: unknown) => void;
+    cleanupImages: (extra?: unknown) => Promise<void>;
 };
 
 export const ASSET_STORE_KEY = "infinite-canvas:asset_store";
@@ -232,47 +230,30 @@ const assetStorage: PersistStorage<AssetStore> = {
 };
 
 async function normalizePersistedAsset(asset: Asset): Promise<Asset> {
-    const normalizedAsset = normalizePersistedVolcengineAsset(asset);
-    const storageKey = "data" in normalizedAsset && normalizedAsset.data && "storageKey" in normalizedAsset.data ? normalizedAsset.data.storageKey : undefined;
+    const storageKey = "data" in asset && asset.data && "storageKey" in asset.data ? asset.data.storageKey : undefined;
     const resourceId = resourceIdFromStorageKey(storageKey);
     if (resourceId) {
         const url = resourceFileUrl(resourceId);
-        if (normalizedAsset.kind === "video" || normalizedAsset.kind === "audio" || normalizedAsset.kind === "model") return { ...normalizedAsset, data: { ...normalizedAsset.data, url } } as Asset;
-        if (normalizedAsset.kind === "image") return { ...normalizedAsset, coverUrl: normalizedAsset.coverUrl.startsWith("blob:") ? url : normalizedAsset.coverUrl, data: { ...normalizedAsset.data, dataUrl: url } };
+        if (asset.kind === "video" || asset.kind === "audio" || asset.kind === "model") return { ...asset, data: { ...asset.data, url } } as Asset;
+        if (asset.kind === "image") return { ...asset, coverUrl: asset.coverUrl.startsWith("blob:") ? url : asset.coverUrl, data: { ...asset.data, dataUrl: url } };
     }
 
     // 非 resource: key 是早期本地存储格式，必须继续从 localForage 恢复，
     // 但只在确有本地 key 时读取，不让远程资源重新走逐条网络查询。
-    if (normalizedAsset.kind === "video" && storageKey) return { ...normalizedAsset, data: { ...normalizedAsset.data, url: await resolveMediaUrl(storageKey, normalizedAsset.data.url) } };
-    if (normalizedAsset.kind === "audio" && storageKey) return { ...normalizedAsset, data: { ...normalizedAsset.data, url: await resolveMediaUrl(storageKey, normalizedAsset.data.url) } };
-    if (normalizedAsset.kind === "model" && storageKey) return { ...normalizedAsset, data: { ...normalizedAsset.data, url: await resolveMediaUrl(storageKey, normalizedAsset.data.url) } };
-    if (normalizedAsset.kind !== "image") return normalizedAsset;
+    if (asset.kind === "video" && storageKey) return { ...asset, data: { ...asset.data, url: await resolveMediaUrl(storageKey, asset.data.url) } };
+    if (asset.kind === "audio" && storageKey) return { ...asset, data: { ...asset.data, url: await resolveMediaUrl(storageKey, asset.data.url) } };
+    if (asset.kind === "model" && storageKey) return { ...asset, data: { ...asset.data, url: await resolveMediaUrl(storageKey, asset.data.url) } };
+    if (asset.kind !== "image") return asset;
     if (storageKey) {
         return {
-            ...normalizedAsset,
-            coverUrl: normalizedAsset.coverUrl.startsWith("blob:") ? await resolveImageUrl(storageKey, normalizedAsset.coverUrl) : normalizedAsset.coverUrl,
-            data: { ...normalizedAsset.data, dataUrl: await resolveImageUrl(storageKey, normalizedAsset.data.dataUrl) },
+            ...asset,
+            coverUrl: asset.coverUrl.startsWith("blob:") ? await resolveImageUrl(storageKey, asset.coverUrl) : asset.coverUrl,
+            data: { ...asset.data, dataUrl: await resolveImageUrl(storageKey, asset.data.dataUrl) },
         };
     }
-    if (!normalizedAsset.data.dataUrl.startsWith("data:image/")) return normalizedAsset;
-    const image = await uploadImage(normalizedAsset.data.dataUrl);
-    return { ...normalizedAsset, coverUrl: normalizedAsset.coverUrl.startsWith("data:image/") ? image.url : normalizedAsset.coverUrl, data: { ...normalizedAsset.data, dataUrl: image.url, storageKey: image.storageKey, bytes: image.bytes, mimeType: image.mimeType } };
-}
-
-function normalizePersistedVolcengineAsset(asset: Asset): Asset {
-    if (asset.kind === "image") {
-        const volcengineAssetUri = volcengineAssetUriForAsset(asset);
-        return volcengineAssetUri ? { ...asset, data: { ...asset.data, volcengineAssetUri } } : asset;
-    }
-    if (asset.kind === "video") {
-        const volcengineAssetUri = volcengineAssetUriForAsset(asset);
-        return volcengineAssetUri ? { ...asset, data: { ...asset.data, volcengineAssetUri } } : asset;
-    }
-    if (asset.kind === "audio") {
-        const volcengineAssetUri = volcengineAssetUriForAsset(asset);
-        return volcengineAssetUri ? { ...asset, data: { ...asset.data, volcengineAssetUri } } : asset;
-    }
-    return asset;
+    if (!asset.data.dataUrl.startsWith("data:image/")) return asset;
+    const image = await uploadImage(asset.data.dataUrl);
+    return { ...asset, coverUrl: asset.coverUrl.startsWith("data:image/") ? image.url : asset.coverUrl, data: { ...asset.data, dataUrl: image.url, storageKey: image.storageKey, bytes: image.bytes, mimeType: image.mimeType } };
 }
 
 async function generationAssetId(effectKey: string) {
@@ -374,42 +355,52 @@ export const useAssetStore = create<AssetStore>()(
                 set((state) => ({
                     assets: state.assets.map((asset) => (asset.id === id ? ({ ...asset, ...patch, updatedAt: new Date().toISOString() } as Asset) : asset)),
                 })),
-            removeAsset: (id) =>
+            removeAsset: async (id) => {
+                let remainingAssets: Asset[] = [];
+                let removedAsset: Asset | undefined;
                 set((state) => {
+                    removedAsset = state.assets.find((asset) => asset.id === id);
                     const assets = state.assets.filter((asset) => asset.id !== id);
-                    get().cleanupImages({ assets });
+                    remainingAssets = assets;
                     return { assets };
-                }),
+                });
+                // 没有本地媒体定位时没有需要由该删除动作回收的 Blob；跳过全库扫描，
+                // 避免纯文本/远程资源删除依赖浏览器 IndexedDB 驱动。
+                if (!removedAsset || (!collectImageStorageKeys(removedAsset).size && !collectMediaStorageKeys(removedAsset).size)) return;
+                await get().cleanupImages({ assets: remainingAssets });
+            },
             replaceAssets: (assets) => set({ assets }),
-            cleanupImages: (extra) => {
+            cleanupImages: async (extra) => {
                 const scope = getActiveUserScope();
                 const frozenExtraImageKeys = collectImageStorageKeys(extra);
                 const frozenExtraMediaKeys = collectMediaStorageKeys(extra);
-                window.setTimeout(async () => {
-                    await withGenerationArtifactCommitLock(scope, async () => {
-                        // 固定锁序：artifact -> Canvas（释放）-> Asset，避免跨 store 锁重入。
-                        const canvasProjects = await withCanvasStorePersistenceLock(scope, async () => {
-                            await commitPendingCanvasStorePersistenceLocked(scope);
-                            const durableCanvas = parseCanvasStorageDocument(await localForageStorageForScope(scope).getItem(CANVAS_STORE_KEY));
-                            return pendingCanvasStorePersistence(scope)?.projects ?? durableCanvas.state.projects;
-                        });
-                        await withGenerationAssetStorageLock(scope, async () => {
-                            await commitPendingAssetStorePersistenceLocked(scope);
-                            const durableAssets = (await readPersistedAssetDocumentForScope(scope)).state.assets;
-                            const references = { projects: canvasProjects, assets: durableAssets };
-                            const imageKeys = new Set([...frozenExtraImageKeys, ...collectImageStorageKeys(references)]);
-                            const mediaKeys = new Set([...frozenExtraMediaKeys, ...collectMediaStorageKeys(references)]);
-                            await cleanupUnusedImages(
-                                [...imageKeys].map((storageKey) => ({ storageKey })),
-                                scope,
-                            );
-                            await cleanupUnusedMedia(
-                                [...mediaKeys].map((storageKey) => ({ storageKey })),
-                                scope,
-                            );
-                        });
-                    });
-                }, 0);
+                await new Promise<void>((resolve, reject) => {
+                    window.setTimeout(() =>
+                        withGenerationArtifactCommitLock(scope, async () => {
+                            // 固定锁序：artifact -> Canvas（释放）-> Asset，避免跨 store 锁重入。
+                            const canvasProjects = await withCanvasStorePersistenceLock(scope, async () => {
+                                await commitPendingCanvasStorePersistenceLocked(scope);
+                                const durableCanvas = parseCanvasStorageDocument(await localForageStorageForScope(scope).getItem(CANVAS_STORE_KEY));
+                                return pendingCanvasStorePersistence(scope)?.projects ?? durableCanvas.state.projects;
+                            });
+                            await withGenerationAssetStorageLock(scope, async () => {
+                                await commitPendingAssetStorePersistenceLocked(scope);
+                                const durableAssets = (await readPersistedAssetDocumentForScope(scope)).state.assets;
+                                const references = { projects: canvasProjects, assets: durableAssets };
+                                const imageKeys = new Set([...frozenExtraImageKeys, ...collectImageStorageKeys(references)]);
+                                const mediaKeys = new Set([...frozenExtraMediaKeys, ...collectMediaStorageKeys(references)]);
+                                await cleanupUnusedImages(
+                                    [...imageKeys].map((storageKey) => ({ storageKey })),
+                                    scope,
+                                );
+                                await cleanupUnusedMedia(
+                                    [...mediaKeys].map((storageKey) => ({ storageKey })),
+                                    scope,
+                                );
+                            });
+                        }).then(resolve, reject),
+                    );
+                });
             },
         }),
         {

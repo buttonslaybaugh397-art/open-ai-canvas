@@ -116,9 +116,9 @@ func RegisterAuthRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
-		channels, channelsErr := svc.PublicSystemChannels()
-		if channelsErr != nil {
-			failService(c, channelsErr)
+		logicalModels, logicalModelsErr := svc.PublicLogicalModels(nil)
+		if logicalModelsErr != nil {
+			failService(c, logicalModelsErr)
 			return
 		}
 		limits, err := svc.PublicRuntimeLimits()
@@ -136,7 +136,7 @@ func RegisterAuthRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
-		ok(c, gin.H{"user": publicUser, "systemChannels": channels, "runtimeLimits": limits, "drawingEngine": drawingEngine, "features": features})
+		ok(c, gin.H{"user": publicUser, "logicalModels": logicalModels, "runtimeLimits": limits, "drawingEngine": drawingEngine, "features": features})
 	})
 	r.GET("/channels/system", func(c *gin.Context) {
 		actor, err := currentUser(c, svc)
@@ -489,6 +489,37 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"setting": setting})
 	})
+	r.GET("/admin/settings/ark-private-assets", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		setting, err := svc.AdminArkPrivateAssetSetting(user)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"setting": setting})
+	})
+	r.PATCH("/admin/settings/ark-private-assets", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		var req service.ArkPrivateAssetSettingRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		setting, err := svc.UpdateArkPrivateAssetSetting(user, req)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"setting": setting})
+	})
 	r.GET("/admin/settings/drawing-engine", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {
@@ -705,13 +736,71 @@ func RegisterSystemProxyRoutes(r *gin.RouterGroup, svc *service.Service) {
 	})
 }
 
+// SystemProxyNoRouteHandler handles the short public proxy form
+// /api/{channelId}/{providerPath}. It deliberately runs from NoRoute so it
+// cannot shadow existing business routes such as /api/tasks or /api/plugins.
+func SystemProxyNoRouteHandler(svc *service.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		channelID, providerPath, ok := shortSystemProxyPath(c.Request.URL.Path)
+		if !ok {
+			fail(c, http.StatusNotFound, errors.New("请求不存在"))
+			return
+		}
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		channel, err := svc.SystemChannel(channelID)
+		if err != nil {
+			fail(c, http.StatusNotFound, errors.New("系统渠道不存在或已停用"))
+			return
+		}
+		proxySystemRequestPath(c, svc, user, channel, providerPath)
+	}
+}
+
+func shortSystemProxyPath(rawPath string) (string, string, bool) {
+	const prefix = "/api/"
+	if !strings.HasPrefix(rawPath, prefix) {
+		return "", "", false
+	}
+	remainder := strings.TrimPrefix(rawPath, prefix)
+	separator := strings.IndexByte(remainder, '/')
+	if separator <= 0 || separator == len(remainder)-1 {
+		return "", "", false
+	}
+	channelID := remainder[:separator]
+	providerPath := remainder[separator:]
+	if strings.ContainsAny(channelID, "?#\\") || strings.Contains(providerPath, "\\") || isReservedAPIPathPrefix(channelID) {
+		return "", "", false
+	}
+	return channelID, providerPath, true
+}
+
+// NoRoute also sees unmatched descendants of registered API routes. Keep the
+// short proxy from interpreting /api/tasks/unknown (or /api/plugins/unknown)
+// as a channel request when a business route returns 404.
+func isReservedAPIPathPrefix(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "admin", "ai", "announcements", "assets", "auth", "canvas-projects", "channels", "diagnostics", "features", "files", "model-catalog", "models", "oauth", "plugins", "projects", "public", "resources", "sessions", "settings", "skills", "style-profiles", "tasks", "user-data", "voice-profiles", "wallet":
+		return true
+	default:
+		return false
+	}
+}
+
 func proxySystemRequest(c *gin.Context, svc *service.Service, user *model.User, channel *model.ModelChannel) {
+	proxySystemRequestPath(c, svc, user, channel, c.Param("path"))
+}
+
+func proxySystemRequestPath(c *gin.Context, svc *service.Service, user *model.User, channel *model.ModelChannel, providerPath string) {
 	startedAt := time.Now()
 	policy, available := loadRuntimePolicy(c, svc)
 	if !available || !enforceRateLimit(c, "system-proxy:"+user.ID, policy.Request.SystemRelayPerMinute, time.Minute) {
 		return
 	}
-	path := c.Param("path")
+	path := providerPath
 	if path == "" {
 		path = "/"
 	}
@@ -765,7 +854,7 @@ func proxySystemRequest(c *gin.Context, svc *service.Service, user *model.User, 
 	for _, key := range []string{"key", "api_key", "access_token", "token"} {
 		query.Del(key)
 	}
-	target := strings.TrimRight(channel.BaseURL, "/") + path
+	target := service.ChannelAPIURLForProtocol(channel.BaseURL, path, protocol)
 	if encodedQuery := query.Encode(); encodedQuery != "" {
 		target += "?" + encodedQuery
 	}
@@ -786,7 +875,7 @@ func proxySystemRequest(c *gin.Context, svc *service.Service, user *model.User, 
 		log := apiCallLog(user, channel, billingOrderID, capability, protocol, c.Request.Method, path, target, body, c.GetHeader("Content-Type"), model.ApiCallStatusFailed, 0, time.Since(startedAt), err.Error(), concurrencyLimit)
 		log.ErrorCode, log.Error = service.ChannelSlotFailureDetails(err)
 		logSystemProxyCall(svc, log, nil)
-		fail(c, http.StatusServiceUnavailable, err)
+		failInternal(c, http.StatusServiceUnavailable, err)
 		return
 	}
 	defer releaseChannel()
@@ -821,6 +910,9 @@ func proxySystemRequest(c *gin.Context, svc *service.Service, user *model.User, 
 	service.ApplyDefaultOutboundHeaders(upstreamReq)
 	if protocol == model.ChannelInterfaceGeminiVeo || protocol == model.ChannelInterfaceGeminiImage {
 		upstreamReq.Header.Set("x-goog-api-key", channel.APIKey)
+	} else if protocol == model.ChannelInterfaceClaudeAPI {
+		upstreamReq.Header.Set("x-api-key", channel.APIKey)
+		upstreamReq.Header.Set("anthropic-version", "2023-06-01")
 	} else {
 		upstreamReq.Header.Set("Authorization", "Bearer "+channel.APIKey)
 	}
@@ -975,13 +1067,4 @@ func clearSessionCookie(c *gin.Context) {
 		SameSite: http.SameSiteLaxMode,
 		Secure:   secure,
 	})
-}
-
-func failService(c *gin.Context, err error) {
-	var authErr *service.AuthError
-	if errors.As(err, &authErr) {
-		fail(c, authErr.Status, errors.New(authErr.Message))
-		return
-	}
-	fail(c, http.StatusInternalServerError, err)
 }

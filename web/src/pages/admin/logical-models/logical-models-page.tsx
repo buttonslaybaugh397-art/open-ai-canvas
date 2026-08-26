@@ -1,19 +1,19 @@
-import { Alert, App, Button, Drawer, Form, Input, InputNumber, Modal, Segmented, Select, Switch, Table, Tag } from "antd";
+import { Alert, App, Button, Drawer, Form, Input, InputNumber, Modal, Select, Switch, Table, Tag } from "antd";
 import type { FormInstance } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { FlaskConical, GitBranch, Layers3, Pencil, Plus, Search } from "lucide-react";
+import { Archive, FlaskConical, GitBranch, Layers3, Pencil, Plus, Search } from "lucide-react";
 import { useDeferredValue, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { PaginationBar } from "@/components/layout/workspace-page";
 import { ModelIconPicker, ModelLogo } from "@/components/model-logo";
 import { CapabilityCardPicker } from "@/components/model-protocol-picker";
-import { formatCredits } from "@/constant/credits";
 import { AdminPageFrame } from "@/pages/admin/components/admin-shell";
 import { AdminDataTable, AdminFilterChip, AdminRowActions, AdminStatusBadge, AdminTableEmpty } from "@/pages/admin/components/admin-ui";
 import { listAdminChannels } from "@/services/api/auth";
 import { listAdminChannelModels, type ChannelModel } from "@/services/api/wallet";
 import {
     createAdminLogicalModel,
+    deleteAdminLogicalModel,
     listAdminLogicalModels,
     simulateAdminLogicalModel,
     updateAdminLogicalModel,
@@ -71,6 +71,7 @@ export default function LogicalModelsPage() {
     const [channelEnabled, setChannelEnabled] = useState<Record<string, boolean>>({});
     const [editingModel, setEditingModel] = useState<AdminLogicalModel | null | undefined>();
     const [saving, setSaving] = useState(false);
+    const [deletingModelId, setDeletingModelId] = useState<string>();
     const [simulatingModel, setSimulatingModel] = useState<AdminLogicalModel>();
     const [simulationIntent, setSimulationIntent] = useState<ModelRequestIntent>();
     const [simulationResult, setSimulationResult] = useState<RouteSimulationResult>();
@@ -84,9 +85,7 @@ export default function LogicalModelsPage() {
         setLoading(true);
         try {
             const [modelResult, firstChannelPage] = await Promise.all([listAdminLogicalModels(), listAdminChannels({ page: 1, limit: 100 })]);
-            const remainingChannelPages = await Promise.all(
-                Array.from({ length: Math.max(0, Math.ceil(firstChannelPage.total / firstChannelPage.limit) - 1) }, (_, index) => listAdminChannels({ page: index + 2, limit: firstChannelPage.limit })),
-            );
+            const remainingChannelPages = await Promise.all(Array.from({ length: Math.max(0, Math.ceil(firstChannelPage.total / firstChannelPage.limit) - 1) }, (_, index) => listAdminChannels({ page: index + 2, limit: firstChannelPage.limit })));
             const channels = [firstChannelPage, ...remainingChannelPages].flatMap((result) => result.channels);
             const channelModelResults = await Promise.all(channels.map((channel) => listAdminChannelModels(channel.id)));
             setModels(modelResult.models);
@@ -131,7 +130,7 @@ export default function LogicalModelsPage() {
                       capability,
                       enabled: true,
                       sortOrder: models.length,
-                      pricePolicy: "unified",
+                      pricePolicy: "channel",
                       billingMode: "fixed_request",
                       unitPriceMicrocredits: 0,
                       inputPriceMicrocredits: 0,
@@ -180,6 +179,21 @@ export default function LogicalModelsPage() {
         }
     };
 
+    const removeModel = async (item: AdminLogicalModel) => {
+        setDeletingModelId(item.id);
+        try {
+            await deleteAdminLogicalModel(item.id);
+            setModels((current) => current.filter((model) => model.id !== item.id));
+            if (paginatedModels.length === 1 && page > 1) setPage(page - 1);
+            message.success("前台模型已归档");
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "归档前台模型失败");
+            throw error;
+        } finally {
+            setDeletingModelId(undefined);
+        }
+    };
+
     const openSimulation = (item: AdminLogicalModel) => {
         setSimulationIntent({
             capability: item.capability,
@@ -224,8 +238,8 @@ export default function LogicalModelsPage() {
             width: 110,
             render: (_, item) => (
                 <div className="text-xs">
-                    <div>{item.routes.filter((route) => route.enabled && route.available).length} 条可用</div>
-                    <div className="text-foreground/45">共 {item.routes.length} 条</div>
+                    <div>{(item.routes || []).filter((route) => route.enabled && route.available).length} 条可用</div>
+                    <div className="text-foreground/45">共 {(item.routes || []).length} 条</div>
                 </div>
             ),
         },
@@ -238,9 +252,23 @@ export default function LogicalModelsPage() {
             render: (_, item) => (
                 <AdminRowActions
                     primary={{ label: "编辑", icon: <Pencil className="size-3.5" />, onClick: () => openModel(item) }}
+                    visibleActionCount={1}
                     actions={[
                         { key: "simulate", label: "模拟供应线路匹配", icon: <FlaskConical className="size-3.5" />, onClick: () => openSimulation(item) },
                         { key: "toggle", label: item.enabled ? "停用" : "启用", onClick: () => void toggleModel(item) },
+                        {
+                            key: "archive",
+                            label: "归档模型",
+                            icon: <Archive className="size-3.5" />,
+                            danger: true,
+                            disabled: deletingModelId === item.id,
+                            confirm: {
+                                title: `归档前台模型“${item.name}”？`,
+                                description: "归档后模型将从公开目录中移除，不能在页面恢复；历史任务和版本记录会保留。排队中或进行中的任务仍在使用时无法归档。",
+                                okText: "确认归档",
+                            },
+                            onClick: () => removeModel(item),
+                        },
                     ]}
                 />
             ),
@@ -249,7 +277,7 @@ export default function LogicalModelsPage() {
 
     return (
         <AdminPageFrame
-            title="模型目录"
+            title="前台模型目录"
             actions={
                 <Button type="primary" icon={<Plus className="size-4" />} onClick={() => openModel()}>
                     新增模型
@@ -257,13 +285,49 @@ export default function LogicalModelsPage() {
             }
         >
             <AdminDataTable
-                toolbar={<Input prefix={<Search className="size-4 text-foreground/40" />} allowClear value={keyword} onChange={(event) => { setKeyword(event.target.value); setPage(1); }} placeholder="搜索模型名称、代码或能力" className="app-list-search" />}
-                toolbarActiveFilters={keyword ? <AdminFilterChip label={`搜索：${keyword}`} onRemove={() => { setKeyword(""); setPage(1); }} /> : null}
+                toolbar={
+                    <Input
+                        prefix={<Search className="size-4 text-foreground/40" />}
+                        allowClear
+                        value={keyword}
+                        onChange={(event) => {
+                            setKeyword(event.target.value);
+                            setPage(1);
+                        }}
+                        placeholder="搜索模型名称、代码或能力"
+                        className="app-list-search"
+                    />
+                }
+                toolbarActiveFilters={
+                    keyword ? (
+                        <AdminFilterChip
+                            label={`搜索：${keyword}`}
+                            onRemove={() => {
+                                setKeyword("");
+                                setPage(1);
+                            }}
+                        />
+                    ) : null
+                }
                 toolbarActive={Boolean(keyword)}
-                onReset={() => { setKeyword(""); setPage(1); }}
-                table={{ rowKey: "id", size: "small", loading, pagination: false, columns: modelColumns, dataSource: paginatedModels, scroll: { x: 980 } }}
+                onReset={() => {
+                    setKeyword("");
+                    setPage(1);
+                }}
+                table={{ className: "admin-logical-model-table", rowKey: "id", size: "small", loading, pagination: false, columns: modelColumns, dataSource: paginatedModels, scroll: { x: 980 } }}
                 empty={<AdminTableEmpty filtered={Boolean(deferredKeyword)} title="暂无模型" />}
-                footer={<PaginationBar alwaysShow current={page} pageSize={pageSize} total={filteredModels.length} onChange={(nextPage, nextPageSize) => { setPage(nextPageSize !== pageSize ? 1 : nextPage); setPageSize(nextPageSize); }} />}
+                footer={
+                    <PaginationBar
+                        alwaysShow
+                        current={page}
+                        pageSize={pageSize}
+                        total={filteredModels.length}
+                        onChange={(nextPage, nextPageSize) => {
+                            setPage(nextPageSize !== pageSize ? 1 : nextPage);
+                            setPageSize(nextPageSize);
+                        }}
+                    />
+                }
             />
 
             <Drawer
@@ -274,7 +338,16 @@ export default function LogicalModelsPage() {
                 maskClosable={!saving}
                 onClose={() => !saving && setEditingModel(undefined)}
                 rootClassName="admin-drawer"
-                footer={<div className="flex justify-end gap-2"><Button disabled={saving} onClick={() => setEditingModel(undefined)}>取消</Button><Button type="primary" loading={saving} onClick={() => void saveModel()}>保存</Button></div>}
+                footer={
+                    <div className="flex justify-end gap-2">
+                        <Button disabled={saving} onClick={() => setEditingModel(undefined)}>
+                            取消
+                        </Button>
+                        <Button type="primary" loading={saving} onClick={() => void saveModel()}>
+                            保存
+                        </Button>
+                    </div>
+                }
             >
                 <Form
                     form={modelForm}
@@ -288,7 +361,8 @@ export default function LogicalModelsPage() {
                             routes: [],
                             capabilitySpec: emptyCapabilitySpec(capability),
                             defaultOptions: {},
-                            billingMode: capability === "text" ? "token" : capability === "video" ? "per_second" : "fixed_request",
+                            pricePolicy: "channel",
+                            billingMode: "fixed_request",
                         });
                     }}
                 >
@@ -341,7 +415,7 @@ export default function LogicalModelsPage() {
                             <DefaultOptionsEditor spec={modelCapabilitySpec} />
                         </Form.Item>
                     </DrawerSection>
-                    <DrawerSection title="用户价格">
+                    <DrawerSection title="系统规格价格">
                         <PricingFields />
                     </DrawerSection>
                 </Form>
@@ -357,7 +431,9 @@ export default function LogicalModelsPage() {
                 onCancel={() => setSimulatingModel(undefined)}
                 styles={{ body: { maxHeight: "min(72vh, 720px)", overflowY: "auto" } }}
                 footer={[
-                    <Button key="cancel" onClick={() => setSimulatingModel(undefined)}>关闭</Button>,
+                    <Button key="cancel" onClick={() => setSimulatingModel(undefined)}>
+                        关闭
+                    </Button>,
                     <Button key="submit" type="primary" icon={<FlaskConical className="size-4" />} loading={simulating} onClick={() => void runSimulation()}>
                         模拟匹配
                     </Button>,
@@ -465,9 +541,7 @@ function RouteFields({
                                             <div className="mb-2 flex items-center justify-between gap-2">
                                                 <div className="min-w-0">
                                                     <div className="text-xs font-semibold">供应线路 {fields.indexOf(field) + 1}</div>
-                                                    <div className="mt-0.5 truncate text-xs text-foreground/50">
-                                                        {selected ? `${channelNames[selected.channelId]} / ${selected.displayName || selected.modelKey}` : "选择一个可承接请求的渠道模型"}
-                                                    </div>
+                                                    <div className="mt-0.5 truncate text-xs text-foreground/50">{selected ? `${channelNames[selected.channelId]} / ${selected.displayName || selected.modelKey}` : "选择一个可承接请求的渠道模型"}</div>
                                                 </div>
                                                 <Button type="text" size="small" danger onClick={() => remove(field.name)}>
                                                     移除
@@ -527,84 +601,23 @@ function logicalModelStatusTag(item: AdminLogicalModel) {
 
 function PricingFields() {
     const form = Form.useFormInstance<LogicalModelFormValues>();
-    const pricePolicy = Form.useWatch("pricePolicy") as LogicalModelMutation["pricePolicy"] | undefined;
-    const billingMode = Form.useWatch("billingMode") as LogicalModelMutation["billingMode"] | undefined;
-    const capability = Form.useWatch("capability") as CapabilityKind | undefined;
-    const modes = [{ label: "按次", value: "fixed_request" }];
-    if (capability === "video") modes.push({ label: "按秒", value: "per_second" });
-    if (capability === "text") modes.push({ label: "Token", value: "token" });
-    const changePolicy = (value: string | number) => {
-        const nextPolicy = value as LogicalModelMutation["pricePolicy"];
-        if (nextPolicy !== "unified") return;
-        const supportedModes = modes.map((item) => item.value);
-        if (!billingMode || !supportedModes.includes(billingMode)) {
-            form.setFieldValue("billingMode", capability === "text" ? "token" : capability === "video" ? "per_second" : "fixed_request");
-        }
-    };
-    return (
-        <>
-            <Form.Item name="pricePolicy" label="定价策略">
-                <Segmented
-                    block
-                    options={[
-                        { label: "跟随供应价格", value: "channel" },
-                        { label: "统一定价", value: "unified" },
-                    ]}
-                    onChange={changePolicy}
-                />
-            </Form.Item>
-            {pricePolicy === "unified" ? (
-                <>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                        <Form.Item name="billingMode" label="计费方式">
-                            <Segmented block options={modes} />
-                        </Form.Item>
-                        {billingMode !== "token" ? (
-                            <Form.Item name="unitPriceMicrocredits" label={billingMode === "per_second" ? "每秒消耗积分" : "每次消耗积分"}>
-                                <CreditsInput />
-                            </Form.Item>
-                        ) : null}
-                    </div>
-                    {billingMode === "token" ? (
-                        <div className="grid gap-3 sm:grid-cols-3">
-                            <Form.Item name="inputPriceMicrocredits" label="输入 / 百万 Token">
-                                <CreditsInput />
-                            </Form.Item>
-                            <Form.Item name="outputPriceMicrocredits" label="输出 / 百万 Token">
-                                <CreditsInput />
-                            </Form.Item>
-                            <Form.Item name="cachedPriceMicrocredits" label="缓存 / 百万 Token">
-                                <CreditsInput />
-                            </Form.Item>
-                        </div>
-                    ) : null}
-                </>
-            ) : (
-                <div className="rounded-md bg-muted/20 px-3 py-3 text-xs leading-5 text-foreground/55">用户费用按实际命中的供应线路价格计算。故障切换到更高价格线路时会重新校验余额。</div>
-            )}
-        </>
-    );
-}
-
-function CreditsInput({ value = 0, onChange }: { value?: number; onChange?: (value: number) => void }) {
-    return <InputNumber className="w-full" min={0} max={1_000_000} precision={6} step={0.1} value={value / 1_000_000} onChange={(next) => onChange?.(Math.round((next || 0) * 1_000_000))} />;
+    useEffect(() => {
+        form.setFieldsValue({
+            pricePolicy: "channel",
+            billingMode: "fixed_request",
+            unitPriceMicrocredits: 0,
+            inputPriceMicrocredits: 0,
+            outputPriceMicrocredits: 0,
+            cachedPriceMicrocredits: 0,
+        });
+    }, [form]);
+    return <div className="rounded-md bg-muted/20 px-3 py-3 text-xs leading-5 text-foreground/55">价格、上游 SKU 和可用规格只在“系统渠道 / 模型管理”配置。前台模型只负责展示、能力范围和故障切换，不再保存第二份价格。</div>;
 }
 
 function logicalPriceLabel(item: AdminLogicalModel) {
-    if (item.pricePolicy === "channel") return <span className="text-xs">跟随供应价格</span>;
-    if (item.billingMode === "token")
-        return (
-            <div className="text-xs">
-                <div>输入 {formatCredits(item.inputPriceMicrocredits)} / 百万</div>
-                <div>输出 {formatCredits(item.outputPriceMicrocredits)} / 百万</div>
-                <div className="text-foreground/45">缓存 {formatCredits(item.cachedPriceMicrocredits)} / 百万</div>
-            </div>
-        );
-    return (
-        <span className="text-xs">
-            {formatCredits(item.unitPriceMicrocredits)} / {item.billingMode === "per_second" ? "秒" : "次"}
-        </span>
-    );
+    const priceTiers = item.priceTiers || [];
+    if (!priceTiers.length) return <span className="text-xs text-foreground/45">待配置系统规格价格</span>;
+    return <span className="text-xs">{priceTiers.length} 个系统规格档</span>;
 }
 
 function logicalModelToForm(item: AdminLogicalModel): LogicalModelFormValues {
@@ -616,15 +629,15 @@ function logicalModelToForm(item: AdminLogicalModel): LogicalModelFormValues {
         capability: item.capability,
         enabled: item.enabled,
         sortOrder: item.sortOrder,
-        pricePolicy: item.pricePolicy,
-        billingMode: item.billingMode,
-        unitPriceMicrocredits: item.unitPriceMicrocredits,
-        inputPriceMicrocredits: item.inputPriceMicrocredits,
-        outputPriceMicrocredits: item.outputPriceMicrocredits,
-        cachedPriceMicrocredits: item.cachedPriceMicrocredits,
+        pricePolicy: "channel",
+        billingMode: "fixed_request",
+        unitPriceMicrocredits: 0,
+        inputPriceMicrocredits: 0,
+        outputPriceMicrocredits: 0,
+        cachedPriceMicrocredits: 0,
         capabilitySpec: item.capabilitySpec,
         defaultOptions: item.defaultOptions,
-        routes: item.routes.map((route) => ({ channelModelId: route.channelModelId, enabled: route.enabled, priority: route.priority, weight: route.weight })),
+        routes: (item.routes || []).map((route) => ({ channelModelId: route.channelModelId, enabled: route.enabled, priority: route.priority, weight: route.weight })),
     };
 }
 
@@ -638,12 +651,12 @@ function logicalModelPayload(values: LogicalModelFormValues, sourceSpecs: Capabi
         capability: values.capability,
         enabled: values.enabled,
         sortOrder: values.sortOrder || 0,
-        pricePolicy: values.pricePolicy,
-        billingMode: values.billingMode,
-        unitPriceMicrocredits: values.unitPriceMicrocredits || 0,
-        inputPriceMicrocredits: values.inputPriceMicrocredits || 0,
-        outputPriceMicrocredits: values.outputPriceMicrocredits || 0,
-        cachedPriceMicrocredits: values.cachedPriceMicrocredits || 0,
+        pricePolicy: "channel",
+        billingMode: "fixed_request",
+        unitPriceMicrocredits: 0,
+        inputPriceMicrocredits: 0,
+        outputPriceMicrocredits: 0,
+        cachedPriceMicrocredits: 0,
         capabilitySpec,
         defaultOptions: sanitizeDefaults(capabilitySpec, values.defaultOptions),
         routes: values.routes.map((route) => ({ ...route, priority: route.priority || 0, weight: route.weight || 0 })),

@@ -25,7 +25,7 @@ export type RemoteResource = {
 
 export type UserOSSSetting = {
     enabled: boolean;
-    provider: "aliyun" | "tencent" | "qiniu" | "rainyun";
+    provider: "aliyun" | "tencent" | "qiniu";
     region: string;
     endpoint: string;
     cdnBaseUrl: string;
@@ -44,6 +44,11 @@ export type UserOSSSettingInput = Pick<UserOSSSetting, "enabled" | "provider" | 
 export type AccountFileStorageUsage = {
     usedBytes: number;
     totalBytes: number;
+};
+
+export type ArkPrivateAssetSync = {
+    resourceId: string;
+    status: "active" | string;
 };
 
 const api = apiClient;
@@ -66,6 +71,11 @@ export function updateUserOSSSetting(input: UserOSSSettingInput) {
 export async function getAccountFileStorageUsage() {
     const data = await request<{ usage: AccountFileStorageUsage }>(api.get("/resources/storage-usage"));
     return data.usage;
+}
+
+export async function syncResourceToArkPrivateAsset(id: string) {
+    const data = await request<{ sync: ArkPrivateAssetSync }>(api.post(`/resources/${encodeURIComponent(id)}/ark-private-asset`));
+    return data.sync;
 }
 
 export function resourceIdFromStorageKey(storageKey?: string) {

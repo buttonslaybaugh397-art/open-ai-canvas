@@ -1,6 +1,6 @@
 import { AnimatePresence, useReducedMotion } from "motion/react";
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
-import { ArrowLeft, Check, ChevronRight, Clipboard, Copy, FolderOpen, FolderPlus, Image as ImageIcon, Layers3, Link2, Maximize2, PanelTop, Pencil, Plus, Redo2, Tags, Trash2, Undo2, Upload, UserRound } from "lucide-react";
+import { ArrowLeft, Check, ChevronRight, Clipboard, CloudUpload, Copy, FolderOpen, FolderPlus, Image as ImageIcon, Layers3, Link2, Maximize2, PanelTop, Pencil, Plus, Redo2, Tags, Trash2, Undo2, Upload, UserRound } from "lucide-react";
 
 import { CanvasCreateMenu, type CanvasCreateCommand } from "@/components/canvas/canvas-create-menu";
 import { aceternityMotion } from "@/lib/aceternity-motion";
@@ -10,7 +10,8 @@ import { canvasNodeAssetCategory } from "@/lib/canvas/canvas-node-asset";
 import { isCanvasFolderNode } from "@/lib/canvas/canvas-frame";
 import { resolveAddNodeMenuCommands, type AddNodeMenuContext } from "@/lib/canvas/tool-registry";
 import { useThemeStore } from "@/stores/use-theme-store";
-import { CanvasNodeType, type CanvasNodeData, type CanvasWorkspaceMode, type ContextMenuState, type Position } from "@/types/canvas";
+import { usePluginStore } from "@/stores/use-plugin-store";
+import { CanvasNodeType, type CanvasNodeData, type CanvasNodeTypeId, type CanvasWorkspaceMode, type ContextMenuState, type Position } from "@/types/canvas";
 
 type CanvasAssetCategory = NonNullable<NonNullable<CanvasNodeData["metadata"]>["assetCategory"]>;
 
@@ -33,7 +34,7 @@ type CanvasNodeContextMenuProps = {
     canRedo: boolean;
     canPaste: boolean;
     onClose: () => void;
-    onAddNode: (type: CanvasNodeType) => void;
+    onAddNode: (type: CanvasNodeTypeId) => void;
     onAddFolder: () => void;
     onChooseStyle: () => void;
     onOpenDirector: (position: Position) => void;
@@ -53,6 +54,7 @@ type CanvasNodeContextMenuProps = {
     onGenerateImage: () => void;
     onCopyContent: () => void;
     onCopyMediaUrl: () => void;
+    onUploadToArkPrivateAsset: () => void;
     onSetAssetCategory: (category: CanvasAssetCategory) => void;
     onToggleFrame: () => void;
 };
@@ -86,6 +88,7 @@ export function CanvasNodeContextMenu({
     onGenerateImage,
     onCopyContent,
     onCopyMediaUrl,
+    onUploadToArkPrivateAsset,
     onSetAssetCategory,
     onToggleFrame,
 }: CanvasNodeContextMenuProps) {
@@ -200,6 +203,7 @@ export function CanvasNodeContextMenu({
                                     <MenuSection label="查看与归档" />
                                     <MenuButton icon={<Maximize2 />} label="进入全景预览" disabled={!canOpenPreview} onClick={() => runAction(onViewMedia)} />
                                     <MenuButton icon={<Tags />} label="设置资产分类" chevron onClick={() => setCategoryOpen(true)} />
+                                    {isImage ? <MenuButton icon={<CloudUpload />} label="上传到方舟素材库" onClick={() => runAction(onUploadToArkPrivateAsset)} /> : null}
                                     <MenuDivider />
                                     <MenuSection label="节点" />
                                     <MenuButton icon={<Copy />} label="复制节点" shortcut="⌘C" onClick={() => runAction(onCopyNode)} />
@@ -255,12 +259,14 @@ export function CanvasNodeContextMenu({
     );
 }
 
-function AddNodeContextMenu({ parentPosition, workspaceMode, isProjectLinked, reducedMotion, onAddNode, onAddFolder, onChooseStyle, onOpenDirector, onUpload, onOpenAssets, onOpenProjectCharacters }: { parentPosition: { left: number; top: number }; workspaceMode: CanvasWorkspaceMode; isProjectLinked: boolean; reducedMotion: boolean; onAddNode: (type: CanvasNodeType) => void; onAddFolder: () => void; onChooseStyle: () => void; onOpenDirector: () => void; onUpload: () => void; onOpenAssets: () => void; onOpenProjectCharacters: () => void }) {
+function AddNodeContextMenu({ parentPosition, workspaceMode, isProjectLinked, reducedMotion, onAddNode, onAddFolder, onChooseStyle, onOpenDirector, onUpload, onOpenAssets, onOpenProjectCharacters }: { parentPosition: { left: number; top: number }; workspaceMode: CanvasWorkspaceMode; isProjectLinked: boolean; reducedMotion: boolean; onAddNode: (type: CanvasNodeTypeId) => void; onAddFolder: () => void; onChooseStyle: () => void; onOpenDirector: () => void; onUpload: () => void; onOpenAssets: () => void; onOpenProjectCharacters: () => void }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const installations = usePluginStore((state) => state.installations);
     const left = getSubmenuLeft(parentPosition.left);
     const createContext: AddNodeMenuContext = {
         workspaceMode,
         isProjectLinked,
+        enabledPluginIds: new Set(installations.filter((item) => item.enabled).map((item) => item.manifest.id)),
         handlers: {
             onAddText: () => onAddNode(CanvasNodeType.Text),
             onAddImage: () => onAddNode(CanvasNodeType.Image),
@@ -270,6 +276,8 @@ function AddNodeContextMenu({ parentPosition, workspaceMode, isProjectLinked, re
             onAddFrame: () => onAddNode(CanvasNodeType.Frame),
             onAddFolder,
             onAddDrawing: () => onAddNode(CanvasNodeType.Drawing),
+            onAddExtensionNode: onAddNode,
+            onAddWorkflow: () => onAddNode(CanvasNodeType.Config),
             onChooseStyle,
             onOpenDirector,
             onUpload,

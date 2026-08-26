@@ -28,8 +28,6 @@ export function removeCreationConversationSnapshot<T extends { id: string }>(con
     return next;
 }
 
-// 文本消息由前端直连生成，未完成时停在 streaming；媒体消息走后端队列，未完成时停在 pending。
-// 两者都需要已绑定 taskIds 才能在刷新后从后端任务终态恢复。
 function isRecoverableCreationMessage(message: PendingCreationMessage) {
     if (message.role !== "assistant" || !message.taskIds?.length) return false;
     return message.mode === "text" ? message.status === "streaming" || message.status === "pending" : message.status === "pending";

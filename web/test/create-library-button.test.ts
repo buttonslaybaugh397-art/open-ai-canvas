@@ -54,25 +54,33 @@ describe("creation library button", () => {
         expect(canvasSource).toContain("onClick={() => onInsert(reference)}");
     });
 
-    test("promotes the first reference into the primary reference slot", () => {
-        const source = readFileSync(resolve(import.meta.dir, "../src/pages/create/index.tsx"), "utf8");
-
-        expect(source).toContain("const [primaryAttachment, ...secondaryAttachments] = props.attachments");
-        expect(source).toContain("<CreationAttachmentThumbnail item={primaryAttachment} reference={props.references.find");
-        expect(source).toContain("primary disabled={props.busy}");
-        expect(source).toContain("secondaryAttachments.map((item) => <CreationAttachmentThumbnail");
-        expect(source).toContain('className={`creation-chat-attachment${primary ? " is-primary" : ""}`}');
-    });
-
-    test("exposes removal for references inside the composer", () => {
+    test("参考内容层叠轨道支持折叠、展开和 Reorder 排序", () => {
         const source = readFileSync(resolve(import.meta.dir, "../src/pages/create/index.tsx"), "utf8");
         const styles = readFileSync(resolve(import.meta.dir, "../src/styles/globals.css"), "utf8");
 
-        expect(source).toContain('className="creation-chat-attachment-remove"');
-        expect(source).toContain('onRemove(item.id)');
-        expect(source).toContain('title="删除参考素材"');
-        expect(source).toContain('<span>删除参考</span>');
-        expect(styles).toContain(".creation-chat-attachment-remove {");
-        expect(styles).toContain("opacity: 1");
+        expect(source).toContain('import { Reorder } from "motion/react"');
+        expect(source).toContain("<Reorder.Group");
+        expect(source).toContain('axis="x"');
+        expect(source).toContain("values={props.attachments}");
+        expect(source).toContain("onReorder={props.onReorderAttachments}");
+        expect(source).toContain("<Reorder.Item");
+        expect(source).toContain('layout="position"');
+        expect(source).toContain("isExpanded");
+        expect(source).toContain("handleTrackMouseEnter");
+        expect(source).toContain("handleTrackMouseLeave");
+        expect(source).toContain("handleTrackFocus");
+        expect(source).toContain("handleTrackBlur");
+        expect(source).toContain("creation-reference-track-wrapper");
+        expect(source).toContain("creation-reference-stack-card");
+        expect(source).toContain("creation-reference-add-button");
+        expect(source).toContain("creation-reference-track-button");
+        expect(source).toContain("CanvasPromptOptimizerDrawer");
+        expect(source).toContain("promptOptimizerOpen");
+        expect(source).toContain("provider={props.promptOptimizerProvider}");
+        expect(styles).toContain(".creation-reference-track");
+        expect(styles).toContain(".creation-reference-stack-card");
+        expect(styles).toContain("--stack-rotate: -7deg");
+        expect(styles).toContain(".creation-reference-track.is-expanded");
+        expect(styles).toContain("@media (hover: none)");
     });
 });

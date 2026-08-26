@@ -57,19 +57,6 @@ func ModelRequestIntentFromTaskInput(input map[string]any, taskType string, oper
 			intent.Inputs[inputType] = len(values)
 		}
 	}
-	// reference_to_video 表示参考视频生成，不是视频续写；只有显式的 extend 才进入续写能力校验。
-	if normalizeCapabilityValue(intent.Operation) == "reference_to_video" {
-		switch {
-		case intent.Inputs["audio"] > 0 && intent.Inputs["image"] == 0 && intent.Inputs["video"] == 0:
-			intent.Operation = "audio_to_video"
-		case intent.Inputs["video"] > 0:
-			intent.Operation = "reference_to_video"
-		case intent.Inputs["image"] > 0:
-			intent.Operation = "image_to_video"
-		default:
-			intent.Operation = "text_to_video"
-		}
-	}
 	if mask, exists := input["mask"]; exists && mask != nil {
 		intent.Inputs["mask"] = 1
 	}
@@ -77,7 +64,8 @@ func ModelRequestIntentFromTaskInput(input map[string]any, taskType string, oper
 	if options, ok := input["capabilityOptions"].(map[string]any); ok {
 		explicitOptions = true
 		for key, value := range options {
-			intent.Options[canonicalCapabilityOptionName(key)] = value
+			name := canonicalCapabilityOptionName(key)
+			intent.Options[name] = normalizeModelRequestOption(name, value)
 		}
 	}
 	if config, ok := input["config"].(map[string]any); ok && !explicitOptions {
@@ -88,12 +76,36 @@ func ModelRequestIntentFromTaskInput(input map[string]any, taskType string, oper
 			default:
 				canonical := canonicalCapabilityOptionName(key)
 				if isCapabilityOptionFor(capability, canonical) && value != nil && strings.TrimSpace(fmt.Sprint(value)) != "" {
-					intent.Options[canonical] = value
+					intent.Options[canonical] = normalizeModelRequestOption(canonical, value)
 				}
 			}
 		}
 	}
 	return intent
+}
+
+func normalizeModelRequestOption(name string, value any) any {
+	if canonicalCapabilityOptionName(name) != "vquality" {
+		return value
+	}
+	resolution, ok := value.(string)
+	if !ok {
+		return value
+	}
+	switch strings.ToLower(strings.TrimSpace(resolution)) {
+	case "low", "480", "480p":
+		return "480p"
+	case "720", "720p":
+		return "720p"
+	case "1080", "1080p":
+		return "1080p"
+	case "2k", "1440", "1440p":
+		return "1440p"
+	case "4k", "2160", "2160p":
+		return "2160p"
+	default:
+		return value
+	}
 }
 
 type CapabilityMatch struct {
@@ -127,6 +139,7 @@ type RoutedModel struct {
 	Revision     model.LogicalModelRevision
 	Route        model.LogicalModelRoute
 	ChannelModel model.ChannelModel
+	PriceTier    *model.ChannelModelPriceTier
 	Defaults     map[string]any
 }
 
@@ -222,7 +235,7 @@ func MatchCapability(spec CapabilitySpec, intent ModelRequestIntent) CapabilityM
 	if normalizeCapability(intent.Capability) != normalizeCapability(spec.Capability) {
 		reasons = append(reasons, "能力类型不匹配")
 	}
-	if operation := normalizeCapabilityValue(intent.Operation); operation != "" && len(spec.Operations) > 0 && !capabilityOperationSupported(spec.Operations, operation) {
+	if operation := normalizeCapabilityValue(intent.Operation); operation != "" && len(spec.Operations) > 0 && !containsNormalized(spec.Operations, operation) {
 		reasons = append(reasons, "不支持操作 "+intent.Operation)
 	}
 	for inputType, count := range intent.Inputs {
@@ -257,13 +270,6 @@ func MatchCapability(spec CapabilitySpec, intent ModelRequestIntent) CapabilityM
 		}
 	}
 	return CapabilityMatch{Matched: len(reasons) == 0, Reasons: reasons}
-}
-
-func capabilityOperationSupported(operations []string, operation string) bool {
-	if containsNormalized(operations, operation) {
-		return true
-	}
-	return operation == "reference_to_video" && containsNormalized(operations, "image_to_video")
 }
 
 func capabilityInputLabel(name string) string {
@@ -557,7 +563,10 @@ func (s *Service) loadRouteCatalog() (*routeCatalogSnapshot, error) {
 			if !ok || !channelModel.Enabled || !enabledSystemChannels[channelModel.ChannelID] {
 				continue
 			}
-			if item.PricePolicy == "channel" && !channelModel.PriceConfigured {
+			if item.PricePolicy == "unified" && item.BillingMode == "token" && !supportsTokenBilling(item.Capability, channelModel.Protocol) {
+				continue
+			}
+			if item.PricePolicy == "channel" && !channelModelHasActivePriceTier(channelModel) {
 				continue
 			}
 			capabilitySpec, specErr := channelModelCapabilitySpec(channelModel)
@@ -598,15 +607,22 @@ func (s *Service) ResolveLogicalModel(logicalModelID string, intent ModelRequest
 	if match := MatchCapability(cached.ProductSpec, intent); !match.Matched {
 		return nil, BadAuthRequest("所选模型不支持当前请求：" + strings.Join(match.Reasons, "；"))
 	}
-	eligible := s.eligibleLogicalRoutes(cached.Routes, intent, nil)
+	eligible := s.eligibleLogicalRoutes(cached.Routes, intent, nil, cached.Model.PricePolicy == "channel")
 	if len(eligible) == 0 {
 		return nil, BadAuthRequest("当前模型暂时无法满足这组输入和参数")
 	}
 	selected := weightedRoute(eligible)
-	return &RoutedModel{LogicalModel: cached.Model, Revision: cached.Revision, Route: selected.Route, ChannelModel: selected.ChannelModel, Defaults: cached.Defaults}, nil
+	var priceTier *model.ChannelModelPriceTier
+	if cached.Model.PricePolicy == "channel" {
+		priceTier = channelModelPriceTierForIntent(selected.ChannelModel, intent)
+		if priceTier == nil {
+			return nil, BadAuthRequest("当前模型尚未配置所选规格的价格")
+		}
+	}
+	return &RoutedModel{LogicalModel: cached.Model, Revision: cached.Revision, Route: selected.Route, ChannelModel: selected.ChannelModel, PriceTier: priceTier, Defaults: cached.Defaults}, nil
 }
 
-func (s *Service) eligibleLogicalRoutes(routes []cachedLogicalRoute, intent ModelRequestIntent, tried map[string]bool) []cachedLogicalRoute {
+func (s *Service) eligibleLogicalRoutes(routes []cachedLogicalRoute, intent ModelRequestIntent, tried map[string]bool, requirePriceTier bool) []cachedLogicalRoute {
 	eligible := make([]cachedLogicalRoute, 0, len(routes))
 	maxPriority := math.MinInt
 	for _, route := range routes {
@@ -614,6 +630,9 @@ func (s *Service) eligibleLogicalRoutes(routes []cachedLogicalRoute, intent Mode
 			continue
 		}
 		if match := MatchCapability(route.CapabilitySpec, intent); !match.Matched {
+			continue
+		}
+		if requirePriceTier && channelModelPriceTierForIntent(route.ChannelModel, intent) == nil {
 			continue
 		}
 		if route.Route.Priority > maxPriority {
@@ -625,6 +644,99 @@ func (s *Service) eligibleLogicalRoutes(routes []cachedLogicalRoute, intent Mode
 		}
 	}
 	return eligible
+}
+
+func channelModelHasActivePriceTier(channelModel model.ChannelModel) bool {
+	for _, tier := range channelModel.PriceTiers {
+		if tier.Enabled && tier.PriceConfigured {
+			return true
+		}
+	}
+	return false
+}
+
+// channelModelPriceTierForIntent 使用“精确规格优先、通配规格兜底”的规则。SKU 选择器与
+// 运行意图使用同一组规范键，因而图片质量/画幅、视频分辨率/时长和生成操作都能独立定价。
+func channelModelPriceTierForIntent(channelModel model.ChannelModel, intent ModelRequestIntent) *model.ChannelModelPriceTier {
+	selector := skuSelectorForIntent(intent)
+	bestScore := -1
+	var best *model.ChannelModelPriceTier
+	for index := range channelModel.PriceTiers {
+		tier := &channelModel.PriceTiers[index]
+		if !tier.Enabled || !tier.PriceConfigured {
+			continue
+		}
+		matched, score := matchSKUSelector(skuSelectorForTier(*tier), selector)
+		if !matched {
+			continue
+		}
+		if score > bestScore {
+			best, bestScore = tier, score
+		}
+	}
+	return best
+}
+
+func skuSelectorForIntent(intent ModelRequestIntent) map[string]string {
+	selector := map[string]string{}
+	if operation := strings.ToLower(strings.TrimSpace(intent.Operation)); operation != "" {
+		selector["operation"] = operation
+	}
+	switch normalizeCapability(intent.Capability) {
+	case "video":
+		// 价格档按实际参考素材归类。供应商执行仍可使用 reference_to_video、extend
+		// 等细分操作；计价时视频参考优先归为视频生视频，其余图片参考无论数量
+		// 都归为图生视频。
+		if intent.Inputs["video"] > 0 {
+			selector["operation"] = "video_to_video"
+		} else if intent.Inputs["image"] > 0 {
+			selector["operation"] = "image_to_video"
+		}
+		if count := intent.Inputs["image"]; count > 0 {
+			selector["imageCount"] = strconv.Itoa(count)
+		}
+		if value := normalizeChannelModelTierResolution(fmt.Sprint(intent.Options["vquality"])); value != "*" {
+			selector["vquality"] = value
+		}
+		if seconds, err := strconv.Atoi(strings.TrimSpace(fmt.Sprint(intent.Options["videoSeconds"]))); err == nil && seconds > 0 {
+			selector["videoSeconds"] = strconv.Itoa(seconds)
+		}
+	case "image":
+		for _, key := range []string{"quality", "size"} {
+			if value := strings.ToLower(strings.TrimSpace(fmt.Sprint(intent.Options[key]))); value != "" && value != "auto" && value != "any" {
+				selector[key] = value
+			}
+		}
+	}
+	return selector
+}
+
+func skuSelectorForTier(tier model.ChannelModelPriceTier) map[string]string {
+	selector := model.DecodeSKUSelector(tier.SelectorJSON)
+	if len(selector) == 0 {
+		if resolution := normalizeChannelModelTierResolution(tier.Resolution); resolution != "*" {
+			selector["vquality"] = resolution
+		}
+		if tier.VideoSeconds > 0 {
+			selector["videoSeconds"] = strconv.Itoa(tier.VideoSeconds)
+		}
+	}
+	return selector
+}
+
+func matchSKUSelector(tier map[string]string, requested map[string]string) (bool, int) {
+	score := 0
+	for key, expected := range tier {
+		expected = strings.TrimSpace(expected)
+		if expected == "" || expected == "*" {
+			continue
+		}
+		if requested[key] != expected {
+			return false, 0
+		}
+		score++
+	}
+	return true, score
 }
 
 func (s *Service) logicalRouteBlocked(route cachedLogicalRoute) bool {
@@ -860,6 +972,9 @@ func (s *Service) routedModelForTaskSelection(task *model.Task) (*RoutedModel, e
 	if logicalModel.PricePolicy == "channel" && !channelModel.PriceConfigured {
 		return nil, errors.New("任务使用的模型服务价格配置已失效")
 	}
+	if logicalModel.PricePolicy == "unified" && logicalModel.BillingMode == "token" && !supportsTokenBilling(logicalModel.Capability, channelModel.Protocol) {
+		return nil, errors.New("任务使用的模型服务不再支持当前 Token 计费配置")
+	}
 	routed := &RoutedModel{LogicalModel: *logicalModel, Revision: *revision, Route: *route, ChannelModel: *channelModel, Defaults: defaults}
 	return routed, nil
 }
@@ -920,7 +1035,7 @@ func (s *Service) switchTaskToNextRoute(task *model.Task, attempts []model.Route
 	}
 	channelModelByID := make(map[string]model.ChannelModel, len(channelModels))
 	for _, channelModel := range channelModels {
-		if channelModel.Enabled && enabledSystemChannels[channelModel.ChannelID] && (logicalModel.PricePolicy != "channel" || channelModel.PriceConfigured) {
+		if channelModel.Enabled && enabledSystemChannels[channelModel.ChannelID] && (logicalModel.PricePolicy != "channel" || channelModelHasActivePriceTier(channelModel)) {
 			channelModelByID[channelModel.ID] = channelModel
 		}
 	}
@@ -940,12 +1055,19 @@ func (s *Service) switchTaskToNextRoute(task *model.Task, attempts []model.Route
 	for _, attempt := range attempts {
 		tried[attempt.RouteID] = true
 	}
-	eligible := s.eligibleLogicalRoutes(candidates, intent, tried)
+	eligible := s.eligibleLogicalRoutes(candidates, intent, tried, logicalModel.PricePolicy == "channel")
 	if len(eligible) == 0 {
 		return nil, BadAuthRequest("当前模型暂时无法满足这组输入和参数")
 	}
 	selected := weightedRoute(eligible)
-	routed := &RoutedModel{LogicalModel: *logicalModel, Revision: *revision, Route: selected.Route, ChannelModel: selected.ChannelModel, Defaults: defaults}
+	var priceTier *model.ChannelModelPriceTier
+	if logicalModel.PricePolicy == "channel" {
+		priceTier = channelModelPriceTierForIntent(selected.ChannelModel, intent)
+		if priceTier == nil {
+			return nil, BadAuthRequest("当前模型尚未配置所选规格的价格")
+		}
+	}
+	routed := &RoutedModel{LogicalModel: *logicalModel, Revision: *revision, Route: selected.Route, ChannelModel: selected.ChannelModel, PriceTier: priceTier, Defaults: defaults}
 	nextInput := applyRoutedProviderSelection(input, routed)
 	if err := s.ValidateTaskCapability(nextInput); err != nil {
 		return nil, err
@@ -959,12 +1081,12 @@ func (s *Service) switchTaskToNextRoute(task *model.Task, attempts []model.Route
 	}
 	var replacement *model.BillingOrder
 	if logicalModel.PricePolicy == "channel" && task.BillingOrderID != "" {
-		config, _ := input["config"].(map[string]any)
-		capability := normalizeCapability(fmt.Sprint(input["mode"]))
+		config, _ := nextInput["config"].(map[string]any)
+		capability := normalizeCapability(fmt.Sprint(nextInput["mode"]))
 		if capability == "" {
 			capability = capabilityFromTaskType(task.Type)
 		}
-		replacement, err = s.newBillingOrder(task.UserID, task.ID, "route-switch:"+task.ID+":"+selected.Route.ID, selected.ChannelModel.ChannelID, selected.ChannelModel.ModelKey, capability, firstNonEmpty(strings.TrimSpace(task.Operation), task.Type), billingQuantity(capability, config["videoSeconds"]), billingResolution(config), estimateTaskBillingTokens(input, capability))
+		replacement, err = s.newBillingOrderWithPriceTier(task.UserID, task.ID, "route-switch:"+task.ID+":"+selected.Route.ID, selected.ChannelModel.ChannelID, selected.ChannelModel.ModelKey, capability, firstNonEmpty(strings.TrimSpace(task.Operation), task.Type), billingQuantity(capability, config["videoSeconds"]), estimateTaskBillingTokens(nextInput, capability), strings.TrimSpace(fmt.Sprint(config["priceTierId"])))
 		if err != nil {
 			return nil, err
 		}
@@ -1038,7 +1160,17 @@ func (s *Service) prepareLogicalTaskRetry(task *model.Task, input map[string]any
 		return nil
 	}
 	intent := ModelRequestIntentFromTaskInput(input, task.Type, task.Operation)
-	routed, err := s.ResolveLogicalModel(task.LogicalModelID, intent)
+	logicalModel, err := s.repo.LogicalModel(task.LogicalModelID)
+	if err != nil {
+		return err
+	}
+	var routed *RoutedModel
+	if logicalModel.ArchivedAt != nil {
+		// 归档只隐藏新任务的公开目录；历史任务重试必须使用任务快照，不能重新从公开目录选路。
+		routed, err = s.resolveArchivedTaskRoute(task, intent)
+	} else {
+		routed, err = s.ResolveLogicalModel(task.LogicalModelID, intent)
+	}
 	if err != nil {
 		return err
 	}
@@ -1060,6 +1192,56 @@ func (s *Service) prepareLogicalTaskRetry(task *model.Task, input map[string]any
 	task.Provider = "managed"
 	task.InputJSON = string(encoded)
 	return nil
+}
+
+// resolveArchivedTaskRoute 恢复归档模型任务保存的 revision、route 和 channel model 快照。
+// 归档模型不得重新进入公开路由目录；原供应线路失效时应明确拒绝重试，避免静默切换到未知配置。
+func (s *Service) resolveArchivedTaskRoute(task *model.Task, intent ModelRequestIntent) (*RoutedModel, error) {
+	if task == nil || task.LogicalModelID == "" || task.LogicalModelRevisionID == "" || task.RouteID == "" || task.ChannelModelID == "" {
+		return nil, BadAuthRequest("历史任务缺少完整的模型服务快照，无法重试")
+	}
+	logicalModel, err := s.repo.LogicalModel(task.LogicalModelID)
+	if err != nil {
+		return nil, err
+	}
+	if logicalModel.ArchivedAt == nil {
+		return nil, BadAuthRequest("任务模型已恢复为可用模型，请重新选择后重试")
+	}
+	revision, err := s.repo.LogicalModelRevision(task.LogicalModelRevisionID)
+	if err != nil || revision.LogicalModelID != logicalModel.ID {
+		return nil, BadAuthRequest("历史任务前台模型版本不存在或归属不一致")
+	}
+	route, err := s.repo.LogicalModelRoute(task.RouteID)
+	if err != nil || route.LogicalModelRevisionID != revision.ID || route.ChannelModelID != task.ChannelModelID || !route.Enabled || route.Weight <= 0 {
+		return nil, BadAuthRequest("历史任务原模型供应线路已失效，无法重试")
+	}
+	channelModel, err := s.repo.ChannelModel(task.ChannelModelID)
+	if err != nil || !channelModel.Enabled {
+		return nil, BadAuthRequest("历史任务原模型服务已失效，无法重试")
+	}
+	if _, err := s.repo.SystemChannel(channelModel.ChannelID); err != nil {
+		return nil, BadAuthRequest("历史任务原模型渠道已失效，无法重试")
+	}
+	productSpec, err := DecodeCapabilitySpec(revision.CapabilitySpecJSON)
+	if err != nil {
+		return nil, err
+	}
+	defaults, err := decodeLogicalDefaults(revision.DefaultOptionsJSON, productSpec)
+	if err != nil {
+		return nil, err
+	}
+	intent.Options = mergeIntentDefaults(intent.Options, defaults)
+	if match := MatchCapability(productSpec, intent); !match.Matched {
+		return nil, BadAuthRequest("历史任务不再符合前台模型能力：" + strings.Join(match.Reasons, "；"))
+	}
+	capabilitySpec, err := channelModelCapabilitySpec(*channelModel)
+	if err != nil || s.logicalRouteBlocked(cachedLogicalRoute{Route: *route, CapabilitySpec: capabilitySpec, ChannelModel: *channelModel}) {
+		return nil, BadAuthRequest("历史任务原模型供应线路暂不可用，无法重试")
+	}
+	if logicalModel.PricePolicy == "channel" && !channelModel.PriceConfigured {
+		return nil, BadAuthRequest("历史任务原模型价格配置已失效，无法重试")
+	}
+	return &RoutedModel{LogicalModel: *logicalModel, Revision: *revision, Route: *route, ChannelModel: *channelModel, Defaults: defaults}, nil
 }
 
 func (s *Service) finishTaskRouteAttempt(attempt *model.RouteAttempt, task *model.Task, taskErr error) {

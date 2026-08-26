@@ -35,14 +35,6 @@ export function recoverCreationTextTask(message: RecoverableCreationTextMessage,
             return { status: "error", content: "生成失败", error: error instanceof Error ? error.message : "文本任务结果格式错误", taskIds: nextTaskIds };
         }
     }
-    // text_replay 是前端自管状态，worker 不会接管它：浏览器在生成中途关闭后任务会永久停在这里。
-    // 此时后端仍存着已上报的草稿，交还给用户并说明生成被中断，不能谎报“生成失败”。
-    const interrupted = matches.find((task) => task.status === "text_replay");
-    if (interrupted) {
-        const draft = interrupted.textDraft?.trim();
-        if (draft) return { status: "error", content: draft, error: "生成在上次会话中被中断，仅恢复已保存的部分正文", taskIds: nextTaskIds };
-        return { status: "error", content: "生成已中断", error: "生成在上次会话中被中断，没有保存到正文", taskIds: nextTaskIds };
-    }
     if (matches.every((task) => task.status === "cancelled")) {
         return { status: "cancelled", content: "已停止", error: undefined, taskIds: nextTaskIds };
     }

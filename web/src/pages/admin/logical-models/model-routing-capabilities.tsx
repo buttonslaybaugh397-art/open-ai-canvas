@@ -439,11 +439,11 @@ export function CapabilitySummary({ spec }: { spec: CapabilitySpec }) {
     return (
         <div className="flex min-w-0 max-w-full flex-wrap gap-1">
             {labels.slice(0, 4).map((label) => (
-                <Tag key={label} className="max-w-full whitespace-normal break-all text-left leading-5">
+                <Tag key={label} className="admin-capability-summary-tag max-w-full whitespace-normal break-all text-left leading-5">
                     {label}
                 </Tag>
             ))}
-            {labels.length > 4 ? <Tag className="shrink-0">+{labels.length - 4}</Tag> : null}
+            {labels.length > 4 ? <Tag className="admin-capability-summary-tag shrink-0">+{labels.length - 4}</Tag> : null}
         </div>
     );
 }
@@ -637,7 +637,7 @@ export function operationLabel(value: string) {
         {
             text_to_video: "文生视频",
             image_to_video: "图生视频",
-            reference_to_video: "参考视频生视频",
+            reference_to_video: "全模态参考",
             extend: "视频续写",
             inpaint: "局部修改",
             replace_element: "元素替换",

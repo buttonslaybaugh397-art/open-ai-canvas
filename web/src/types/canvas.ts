@@ -1,5 +1,7 @@
+import type { CanvasColorGrade } from "@/lib/canvas/canvas-color-grade";
 import type { PortraitTextureSettings } from "@/lib/canvas/canvas-portrait-texture";
 import type { StyleExecutionPlan } from "@/lib/canvas/style-profile";
+import type { PortraitClearanceNodeState } from "@/lib/portrait-clearance/contracts";
 import type { SrtEntry, SubtitleHighlight, SubtitleStyle } from "@/types/timeline";
 
 export type Position = {
@@ -23,6 +25,21 @@ export enum CanvasNodeType {
     Video = "video",
     Audio = "audio",
     Frame = "frame",
+    Markdown = "markdown",
+    Svg = "svg",
+    Html = "html",
+    Panorama = "panorama",
+    Compare = "compare",
+    Chart = "chart",
+    ColorGrade = "colorgrade",
+}
+
+/** Runtime IDs contributed by plugins share the persisted node type field. */
+export type PluginCanvasNodeType = string & { readonly __pluginCanvasNodeType?: unique symbol };
+export type CanvasNodeTypeId = CanvasNodeType | PluginCanvasNodeType;
+
+export function isBuiltinCanvasNodeType(type: CanvasNodeTypeId): type is CanvasNodeType {
+    return Object.values(CanvasNodeType).includes(type as CanvasNodeType);
 }
 
 export type CanvasNodeStatus = "idle" | "success" | "loading" | "error";
@@ -60,8 +77,17 @@ export type StoryboardColumn =
     | "timeBeats"
     | "imageGenerationPrompt"
     | "videoMotionPrompt"
+    | "assets"
     | "continuityOut"
     | "negativePrompt";
+
+export type StoryboardAssetRole = "character" | "environment" | "wardrobe" | "prop" | "weapon" | "style" | "motion" | "audio";
+
+export type StoryboardAssetBinding = {
+    nodeId: string;
+    role: StoryboardAssetRole;
+    priority: number;
+};
 
 export type StoryboardCharacterReference = {
     characterName: string;
@@ -96,7 +122,7 @@ export type StoryboardRow = {
     optionalDetails: string[];
     continuityOut: string;
     negativePrompt: string;
-    referenceNodeIds: string[];
+    assetBindings: StoryboardAssetBinding[];
     imageNodeId?: string;
     videoNodeId?: string;
     status?: CanvasNodeStatus;
@@ -144,6 +170,10 @@ export type CanvasSkillSnapshot = {
 };
 
 export type CanvasNodeMetadata = {
+    /** Namespaced extension ownership for nodes contributed by a unified plugin. */
+    pluginId?: string;
+    pluginNodeId?: string;
+    pluginData?: Record<string, unknown>;
     importSource?:
         | {
               provider: "libtv";
@@ -173,11 +203,18 @@ export type CanvasNodeMetadata = {
     locked?: boolean;
     errorDetails?: string;
     generationErrorCode?: string;
+    resourceReloadAvailable?: boolean;
     failedPromptFingerprint?: string;
     fontSize?: number;
     generationMode?: CanvasGenerationMode;
     generationType?: CanvasImageGenerationType;
     model?: string;
+    workflowProvider?: "model" | "runninghub" | "comfyui";
+    runningHubWorkflowId?: string;
+    runningHubWorkflowKind?: "workflow" | "app";
+    comfyBridgeWorkflowId?: string;
+    /** 当前画布节点覆盖的工作流动态字段，键为 source:* 或 field:nodeId:fieldName。 */
+    workflowParameters?: Record<string, unknown>;
     size?: string;
     quality?: string;
     transparentBackground?: string;
@@ -207,7 +244,6 @@ export type CanvasNodeMetadata = {
     bytes?: number;
     durationMs?: number;
     assetId?: string;
-    volcengineAssetUri?: string;
     assetTags?: string[];
     assetCategory?: "character" | "environment" | "wardrobe" | "prop" | "weapon" | "style" | "other";
     workflowKind?: CanvasWorkflowKind;
@@ -223,6 +259,7 @@ export type CanvasNodeMetadata = {
     characterIds?: string[];
     referenceSetId?: string;
     referenceAssetNodeIds?: string[];
+    assetBindings?: StoryboardAssetBinding[];
     characterName?: string;
     characterPrompt?: string;
     characterAliases?: string[];
@@ -257,6 +294,9 @@ export type CanvasNodeMetadata = {
     taskProgress?: number;
     taskStage?: string;
     taskProvider?: string;
+    taskStartedAt?: string;
+    taskCompletedAt?: string;
+    taskDurationMs?: number;
     taskErrorCode?: string;
     taskOfficialStatus?: "pending" | "processing" | "completed" | "failed" | "cancelled";
     taskReceiptRecorded?: boolean;
@@ -274,6 +314,7 @@ export type CanvasNodeMetadata = {
     };
     sessionId?: string;
     videoEditOperation?: CanvasVideoEditOperation;
+    arkPrivateAssetUpload?: string;
     videoCameraMoveId?: string;
     videoCameraMovePrompt?: string;
     videoStartFrameNodeId?: string;
@@ -295,6 +336,12 @@ export type CanvasNodeMetadata = {
     skillId?: string;
     skillVersion?: number;
     skillSnapshot?: CanvasSkillSnapshot;
+    /** 图表节点的图形类型，缺省柱状图。落盘字段——新增扩展节点的自有字段都要在这里声明。 */
+    chartKind?: "bar" | "line";
+    /** 调色节点的参数；缺省视为未调色。 */
+    colorGrade?: CanvasColorGrade;
+    /** 用户手动拉伸过尺寸；图片按真实比例自动适配时避让它。 */
+    manualSize?: boolean;
     storyboard?: StoryboardData;
     storyboardShotDuration?: StoryboardShotDuration;
     storyboardShotCount?: StoryboardShotCount;
@@ -352,11 +399,13 @@ export type CanvasNodeMetadata = {
         editMode?: "provider-mask" | "local-composite";
     };
     portraitTexture?: PortraitTextureSettings;
+    /** 肖像排查节点只保存可恢复的 UI 状态，不保存图片、embedding 或完整结果。 */
+    portraitClearance?: PortraitClearanceNodeState;
 };
 
 export type CanvasNodeData = {
     id: string;
-    type: CanvasNodeType;
+    type: CanvasNodeTypeId;
     title: string;
     position: Position;
     width: number;
@@ -373,6 +422,8 @@ export type CanvasConnection = {
     toHandleId?: string;
     fromAnchorRatio?: number;
     toAnchorRatio?: number;
+    relation?: "storyboard-output" | "storyboard-asset-reference";
+    storyboardRowId?: string;
 };
 
 export type CanvasDisplayConnection = {
@@ -383,7 +434,7 @@ export type CanvasDisplayConnection = {
 
 export type CanvasAssistantReference = {
     id: string;
-    type: CanvasNodeType;
+    type: CanvasNodeTypeId;
     title: string;
     dataUrl?: string;
     storageKey?: string;

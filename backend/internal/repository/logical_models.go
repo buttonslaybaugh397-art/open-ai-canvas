@@ -7,6 +7,7 @@ import (
 	"infinite-canvas/backend/internal/model"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type LogicalModelGraph struct {
@@ -16,9 +17,12 @@ type LogicalModelGraph struct {
 	ChannelModels []model.ChannelModel
 }
 
+var ErrLogicalModelInUse = errors.New("logical model is in use")
+var ErrLogicalModelUnavailable = errors.New("logical model is unavailable")
+
 func (r *Repository) LogicalModels(includeDisabled bool) ([]model.LogicalModel, error) {
 	var items []model.LogicalModel
-	query := r.db.Order("sort_order asc, created_at asc")
+	query := r.db.Where("archived_at IS NULL").Order("sort_order asc, created_at asc")
 	if !includeDisabled {
 		query = query.Where("enabled = ?", true)
 	}
@@ -31,6 +35,22 @@ func (r *Repository) LogicalModel(id string) (*model.LogicalModel, error) {
 		return nil, err
 	}
 	return &item, nil
+}
+
+func (r *Repository) LogicalModelsBySourceChannelModelID(channelModelID string) ([]model.LogicalModel, error) {
+	var items []model.LogicalModel
+	return items, r.db.Where("source_channel_model_id = ? AND archived_at IS NULL", channelModelID).Order("sort_order asc, created_at asc").Find(&items).Error
+}
+
+func (r *Repository) LogicalModelsByOnlyActiveChannelModelID(channelModelID string) ([]model.LogicalModel, error) {
+	var items []model.LogicalModel
+	query := r.db.Model(&model.LogicalModel{}).
+		Joins("JOIN logical_model_routes AS route ON route.logical_model_revision_id = logical_models.active_revision_id").
+		Where("logical_models.archived_at IS NULL").
+		Group("logical_models.id").
+		Having("COUNT(route.id) = 1 AND MAX(route.channel_model_id) = ?", channelModelID).
+		Order("logical_models.sort_order asc, logical_models.created_at asc")
+	return items, query.Find(&items).Error
 }
 
 func (r *Repository) LogicalModelRevision(id string) (*model.LogicalModelRevision, error) {
@@ -68,7 +88,10 @@ func (r *Repository) ChannelModelsByIDs(ids []string) ([]model.ChannelModel, err
 	if len(ids) == 0 {
 		return items, nil
 	}
-	return items, r.db.Where("id IN ?", ids).Find(&items).Error
+	if err := r.db.Where("id IN ?", ids).Find(&items).Error; err != nil {
+		return nil, err
+	}
+	return items, r.PopulateChannelModelPriceTiers(items)
 }
 
 func (r *Repository) SystemChannelsByIDs(ids []string, includeDisabled bool) ([]model.ModelChannel, error) {
@@ -86,6 +109,9 @@ func (r *Repository) SystemChannelsByIDs(ids []string, includeDisabled bool) ([]
 func (r *Repository) ChannelModel(id string) (*model.ChannelModel, error) {
 	var item model.ChannelModel
 	if err := r.db.First(&item, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	if err := r.PopulateChannelModelPriceTier(&item); err != nil {
 		return nil, err
 	}
 	return &item, nil
@@ -312,6 +338,8 @@ func (r *Repository) SwitchTaskLogicalRoute(taskID string, expectedRouteID strin
 			}
 			updates["billing_mode"] = replacement.BillingMode
 			updates["price_version"] = replacement.PriceVersion
+			updates["price_tier_id"] = replacement.PriceTierID
+			updates["price_tier_version"] = replacement.PriceTierVersion
 			updates["unit_price_microcredits"] = replacement.UnitPriceMicrocredits
 			updates["multiplier_basis_points"] = replacement.MultiplierBasisPoints
 			updates["quantity"] = replacement.Quantity
@@ -349,12 +377,14 @@ func (r *Repository) SaveLogicalModelBundle(item *model.LogicalModel, revision *
 				"capability":                item.Capability,
 				"enabled":                   item.Enabled,
 				"sort_order":                item.SortOrder,
+				"source_channel_model_id":   item.SourceChannelModelID,
 				"price_policy":              item.PricePolicy,
 				"billing_mode":              item.BillingMode,
 				"unit_price_microcredits":   item.UnitPriceMicrocredits,
 				"input_price_microcredits":  item.InputPriceMicrocredits,
 				"output_price_microcredits": item.OutputPriceMicrocredits,
 				"cached_price_microcredits": item.CachedPriceMicrocredits,
+				"legacy_model_ids_json":     item.LegacyModelIDsJSON,
 				"updated_at":                item.UpdatedAt,
 			})
 			if result.Error != nil {
@@ -399,6 +429,68 @@ func (r *Repository) SaveLogicalModelBundle(item *model.LogicalModel, revision *
 		item.RevisionSequence = revision.Version
 		return nil
 	})
+}
+
+func (r *Repository) ArchiveLogicalModel(id string, audit *model.AdminAuditEvent, now time.Time) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		// PostgreSQL 下锁定主体，使任务创建与归档在同一行上串行，避免检查后仍写入新任务。
+		var item model.LogicalModel
+		query := tx.Where("id = ? AND archived_at IS NULL", id)
+		if r.Dialect() == "postgres" {
+			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		if err := query.First(&item).Error; err != nil {
+			return err
+		}
+		var activeTasks int64
+		if err := tx.Model(&model.Task{}).
+			Where("logical_model_id = ? AND status IN ?", id, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).
+			Count(&activeTasks).Error; err != nil {
+			return err
+		}
+		if activeTasks > 0 {
+			return ErrLogicalModelInUse
+		}
+		archived := tx.Model(&model.LogicalModel{}).
+			Where("id = ? AND archived_at IS NULL", id).
+			Updates(map[string]any{"enabled": false, "archived_at": now, "updated_at": now})
+		if archived.Error != nil {
+			return archived.Error
+		}
+		if archived.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		if audit != nil {
+			if err := tx.Create(audit).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// requireActiveLogicalModelForTask 与归档共用主体行锁，保证新任务只引用仍在目录中的当前 revision。
+func (r *Repository) requireActiveLogicalModelForTask(tx *gorm.DB, task *model.Task) error {
+	if task == nil || task.LogicalModelID == "" {
+		return nil
+	}
+	var item model.LogicalModel
+	query := tx.Select("id").Where(
+		"id = ? AND enabled = ? AND archived_at IS NULL AND active_revision_id = ?",
+		task.LogicalModelID,
+		true,
+		task.LogicalModelRevisionID,
+	)
+	if r.Dialect() == "postgres" {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := query.First(&item).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrLogicalModelUnavailable
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *Repository) DeleteLogicalModelRoute(id string) error {

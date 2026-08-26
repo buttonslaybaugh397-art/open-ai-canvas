@@ -8,7 +8,7 @@ export type TeamAssetOwner = {
 };
 
 export type TeamAssetItem = {
-    asset: Asset;
+    asset: Asset & { folderId?: string };
     owner: TeamAssetOwner;
     canEdit: boolean;
     createdAt: string;

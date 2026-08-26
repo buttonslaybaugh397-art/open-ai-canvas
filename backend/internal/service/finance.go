@@ -25,8 +25,8 @@ type WalletSummary struct {
 	Total   int64                     `json:"total"`
 	Page    int                       `json:"page"`
 	Limit   int                       `json:"limit"`
-	Policy  PublicCreditPolicy        `json:"policy"`
 	Consumption CreditConsumptionStats `json:"consumption"`
+	Policy  PublicCreditPolicy        `json:"policy"`
 }
 
 type CreditConsumptionStats struct {
@@ -45,15 +45,20 @@ func creditConsumptionWindow(now time.Time) repository.CreditConsumptionWindow {
 	weekStart := todayStart.AddDate(0, 0, -daysSinceMonday)
 	monthStart := time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, creditConsumptionLocation)
 	return repository.CreditConsumptionWindow{
-		TodayFrom: todayStart, YesterdayFrom: todayStart.AddDate(0, 0, -1), TodayTo: localNow,
-		WeekFrom: weekStart, MonthFrom: monthStart,
+		TodayFrom: todayStart,
+		YesterdayFrom: todayStart.AddDate(0, 0, -1),
+		TodayTo: localNow,
+		WeekFrom: weekStart,
+		MonthFrom: monthStart,
 	}
 }
 
 func creditConsumptionStatsFromTotals(totals repository.CreditConsumptionTotals) CreditConsumptionStats {
 	return CreditConsumptionStats{
-		TodayMicrocredits: totals.Today, YesterdayMicrocredits: totals.Yesterday,
-		WeekMicrocredits: totals.Week, MonthMicrocredits: totals.Month,
+		TodayMicrocredits: totals.Today,
+		YesterdayMicrocredits: totals.Yesterday,
+		WeekMicrocredits: totals.Week,
+		MonthMicrocredits: totals.Month,
 	}
 }
 
@@ -170,15 +175,15 @@ func (s *Service) Wallet(user *model.User, entryType string, page int, limit int
 	if err != nil {
 		return nil, err
 	}
+	consumptionByUserID, err := s.creditConsumptionStatsForUsers([]string{user.ID})
+	if err != nil {
+		return nil, err
+	}
 	policy, err := s.publicCreditPolicy(user.ID)
 	if err != nil {
 		return nil, err
 	}
-	consumption, err := s.creditConsumptionStatsForUsers([]string{user.ID})
-	if err != nil {
-		return nil, err
-	}
-	return &WalletSummary{Account: *account, Entries: entries, Total: total, Page: page, Limit: limit, Policy: policy, Consumption: consumption[user.ID]}, nil
+	return &WalletSummary{Account: *account, Entries: entries, Total: total, Page: page, Limit: limit, Consumption: consumptionByUserID[user.ID], Policy: policy}, nil
 }
 
 func (s *Service) RedeemCredits(user *model.User, code string, redeemedIP string) (*model.CreditAccount, error) {
@@ -497,12 +502,12 @@ func (s *Service) taskBillingOrder(userID string, task *model.Task, input map[st
 		capability = capabilityFromTaskType(task.Type)
 	}
 	scene := firstNonEmpty(strings.TrimSpace(task.Operation), task.Type)
-	return s.newBillingOrder(userID, task.ID, "task:"+task.ID+":"+newID(), channelID, modelKey, capability, scene, billingQuantity(capability, config["videoSeconds"]), billingResolution(config), estimateTaskBillingTokens(input, capability))
+	return s.newBillingOrder(userID, task.ID, "task:"+task.ID+":"+newID(), channelID, modelKey, capability, scene, billingQuantity(capability, config["videoSeconds"]), estimateTaskBillingTokens(input, capability))
 }
 
 func (s *Service) newLogicalModelBillingOrder(userID string, task *model.Task, input map[string]any) (*model.BillingOrder, error) {
 	logicalModel, err := s.repo.LogicalModel(task.LogicalModelID)
-	if err != nil || !logicalModel.Enabled || logicalModel.ActiveRevisionID != task.LogicalModelRevisionID {
+	if err != nil || (!logicalModel.Enabled && logicalModel.ArchivedAt == nil) || logicalModel.ActiveRevisionID != task.LogicalModelRevisionID {
 		return nil, BadAuthRequest("所选模型计费配置已失效，请重新选择")
 	}
 	route, err := s.repo.LogicalModelRoute(task.RouteID)
@@ -519,7 +524,7 @@ func (s *Service) newLogicalModelBillingOrder(userID string, task *model.Task, i
 		capability = capabilityFromTaskType(task.Type)
 	}
 	if logicalModel.PricePolicy == "channel" {
-		order, priceErr := s.newBillingOrder(userID, task.ID, "task:"+task.ID+":"+newID(), channelModel.ChannelID, channelModel.ModelKey, capability, firstNonEmpty(strings.TrimSpace(task.Operation), task.Type), billingQuantity(capability, config["videoSeconds"]), billingResolution(config), estimateTaskBillingTokens(input, capability))
+		order, priceErr := s.newBillingOrderWithPriceTier(userID, task.ID, "task:"+task.ID+":"+newID(), channelModel.ChannelID, channelModel.ModelKey, capability, firstNonEmpty(strings.TrimSpace(task.Operation), task.Type), billingQuantity(capability, config["videoSeconds"]), estimateTaskBillingTokens(input, capability), strings.TrimSpace(fmt.Sprint(config["priceTierId"])))
 		if priceErr != nil {
 			return nil, priceErr
 		}
@@ -543,6 +548,9 @@ func (s *Service) newLogicalModelBillingOrder(userID string, task *model.Task, i
 		}
 		amount, err = creditAmount(logicalModel.UnitPriceMicrocredits, quantity, 10_000)
 	case "token":
+		if channelModel.Capability != capability || !supportsTokenBilling(capability, channelModel.Protocol) {
+			return nil, BadAuthRequest("当前供应线路不支持前台模型的 Token 计费方式")
+		}
 		pricing := &model.ChannelModel{InputTokenPriceMicrocredits: logicalModel.InputPriceMicrocredits, OutputTokenPriceMicrocredits: logicalModel.OutputPriceMicrocredits, CachedTokenPriceMicrocredits: logicalModel.CachedPriceMicrocredits}
 		amount, err = tokenEstimateAmount(pricing, tokenEstimate, 10_000)
 		quantity = tokenEstimate.InputTokens + tokenEstimate.OutputTokens
@@ -585,7 +593,7 @@ func (s *Service) ReserveProxyBillingWithBody(userID string, channelID string, m
 	if strings.TrimSpace(idempotencyKey) == "" {
 		idempotencyKey = newID()
 	}
-	order, err := s.newBillingOrder(userID, "", "proxy:"+idempotencyKey, channelID, modelKey, capability, firstNonEmpty(strings.TrimSpace(scene), "system_proxy"), quantity, proxyBillingResolution(requestBody), estimateProxyTokens(requestBody))
+	order, err := s.newBillingOrder(userID, "", "proxy:"+idempotencyKey, channelID, modelKey, capability, firstNonEmpty(strings.TrimSpace(scene), "system_proxy"), quantity, estimateProxyTokens(requestBody))
 	if err != nil {
 		return nil, err
 	}
@@ -598,7 +606,11 @@ func (s *Service) ReserveProxyBillingWithBody(userID string, channelID string, m
 	return order, nil
 }
 
-func (s *Service) newBillingOrder(userID string, taskID string, idempotencyKey string, channelID string, modelKey string, capability string, scene string, requestedQuantity int64, requestedResolution string, tokenEstimate tokenBillingEstimate) (*model.BillingOrder, error) {
+func (s *Service) newBillingOrder(userID string, taskID string, idempotencyKey string, channelID string, modelKey string, capability string, scene string, requestedQuantity int64, tokenEstimate tokenBillingEstimate) (*model.BillingOrder, error) {
+	return s.newBillingOrderWithPriceTier(userID, taskID, idempotencyKey, channelID, modelKey, capability, scene, requestedQuantity, tokenEstimate, "")
+}
+
+func (s *Service) newBillingOrderWithPriceTier(userID string, taskID string, idempotencyKey string, channelID string, modelKey string, capability string, scene string, requestedQuantity int64, tokenEstimate tokenBillingEstimate, priceTierID string) (*model.BillingOrder, error) {
 	item, err := s.repo.ChannelModelByKey(channelID, modelKey)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, BadAuthRequest("当前模型暂时不可用，请重新选择")
@@ -606,13 +618,13 @@ func (s *Service) newBillingOrder(userID string, taskID string, idempotencyKey s
 	if err != nil {
 		return nil, err
 	}
-	if !item.PriceConfigured {
-		return nil, BadAuthRequest("当前模型尚未配置用户积分价格")
+	tier := channelModelPriceTierForBilling(*item, priceTierID, capability)
+	if tier == nil {
+		return nil, BadAuthRequest("当前模型尚未配置所选规格的用户积分价格")
 	}
-	resolution, unitPrice := channelModelUnitPrice(item, requestedResolution)
 	quantity := int64(1)
 	amount := int64(0)
-	switch item.BillingMode {
+	switch tier.BillingMode {
 	case "fixed_request":
 	case "per_second":
 		if item.Capability != "video" || capability != "video" {
@@ -644,64 +656,36 @@ func (s *Service) newBillingOrder(userID string, taskID string, idempotencyKey s
 	if configured := policy.ModelMultiplierBPS[modelKey]; configured > 0 {
 		multiplierBPS = configured
 	}
-	if item.BillingMode == "token" {
-		amount, err = tokenEstimateAmount(item, tokenEstimate, multiplierBPS)
+	if tier.BillingMode == "token" {
+		amount, err = tokenEstimateAmount(&model.ChannelModel{InputTokenPriceMicrocredits: tier.InputTokenPriceMicrocredits, OutputTokenPriceMicrocredits: tier.OutputTokenPriceMicrocredits, CachedTokenPriceMicrocredits: tier.CachedTokenPriceMicrocredits}, tokenEstimate, multiplierBPS)
 	} else {
-		amount, err = creditAmount(unitPrice, quantity, multiplierBPS)
+		amount, err = creditAmount(tier.UnitPriceMicrocredits, quantity, multiplierBPS)
 	}
 	if err != nil {
 		return nil, err
 	}
 	return &model.BillingOrder{
 		ID: newID(), UserID: userID, IdempotencyKey: idempotencyKey, TaskID: taskID,
-		ChannelID: channelID, ChannelModelID: item.ID, Model: modelKey, Capability: capability,
-		Scene: truncateRunes(scene, 80), BillingMode: item.BillingMode, PriceVersion: item.PriceVersion, Resolution: resolution,
-		UnitPriceMicrocredits: unitPrice, MultiplierBasisPoints: multiplierBPS, Quantity: quantity, AmountMicrocredits: amount,
-		ReservedAmountMicrocredits: amount, InputTokenPriceMicrocredits: item.InputTokenPriceMicrocredits,
-		OutputTokenPriceMicrocredits: item.OutputTokenPriceMicrocredits, CachedTokenPriceMicrocredits: item.CachedTokenPriceMicrocredits,
+		ChannelID: channelID, ChannelModelID: item.ID, PriceTierID: tier.ID, PriceTierVersion: tier.PriceVersion, PriceSelectorJSON: tier.SelectorJSON, Model: modelKey, Capability: capability,
+		Scene: truncateRunes(scene, 80), BillingMode: tier.BillingMode, PriceVersion: item.PriceVersion,
+		UnitPriceMicrocredits: tier.UnitPriceMicrocredits, MultiplierBasisPoints: multiplierBPS, Quantity: quantity, AmountMicrocredits: amount,
+		ReservedAmountMicrocredits: amount, InputTokenPriceMicrocredits: tier.InputTokenPriceMicrocredits,
+		OutputTokenPriceMicrocredits: tier.OutputTokenPriceMicrocredits, CachedTokenPriceMicrocredits: tier.CachedTokenPriceMicrocredits,
 		Status: model.BillingStatusReserved,
 	}, nil
 }
 
-func billingResolution(config map[string]any) string {
-	if config == nil {
-		return ""
-	}
-	return firstNonEmpty(strings.TrimSpace(fmt.Sprint(config["vquality"])), strings.TrimSpace(fmt.Sprint(config["resolution"])))
-}
-
-func proxyBillingResolution(requestBody []byte) string {
-	if len(requestBody) == 0 {
-		return ""
-	}
-	payload := map[string]any{}
-	if json.Unmarshal(requestBody, &payload) != nil {
-		return ""
-	}
-	return firstNonEmpty(strings.TrimSpace(fmt.Sprint(payload["resolution"])), strings.TrimSpace(fmt.Sprint(payload["vquality"])))
-}
-
-func channelModelUnitPrice(item *model.ChannelModel, requestedResolution string) (string, int64) {
-	if item == nil {
-		return "", 0
-	}
-	if item.Capability != "video" {
-		return "", item.UnitPriceMicrocredits
-	}
-	resolution := strings.TrimSpace(requestedResolution)
-	if resolution == "" || strings.EqualFold(resolution, "auto") || strings.EqualFold(resolution, "default") {
-		if profile, err := DecodeModelCapabilityConfig(item.CapabilityConfigJSON); err == nil && profile != nil && profile.Video != nil {
-			resolution = profile.Video.DefaultResolution
+func channelModelPriceTierForBilling(channelModel model.ChannelModel, priceTierID string, capability string) *model.ChannelModelPriceTier {
+	if priceTierID != "" {
+		for index := range channelModel.PriceTiers {
+			tier := &channelModel.PriceTiers[index]
+			if tier.ID == priceTierID && tier.Enabled && tier.PriceConfigured {
+				return tier
+			}
 		}
+		return nil
 	}
-	if strings.TrimSpace(resolution) == "" {
-		return "", item.UnitPriceMicrocredits
-	}
-	resolution = normalizeResolution(resolution)
-	if price, ok := decodeResolutionPrices(item.ResolutionPricesJSON)[resolution]; ok {
-		return resolution, price
-	}
-	return resolution, item.UnitPriceMicrocredits
+	return channelModelPriceTierForIntent(channelModel, ModelRequestIntent{Capability: capability, Options: map[string]any{}})
 }
 
 func estimateTaskTokens(input map[string]any) tokenBillingEstimate {
@@ -877,59 +861,23 @@ func billingQuantity(capability string, value any) int64 {
 }
 
 func (s *Service) MarkBillingRunning(orderID string) error {
-	if orderID == "" {
-		return nil
-	}
-	return s.repo.MarkBillingRunning(orderID)
+	return s.taskBilling().MarkBillingRunning(orderID)
 }
 
 func (s *Service) SettleBilling(orderID string, providerRequestID string) error {
-	if orderID == "" {
-		return nil
-	}
-	return s.repo.SettleBillingOrder(orderID, providerRequestID)
+	return s.taskBilling().SettleBilling(orderID, providerRequestID)
 }
 
 func (s *Service) RefundBilling(orderID string, errorText string) error {
-	if orderID == "" {
-		return nil
-	}
-	return s.repo.RefundBillingOrder(orderID, truncateRunes(errorText, 1000))
+	return s.taskBilling().RefundBilling(orderID, errorText)
 }
 
 func (s *Service) MarkBillingUncertain(orderID string, errorText string) error {
-	if orderID == "" {
-		return nil
-	}
-	return s.repo.MarkBillingUncertain(orderID, truncateRunes(errorText, 1000))
+	return s.taskBilling().MarkBillingUncertain(orderID, errorText)
 }
 
 func (s *Service) BillingFailureRequiresReview(orderID string, taskID string, err error) bool {
-	if orderID == "" {
-		return false
-	}
-	if billingFailureUncertain(err) {
-		return true
-	}
-	order, orderErr := s.repo.BillingOrder(orderID)
-	if orderErr != nil || order.Status == model.BillingStatusUncertain {
-		return true
-	}
-	hasSuccessfulCall, logErr := s.repo.TaskHasSuccessfulBillableCall(taskID)
-	return logErr != nil || hasSuccessfulCall
-}
-
-func billingFailureUncertain(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	for _, marker := range []string{"524", "timeout", "超时", "deadline exceeded", "context canceled", "connection reset", "unexpected eof", "broken pipe"} {
-		if strings.Contains(message, marker) {
-			return true
-		}
-	}
-	return false
+	return s.taskBilling().BillingFailureRequiresReview(orderID, taskID, err)
 }
 
 func newRedeemCode() (string, error) {

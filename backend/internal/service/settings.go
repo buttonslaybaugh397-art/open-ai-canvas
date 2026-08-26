@@ -26,7 +26,6 @@ const (
 	aliyunOSSProvider  = "aliyun"
 	tencentCOSProvider = "tencent"
 	qiniuKodoProvider  = "qiniu"
-	rainyunROSProvider = "rainyun"
 )
 
 type OSSSettingRequest struct {
@@ -150,7 +149,7 @@ func (s *Service) UpdateUserOSSSetting(actor *model.User, req OSSSettingRequest)
 	if actor == nil {
 		return nil, Unauthorized("请先登录")
 	}
-	currentSetting, currentValue, err := s.readUserOSSSetting(actor.ID)
+	_, currentValue, err := s.readUserOSSSetting(actor.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -167,14 +166,7 @@ func (s *Service) UpdateUserOSSSetting(actor *model.User, req OSSSettingRequest)
 		return nil, err
 	}
 	// 配置按版本追加而不是覆盖，资源会固定引用创建时的版本。
-	createdAt := time.Now()
-	if currentSetting != nil {
-		minimumCreatedAt := currentSetting.CreatedAt.Add(time.Millisecond)
-		if createdAt.Before(minimumCreatedAt) {
-			createdAt = minimumCreatedAt
-		}
-	}
-	setting := model.UserOSSSetting{ID: newID(), UserID: actor.ID, Enabled: next.Enabled, ValueJSON: string(valueJSON), CreatedAt: createdAt, UpdatedAt: createdAt}
+	setting := model.UserOSSSetting{ID: newID(), UserID: actor.ID, Enabled: next.Enabled, ValueJSON: string(valueJSON)}
 	if err := s.repo.CreateUserOSSSetting(&setting); err != nil {
 		return nil, err
 	}
@@ -384,7 +376,7 @@ func (s *Service) protectTaskSecrets(value interface{}) error {
 	switch item := value.(type) {
 	case map[string]interface{}:
 		for key, child := range item {
-			if key == "apiKey" {
+			if isTaskSecretField(key) {
 				secret, _ := child.(string)
 				if secret != "" && secret != "system" && !strings.HasPrefix(secret, encryptedSettingPrefix) {
 					encrypted, err := s.encryptSettingSecret(secret)
@@ -428,7 +420,7 @@ func (s *Service) decryptTaskSecrets(value interface{}) error {
 	switch item := value.(type) {
 	case map[string]interface{}:
 		for key, child := range item {
-			if key == "apiKey" {
+			if isTaskSecretField(key) {
 				secret, _ := child.(string)
 				if strings.HasPrefix(secret, encryptedSettingPrefix) {
 					plain, err := s.decryptSettingSecret(secret)
@@ -453,6 +445,15 @@ func (s *Service) decryptTaskSecrets(value interface{}) error {
 	return nil
 }
 
+func isTaskSecretField(key string) bool {
+	switch key {
+	case "apiKey", "secretKey", "runningHubWalletApiKey", "runningHubUploadApiKey":
+		return true
+	default:
+		return false
+	}
+}
+
 func ossSettingFromRequest(req OSSSettingRequest, current ossSettingValue) (ossSettingValue, error) {
 	next := normalizeOSSSetting(ossSettingValue{
 		Enabled:         req.Enabled,
@@ -466,8 +467,8 @@ func ossSettingFromRequest(req OSSSettingRequest, current ossSettingValue) (ossS
 		PublicBaseURL:   strings.TrimRight(strings.TrimSpace(req.PublicBaseURL), "/"),
 		PathPrefix:      strings.Trim(strings.TrimSpace(req.PathPrefix), "/"),
 	})
-	if !supportedOSSProvider(next.Provider) {
-		return next, BadAuthRequest("仅支持阿里云 OSS、腾讯云 COS、七牛云 Kodo 和雨云 ROS")
+	if next.Provider != aliyunOSSProvider && next.Provider != tencentCOSProvider && next.Provider != qiniuKodoProvider {
+		return next, BadAuthRequest("仅支持阿里云 OSS、腾讯云 COS 和七牛云 Kodo")
 	}
 	current = normalizeOSSSetting(current)
 	// 不同云厂商的密钥不能复用；只有继续使用同一厂商时，留空才表示保留原密钥。
@@ -485,18 +486,10 @@ func ossSettingFromRequest(req OSSSettingRequest, current ossSettingValue) (ossS
 			if next.Provider == qiniuKodoProvider {
 				return next, BadAuthRequest("请填写七牛云 Kodo 上传 Endpoint")
 			}
-			if next.Provider == rainyunROSProvider {
-				return next, BadAuthRequest("请填写雨云 ROS S3 Endpoint")
-			}
 			return next, BadAuthRequest("请填写阿里云 OSS Endpoint")
 		}
 		if _, err := ValidateOutboundURL(next.Endpoint); err != nil {
 			return next, err
-		}
-		if next.Provider == rainyunROSProvider {
-			if _, err := rainyunS3Endpoint(next); err != nil {
-				return next, BadAuthRequest(err.Error())
-			}
 		}
 		if next.CDNBaseURL != "" {
 			if _, err := ossCDNBaseURL(next.CDNBaseURL); err != nil {
@@ -552,9 +545,6 @@ func normalizeOSSSetting(value ossSettingValue) ossSettingValue {
 	if value.Provider == tencentCOSProvider && value.Endpoint == "" && value.Region != "" {
 		value.Endpoint = "https://cos." + value.Region + ".myqcloud.com"
 	}
-	if value.Provider == rainyunROSProvider && value.Region == "" {
-		value.Region = "us-east-1"
-	}
 	value.CDNBaseURL = strings.TrimRight(strings.TrimSpace(value.CDNBaseURL), "/")
 	value.Bucket = strings.TrimSpace(value.Bucket)
 	value.AccessKeyID = strings.TrimSpace(value.AccessKeyID)
@@ -563,15 +553,6 @@ func normalizeOSSSetting(value ossSettingValue) ossSettingValue {
 	value.PathPrefix = strings.Trim(strings.TrimSpace(value.PathPrefix), "/")
 	value.ArchivedCredentials = cloneOSSProviderCredentials(value.ArchivedCredentials)
 	return value
-}
-
-func supportedOSSProvider(provider string) bool {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case aliyunOSSProvider, tencentCOSProvider, qiniuKodoProvider, rainyunROSProvider:
-		return true
-	default:
-		return false
-	}
 }
 
 func defaultOSSSetting() ossSettingValue {

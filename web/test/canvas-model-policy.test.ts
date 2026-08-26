@@ -3,9 +3,8 @@ import { describe, expect, test } from "bun:test";
 import { canvasConnectionError } from "../src/lib/canvas/canvas-connection-policy";
 import { assertCanvasImageReferenceLimit, buildGenerationConfig, canvasImageReferenceLimitError, resolveCanvasGenerationModel } from "../src/lib/canvas/canvas-project-generation";
 import { defaultModelCapabilityConfig } from "../src/lib/model-capabilities";
-import { groupModelsByDisplayName, inferVideoOperation, modelCompatibilityError, modelGroupReferenceLimits, modelReferenceLimits, resolveCompatibleModel, resolveModelGenerationDefaults, resolveVideoOperation } from "../src/lib/model-selection";
-import { DEFAULT_CANVAS_GENERATION_RATIO, isCanvasGenerationRatio, resolveCanvasGenerationRatio } from "../src/lib/canvas/canvas-generation-ratio";
-import { defaultConfig, type AiConfig, type ModelChannel } from "../src/stores/use-config-store";
+import { groupModelsByDisplayName, inferVideoOperation, modelCompatibilityError, modelGroupReferenceLimits, resolveCompatibleModel, resolveModelGenerationDefaults } from "../src/lib/model-selection";
+import { defaultConfig, normalizeModelOptionValue, type AiConfig, type ModelChannel } from "../src/stores/use-config-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "../src/types/canvas";
 
 function policyConfig(): AiConfig {
@@ -130,13 +129,26 @@ describe("逻辑模型选择", () => {
         expect(resolveModelGenerationDefaults(config, model, "video", {}, { videoSeconds: "6" }).videoSeconds).toBe("15");
     });
 
-    test("画布比例优先使用当前画布，否则继承全局默认", () => {
-        expect(DEFAULT_CANVAS_GENERATION_RATIO).toBe("16:9");
-        expect(resolveCanvasGenerationRatio(undefined, "9:16")).toBe("9:16");
-        expect(resolveCanvasGenerationRatio("4:3", "9:16")).toBe("4:3");
-        expect(resolveCanvasGenerationRatio("invalid", "invalid")).toBe("16:9");
-        expect(isCanvasGenerationRatio(" 16:9 ")).toBe(true);
-        expect(isCanvasGenerationRatio("invalid")).toBe(false);
+
+    test("渠道视频能力配置优先于旧的全局 6 秒和 1:1 配置", () => {
+        const model = "autodl-channel::MiniMax H3";
+        const profile = defaultModelCapabilityConfig("autodl-comfyui", "MiniMax H3");
+        profile.video!.duration = { selection: "range", min: 1, max: 15, step: 1, default: 15 };
+        profile.video!.defaultRatio = "16:9";
+        const config: AiConfig = {
+            ...defaultConfig,
+            videoSeconds: "6",
+            size: "1:1",
+            channels: [{ id: "autodl-channel", name: "AutoDL", baseUrl: "https://autodl.art", apiKey: "system", apiFormat: "openai", scope: "system", models: ["MiniMax H3"], modelCosts: [{ model: "MiniMax H3", capability: "video", protocol: "autodl-comfyui", billingMode: "fixed_request", unitPriceMicrocredits: 1, capabilityConfig: profile }] }],
+            models: [model],
+            videoModels: [model],
+            videoModel: model,
+            model,
+        };
+
+        const defaults = resolveModelGenerationDefaults(config, model, "video", {}, { videoSeconds: "6", size: "1:1" });
+        expect(defaults.videoSeconds).toBe("15");
+        expect(defaults.size).toBe("16:9");
     });
 
     test("后台标注的视频模型不因内部标识缺少视频关键词而回退", () => {
@@ -177,28 +189,70 @@ describe("逻辑模型选择", () => {
         expect(modelCompatibilityError(config, "relay::cinema-image", requirements)).toContain("参考音频");
     });
 
-    test("参考视频默认使用参考视频生成而不是视频续写", () => {
-        const input = { textCount: 1, imageCount: 0, videoCount: 1, audioCount: 0, characterCount: 0 };
-        expect(inferVideoOperation(input)).toBe("reference_to_video");
-        expect(resolveVideoOperation(input)).toBe("reference_to_video");
-        expect(resolveVideoOperation(input, "extend")).toBe("extend");
+    test("音频仅在单独参考时归类为音频生视频", () => {
+        expect(inferVideoOperation({ textCount: 1, imageCount: 0, videoCount: 0, audioCount: 1, characterCount: 0 })).toBe("audio_to_video");
+        expect(inferVideoOperation({ textCount: 1, imageCount: 1, videoCount: 0, audioCount: 1, characterCount: 0 })).toBe("reference_to_video");
+        expect(inferVideoOperation({ textCount: 1, imageCount: 0, videoCount: 1, audioCount: 1, characterCount: 0 })).toBe("reference_to_video");
+    });
+
+    test("逻辑视频模型将 720 与 720p 视为同一分辨率", () => {
+        const model = "cinema-720p";
+        const channel: ModelChannel = {
+            id: "logical-video",
+            name: "平台视频模型",
+            baseUrl: "/api",
+            apiKey: "system",
+            apiFormat: "openai",
+            scope: "system",
+            models: [model],
+            modelCosts: [{
+                model,
+                capability: "video",
+                billingMode: "per_second",
+                unitPriceMicrocredits: 1,
+                logicalCapabilitySpec: {
+                    version: 1,
+                    capability: "video",
+                    operations: ["text_to_video"],
+                    inputs: {},
+                    options: {
+                        videoSeconds: { min: 1, max: 15, step: 1 },
+                        size: { values: ["16:9"] },
+                        vquality: { values: ["720p"] },
+                        videoGenerateAudio: { values: [false] },
+                        videoWatermark: { values: [false] },
+                    },
+                },
+            }],
+        };
+        const value = `logical-video::${model}`;
+        const config = { ...defaultConfig, channels: [channel], models: [value], videoModels: [value], videoModel: value };
+
+        expect(modelCompatibilityError(config, value, {
+            capability: "video",
+            input: { textCount: 1, imageCount: 0, videoCount: 0, audioCount: 0, characterCount: 0 },
+            options: { size: "16:9", videoSeconds: 6, vquality: "720", videoGenerateAudio: false, videoWatermark: false },
+        })).toBe("");
+    });
+
+    test("已保存的旧 SKU 选择会解析到新的模型家族", () => {
+        const channel: ModelChannel = {
+            id: "managed",
+            name: "平台模型",
+            baseUrl: "/api",
+            apiKey: "system",
+            apiFormat: "openai",
+            scope: "system",
+            models: ["family-seedance-2-5"],
+            modelAliases: { "legacy-seedance-720": "family-seedance-2-5" },
+        };
+
+        expect(normalizeModelOptionValue("managed::legacy-seedance-720", [channel])).toBe("managed::family-seedance-2-5");
     });
 
     test("逻辑模型容量使用同名细分模型的最大值", () => {
         const config = policyConfig();
         expect(modelGroupReferenceLimits(config, "relay::cinema-text", "video")).toEqual({ maxImages: 1, maxVideos: 0, maxAudios: 1 });
-    });
-
-    test("生成补图预算使用最终具体模型而不是同组最大值", () => {
-        const config = policyConfig();
-        const imageModel = config.channels[0]?.modelCosts?.find((item) => item.model === "cinema-image");
-        const textModel = config.channels[0]?.modelCosts?.find((item) => item.model === "cinema-text");
-        if (!imageModel?.capabilityConfig?.video || !textModel?.capabilityConfig?.video) throw new Error("缺少视频能力配置");
-        imageModel.capabilityConfig.video.references.maxImages = 16;
-        textModel.capabilityConfig.video.references.maxImages = 9;
-
-        expect(modelGroupReferenceLimits(config, "relay::cinema-text", "video")).toMatchObject({ maxImages: 16 });
-        expect(modelReferenceLimits(config, "relay::cinema-text", "video")).toMatchObject({ maxImages: 9 });
     });
 });
 

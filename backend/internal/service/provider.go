@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"mime"
 	"mime/multipart"
@@ -19,9 +20,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/protocol"
 
 	"gorm.io/gorm"
 )
@@ -54,6 +55,9 @@ type providerTextMessage struct {
 
 type providerConfig struct {
 	ChannelID             string                 `json:"channelId"`
+	ChannelModelKey       string                 `json:"channelModelKey,omitempty"`
+	PriceTierID           string                 `json:"priceTierId,omitempty"`
+	ProviderModelKey      string                 `json:"providerModelKey,omitempty"`
 	APIFormat             string                 `json:"apiFormat"`
 	InterfaceType         string                 `json:"interfaceType"`
 	BaseURL               string                 `json:"baseUrl"`
@@ -70,12 +74,21 @@ type providerConfig struct {
 	VQuality              string                 `json:"vquality"`
 	VideoGenerateAudio    string                 `json:"videoGenerateAudio"`
 	VideoWatermark        string                 `json:"videoWatermark"`
+	ArkPrivateAssetUpload string                 `json:"videoArkPrivateAssetUpload"`
 	AudioVoice            string                 `json:"audioVoice"`
 	AudioFormat           string                 `json:"audioFormat"`
 	AudioSpeed            string                 `json:"audioSpeed"`
 	AudioInstructions     string                 `json:"audioInstructions"`
 	SystemPrompt          string                 `json:"systemPrompt"`
 	CapabilityConfig      *ModelCapabilityConfig `json:"capabilityConfig"`
+	WorkflowID            string                 `json:"workflowId"`
+	WebappID              string                 `json:"webappId"`
+	WorkflowJSON          map[string]interface{} `json:"workflowJson"`
+	WorkflowFields        []WorkflowField        `json:"workflowFields"`
+	BridgeID              string                 `json:"bridgeId"`
+	RunningHubUseWallet   bool                   `json:"runningHubUseWallet"`
+	RunningHubWalletKey   string                 `json:"runningHubWalletApiKey"`
+	RunningHubUploadKey   string                 `json:"runningHubUploadApiKey"`
 }
 
 const providerHTTPTimeout = 5 * time.Minute
@@ -83,18 +96,17 @@ const videoPollTimeout = 30 * time.Minute
 const maxProviderResponseBytes int64 = 64 << 20
 
 type providerMedia struct {
-	ID                 string `json:"id"`
-	Name               string `json:"name"`
-	Type               string `json:"type"`
-	DataURL            string `json:"dataUrl"`
-	URL                string `json:"url"`
-	StorageKey         string `json:"storageKey"`
-	VolcengineAssetURI string `json:"volcengineAssetUri"`
-	MimeType           string `json:"mimeType"`
-	Bytes              int64  `json:"bytes"`
-	Width              int    `json:"width"`
-	Height             int    `json:"height"`
-	DurationMs         int64  `json:"durationMs"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	DataURL    string `json:"dataUrl"`
+	URL        string `json:"url"`
+	StorageKey string `json:"storageKey"`
+	MimeType   string `json:"mimeType"`
+	Bytes      int64  `json:"bytes"`
+	Width      int    `json:"width"`
+	Height     int    `json:"height"`
+	DurationMs int64  `json:"durationMs"`
 }
 
 type imageResponse struct {
@@ -107,6 +119,17 @@ type imageResponse struct {
 type providerError struct {
 	Message string `json:"message"`
 }
+
+// providerPayloadError keeps the upstream reason available for protocol
+// fallback decisions while exposing only the categorized message to callers.
+// Provider bodies may contain secrets or internal diagnostics and must not be
+// copied into user-facing errors or logs.
+type providerPayloadError struct {
+	raw     string
+	message string
+}
+
+func (e providerPayloadError) Error() string { return e.message }
 
 type providerHTTPError struct {
 	StatusCode int
@@ -125,8 +148,11 @@ type providerOutboundPolicyContext struct {
 
 type providerAnalyticsContext struct {
 	Service           *Service
+	Billing           taskBillingLifecycle
 	UserID            string
 	TaskID            string
+	TraceID           string
+	RequestID         string
 	BillingOrderID    string
 	BillingMode       string
 	Capability        string
@@ -140,7 +166,10 @@ type providerAnalyticsContext struct {
 }
 
 func withProviderAnalytics(ctx context.Context, service *Service, task model.Task) context.Context {
-	metadata := providerAnalyticsContext{Service: service, UserID: task.UserID, TaskID: task.ID, BillingOrderID: task.BillingOrderID, Capability: capabilityFromTaskType(task.Type), Operation: task.Operation, Model: task.Model, ProviderRequestID: task.ProviderRequestID}
+	metadata := providerAnalyticsContext{Service: service, UserID: task.UserID, TaskID: task.ID, TraceID: task.TraceID, RequestID: task.RequestID, BillingOrderID: task.BillingOrderID, Capability: capabilityFromTaskType(task.Type), Operation: task.Operation, Model: task.Model, ProviderRequestID: task.ProviderRequestID}
+	if service != nil {
+		metadata.Billing = service.taskBilling()
+	}
 	// 账单模式随请求上下文传递，流式协议据此只为 Token 计费开启 usage 终态块。
 	if service != nil && task.BillingOrderID != "" {
 		if order, err := service.repo.BillingOrder(task.BillingOrderID); err == nil {
@@ -153,7 +182,7 @@ func withProviderAnalytics(ctx context.Context, service *Service, task model.Tas
 	}
 	if json.Unmarshal([]byte(task.InputJSON), &input) == nil {
 		metadata.ChannelID = firstNonEmpty(input.Config.ChannelID, systemChannelIDFromBaseURL(input.Config.BaseURL))
-		metadata.Model = firstNonEmpty(input.Config.Model, metadata.Model)
+		metadata.Model = firstNonEmpty(input.Config.ChannelModelKey, input.Config.Model, metadata.Model)
 		metadata.VideoSeconds, _ = strconv.Atoi(input.Config.VideoSeconds)
 		if normalized := normalizeCapability(input.Mode); normalized != "" {
 			metadata.Capability = normalized
@@ -177,13 +206,65 @@ func withProviderRequestKind(ctx context.Context, requestKind string) context.Co
 }
 
 func (e providerHTTPError) Error() string {
-	if e.StatusCode == 524 {
+	switch e.StatusCode {
+	case 524:
 		return "上游网关超时（524）：模型请求可能仍在服务端执行并产生费用，请勿立即重试，请先到供应商后台核对任务或账单"
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return "模型服务拒绝了请求，请检查模型和参数"
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return "模型服务鉴权失败，请检查 API Key 和模型权限"
+	case http.StatusNotFound:
+		return "模型或模型接口不存在，请检查渠道配置"
+	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
+		return "模型服务响应超时，请稍后重试"
+	case http.StatusTooManyRequests:
+		return "模型服务请求过于频繁或额度不足，请稍后重试"
 	}
-	return fmt.Sprintf("接口请求失败：%s %s", e.Status, e.Body)
+	if e.StatusCode >= http.StatusInternalServerError {
+		return fmt.Sprintf("模型服务暂时不可用（HTTP %d）", e.StatusCode)
+	}
+	return fmt.Sprintf("模型服务请求失败（HTTP %d）", e.StatusCode)
+}
+
+func providerUserFacingErrorMessage(err error) string {
+	if err == nil {
+		return "模型服务请求失败"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "模型请求已取消"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "模型服务响应超时，请稍后重试"
+	}
+	var appErr *AppError
+	if errors.As(err, &appErr) && strings.TrimSpace(appErr.Message) != "" {
+		return appErr.Message
+	}
+	var httpErr providerHTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.Error()
+	}
+	return "连接模型服务失败，请检查渠道地址和网络"
+}
+
+func providerPayloadErrorMessage(raw string) string {
+	normalized := strings.ToLower(strings.TrimSpace(raw))
+	switch {
+	case strings.Contains(normalized, "safety"), strings.Contains(normalized, "moderation"), strings.Contains(normalized, "content policy"), strings.Contains(normalized, "blocked"):
+		return "请求内容未通过模型服务安全审核，请调整后重试"
+	case strings.Contains(normalized, "quota"), strings.Contains(normalized, "insufficient"), strings.Contains(normalized, "balance"), strings.Contains(normalized, "billing"):
+		return "模型服务额度不足，请检查渠道余额或配额"
+	case strings.Contains(normalized, "model") && (strings.Contains(normalized, "not found") || strings.Contains(normalized, "permission") || strings.Contains(normalized, "access")):
+		return "模型不存在或当前渠道未获得模型权限"
+	case strings.Contains(normalized, "invalid"), strings.Contains(normalized, "parameter"), strings.Contains(normalized, "argument"):
+		return "模型服务拒绝了请求，请检查模型和参数"
+	default:
+		return "模型服务返回失败，请检查请求内容或渠道配置"
+	}
 }
 
 func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string, taskProjectID string, taskType string, fallbackPrompt string, rawInput string) (map[string]interface{}, error) {
+	ctx = withProtocolRegistry(ctx, s.protocolRegistry())
 	var input canvasGenerationInput
 	if err := json.Unmarshal([]byte(rawInput), &input); err != nil {
 		return nil, fmt.Errorf("任务输入解析失败：%w", err)
@@ -213,6 +294,18 @@ func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string
 	}
 	input.Config = config
 	ctx = withProviderOutboundPolicy(ctx, input.Config)
+	if isWorkflowProviderInterface(input.Config.InterfaceType) {
+		if err := validateWorkflowProviderConfig(input.Mode, input.Config); err != nil {
+			return nil, err
+		}
+		// 工作流参数由工作流字段定义校验，普通模型能力配置不能覆盖它们。
+		if resumedProviderRequestID(ctx) == "" {
+			if err := s.hydrateGenerationMedia(userID, &input, false); err != nil {
+				return nil, err
+			}
+		}
+		return s.runWorkflowProviderTask(ctx, input)
+	}
 	if input.Mode == "image" && input.Metadata != nil {
 		if err := s.applyGenerationStyleProfile(userID, taskProjectID, &input); err != nil {
 			return nil, err
@@ -224,14 +317,11 @@ func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string
 	if strings.TrimSpace(input.Config.BaseURL) == "" || strings.TrimSpace(input.Config.APIKey) == "" || strings.TrimSpace(input.Config.Model) == "" {
 		return nil, errors.New("后端生成任务缺少 Base URL、API Key 或模型名")
 	}
-	if err := validateGenerationInterface(input.Mode, input.Config.InterfaceType); err != nil {
+	if err := s.validateGenerationInterface(input.Mode, input.Config.InterfaceType); err != nil {
 		return nil, err
 	}
 	if isVolcengineJiMengProtocol(input.Config.InterfaceType) && strings.TrimSpace(input.Config.SecretKey) == "" {
 		return nil, errors.New("即梦官方 API 缺少 Secret Key")
-	}
-	if input.Mode == "video" && input.Config.InterfaceType == string(model.ChannelInterfaceHuiQuYunVideo) {
-		normalizeHuiQuYunVideoInput(&input)
 	}
 	if input.Mode == "image" {
 		if err := s.validateResolvedImageCapability(&input); err != nil {
@@ -244,12 +334,14 @@ func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string
 		}
 	}
 	if resumedProviderRequestID(ctx) == "" {
-		requirePublicURL := protocolRequiresPublicReferenceURL(input.Config.InterfaceType)
-		// MX933 带参考素材时只接受 multipart 文件，必须保留本地字节而不是转换为 OSS URL。
-		if input.Config.InterfaceType == string(model.ChannelInterfaceHuiQuYunVideo) && isHuiQuYunMX933VideoModel(input.Config.Model) {
-			requirePublicURL = false
+		requirePublicURL := input.Config.InterfaceType == "newapi-channel-1" || input.Config.InterfaceType == "newapi-channel-2" || input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo) || input.Config.InterfaceType == string(model.ChannelInterfaceMiniMaxVideo)
+		if adapter, ok := declarativeProtocolAdapterForContext(ctx, input.Config.InterfaceType); ok {
+			requirePublicURL = requirePublicURL || adapter.Metadata().RequiresPublicMediaURLs
 		}
 		if err := s.hydrateGenerationMedia(userID, &input, requirePublicURL); err != nil {
+			return nil, err
+		}
+		if err := s.prepareArkPrivateAssetReferences(ctx, userID, &input); err != nil {
 			return nil, err
 		}
 	}
@@ -280,6 +372,9 @@ func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string
 }
 
 func runAgentToolTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
+	if adapter, ok := agentProtocolAdapterForContext(ctx, input.Config.InterfaceType); ok {
+		return runDeclarativeAgentTask(ctx, input, adapter)
+	}
 	if input.AgentRequests == nil {
 		return nil, errors.New("画布 Agent 工具请求缺少协议参数")
 	}
@@ -290,11 +385,17 @@ func runAgentToolTask(ctx context.Context, input canvasGenerationInput) (map[str
 		request = input.AgentRequests.Responses
 		path = "/responses"
 		protocol = "responses"
+	} else if input.Config.InterfaceType == string(model.ChannelInterfaceClaudeAPI) {
+		path = "/messages"
+		protocol = "claude-api"
 	}
 	if request == nil {
 		return nil, errors.New("画布 Agent 工具请求缺少协议参数")
 	}
 	body := cloneStringAnyMap(request)
+	if protocol == "claude-api" {
+		body = claudeAgentBody(body)
+	}
 	body["model"] = input.Config.Model
 	var payload map[string]interface{}
 	err := postJSON(ctx, input.Config, path, body, &payload)
@@ -318,11 +419,161 @@ func runAgentToolTask(ctx context.Context, input canvasGenerationInput) (map[str
 	return parseAgentToolPayload(payload, protocol)
 }
 
+func runDeclarativeAgentTask(ctx context.Context, input canvasGenerationInput, adapter protocol.AgentAdapter) (map[string]interface{}, error) {
+	if input.AgentRequests == nil {
+		return nil, errors.New("画布 Agent 工具请求缺少协议参数")
+	}
+	request := map[string]any{
+		"chatCompletion": input.AgentRequests.ChatCompletion,
+		"responses":      input.AgentRequests.Responses,
+	}
+	spec, err := adapter.BuildAgent(ctx, protocol.AgentRequestContext{BaseURL: input.Config.BaseURL, Model: input.Config.Model, Request: request})
+	if err != nil {
+		return nil, err
+	}
+	body, err := executeProtocolRequest(ctx, input.Config, spec)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := adapter.ParseAgent(ctx, body)
+	if err != nil {
+		return nil, err
+	}
+	result := map[string]interface{}{"mode": "text", "text": parsed.Text, "toolCalls": []interface{}{}}
+	if parsed.Reasoning != "" {
+		result["reasoning"] = parsed.Reasoning
+	}
+	calls := make([]interface{}, 0, len(parsed.ToolCalls))
+	for _, call := range parsed.ToolCalls {
+		calls = append(calls, map[string]interface{}{
+			"id":       call.ID,
+			"type":     "function",
+			"function": map[string]interface{}{"name": call.Name, "arguments": call.Arguments},
+		})
+	}
+	result["toolCalls"] = calls
+	if strings.TrimSpace(parsed.Text) == "" && len(calls) == 0 {
+		return nil, errors.New("声明式 Agent 接口没有返回内容")
+	}
+	return result, nil
+}
+
+func claudeAgentBody(request map[string]interface{}) map[string]interface{} {
+	body := map[string]interface{}{"max_tokens": 4096}
+	if messages, ok := request["messages"].([]interface{}); ok {
+		claudeMessages := make([]interface{}, 0, len(messages))
+		var system []string
+		for _, value := range messages {
+			message, _ := value.(map[string]interface{})
+			role := strings.ToLower(strings.TrimSpace(stringField(message, "role")))
+			if role == "system" {
+				if content := strings.TrimSpace(fmt.Sprint(message["content"])); content != "" {
+					system = append(system, content)
+				}
+				continue
+			}
+			if role == "tool" {
+				claudeMessages = append(claudeMessages, map[string]interface{}{"role": "user", "content": []interface{}{map[string]interface{}{
+					"type": "tool_result", "tool_use_id": stringField(message, "tool_call_id"), "content": fmt.Sprint(message["content"]),
+				}}})
+				continue
+			}
+			role = mapClaudeMessageRole(role)
+			content := message["content"]
+			if content == nil {
+				content = ""
+			}
+			if toolCalls, ok := message["tool_calls"].([]interface{}); ok && len(toolCalls) > 0 {
+				blocks := make([]interface{}, 0, len(toolCalls))
+				for _, value := range toolCalls {
+					toolCall, _ := value.(map[string]interface{})
+					function, _ := toolCall["function"].(map[string]interface{})
+					blocks = append(blocks, map[string]interface{}{
+						"type": "tool_use", "id": stringField(toolCall, "id"), "name": stringField(function, "name"), "input": claudeToolInput(function["arguments"]),
+					})
+				}
+				content = blocks
+			}
+			claudeMessages = append(claudeMessages, map[string]interface{}{"role": role, "content": content})
+		}
+		body["messages"] = claudeMessages
+		if len(system) > 0 {
+			body["system"] = strings.Join(system, "\n\n")
+		}
+	}
+	if tools, ok := request["tools"].([]interface{}); ok && len(tools) > 0 {
+		claudeTools := make([]interface{}, 0, len(tools))
+		for _, value := range tools {
+			tool, _ := value.(map[string]interface{})
+			function, _ := tool["function"].(map[string]interface{})
+			if len(function) == 0 {
+				continue
+			}
+			claudeTools = append(claudeTools, map[string]interface{}{
+				"name": stringField(function, "name"), "description": stringField(function, "description"), "input_schema": function["parameters"],
+			})
+		}
+		if len(claudeTools) > 0 {
+			body["tools"] = claudeTools
+		}
+	}
+	if choice, ok := request["tool_choice"]; ok {
+		body["tool_choice"] = claudeToolChoice(choice)
+	}
+	return body
+}
+
+func mapClaudeMessageRole(role string) string {
+	if role == "assistant" {
+		return "assistant"
+	}
+	return "user"
+}
+
+func claudeToolInput(value interface{}) interface{} {
+	if raw, ok := value.(string); ok {
+		var parsed interface{}
+		if json.Unmarshal([]byte(raw), &parsed) == nil && parsed != nil {
+			return parsed
+		}
+	}
+	if value != nil {
+		return value
+	}
+	return map[string]interface{}{}
+}
+
+func claudeToolChoice(value interface{}) interface{} {
+	switch choice := value.(type) {
+	case string:
+		switch strings.ToLower(strings.TrimSpace(choice)) {
+		case "required":
+			return map[string]interface{}{"type": "any"}
+		case "none":
+			return map[string]interface{}{"type": "auto"}
+		default:
+			return map[string]interface{}{"type": "auto"}
+		}
+	case map[string]interface{}:
+		if function, ok := choice["function"].(map[string]interface{}); ok && stringField(function, "name") != "" {
+			return map[string]interface{}{"type": "tool", "name": stringField(function, "name")}
+		}
+		if name := stringField(choice, "name"); name != "" {
+			return map[string]interface{}{"type": "tool", "name": name}
+		}
+	}
+	return map[string]interface{}{"type": "auto"}
+}
+
 func isAgentToolChoiceCompatibilityError(err error) bool {
 	if err == nil {
 		return false
 	}
 	message := strings.ToLower(err.Error())
+	var payloadErr providerPayloadError
+	if errors.As(err, &payloadErr) {
+		message += " " + strings.ToLower(payloadErr.raw)
+	}
 	return strings.Contains(message, "tool_choice") || strings.Contains(message, "tool choice") || strings.Contains(message, "tool-choice") || strings.Contains(message, "thinking mode")
 }
 
@@ -350,6 +601,28 @@ func parseAgentToolPayload(payload map[string]interface{}, protocol string) (map
 			calls = append(calls, map[string]interface{}{"id": firstNonEmptyString(stringField(item, "call_id"), stringField(item, "id")), "type": "function", "function": map[string]interface{}{"name": stringField(item, "name"), "arguments": stringField(item, "arguments")}})
 		}
 		result["toolCalls"] = calls
+		return result, nil
+	}
+	if protocol == "claude-api" {
+		content := interfaceSlice(payload["content"])
+		calls := make([]interface{}, 0)
+		for _, value := range content {
+			item, _ := value.(map[string]interface{})
+			switch stringField(item, "type") {
+			case "text":
+				result["text"] = result["text"].(string) + stringField(item, "text")
+			case "tool_use":
+				arguments, err := json.Marshal(item["input"])
+				if err != nil {
+					return nil, err
+				}
+				calls = append(calls, map[string]interface{}{"id": stringField(item, "id"), "type": "function", "function": map[string]interface{}{"name": stringField(item, "name"), "arguments": string(arguments)}})
+			}
+		}
+		result["toolCalls"] = calls
+		if result["text"] == "" && len(calls) == 0 {
+			return nil, errors.New("Claude Agent 接口没有返回内容")
+		}
 		return result, nil
 	}
 	choices := interfaceSlice(payload["choices"])
@@ -404,11 +677,6 @@ func cloneStringAnyMap(value map[string]interface{}) map[string]interface{} {
 	return cloned
 }
 
-// 供应商已接受异步视频任务后，轮询或下载短暂失败不能重新创建任务；保留上游 ID 交给下一轮 worker 继续查询。
-func providerVideoTaskCanResume(ctx context.Context, input canvasGenerationInput) bool {
-	return input.Mode == "video" && resumedProviderRequestID(ctx) != "" && supportsProviderVideoRecovery(input.Config.InterfaceType)
-}
-
 type styleExecutionPlanDocument struct {
 	SchemaVersion   int    `json:"schemaVersion"`
 	ProfilePresetID string `json:"profilePresetId"`
@@ -440,33 +708,47 @@ func (s *Service) applyGenerationStyleProfile(userID string, taskProjectID strin
 		if strings.TrimSpace(storedProfileJSON) == "" {
 			// 旧项目只有 preset ID，允许画布把该预设编译为结构化快照；仍需锁定同一预设，不能借降级路径换画风。
 			if strings.TrimSpace(storedPresetID) == "" || strings.TrimSpace(profile.PresetID) != strings.TrimSpace(storedPresetID) {
-				return errors.New("任务画风预设与项目当前设置不一致，请刷新画布后重试")
+				return errors.New("项目画风已发生变化，请返回项目列表后重新打开当前项目再生成")
 			}
 		} else {
 			matches, compareErr := equivalentStyleProfileJSON(styleProfileJSON, storedProfileJSON)
-			if compareErr != nil || !matches {
-				return errors.New("任务画风快照与项目当前设置不一致，请刷新画布后重试")
+			if compareErr != nil {
+				return errors.New("项目画风配置暂时无法读取，请在项目设置中重新保存画风后重试")
+			}
+			if !matches {
+				// 项目画风可能在另一个页面更新；保存路径以服务端快照为准，生成时自动采用最新版本。
+				validatedStoredProfileJSON, validateErr := validateStyleProfileJSON(storedProfileJSON)
+				if validateErr != nil || json.Unmarshal([]byte(validatedStoredProfileJSON), &profile) != nil {
+					return errors.New("项目画风配置暂时无法读取，请在项目设置中重新保存画风后重试")
+				}
 			}
 		}
 	}
-	plan, err := decodeStyleExecutionPlan(input.Metadata["styleExecutionPlan"])
-	if err != nil {
-		return err
-	}
+	// 执行计划是前端为即时预览生成的派生数据。平台模型入队后可能改选真实供应线路，
+	// 因此后端必须以最终模型重新编译，不能要求用户手动“刷新配置”来同步内部路由。
+	plan, _ := decodeStyleExecutionPlan(input.Metadata["styleExecutionPlan"])
 	stylePrompt, expectedStatus, warnings := resolveGenerationStyleExecution(profile, input.Config.Model, firstNonEmpty(input.Config.InterfaceType, input.Config.APIFormat))
-	if plan.SchemaVersion != 1 || plan.ProfilePresetID != profile.PresetID || plan.ProfileRevision != profile.Revision || plan.Mode != input.Mode || !strings.EqualFold(plan.Model, input.Config.Model) || plan.InterfaceType != firstNonEmpty(input.Config.InterfaceType, input.Config.APIFormat) {
-		return errors.New("项目画风执行计划与当前模型或快照不一致，请刷新配置后重试")
-	}
-	if plan.Status != expectedStatus || strings.TrimSpace(plan.Prompt) != stylePrompt {
-		return errors.New("项目画风执行计划已失效，请重新生成执行计划")
-	}
+	input.Prompt = reconcileGenerationStylePrompt(input.Prompt, plan.Prompt, stylePrompt)
 	if expectedStatus == "blocked" {
-		return fmt.Errorf("项目画风与当前生成模型不兼容：%s", strings.Join(warnings, "；"))
-	}
-	if stylePrompt != "" && !strings.Contains(input.Prompt, stylePrompt) {
-		input.Prompt = strings.TrimSpace(input.Prompt) + "\n\n【项目画风执行规范】\n" + stylePrompt
+		return fmt.Errorf("当前图片模型无法完整执行项目画风：%s。请切换图片模型，或在项目设置中停用对应画风资产", strings.Join(warnings, "；"))
 	}
 	return nil
+}
+
+func reconcileGenerationStylePrompt(prompt string, previousStylePrompt string, currentStylePrompt string) string {
+	content := strings.TrimSpace(prompt)
+	previous := strings.TrimSpace(previousStylePrompt)
+	if previous != "" {
+		previousBlock := "【项目画风执行规范】\n" + previous
+		if strings.HasSuffix(content, previousBlock) {
+			content = strings.TrimSpace(strings.TrimSuffix(content, previousBlock))
+		}
+	}
+	current := strings.TrimSpace(currentStylePrompt)
+	if current == "" || strings.HasSuffix(content, "【项目画风执行规范】\n"+current) {
+		return content
+	}
+	return strings.TrimSpace(content + "\n\n【项目画风执行规范】\n" + current)
 }
 
 func (s *Service) taskProjectStyleProfile(userID string, canvasOrProjectID string) (string, string, bool, error) {
@@ -592,7 +874,7 @@ func (s *Service) validateResolvedVideoCapability(input *canvasGenerationInput) 
 		input.VideoCapability = input.Config.CapabilityConfig.Video
 		return validateVideoTask(input.VideoCapability, *input)
 	}
-	item, err := s.repo.ChannelModelByKey(channelID, strings.TrimPrefix(strings.TrimSpace(input.Config.Model), "models/"))
+	item, err := s.repo.ChannelModelByKey(channelID, providerChannelModelKey(input.Config))
 	if err != nil {
 		return errors.New("当前系统渠道模型未配置或已停用")
 	}
@@ -601,6 +883,7 @@ func (s *Service) validateResolvedVideoCapability(input *canvasGenerationInput) 
 		return errors.New("当前视频模型尚未配置能力参数")
 	}
 	input.VideoCapability = profile.Video
+	applyFixedVideoResolution(input, profile.Video)
 	return validateVideoTask(profile.Video, *input)
 }
 
@@ -615,7 +898,7 @@ func (s *Service) validateResolvedImageCapability(input *canvasGenerationInput) 
 		}
 		return validateImageTask(input.ImageCapability, *input)
 	}
-	item, err := s.repo.ChannelModelByKey(channelID, strings.TrimPrefix(strings.TrimSpace(input.Config.Model), "models/"))
+	item, err := s.repo.ChannelModelByKey(channelID, providerChannelModelKey(input.Config))
 	if err != nil {
 		return errors.New("当前系统渠道模型未配置或已停用")
 	}
@@ -643,47 +926,22 @@ func metadataStringValues(value any) map[string]string {
 	return values
 }
 
-// 以下协议只接受公网 URL 形式的参考素材（JSON 体里传地址，不支持内嵌 data URL 也不走 multipart）；
-// 素材库资源必须先签成可回源的临时地址，否则上游拉不到文件。
-func protocolRequiresPublicReferenceURL(interfaceType string) bool {
-	switch interfaceType {
-	case "newapi-channel-1", "newapi-channel-2", string(model.ChannelInterfaceSeedanceVideos):
-		return true
-	case string(model.ChannelInterfaceGlobalAiOpcImage), string(model.ChannelInterfaceGlobalAiOpcVideo):
-		return true
-	case string(model.ChannelInterfaceHuiQuYunVideo), string(model.ChannelInterfaceVolcengineArkVideo):
-		return true
-	case string(model.ChannelInterfaceAIStarsLabImage), string(model.ChannelInterfaceAIStarsLabVideo):
-		return true
-	default:
-		return false
-	}
-}
-
 func (s *Service) hydrateGenerationMedia(userID string, input *canvasGenerationInput, requirePublicURL bool) error {
-	allowVolcengineAssetURI := input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo) || isArkPlanVideoConfig(input.Config)
 	groups := [][]providerMedia{input.ReferenceImages, input.ReferenceVideos, input.ReferenceAudios}
 	for _, group := range groups {
 		for index := range group {
-			if err := s.hydrateProviderMedia(userID, &group[index], requirePublicURL, allowVolcengineAssetURI); err != nil {
+			if err := s.hydrateProviderMedia(userID, &group[index], requirePublicURL); err != nil {
 				return err
 			}
 		}
 	}
 	if input.Mask != nil {
-		return s.hydrateProviderMedia(userID, input.Mask, requirePublicURL, allowVolcengineAssetURI)
+		return s.hydrateProviderMedia(userID, input.Mask, requirePublicURL)
 	}
 	return nil
 }
 
-func (s *Service) hydrateProviderMedia(userID string, media *providerMedia, requirePublicURL bool, allowVolcengineAssetURI ...bool) error {
-	allowAssetURI := len(allowVolcengineAssetURI) > 0 && allowVolcengineAssetURI[0]
-	if allowAssetURI {
-		if assetURI := volcengineAssetURI(*media); assetURI != "" {
-			media.VolcengineAssetURI = assetURI
-			return nil
-		}
-	}
+func (s *Service) hydrateProviderMedia(userID string, media *providerMedia, requirePublicURL bool) error {
 	if !strings.HasPrefix(media.StorageKey, "resource:") {
 		if requirePublicURL && strings.HasPrefix(strings.TrimSpace(media.DataURL), "data:") {
 			return errors.New("当前 JSON 视频协议的参考素材不能使用内嵌数据，请先上传到对象存储或提供公网素材地址")
@@ -757,6 +1015,14 @@ func (s *Service) resolveProviderConfig(config providerConfig) (providerConfig, 
 		return providerConfig{}, err
 	}
 	config.Headers = headers
+	if isComfyBridgeInterface(config.InterfaceType) {
+		config.BaseURL = "bridge://local"
+		config.APIKey = ""
+		return config, nil
+	}
+	if isRunningHubInterface(config.InterfaceType) && strings.TrimSpace(config.BaseURL) == "" {
+		config.BaseURL = "https://www.runninghub.cn"
+	}
 	channelID := strings.TrimSpace(config.ChannelID)
 	if channelID == "" {
 		channelID = systemChannelIDFromBaseURL(config.BaseURL)
@@ -772,30 +1038,62 @@ func (s *Service) resolveProviderConfig(config providerConfig) (providerConfig, 
 	if err != nil {
 		return providerConfig{}, errors.New("系统渠道不存在或已停用")
 	}
-	modelName := strings.TrimSpace(config.Model)
-	if modelName == "" {
-		models := channelModelNames(*channel)
-		if len(models) == 0 {
-			return providerConfig{}, errors.New("系统渠道未配置可用模型")
-		}
-		modelName = models[0]
+	modelKey := strings.TrimPrefix(strings.TrimSpace(config.ChannelModelKey), "models/")
+	requestedModel := strings.TrimPrefix(strings.TrimSpace(config.Model), "models/")
+	if modelKey == "" {
+		modelKey = requestedModel
 	}
-	if !stringInSlice(modelName, channelModelNames(*channel)) {
-		return providerConfig{}, errors.New("当前系统渠道未授权该模型")
+	if modelKey == "" {
+		channelModels, listErr := s.repo.ChannelModels(channel.ID, false)
+		if listErr != nil {
+			return providerConfig{}, listErr
+		}
+		if len(channelModels) > 0 {
+			modelKey = channelModels[0].ModelKey
+		} else {
+			models := channelModelNames(*channel)
+			if len(models) == 0 {
+				return providerConfig{}, errors.New("系统渠道未配置可用模型")
+			}
+			modelKey = models[0]
+		}
 	}
 	if _, err := s.validateChannelOutboundURL(channel.BaseURL, channel.AllowLocalChannel, false); err != nil {
 		return providerConfig{}, err
 	}
 	config.ChannelID = channel.ID
 	config.APIFormat = channel.APIFormat
-	channelModel, modelErr := s.repo.ChannelModelByKey(channel.ID, modelName)
-	if modelErr != nil || channelModel.Protocol == "" {
+	channelModel, modelErr := s.repo.ChannelModelByKey(channel.ID, modelKey)
+	if modelErr != nil {
+		// ModelsJSON 只是旧渠道表上的目录缓存。SKU 合并后它不能代表可执行模型，
+		// 唯一授权来源必须是已启用的 channel_models 记录。
+		return providerConfig{}, errors.New("当前系统渠道未授权该模型")
+	}
+	if channelModel.Protocol == "" {
 		return providerConfig{}, errors.New("当前模型尚未配置请求协议")
+	}
+	providerModelKey := strings.TrimPrefix(strings.TrimSpace(config.ProviderModelKey), "models/")
+	if config.PriceTierID != "" {
+		matched := false
+		for _, tier := range channelModel.PriceTiers {
+			if tier.ID == config.PriceTierID && tier.Enabled && tier.PriceConfigured {
+				providerModelKey = firstNonEmpty(providerModelKey, tier.ProviderModelKey)
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return providerConfig{}, errors.New("当前模型规格价格档已更新，请重新创建任务")
+		}
+	} else if modelKey != "" && requestedModel != "" && modelKey != requestedModel {
+		return providerConfig{}, errors.New("系统渠道模型标识不一致")
 	}
 	config.InterfaceType = string(channelModel.Protocol)
 	// 模型协议是实际请求契约；混合渠道中鉴权格式也必须随模型协议切换。
 	if config.InterfaceType == string(model.ChannelInterfaceGeminiVeo) || config.InterfaceType == string(model.ChannelInterfaceGeminiImage) {
 		config.APIFormat = "gemini"
+	} else if config.InterfaceType == string(model.ChannelInterfaceClaudeAPI) {
+		config.APIFormat = "claude"
 	} else if config.InterfaceType != "" {
 		config.APIFormat = "openai"
 	}
@@ -807,56 +1105,51 @@ func (s *Service) resolveProviderConfig(config providerConfig) (providerConfig, 
 	if err != nil {
 		return providerConfig{}, err
 	}
-	config.Model = modelName
-	// 系统渠道的线路块必须以服务端记录为准：它是官方必填的 channel/model 来源，不能依赖浏览器上报。
-	// 未定价模型不会随公开渠道下发 capabilityConfig，早期存量前端缓存也可能没有这个字段，因此在这里回填。
-	if profile, decodeErr := DecodeModelCapabilityConfig(channelModel.CapabilityConfigJSON); decodeErr == nil && profile != nil && profile.AIStarsLab != nil {
-		// 复制一份再改，CapabilityConfig 是指针，直接写会污染调用方持有的同一个结构体。
-		merged := ModelCapabilityConfig{}
-		if config.CapabilityConfig != nil {
-			merged = *config.CapabilityConfig
-		}
-		merged.AIStarsLab = profile.AIStarsLab
-		config.CapabilityConfig = &merged
-	}
+	config.ChannelModelKey = modelKey
+	config.ProviderModelKey = providerModelKey
+	config.Model = firstNonEmpty(providerModelKey, channelModel.ProviderModelKey, modelKey)
 	return config, nil
 }
 
-func stringInSlice(value string, values []string) bool {
-	value = strings.TrimPrefix(strings.TrimSpace(value), "models/")
-	for _, candidate := range values {
-		if strings.TrimPrefix(strings.TrimSpace(candidate), "models/") == value {
-			return true
-		}
-	}
-	return false
+func providerChannelModelKey(config providerConfig) string {
+	return strings.TrimPrefix(strings.TrimSpace(firstNonEmpty(config.ChannelModelKey, config.Model)), "models/")
 }
 
 func systemChannelIDFromBaseURL(baseURL string) string {
 	value := strings.TrimSpace(baseURL)
-	for _, marker := range []string{"/api/ai/system/", "api/ai/system/"} {
-		index := strings.Index(value, marker)
+	lowerValue := strings.ToLower(value)
+	for _, marker := range []string{"/api/ai/system/", "/api/"} {
+		index := strings.LastIndex(lowerValue, marker)
 		if index < 0 {
 			continue
 		}
 		id := strings.Trim(value[index+len(marker):], "/")
-		if slash := strings.Index(id, "/"); slash >= 0 {
-			id = id[:slash]
+		if queryIndex := strings.IndexAny(id, "?#"); queryIndex >= 0 {
+			id = id[:queryIndex]
 		}
-		return strings.TrimSpace(id)
+		if slash := strings.Index(id, "/"); slash >= 0 {
+			continue
+		}
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		switch strings.ToLower(id) {
+		case "v1", "v1beta", "v2", "v3", "plan", "ai":
+			continue
+		default:
+			return id
+		}
 	}
 	return ""
 }
 
 func runImageTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
-	if input.Config.InterfaceType == string(model.ChannelInterfaceGlobalAiOpcImage) {
-		return runGlobalAiOpcTask(ctx, input, "image")
+	if _, ok := declarativeProtocolAdapterForContext(ctx, input.Config.InterfaceType); ok {
+		return runDeclarativeProtocolTask(ctx, input)
 	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceGrokImage) {
 		return runGrokImageTask(ctx, input)
-	}
-	if input.Config.InterfaceType == string(model.ChannelInterfaceAIStarsLabImage) {
-		return runAiStarsLabImageTask(ctx, input)
 	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineJiMengImage) {
 		return runVolcengineJiMengImageTask(ctx, input)
@@ -1330,11 +1623,16 @@ func normalizeVolcengineArkImageSize(value string) string {
 }
 
 func runTextTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
+	if _, ok := declarativeProtocolAdapterForContext(ctx, input.Config.InterfaceType); ok {
+		return runDeclarativeProtocolTask(ctx, input)
+	}
 	switch input.Config.InterfaceType {
 	case "chat-completion":
 		return runChatCompletionsTextTask(ctx, input)
 	case "openai-response":
 		return runResponsesTextTask(ctx, input)
+	case string(model.ChannelInterfaceClaudeAPI):
+		return runClaudeTextTask(ctx, input)
 	}
 	return runLegacyTextTask(ctx, input)
 }
@@ -1389,6 +1687,68 @@ func runChatCompletionsTextTask(ctx context.Context, input canvasGenerationInput
 		return nil, err
 	}
 	return map[string]interface{}{"mode": "text", "text": text}, nil
+}
+
+func runClaudeTextTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
+	if len(input.ReferenceVideos) > 0 {
+		return nil, errors.New("Claude API 当前不支持视频参考输入")
+	}
+	messages := make([]map[string]interface{}, 0, len(input.TextHistory)+1)
+	for _, message := range validatedTextHistory(input.TextHistory) {
+		messages = append(messages, message)
+	}
+	content, err := claudeTextContent(input)
+	if err != nil {
+		return nil, err
+	}
+	messages = append(messages, map[string]interface{}{"role": "user", "content": content})
+	body := map[string]interface{}{"model": input.Config.Model, "max_tokens": 4096, "messages": messages}
+	if systemPrompt := strings.TrimSpace(input.Config.SystemPrompt); systemPrompt != "" {
+		body["system"] = systemPrompt
+	}
+	text, err := requestTextProvider(ctx, input.Config, "/messages", body, "claude-api", input.StreamText)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"mode": "text", "text": text}, nil
+}
+
+func claudeTextContent(input canvasGenerationInput) (interface{}, error) {
+	if len(input.ReferenceImages) == 0 {
+		return input.Prompt, nil
+	}
+	content := []map[string]interface{}{{"type": "text", "text": input.Prompt}}
+	for _, image := range input.ReferenceImages {
+		value, err := openAIImageInputURL(image)
+		if err != nil {
+			return nil, err
+		}
+		if strings.HasPrefix(value, "data:") {
+			mimeType, data, ok := splitDataURL(value)
+			if !ok {
+				return nil, errors.New("Claude 参考图片 data URL 无效")
+			}
+			content = append(content, map[string]interface{}{"type": "image", "source": map[string]interface{}{"type": "base64", "media_type": mimeType, "data": data}})
+		} else {
+			content = append(content, map[string]interface{}{"type": "image", "source": map[string]interface{}{"type": "url", "url": value}})
+		}
+	}
+	return content, nil
+}
+
+func splitDataURL(value string) (string, string, bool) {
+	if !strings.HasPrefix(value, "data:") {
+		return "", "", false
+	}
+	separator := strings.Index(value, ",")
+	if separator <= len("data:") {
+		return "", "", false
+	}
+	header := strings.TrimPrefix(value[:separator], "data:")
+	if !strings.HasSuffix(header, ";base64") {
+		return "", "", false
+	}
+	return strings.TrimSuffix(header, ";base64"), value[separator+1:], value[separator+1:] != ""
 }
 
 func textResponseInput(input canvasGenerationInput) (interface{}, error) {
@@ -1513,6 +1873,9 @@ func shouldFallbackTextToChat(err error) bool {
 }
 
 func runAudioTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
+	if _, ok := declarativeProtocolAdapterForContext(ctx, input.Config.InterfaceType); ok {
+		return runDeclarativeProtocolTask(ctx, input)
+	}
 	if resolved, ok := input.Metadata["resolvedCharacterVersions"].([]interface{}); ok && len(resolved) > 0 {
 		voiceKey := metadataString(input.Metadata, "resolvedCharacterVoiceKey")
 		if voiceKey == "" || strings.TrimSpace(input.Config.AudioVoice) != voiceKey {
@@ -1545,6 +1908,215 @@ func runAudioTask(ctx context.Context, input canvasGenerationInput) (map[string]
 		return nil, err
 	}
 	return map[string]interface{}{"mode": "audio", "audio": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType, "format": format}}, nil
+}
+
+// runDeclarativeProtocolTask is the host runtime for JSON manifest plugins.
+// Manifest code only describes request/response mapping; credentials, outbound
+// policy, polling and result downloads remain owned by the host.
+func runDeclarativeProtocolTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
+	adapter, ok := declarativeProtocolAdapterForContext(ctx, input.Config.InterfaceType)
+	if !ok {
+		return nil, fmt.Errorf("接口类型 %s 未安装声明式适配器", input.Config.InterfaceType)
+	}
+	request := protocolRequestFromInput(input)
+	taskID := resumedProviderRequestID(ctx)
+	var created protocol.CreateResult
+	if taskID == "" {
+		spec, err := adapter.BuildCreate(ctx, protocol.RequestContext{BaseURL: input.Config.BaseURL, Request: request})
+		if err != nil {
+			return nil, err
+		}
+		body, err := executeProtocolRequest(ctx, input.Config, spec)
+		if err != nil {
+			return nil, err
+		}
+		created, err = adapter.ParseCreate(ctx, body)
+		if err != nil {
+			return nil, err
+		}
+		taskID = created.TaskID
+		if created.Status == protocol.StatusFailed || created.Status == protocol.StatusCancelled {
+			return nil, protocolResultError(created.Message, taskID)
+		}
+		if created.Status == protocol.StatusSucceeded {
+			return finishProtocolResult(ctx, input.Config, input.Mode, created.Result)
+		}
+		if taskID == "" {
+			return nil, errors.New("声明式协议创建请求没有返回任务 ID")
+		}
+	}
+
+	for deadline := providerPollingDeadline(ctx); time.Now().Before(deadline); {
+		spec, err := adapter.BuildPoll(ctx, protocol.PollContext{BaseURL: input.Config.BaseURL, Model: request.Model, Request: request, TaskID: taskID})
+		if err != nil {
+			return nil, err
+		}
+		body, err := executeProtocolRequest(ctx, input.Config, spec)
+		if err != nil {
+			return nil, err
+		}
+		state, err := adapter.ParsePoll(ctx, protocol.PollContext{BaseURL: input.Config.BaseURL, Model: request.Model, Request: request, TaskID: taskID}, body)
+		if err != nil {
+			return nil, err
+		}
+		if state.TaskID != "" {
+			taskID = state.TaskID
+		}
+		switch state.Status {
+		case protocol.StatusSucceeded:
+			return finishProtocolResult(ctx, input.Config, input.Mode, state.Result)
+		case protocol.StatusFailed, protocol.StatusCancelled:
+			return nil, protocolResultError(state.Message, taskID)
+		}
+		if err := sleepContext(ctx, 2500*time.Millisecond); err != nil {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("声明式协议任务超时（任务 %s）", taskID)
+}
+
+func protocolRequestFromInput(input canvasGenerationInput) protocol.GenerationRequest {
+	request := protocol.GenerationRequest{
+		Model:         input.Config.Model,
+		Prompt:        input.Prompt,
+		Images:        protocolMediaReferences(input.ReferenceImages, "image"),
+		Videos:        protocolMediaReferences(input.ReferenceVideos, "video"),
+		Audios:        protocolMediaReferences(input.ReferenceAudios, "audio"),
+		AspectRatio:   input.Config.Size,
+		Resolution:    input.Config.VQuality,
+		Quality:       input.Config.Quality,
+		GenerateAudio: parseBool(input.Config.VideoGenerateAudio, false),
+		Watermark:     parseBool(input.Config.VideoWatermark, false),
+		Operation:     metadataString(input.Metadata, "videoOperation"),
+		Extra: map[string]any{
+			"videoSeconds": input.Config.VideoSeconds,
+			"audioVoice":   input.Config.AudioVoice,
+			"audioFormat":  input.Config.AudioFormat,
+			"count":        input.Config.Count,
+		},
+	}
+	if duration, err := strconv.Atoi(strings.TrimSpace(input.Config.VideoSeconds)); err == nil && duration > 0 {
+		request.Duration = duration
+	}
+	if count, err := strconv.Atoi(strings.TrimSpace(input.Config.Count)); err == nil && count > 0 {
+		request.ImageCount = count
+	}
+	return request
+}
+
+func protocolMediaReferences(values []providerMedia, kind string) []protocol.MediaReference {
+	result := make([]protocol.MediaReference, 0, len(values))
+	for _, value := range values {
+		item := protocol.MediaReference{URL: strings.TrimSpace(value.URL), DataURL: strings.TrimSpace(value.DataURL), Kind: kind}
+		if item.URL != "" || item.DataURL != "" {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func executeProtocolRequest(ctx context.Context, config providerConfig, spec protocol.RequestSpec) ([]byte, error) {
+	if err := spec.Validate(); err != nil {
+		return nil, err
+	}
+	method := strings.ToUpper(strings.TrimSpace(spec.Method))
+	var body io.Reader
+	if spec.Body != nil {
+		contentType := strings.ToLower(strings.TrimSpace(strings.Split(spec.ContentType, ";")[0]))
+		if contentType != "" && contentType != "application/json" {
+			return nil, fmt.Errorf("声明式协议暂不支持 %s 请求体", spec.ContentType)
+		}
+		data, err := json.Marshal(spec.Body)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, apiURL(config.BaseURL, spec.Path), body)
+	if err != nil {
+		return nil, err
+	}
+	applyProviderAuth(req, config)
+	if spec.Body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for name, value := range spec.Headers {
+		req.Header.Set(name, value)
+	}
+	ApplyOutboundHeaders(req, config.Headers)
+	data, _, err := doBinary(req)
+	return data, err
+}
+
+func finishProtocolResult(ctx context.Context, config providerConfig, mode string, result *protocol.Result) (map[string]interface{}, error) {
+	if result == nil {
+		return nil, errors.New("声明式协议已完成但没有返回结果")
+	}
+	if mode == "text" {
+		output := map[string]interface{}{"mode": "text", "text": result.Text}
+		if strings.TrimSpace(result.Reasoning) != "" {
+			output["reasoning"] = result.Reasoning
+		}
+		return output, nil
+	}
+	var references []protocol.MediaReference
+	switch mode {
+	case "image":
+		references = result.Images
+	case "video":
+		references = result.Videos
+	case "audio":
+		references = result.Audios
+	default:
+		return nil, fmt.Errorf("声明式协议不支持生成模式 %s", mode)
+	}
+	if len(references) == 0 {
+		return nil, errors.New("声明式协议已完成但没有返回媒体地址")
+	}
+	items := make([]interface{}, 0, len(references))
+	for _, reference := range references {
+		data, mimeType, err := protocolMediaBytes(ctx, config, reference)
+		if err != nil {
+			return nil, err
+		}
+		item := map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}
+		items = append(items, item)
+	}
+	switch mode {
+	case "image":
+		return map[string]interface{}{"mode": "image", "images": items}, nil
+	case "video":
+		return map[string]interface{}{"mode": "video", "video": items[0]}, nil
+	default:
+		return map[string]interface{}{"mode": "audio", "audio": items[0]}, nil
+	}
+}
+
+func protocolMediaBytes(ctx context.Context, config providerConfig, reference protocol.MediaReference) ([]byte, string, error) {
+	if strings.TrimSpace(reference.DataURL) != "" {
+		mimeType, data, err := decodeProviderDataURL(reference.DataURL)
+		return data, mimeType, err
+	}
+	value := strings.TrimSpace(reference.URL)
+	if value == "" {
+		return nil, "", errors.New("声明式协议媒体结果地址为空")
+	}
+	data, mimeType, err := getProviderExternalBinary(withProviderRequestKind(ctx, "download"), config, value)
+	if err != nil {
+		return nil, "", fmt.Errorf("声明式协议媒体结果下载失败：%w", err)
+	}
+	return data, normalizedMediaMimeType(mimeType, data), nil
+}
+
+func protocolResultError(message, taskID string) error {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = "上游返回失败状态"
+	}
+	if taskID == "" {
+		return errors.New(message)
+	}
+	return fmt.Errorf("声明式协议任务失败（任务 %s）：%s", taskID, message)
 }
 
 func runAsyncAudioTask(ctx context.Context, input canvasGenerationInput, body map[string]interface{}, format string) (map[string]interface{}, error) {
@@ -1748,17 +2320,11 @@ func audioFormatMimeType(format string) string {
 }
 
 func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
+	if _, ok := declarativeProtocolAdapterForContext(ctx, input.Config.InterfaceType); ok {
+		return runDeclarativeProtocolTask(ctx, input)
+	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceMiniMaxVideo) {
 		return runMiniMaxVideoTask(ctx, input)
-	}
-	if input.Config.InterfaceType == string(model.ChannelInterfaceGlobalAiOpcVideo) {
-		return runGlobalAiOpcTask(ctx, input, "video")
-	}
-	if input.Config.InterfaceType == string(model.ChannelInterfaceHuiQuYunVideo) {
-		return runHuiQuYunVideoTask(ctx, input)
-	}
-	if input.Config.InterfaceType == string(model.ChannelInterfaceAIStarsLabVideo) {
-		return runAiStarsLabVideoTask(ctx, input)
 	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineJiMengVideo) {
 		return runVolcengineJiMengVideoTask(ctx, input)
@@ -1775,9 +2341,6 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 	if input.Config.InterfaceType == "newapi-channel-1" {
 		return runNewAPIChannel1VideoTask(ctx, input)
 	}
-	if input.Config.InterfaceType == string(model.ChannelInterfaceSeedanceVideos) {
-		return runSeedanceVideosTask(ctx, input)
-	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo) {
 		return runSeedanceAgentPlanVideoTask(ctx, input)
 	}
@@ -1787,7 +2350,7 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 	if isSeedanceVideoConfig(input.Config) {
 		return runSeedanceVideosTask(ctx, input)
 	}
-	if resumedProviderRequestID(ctx) == "" && (len(input.ReferenceVideos) > 0 || len(input.ReferenceAudios) > 0) {
+	if len(input.ReferenceVideos) > 0 || len(input.ReferenceAudios) > 0 {
 		return nil, errors.New("OpenAI 风格视频接口不支持参考视频或参考音频，请切换到 Seedance / Agent Plan 渠道")
 	}
 	id := resumedProviderRequestID(ctx)
@@ -1898,7 +2461,7 @@ func runMiniMaxVideoTask(ctx context.Context, input canvasGenerationInput) (map[
 	}
 	content := []miniMaxVideoContent{{Type: "text", Text: strings.TrimSpace(input.Prompt)}}
 	for index, image := range input.ReferenceImages {
-		mediaURL, err := miniMaxMediaURLValue(image)
+		url, err := miniMaxMediaURLValue(image)
 		if err != nil {
 			return nil, fmt.Errorf("MiniMax 参考图无效：%w", err)
 		}
@@ -1910,21 +2473,21 @@ func runMiniMaxVideoTask(ctx context.Context, input canvasGenerationInput) (map[
 				role = "last_frame"
 			}
 		}
-		content = append(content, miniMaxVideoContent{Type: "image_url", ImageURL: &miniMaxMediaURL{URL: mediaURL}, Role: role})
+		content = append(content, miniMaxVideoContent{Type: "image_url", ImageURL: &miniMaxMediaURL{URL: url}, Role: role})
 	}
 	for _, video := range input.ReferenceVideos {
-		mediaURL, err := miniMaxMediaURLValue(video)
+		url, err := miniMaxMediaURLValue(video)
 		if err != nil {
 			return nil, fmt.Errorf("MiniMax 参考视频无效：%w", err)
 		}
-		content = append(content, miniMaxVideoContent{Type: "video_url", VideoURL: &miniMaxMediaURL{URL: mediaURL}, Role: "reference_video"})
+		content = append(content, miniMaxVideoContent{Type: "video_url", VideoURL: &miniMaxMediaURL{URL: url}, Role: "reference_video"})
 	}
 	for _, audio := range input.ReferenceAudios {
-		mediaURL, err := miniMaxMediaURLValue(audio)
+		url, err := miniMaxMediaURLValue(audio)
 		if err != nil {
 			return nil, fmt.Errorf("MiniMax 参考音频无效：%w", err)
 		}
-		content = append(content, miniMaxVideoContent{Type: "audio_url", AudioURL: &miniMaxMediaURL{URL: mediaURL}, Role: "reference_audio"})
+		content = append(content, miniMaxVideoContent{Type: "audio_url", AudioURL: &miniMaxMediaURL{URL: url}, Role: "reference_audio"})
 	}
 	watermark := parseBool(input.Config.VideoWatermark, false)
 	frameMode := len(input.ReferenceImages) > 0 && len(input.ReferenceImages) <= 2 && len(input.ReferenceVideos) == 0 && len(input.ReferenceAudios) == 0
@@ -2040,609 +2603,6 @@ func miniMaxTaskError(task map[string]interface{}) string {
 		}
 	}
 	return "上游返回失败"
-}
-
-func isRecoverableProviderVideoError(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) {
-		return false
-	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return true
-	}
-	var networkErr net.Error
-	if errors.As(err, &networkErr) {
-		return true
-	}
-	var httpErr providerHTTPError
-	if errors.As(err, &httpErr) {
-		return httpErr.StatusCode == http.StatusRequestTimeout || httpErr.StatusCode == http.StatusTooManyRequests || httpErr.StatusCode >= http.StatusInternalServerError
-	}
-	message := strings.ToLower(err.Error())
-	for _, marker := range []string{"超时", "timeout", "do_request_failed", "do request failed", "connection reset", "connection refused", "temporarily unavailable", "上游网关", "查询失败", "下载失败"} {
-		if strings.Contains(message, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func runHuiQuYunVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
-	id := resumedProviderRequestID(ctx)
-	if id == "" {
-		var created map[string]interface{}
-		if isHuiQuYunMX933VideoModel(input.Config.Model) && hasHuiQuYunVideoReferences(input) {
-			body, contentType, err := huiQuYunMX933MultipartBody(input)
-			if err != nil {
-				return nil, err
-			}
-			if err := postForm(ctx, input.Config, "/videos/generations", contentType, body, &created); err != nil {
-				return nil, err
-			}
-		} else {
-			body, err := huiQuYunVideoRequestBody(input)
-			if err != nil {
-				return nil, err
-			}
-			if err := postJSON(ctx, input.Config, "/videos/generations", body, &created); err != nil {
-				return nil, err
-			}
-		}
-		id = firstNonEmptyString(stringField(created, "id"), stringField(created, "task_id"), stringField(created, "request_id"))
-		if id == "" {
-			if data, ok := created["data"].(map[string]interface{}); ok {
-				id = firstNonEmptyString(stringField(data, "id"), stringField(data, "task_id"), stringField(data, "request_id"))
-			}
-		}
-	}
-	if id == "" {
-		return nil, errors.New("汇取云接口没有返回任务 ID")
-	}
-	for deadline := providerPollingDeadline(ctx); time.Now().Before(deadline); {
-		var state map[string]interface{}
-		if err := getJSON(withProviderRequestKind(ctx, "poll"), input.Config, "/videos/"+url.PathEscape(id), &state); err != nil {
-			return nil, err
-		}
-		if data, ok := state["data"].(map[string]interface{}); ok {
-			state = data
-		}
-		status := strings.ToLower(strings.TrimSpace(stringField(state, "status")))
-		switch status {
-		case "completed", "succeeded":
-			if videoURL := newAPIVideoResultURL(state); videoURL != "" {
-				data, mimeType, err := getProviderExternalBinary(withProviderRequestKind(ctx, "download"), input.Config, videoURL)
-				if err != nil {
-					return nil, fmt.Errorf("汇取云视频结果下载失败（任务 %s）：%w", id, err)
-				}
-				mimeType = normalizedMediaMimeType(mimeType, data)
-				return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
-			}
-			data, mimeType, err := getBinary(withProviderRequestKind(ctx, "download"), input.Config, "/videos/"+url.PathEscape(id)+"/content")
-			if err != nil {
-				return nil, err
-			}
-			mimeType = normalizedMediaMimeType(mimeType, data)
-			return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
-		case "failed", "cancelled", "canceled":
-			return nil, fmt.Errorf("汇取云视频生成失败（任务 %s）：%s", id, huiQuYunVideoError(state))
-		case "queued", "in_progress", "processing", "":
-		default:
-			return nil, fmt.Errorf("汇取云任务 %s 返回未知状态：%s", id, status)
-		}
-		if err := sleepContext(ctx, 5*time.Second); err != nil {
-			return nil, err
-		}
-	}
-	return nil, fmt.Errorf("汇取云视频生成超时（任务 %s）", id)
-}
-
-func runAiStarsLabVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
-	id := resumedProviderRequestID(ctx)
-	if id == "" {
-		body, err := aiStarsLabVideoRequestBody(input)
-		if err != nil {
-			return nil, err
-		}
-		var created map[string]interface{}
-		if err := postJSON(ctx, input.Config, "/generation/create/video", body, &created); err != nil {
-			return nil, err
-		}
-		id = aiStarsLabTaskID(created)
-	}
-	if id == "" {
-		return nil, errors.New("AIStarsLab 视频接口没有返回任务 ID")
-	}
-	resultURL, err := pollAiStarsLabTask(ctx, input, id, "视频")
-	if err != nil {
-		return nil, err
-	}
-	data, mimeType, err := getProviderExternalBinary(withProviderRequestKind(ctx, "download"), input.Config, resultURL)
-	if err != nil {
-		return nil, fmt.Errorf("AIStarsLab 视频结果下载失败（任务 %s）：%w", id, err)
-	}
-	mimeType = normalizedMediaMimeType(mimeType, data)
-	return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
-}
-
-func aiStarsLabVideoRequestBody(input canvasGenerationInput) (map[string]interface{}, error) {
-	if len(input.ReferenceAudios) > 0 && len(input.ReferenceImages) == 0 {
-		return nil, errors.New("AIStarsLab 参考音频必须同时提供至少 1 张参考图片")
-	}
-	route := aiStarsLabRoute(input.Config.CapabilityConfig, input.Config.Model)
-	// channel 是官方必填的线路编码，只能原样回传目录下发或 modelKey 还原的值；缺失时必须明确失败，不能用空字符串让上游猜线路。
-	if route == nil || strings.TrimSpace(route.Channel) == "" {
-		return nil, errors.New("AIStarsLab 模型缺少线路编码，请在后台重新拉取该渠道模型")
-	}
-	config := DefaultModelCapabilityConfigForModel(string(model.ChannelInterfaceAIStarsLabVideo), input.Config.Model).Video
-	if input.VideoCapability != nil {
-		config = input.VideoCapability
-	}
-	images, err := aiStarsLabMediaURLs(input.ReferenceImages)
-	if err != nil {
-		return nil, err
-	}
-	videos, err := aiStarsLabMediaURLs(input.ReferenceVideos)
-	if err != nil {
-		return nil, err
-	}
-	audios, err := aiStarsLabMediaURLs(input.ReferenceAudios)
-	if err != nil {
-		return nil, err
-	}
-	duration := config.Duration.Default
-	if value, parseErr := strconv.Atoi(strings.TrimSpace(input.Config.VideoSeconds)); parseErr == nil && value > 0 {
-		duration = value
-	}
-	mode, err := aiStarsLabVideoMode(route, len(images))
-	if err != nil {
-		return nil, err
-	}
-	quality, err := aiStarsLabRequestQuality(route, config, input.Config.VQuality)
-	if err != nil {
-		return nil, err
-	}
-	body := map[string]interface{}{
-		"channel":     strings.TrimSpace(route.Channel),
-		"model":       aiStarsLabRequestModel(route, input.Config.Model),
-		"prompt":      strings.TrimSpace(input.Prompt),
-		"aspectRatio": strings.TrimSpace(input.Config.Size),
-		"quality":     quality,
-		"duration":    duration,
-		"inputImages": images,
-		"inputVideos": videos,
-		"inputAudios": audios,
-	}
-	if mode != "" {
-		body["mode"] = mode
-	}
-	return body, nil
-}
-
-// 线路块是 channel、model 等官方必填项的首选来源。
-// 早期存量记录把线路编码写进了 modelKey（`<线路>:<模型>`）且没有线路块，它们仍可能已定价启用并被用户选中；
-// 生成不能卡在“先去后台重新拉取模型”上，因此线路块缺失时按 modelKey 现场还原。
-// 还原结果只保证 channel 与 model 可信，各类参考素材上限置 -1 表示未知并交由上游校验，不能因本地默认 0 把参考图误判成超限。
-func aiStarsLabRoute(config *ModelCapabilityConfig, modelKey string) *AIStarsLabCapabilityConfig {
-	if config != nil && config.AIStarsLab != nil && strings.TrimSpace(config.AIStarsLab.Channel) != "" {
-		return config.AIStarsLab
-	}
-	channelID, modelName, found := strings.Cut(strings.TrimSpace(modelKey), ":")
-	channelID, modelName = strings.TrimSpace(channelID), strings.TrimSpace(modelName)
-	if !found || channelID == "" || modelName == "" {
-		return nil
-	}
-	derived := AIStarsLabCapabilityConfig{Channel: channelID, Model: modelName, InputImagesMax: -1, InputVideosMax: -1, InputAudiosMax: -1}
-	if config != nil && config.AIStarsLab != nil {
-		existing := config.AIStarsLab
-		derived.Capability = existing.Capability
-		derived.Qualities, derived.AspectRatios, derived.Modes = existing.Qualities, existing.AspectRatios, existing.Modes
-		derived.Duration, derived.DurationMin, derived.DurationMax = existing.Duration, existing.DurationMin, existing.DurationMax
-	}
-	return &derived
-}
-
-// 线路块里的 model 是目录下发的官方模型名，是唯一可信值；
-// 早期存量记录的 modelKey 带有 `<线路>:` 前缀，直接回传会让上游找不到模型。
-func aiStarsLabRequestModel(route *AIStarsLabCapabilityConfig, fallback string) string {
-	if route != nil {
-		if name := strings.TrimSpace(route.Model); name != "" {
-			return name
-		}
-	}
-	return strings.TrimSpace(fallback)
-}
-
-func runAiStarsLabImageTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
-	if input.Mask != nil {
-		return nil, errors.New("AIStarsLab 图片协议不支持蒙版编辑，请移除蒙版后重试")
-	}
-	id := resumedProviderRequestID(ctx)
-	if id == "" {
-		body, err := aiStarsLabImageRequestBody(input)
-		if err != nil {
-			return nil, err
-		}
-		var created map[string]interface{}
-		if err := postJSON(ctx, input.Config, "/generation/create/image", body, &created); err != nil {
-			return nil, err
-		}
-		id = aiStarsLabTaskID(created)
-	}
-	if id == "" {
-		return nil, errors.New("AIStarsLab 图片接口没有返回任务 ID")
-	}
-	resultURL, err := pollAiStarsLabTask(ctx, input, id, "图片")
-	if err != nil {
-		return nil, err
-	}
-	data, mimeType, err := getProviderExternalBinary(withProviderRequestKind(ctx, "download"), input.Config, resultURL)
-	if err != nil {
-		return nil, fmt.Errorf("AIStarsLab 图片结果下载失败（任务 %s）：%w", id, err)
-	}
-	mimeType = normalizedMediaMimeType(mimeType, data)
-	return map[string]interface{}{"mode": "image", "images": []map[string]interface{}{{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}}, nil
-}
-
-func aiStarsLabImageRequestBody(input canvasGenerationInput) (map[string]interface{}, error) {
-	route := aiStarsLabRoute(input.Config.CapabilityConfig, input.Config.Model)
-	if route == nil || strings.TrimSpace(route.Channel) == "" {
-		return nil, errors.New("AIStarsLab 模型缺少线路编码，请在后台重新拉取该渠道模型")
-	}
-	images, err := aiStarsLabMediaURLs(input.ReferenceImages)
-	if err != nil {
-		return nil, err
-	}
-	if route.InputImagesMax >= 0 && len(images) > route.InputImagesMax {
-		return nil, fmt.Errorf("AIStarsLab 当前模型最多支持 %d 张参考图，当前连接了 %d 张", route.InputImagesMax, len(images))
-	}
-	// n 官方当前仅支持 1；画布的多图需求由上层拆成多个任务，不在这里静默放大。
-	quality, err := aiStarsLabRequestQuality(route, nil, input.Config.Quality)
-	if err != nil {
-		return nil, err
-	}
-	body := map[string]interface{}{
-		"channel":     strings.TrimSpace(route.Channel),
-		"model":       aiStarsLabRequestModel(route, input.Config.Model),
-		"prompt":      withSystemPrompt(input.Config, input.Prompt),
-		"aspectRatio": aiStarsLabImageRatio(input.Config.Size, route),
-		"quality":     quality,
-		"inputImages": images,
-		"n":           1,
-	}
-	return body, nil
-}
-
-// aspectRatio 是必填项且只能从目录声明的比例里选；画布可能传 auto 或像素尺寸，这里回退到首个声明比例。
-func aiStarsLabImageRatio(value string, route *AIStarsLabCapabilityConfig) string {
-	normalized := strings.TrimSpace(value)
-	for _, ratio := range route.AspectRatios {
-		if strings.EqualFold(strings.TrimSpace(ratio), normalized) {
-			return strings.TrimSpace(ratio)
-		}
-	}
-	if len(route.AspectRatios) > 0 {
-		return strings.TrimSpace(route.AspectRatios[0])
-	}
-	if normalized == "" || strings.EqualFold(normalized, "auto") {
-		return "1:1"
-	}
-	return normalized
-}
-
-func aiStarsLabTaskID(payload map[string]interface{}) string {
-	id := firstNonEmptyString(stringField(payload, "taskId"), stringField(payload, "task_id"), stringField(payload, "id"))
-	if data, ok := payload["data"].(map[string]interface{}); ok && id == "" {
-		id = firstNonEmptyString(stringField(data, "taskId"), stringField(data, "task_id"), stringField(data, "id"))
-	}
-	return id
-}
-
-// 图片和视频共用同一个状态轮询合同：1 已创建、2 执行中、3 成功、4 失败，结果只在 outputs 数组。
-func pollAiStarsLabTask(ctx context.Context, input canvasGenerationInput, id string, label string) (string, error) {
-	for deadline := providerPollingDeadline(ctx); time.Now().Before(deadline); {
-		var payload map[string]interface{}
-		if err := getJSON(withProviderRequestKind(ctx, "poll"), input.Config, "/generation/status?taskId="+url.QueryEscape(id), &payload); err != nil {
-			return "", err
-		}
-		state := payload
-		if data, ok := payload["data"].(map[string]interface{}); ok {
-			state = data
-		}
-		switch fmt.Sprint(state["status"]) {
-		case "3":
-			resultURL := firstStringInList(state["outputs"])
-			if resultURL == "" {
-				return "", fmt.Errorf("AIStarsLab %s任务 %s 已完成但没有返回结果地址", label, id)
-			}
-			return resultURL, nil
-		case "4":
-			return "", fmt.Errorf("AIStarsLab %s生成失败（任务 %s）：%s", label, id, firstNonEmptyString(stringField(state, "errorMessage"), stringField(state, "errorCode"), "上游返回失败"))
-		}
-		// 官方建议 10~15 秒轮询一次，频率过高容易触发限流。
-		if err := sleepContext(ctx, 10*time.Second); err != nil {
-			return "", err
-		}
-	}
-	return "", context.DeadlineExceeded
-}
-
-func aiStarsLabMediaURLs(items []providerMedia) ([]string, error) {
-	urls := make([]string, 0, len(items))
-	for _, item := range items {
-		value, err := videoGenerationsMediaURL(item)
-		if err != nil || !isPublicMediaURL(value) {
-			return nil, errors.New("AIStarsLab 参考素材仅支持公网 URL；请先保存到对象存储")
-		}
-		urls = append(urls, value)
-	}
-	return urls, nil
-}
-
-// quality 是官方必填项，必须取自目录下发的档位；用户选择不在档位内时回退到首个可用档位。
-// 前端状态历史上保存的是去掉 p 的裸数字（`720`），而线路声明的档位通常带后缀（`720p`）。
-// 早期实现直接做大小写无关的全串比较，两边永远对不上，于是静默兑现成第一档：
-// 用户选 720 实际出 480，而计费走的是已归一化的 720p 单价，钱与画质对不上。
-// 因此这里按归一化后的分辨率比对，并保留 1K/2K 这类非分辨率档位的原串相等判断。
-func aiStarsLabRequestQuality(route *AIStarsLabCapabilityConfig, config *VideoCapabilityConfig, requested string) (string, error) {
-	supported := route.Qualities
-	if len(supported) == 0 && config != nil {
-		supported = config.Resolutions
-	}
-	normalized := strings.TrimSpace(requested)
-	if len(supported) == 0 {
-		return normalized, nil
-	}
-	// 未选择时才用首档兑现；已明确选过的档位不得静默降级。
-	if normalized == "" || strings.EqualFold(normalized, "auto") || strings.EqualFold(normalized, "default") {
-		return strings.TrimSpace(supported[0]), nil
-	}
-	requestedKey := normalizeResolution(normalized)
-	for _, value := range supported {
-		candidate := strings.TrimSpace(value)
-		if strings.EqualFold(candidate, normalized) || normalizeResolution(candidate) == requestedKey {
-			return candidate, nil
-		}
-	}
-	return "", fmt.Errorf("AIStarsLab 当前线路不支持 %s 画质，可选：%s", normalized, strings.Join(supported, "、"))
-}
-
-// mode 决定上游对参考图的校验规则：2 张图优先首尾帧，否则有图走全能参考、无图走文生视频。
-// 模型未声明对应模式时不静默降级，直接报错，避免上游按默认模式产出与预期不符的结果。
-func aiStarsLabVideoMode(route *AIStarsLabCapabilityConfig, imageCount int) (string, error) {
-	if len(route.Modes) == 0 {
-		return "", nil
-	}
-	supports := func(name string) bool {
-		for _, value := range route.Modes {
-			if strings.EqualFold(strings.TrimSpace(value), name) {
-				return true
-			}
-		}
-		return false
-	}
-	if imageCount == 0 {
-		if supports("text2video") {
-			return "text2video", nil
-		}
-		return "", errors.New("AIStarsLab 当前模型不支持文生视频，请至少提供 1 张参考图片")
-	}
-	if imageCount == 2 && supports("frames2video") {
-		return "frames2video", nil
-	}
-	if supports("image2video") {
-		return "image2video", nil
-	}
-	return "", errors.New("AIStarsLab 当前模型不支持参考图片生成，请改用文生视频")
-}
-
-func firstStringInList(value interface{}) string {
-	items, ok := value.([]interface{})
-	if !ok {
-		return ""
-	}
-	for _, item := range items {
-		if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
-			return strings.TrimSpace(text)
-		}
-	}
-	return ""
-}
-
-func huiQuYunVideoRequestBody(input canvasGenerationInput) (map[string]interface{}, error) {
-	normalizeHuiQuYunVideoInput(&input)
-	if len(input.ReferenceAudios) > 0 && len(input.ReferenceImages) == 0 && len(input.ReferenceVideos) == 0 {
-		return nil, errors.New("汇取云参考音频必须搭配参考图片或参考视频")
-	}
-	images, err := huiQuYunMediaURLs(input.ReferenceImages)
-	if err != nil {
-		return nil, err
-	}
-	videos, err := huiQuYunMediaURLs(input.ReferenceVideos)
-	if err != nil {
-		return nil, err
-	}
-	audios, err := huiQuYunMediaURLs(input.ReferenceAudios)
-	if err != nil {
-		return nil, err
-	}
-	seconds, _ := strconv.Atoi(strings.TrimSpace(input.Config.VideoSeconds))
-	ratio := input.Config.Size
-	if isHuiQuYunMX933VideoModel(input.Config.Model) {
-		if hasHuiQuYunVideoReferences(input) {
-			return nil, errors.New("汇取云 MX933 参考素材必须使用 multipart 文件上传")
-		}
-		return map[string]interface{}{
-			"model":          input.Config.Model,
-			"prompt":         strings.TrimSpace(input.Prompt),
-			"seconds":        seconds,
-			"resolution":     input.Config.VQuality,
-			"aspect_ratio":   ratio,
-			"generate_audio": parseBool(input.Config.VideoGenerateAudio, true),
-		}, nil
-	}
-	ratio = normalizeHuiQuYunVideoRatio(ratio)
-	body := map[string]interface{}{
-		"model":        input.Config.Model,
-		"prompt":       strings.TrimSpace(input.Prompt),
-		"seconds":      seconds,
-		"resolution":   "720P",
-		"aspect_ratio": ratio,
-		"audio":        parseBool(input.Config.VideoGenerateAudio, true),
-	}
-	switch len(images) {
-	case 1:
-		body["reference_image"] = images[0]
-	case 2:
-		body["start_frame"], body["end_frame"] = images[0], images[1]
-	default:
-		if len(images) > 2 {
-			body["reference_images"] = images
-		}
-	}
-	if len(videos) > 0 {
-		body["video_references"] = videos
-	}
-	if len(audios) > 0 {
-		body["audio_reference"] = audios[0]
-	}
-	return body, nil
-}
-
-func hasHuiQuYunVideoReferences(input canvasGenerationInput) bool {
-	return len(input.ReferenceImages)+len(input.ReferenceVideos)+len(input.ReferenceAudios) > 0
-}
-
-func huiQuYunMX933MultipartBody(input canvasGenerationInput) (*bytes.Buffer, string, error) {
-	normalizeHuiQuYunVideoInput(&input)
-	if len(input.ReferenceAudios) > 0 && len(input.ReferenceImages) == 0 && len(input.ReferenceVideos) == 0 {
-		return nil, "", errors.New("汇取云参考音频必须搭配参考图片或参考视频")
-	}
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-	writeField(writer, "model", input.Config.Model)
-	writeField(writer, "prompt", strings.TrimSpace(input.Prompt))
-	writeField(writer, "seconds", input.Config.VideoSeconds)
-	writeField(writer, "resolution", input.Config.VQuality)
-	writeField(writer, "aspect_ratio", input.Config.Size)
-	writeField(writer, "generate_audio", strconv.FormatBool(parseBool(input.Config.VideoGenerateAudio, true)))
-
-	images := append([]providerMedia(nil), input.ReferenceImages...)
-	writeFrame := func(metadataKey string, field string) error {
-		frameID := metadataString(input.Metadata, metadataKey)
-		if frameID == "" {
-			return nil
-		}
-		for index, image := range images {
-			if image.ID != frameID {
-				continue
-			}
-			if err := writeMediaPart(writer, field, image); err != nil {
-				return err
-			}
-			images = append(images[:index], images[index+1:]...)
-			return nil
-		}
-		return fmt.Errorf("汇取云 MX933 %s参考图未包含在当前任务素材中", map[string]string{"first_frame": "首帧", "last_frame": "尾帧"}[field])
-	}
-	if err := writeFrame("videoStartFrameNodeId", "first_frame"); err != nil {
-		return nil, "", err
-	}
-	if err := writeFrame("videoEndFrameNodeId", "last_frame"); err != nil {
-		return nil, "", err
-	}
-	for _, image := range images {
-		if err := writeMediaPart(writer, "images", image); err != nil {
-			return nil, "", err
-		}
-	}
-	for _, video := range input.ReferenceVideos {
-		if err := writeMediaPart(writer, "videos", video); err != nil {
-			return nil, "", err
-		}
-	}
-	for _, audio := range input.ReferenceAudios {
-		if err := writeMediaPart(writer, "audios", audio); err != nil {
-			return nil, "", err
-		}
-	}
-	if err := writer.Close(); err != nil {
-		return nil, "", err
-	}
-	return body, writer.FormDataContentType(), nil
-}
-
-func normalizeHuiQuYunVideoInput(input *canvasGenerationInput) {
-	seconds := huiQuYunFixedVideoDuration(input.Config.Model)
-	if seconds == 0 {
-		seconds, _ = strconv.Atoi(strings.TrimSpace(input.Config.VideoSeconds))
-		if seconds < 4 || seconds > 15 {
-			seconds = 8
-		}
-	}
-	input.Config.VideoSeconds = strconv.Itoa(seconds)
-	if isHuiQuYunMX933VideoModel(input.Config.Model) {
-		input.Config.Size = normalizeHuiQuYunMX933VideoRatio(input.Config.Size)
-		quality := strings.ToLower(strings.TrimSpace(input.Config.VQuality))
-		if quality != "480p" && quality != "720p" {
-			quality = "720p"
-		}
-		input.Config.VQuality = quality
-		return
-	}
-	input.Config.Size = normalizeHuiQuYunVideoRatio(input.Config.Size)
-	input.Config.VQuality = "720p"
-}
-
-func huiQuYunMediaURLs(items []providerMedia) ([]string, error) {
-	urls := make([]string, 0, len(items))
-	for _, item := range items {
-		value, err := videoGenerationsMediaURL(item)
-		if err != nil || !isPublicMediaURL(value) {
-			return nil, errors.New("汇取云参考素材需要公网 URL；请先保存到对象存储")
-		}
-		urls = append(urls, value)
-	}
-	return urls, nil
-}
-
-func normalizeHuiQuYunVideoRatio(value string) string {
-	normalized := strings.TrimSpace(value)
-	if strings.Contains(normalized, "x") {
-		parts := strings.SplitN(normalized, "x", 2)
-		width, widthErr := strconv.Atoi(parts[0])
-		height, heightErr := strconv.Atoi(parts[1])
-		if widthErr == nil && heightErr == nil && width > 0 && height > 0 {
-			switch {
-			case width == height:
-				normalized = "1:1"
-			case width > height:
-				normalized = "16:9"
-			default:
-				normalized = "9:16"
-			}
-		}
-	}
-	switch normalized {
-	case "21:9", "4:3", "16:9", "1:1", "3:4", "9:16":
-		return normalized
-	default:
-		return "16:9"
-	}
-}
-
-func normalizeHuiQuYunMX933VideoRatio(value string) string {
-	switch strings.TrimSpace(value) {
-	case "3:2", "2:3":
-		return strings.TrimSpace(value)
-	default:
-		return normalizeHuiQuYunVideoRatio(value)
-	}
-}
-
-func huiQuYunVideoError(state map[string]interface{}) string {
-	if value, ok := state["error"].(map[string]interface{}); ok {
-		return firstNonEmptyString(stringField(value, "message"), stringField(value, "code"), "上游返回失败")
-	}
-	return firstNonEmptyString(stringField(state, "error"), stringField(state, "message"), stringField(state, "msg"), "上游返回失败")
 }
 
 func runGeminiVeoVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
@@ -2858,11 +2818,7 @@ func getGeminiBinary(ctx context.Context, config providerConfig, rawURL string) 
 }
 
 func geminiVeoURL(baseURL string, path string) string {
-	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if !strings.HasSuffix(strings.ToLower(base), "/v1beta") {
-		base += "/v1beta"
-	}
-	return base + "/" + strings.TrimLeft(path, "/")
+	return apiURLWithDefaultPrefix(baseURL, path, "/v1beta")
 }
 
 func findProviderMediaURL(value interface{}) string {
@@ -3059,14 +3015,15 @@ func logNewAPIChannel2QueryRetry(ctx context.Context, providerTaskID string, ret
 }
 
 func newAPIChannel2VideoRequestBody(input canvasGenerationInput) (newAPIVideoRequest, error) {
-	if len(input.ReferenceAudios) > 0 && len(input.ReferenceImages) == 0 {
-		return newAPIVideoRequest{}, errors.New("NewAPI Video Generations 的参考音频必须同时提供至少 1 张参考图片")
+	// NewAPI Video Generations 只接受附着在参考视频上的音频；纯音频请求会被上游拒绝。
+	if len(input.ReferenceAudios) > 0 && len(input.ReferenceVideos) == 0 {
+		return newAPIVideoRequest{}, errors.New("NewAPI Video Generations 的参考音频必须同时提供至少 1 个参考视频；纯音频生视频请切换到支持该模式的渠道")
 	}
 	modelName := strings.ToLower(strings.TrimSpace(input.Config.Model))
 	requiresSingleImage := modelName == "grok-video-1.5" || modelName == "grok-video-1.5-1080p"
 	images := make([]string, 0, len(input.ReferenceImages))
 	// 单图模型以实际参考图为准，兼容旧画布中未随连接关系更新的 text_to_video 元数据。
-	if shouldSendNewAPIVideoImages(input) || requiresSingleImage || len(input.ReferenceAudios) > 0 {
+	if shouldSendNewAPIVideoImages(input) || requiresSingleImage {
 		for _, image := range input.ReferenceImages {
 			url, err := videoGenerationsMediaURL(image)
 			if err != nil {
@@ -3342,318 +3299,40 @@ func firstNonEmptyString(values ...string) string {
 	return ""
 }
 
-func runGlobalAiOpcTask(ctx context.Context, input canvasGenerationInput, mode string) (map[string]interface{}, error) {
-	if input.Mask != nil {
-		return nil, errors.New("GlobalAiOpc 图片任务不支持蒙版编辑，请移除蒙版后重试")
-	}
-	id := resumedProviderRequestID(ctx)
-	if id == "" {
-		body, err := globalAiOpcTaskBody(input, mode)
-		if err != nil {
-			return nil, err
-		}
-		var created map[string]interface{}
-		if err := postGlobalAiOpcJSON(ctx, input.Config, body, &created); err != nil {
-			return nil, err
-		}
-		created, err = unwrapGlobalAiOpcTask(created)
-		if err != nil {
-			return nil, err
-		}
-		id = firstNonEmptyString(stringField(created, "id"), stringField(created, "task_id"), stringField(created, "request_id"))
-		if id == "" {
-			return nil, errors.New("GlobalAiOpc 接口没有返回任务 ID")
-		}
-	}
-	for deadline := providerPollingDeadline(ctx); time.Now().Before(deadline); {
-		var state map[string]interface{}
-		if err := getGlobalAiOpcJSON(ctx, input.Config, id, &state); err != nil {
-			return nil, err
-		}
-		unwrappedState, err := unwrapGlobalAiOpcTask(state)
-		if err != nil {
-			return nil, err
-		}
-		state = unwrappedState
-		status := strings.ToLower(strings.TrimSpace(stringField(state, "status")))
-		switch status {
-		case "completed", "succeeded", "success":
-			resultURL := firstNonEmptyString(stringField(state, mode+"_url"), stringField(state, "result_url"), stringField(state, "url"))
-			if resultURL == "" {
-				return nil, fmt.Errorf("GlobalAiOpc 任务 %s 已完成但没有返回结果地址", id)
-			}
-			data, mimeType, err := getProviderExternalBinary(withProviderRequestKind(ctx, "download"), input.Config, resultURL)
-			if err != nil {
-				return nil, fmt.Errorf("GlobalAiOpc 结果下载失败（任务 %s）：%w", id, err)
-			}
-			mimeType = normalizedMediaMimeType(mimeType, data)
-			media := map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}
-			if mode == "image" {
-				return map[string]interface{}{"mode": "image", "images": []map[string]interface{}{media}}, nil
-			}
-			return map[string]interface{}{"mode": "video", "video": media}, nil
-		case "failed", "cancelled", "canceled", "expired":
-			return nil, fmt.Errorf("GlobalAiOpc 任务 %s 失败：%s", id, globalAiOpcTaskError(state))
-		case "queued", "processing", "running", "pending", "":
-			if err := sleepContext(ctx, 5*time.Second); err != nil {
-				return nil, err
-			}
-		default:
-			return nil, fmt.Errorf("GlobalAiOpc 任务 %s 返回未知状态：%s", id, status)
-		}
-	}
-	return nil, fmt.Errorf("GlobalAiOpc 生成超时（任务 %s）", id)
-}
-
-func globalAiOpcTaskBody(input canvasGenerationInput, mode string) (map[string]interface{}, error) {
-	body := map[string]interface{}{"model": input.Config.Model, "prompt": strings.TrimSpace(input.Prompt)}
-	imageURLs := make([]string, 0, len(input.ReferenceImages))
-	for _, image := range input.ReferenceImages {
-		value, err := globalAiOpcMediaURL(image)
-		if err != nil {
-			return nil, err
-		}
-		imageURLs = append(imageURLs, value)
-	}
-	if mode == "image" {
-		if len(imageURLs) > 0 {
-			body["reference_images"] = imageURLs
-		}
-		body["aspect_ratio"] = normalizeGlobalAiOpcImageRatio(input.Config.Size)
-		body["resolution"] = normalizeGlobalAiOpcImageResolution(input.Config.Model, input.Config.Quality)
-		body["watermark"] = parseBool(input.Config.VideoWatermark, false)
-		return body, nil
-	}
-	modelName := strings.ToLower(strings.TrimSpace(input.Config.Model))
-	profile := input.VideoCapability
-	if profile == nil {
-		profile = DefaultModelCapabilityConfigForModel(string(model.ChannelInterfaceGlobalAiOpcVideo), input.Config.Model).Video
-	}
-	seconds, err := strconv.Atoi(strings.TrimSpace(input.Config.VideoSeconds))
-	if err != nil {
-		seconds = profile.Duration.Default
-	}
-	body["duration"] = seconds
-	ratio := strings.TrimSpace(input.Config.Size)
-	if !containsCapabilityString(profile.Ratios, ratio) {
-		ratio = profile.DefaultRatio
-	}
-	isSeedance15 := strings.HasPrefix(modelName, "seedance_1_5_pro_")
-	if isSeedance15 {
-		body["size"] = ratio
-	} else {
-		body["aspect_ratio"] = ratio
-		body["resolution"] = normalizeGlobalAiOpcVideoResolution(modelName, input.Config.VQuality, profile.DefaultResolution)
-	}
-	if profile.GenerateAudio.Supported {
-		body["generate_audio"] = parseBool(input.Config.VideoGenerateAudio, profile.GenerateAudio.Default)
-	}
-	if profile.Watermark.Supported {
-		body["watermark"] = parseBool(input.Config.VideoWatermark, profile.Watermark.Default)
-	}
-	if len(imageURLs) > 0 && !isSeedance15 {
-		body["reference_images"] = imageURLs
-	}
-	if startID := metadataString(input.Metadata, "videoStartFrameNodeId"); startID != "" {
-		firstImage := globalAiOpcFrameURL(input.ReferenceImages, imageURLs, startID)
-		if firstImage == "" {
-			return nil, errors.New("GlobalAiOpc 视频首帧未包含在参考图片中")
-		}
-		body["first_image"] = firstImage
-	} else if isSeedance15 && len(imageURLs) > 0 {
-		body["first_image"] = imageURLs[0]
-	}
-	if endID := metadataString(input.Metadata, "videoEndFrameNodeId"); endID != "" {
-		lastImage := globalAiOpcFrameURL(input.ReferenceImages, imageURLs, endID)
-		if lastImage == "" {
-			return nil, errors.New("GlobalAiOpc 视频尾帧未包含在参考图片中")
-		}
-		body["last_image"] = lastImage
-	} else if isSeedance15 && len(imageURLs) > 1 {
-		body["last_image"] = imageURLs[1]
-	}
-	videoURLs := make([]string, 0, len(input.ReferenceVideos))
-	for _, media := range input.ReferenceVideos {
-		value, err := globalAiOpcMediaURL(media)
-		if err != nil {
-			return nil, err
-		}
-		videoURLs = append(videoURLs, value)
-	}
-	if len(videoURLs) > 0 {
-		body["reference_videos"] = videoURLs
-	}
-	audioURLs := make([]string, 0, len(input.ReferenceAudios))
-	for _, media := range input.ReferenceAudios {
-		value, err := globalAiOpcMediaURL(media)
-		if err != nil {
-			return nil, err
-		}
-		audioURLs = append(audioURLs, value)
-	}
-	if len(audioURLs) > 0 {
-		body["reference_audios"] = audioURLs
-	}
-	return body, nil
-}
-
-func globalAiOpcFrameURL(images []providerMedia, urls []string, frameID string) string {
-	for index, image := range images {
-		if image.ID == frameID && index < len(urls) {
-			return urls[index]
-		}
-	}
-	return ""
-}
-
-func globalAiOpcMediaURL(media providerMedia) (string, error) {
-	value := strings.TrimSpace(media.URL)
-	if !isPublicMediaURL(value) {
-		return "", errors.New("GlobalAiOpc 参考素材必须使用公网 HTTP(S) URL，请先上传到 OSS")
-	}
-	if _, err := ValidateOutboundURL(value); err != nil {
-		return "", err
-	}
-	return value, nil
-}
-
-func normalizeGlobalAiOpcImageRatio(value string) string {
-	switch strings.TrimSpace(value) {
-	case "1:1", "3:4", "4:3", "16:9", "9:16", "3:2", "2:3", "21:9":
-		return strings.TrimSpace(value)
-	default:
-		return "1:1"
-	}
-}
-
-func normalizeGlobalAiOpcImageResolution(modelName string, value string) string {
-	resolution := strings.ToUpper(strings.TrimSpace(value))
-	if strings.EqualFold(strings.TrimSpace(modelName), "seedream_5.0Pro") {
-		if resolution == "2K" {
-			return "2K"
-		}
-		return "1K"
-	}
-	switch resolution {
-	case "3K", "4K":
-		return resolution
-	default:
-		return "2K"
-	}
-}
-
-func normalizeGlobalAiOpcVideoResolution(modelName string, value string, fallback string) string {
-	if modelName == "minimax-h3-c4" {
-		return "1440P"
-	}
-	resolution := strings.ToLower(strings.TrimSpace(value))
-	switch resolution {
-	case "low":
-		resolution = "480p"
-	case "auto", "medium", "high", "":
-		resolution = "720p"
-	case "4k", "2160":
-		resolution = "2160p"
-	default:
-		if _, err := strconv.Atoi(resolution); err == nil {
-			resolution += "p"
-		}
-	}
-	if strings.TrimSpace(value) == "" {
-		resolution = strings.ToLower(strings.TrimSpace(fallback))
-	}
-	if modelName == "sd_2.0_special" && resolution == "2160p" {
-		return "4k"
-	}
-	return resolution
-}
-
-func globalAiOpcTaskError(state map[string]interface{}) string {
-	if value, ok := state["error"].(string); ok && strings.TrimSpace(value) != "" {
-		return strings.TrimSpace(value)
-	}
-	if value, ok := state["error"].(map[string]interface{}); ok {
-		return firstNonEmptyString(stringField(value, "message"), stringField(value, "code"), "上游返回失败")
-	}
-	return firstNonEmptyString(stringField(state, "message"), stringField(state, "msg"), "上游返回失败")
-}
-
-func unwrapGlobalAiOpcTask(payload map[string]interface{}) (map[string]interface{}, error) {
-	if code, ok := payload["code"]; ok && globalAiOpcResponseCodeFailed(code) {
-		return nil, errors.New(firstNonEmptyString(stringField(payload, "msg"), stringField(payload, "message"), "GlobalAiOpc 请求失败"))
-	}
-	if data, ok := payload["data"].(map[string]interface{}); ok {
-		return data, nil
-	}
-	if _, wrapped := payload["data"]; wrapped {
-		return nil, errors.New("GlobalAiOpc 接口没有返回任务数据")
-	}
-	return payload, nil
-}
-
-func globalAiOpcResponseCodeFailed(value interface{}) bool {
-	switch code := value.(type) {
-	case nil:
-		return false
-	case float64:
-		return code != 0
-	case string:
-		switch strings.ToLower(strings.TrimSpace(code)) {
-		case "", "0", "ok", "success", "succeeded", "completed":
-			return false
-		default:
-			return true
-		}
-	default:
-		return true
-	}
-}
-
-func postGlobalAiOpcJSON(ctx context.Context, config providerConfig, body interface{}, target interface{}) error {
-	data, _ := json.Marshal(body)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, globalAiOpcTaskURL(config.BaseURL, ""), bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+config.APIKey)
-	req.Header.Set("Content-Type", "application/json")
-	ApplyOutboundHeaders(req, config.Headers)
-	return doJSON(req, target)
-}
-
-func getGlobalAiOpcJSON(ctx context.Context, config providerConfig, taskID string, target interface{}) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, globalAiOpcTaskURL(config.BaseURL, taskID), nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+config.APIKey)
-	ApplyOutboundHeaders(req, config.Headers)
-	return doJSON(req, target)
-}
-
-func globalAiOpcTaskURL(baseURL string, taskID string) string {
-	base := strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/v2/model-center/tasks"
-	if strings.TrimSpace(taskID) != "" {
-		base += "/" + url.PathEscape(strings.TrimSpace(taskID))
-	}
-	return base
-}
-
 func validateGenerationInterface(mode string, interfaceType string) error {
+	return validateGenerationInterfaceWithRegistry(protocol.Builtins(), mode, interfaceType)
+}
+
+func (s *Service) validateGenerationInterface(mode string, interfaceType string) error {
+	return validateGenerationInterfaceWithRegistry(s.protocolRegistry(), mode, interfaceType)
+}
+
+func validateGenerationInterfaceWithRegistry(registry *protocol.Registry, mode string, interfaceType string) error {
 	interfaceType = strings.TrimSpace(interfaceType)
 	if interfaceType == "" {
 		return nil
 	}
-	allowed := map[string]map[string]bool{
-		"text":  {"chat-completion": true, "openai-response": true},
-		"image": {"openai-image": true, "grok-image": true, "globalaiopc-image": true, "aistarslab-image": true, "volcengine-ark-image": true, "volcengine-jimeng-image": true, "gemini-image": true},
-		"video": {"newapi": true, "newapi-channel-1": true, "newapi-channel-2": true, "seedance-videos": true, "globalaiopc-video": true, "huiquyun-video": true, "aistarslab-video": true, "xai-video": true, "volcengine-ark-video": true, "volcengine-jimeng-video": true, "gemini-veo": true, "novita-video": true},
-		"audio": {"openai-audio": true, "async-audio": true},
+	adapter, ok := registry.Resolve(interfaceType)
+	if !ok {
+		return fmt.Errorf("接口类型 %s 未安装", interfaceType)
 	}
-	if allowed[mode] != nil && !allowed[mode][interfaceType] {
+	metadata := adapter.Metadata()
+	if !metadata.Enabled || metadata.UnavailableReason != "" {
+		return fmt.Errorf("接口类型 %s 当前不可用：%s", interfaceType, metadata.UnavailableReason)
+	}
+	if mode != "" && !protocolCapabilityMatches(metadata, protocol.Capability(mode)) {
 		return fmt.Errorf("接口类型 %s 不支持%s生成", interfaceType, mode)
 	}
 	return nil
+}
+
+func protocolCapabilityMatches(metadata protocol.Metadata, capability protocol.Capability) bool {
+	for _, item := range metadata.Categories {
+		if item == capability {
+			return true
+		}
+	}
+	return false
 }
 
 func grokVideoBody(input canvasGenerationInput) (map[string]interface{}, error) {
@@ -3918,6 +3597,17 @@ func postStreamingText(ctx context.Context, config providerConfig, path string, 
 }
 
 func extractTextPayload(payload map[string]interface{}, protocol string) string {
+	if protocol == "claude-api" {
+		content, _ := payload["content"].([]interface{})
+		var result strings.Builder
+		for _, item := range content {
+			record, _ := item.(map[string]interface{})
+			if stringField(record, "type") == "text" {
+				result.WriteString(stringField(record, "text"))
+			}
+		}
+		return result.String()
+	}
 	if protocol == "responses" {
 		text := stringField(payload, "output_text")
 		if text == "" {
@@ -3973,6 +3663,11 @@ func parseTextEventStream(data []byte, protocol string) (string, error) {
 		}
 		if protocol == "responses" {
 			text.WriteString(stringField(payload, "delta"))
+		} else if protocol == "claude-api" {
+			delta, _ := payload["delta"].(map[string]interface{})
+			if stringField(delta, "type") == "text_delta" {
+				text.WriteString(stringField(delta, "text"))
+			}
 		} else {
 			choices, _ := payload["choices"].([]interface{})
 			for _, choice := range choices {
@@ -4035,7 +3730,7 @@ func postStreamingBinary(ctx context.Context, config providerConfig, path string
 	if err != nil {
 		return nil, "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+config.APIKey)
+	applyProviderAuth(req, config)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	ApplyOutboundHeaders(req, config.Headers)
@@ -4048,10 +3743,23 @@ func postJSON(ctx context.Context, config providerConfig, path string, body inte
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+config.APIKey)
+	applyProviderAuth(req, config)
 	req.Header.Set("Content-Type", "application/json")
 	ApplyOutboundHeaders(req, config.Headers)
 	return doJSON(req, target)
+}
+
+func applyProviderAuth(req *http.Request, config providerConfig) {
+	if config.APIFormat == "claude" {
+		req.Header.Set("x-api-key", config.APIKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+		return
+	}
+	if config.APIFormat == "gemini" {
+		req.Header.Set("x-goog-api-key", config.APIKey)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+config.APIKey)
 }
 
 func postForm(ctx context.Context, config providerConfig, path string, contentType string, body io.Reader, target interface{}) error {
@@ -4111,7 +3819,7 @@ func getProviderExternalBinary(ctx context.Context, config providerConfig, rawUR
 		return nil, "", err
 	}
 	if sameProviderOrigin(config.BaseURL, rawURL) {
-		req.Header.Set("Authorization", "Bearer "+config.APIKey)
+		applyProviderAuth(req, config)
 		ApplyOutboundHeaders(req, config.Headers)
 	}
 	return doBinary(req)
@@ -4139,41 +3847,23 @@ func doJSON(req *http.Request, target interface{}) error {
 	}
 	if payload, ok := target.(*imageResponse); ok {
 		if payload.Error != nil && payload.Error.Message != "" {
-			return errors.New(payload.Error.Message)
+			return errors.New(providerPayloadErrorMessage(payload.Error.Message))
 		}
 		if payload.Code != nil && *payload.Code != 0 {
-			return errors.New(defaultString(payload.Msg, "请求失败"))
+			return errors.New(providerPayloadErrorMessage(payload.Msg))
 		}
 	}
 	if payload, ok := target.(*map[string]interface{}); ok {
-		if code, ok := (*payload)["code"]; ok && responseCodeFailed(code) {
-			return errors.New(defaultString(stringField(*payload, "msg"), "请求失败"))
+		if code, ok := (*payload)["code"].(float64); ok && code != 0 {
+			rawMessage := stringField(*payload, "msg")
+			return providerPayloadError{raw: rawMessage, message: providerPayloadErrorMessage(rawMessage)}
 		}
 		if errValue, ok := (*payload)["error"].(map[string]interface{}); ok && stringField(errValue, "message") != "" {
-			return errors.New(stringField(errValue, "message"))
+			rawMessage := stringField(errValue, "message")
+			return providerPayloadError{raw: rawMessage, message: providerPayloadErrorMessage(rawMessage)}
 		}
 	}
 	return nil
-}
-
-func responseCodeFailed(value interface{}) bool {
-	switch code := value.(type) {
-	case nil:
-		return false
-	case float64:
-		return code != 0
-	case string:
-		switch strings.ToLower(strings.TrimSpace(code)) {
-		case "", "0", "ok", "success", "succeeded", "completed":
-			return false
-		default:
-			return true
-		}
-	case json.Number:
-		return code.String() != "0"
-	default:
-		return true
-	}
 }
 
 func withProviderOutboundPolicy(ctx context.Context, config providerConfig) context.Context {
@@ -4337,8 +4027,8 @@ func recordProviderRequest(req *http.Request, startedAt time.Time, statusCode in
 	if req.Header.Get("x-goog-api-key") != "" {
 		apiFormat = "gemini"
 	}
-	log := model.ApiCallLog{
-		UserID: metadata.UserID, ChannelID: metadata.ChannelID, TaskID: metadata.TaskID, BillingOrderID: metadata.BillingOrderID,
+	callLog := model.ApiCallLog{
+		UserID: metadata.UserID, TraceID: metadata.TraceID, RequestID: metadata.RequestID, ChannelID: metadata.ChannelID, TaskID: metadata.TaskID, BillingOrderID: metadata.BillingOrderID,
 		Source: "backend-task", Capability: metadata.Capability, Operation: metadata.Operation,
 		RequestKind: requestKind, Billable: req.Method == http.MethodPost && requestKind != "cancel",
 		APIFormat: apiFormat, Method: req.Method, Path: req.URL.Path, Model: metadata.Model,
@@ -4349,23 +4039,26 @@ func recordProviderRequest(req *http.Request, startedAt time.Time, statusCode in
 	channelSlotFailure := false
 	if code, message := ChannelSlotFailureDetails(requestErr); code != "" {
 		channelSlotFailure = true
-		log.ErrorCode = code
-		log.Error = message
+		callLog.ErrorCode = code
+		callLog.Error = message
 	}
 	if requestKind == "create" && metadata.Capability == "video" {
-		log.VideoSeconds = metadata.VideoSeconds
-		if log.VideoSeconds <= 0 {
+		callLog.VideoSeconds = metadata.VideoSeconds
+		if callLog.VideoSeconds <= 0 {
 			if strings.Contains(strings.ToLower(metadata.Model), "seedance") || strings.Contains(req.URL.Path, "/contents/generations/tasks") {
-				log.VideoSeconds = 5
+				callLog.VideoSeconds = 5
 			} else {
-				log.VideoSeconds = 6
+				callLog.VideoSeconds = 6
 			}
 		}
 	}
-	metadata.Service.EnrichAPICallLog(&log, responseBody)
-	if err := metadata.Service.LogAPICall(log); err != nil {
-		if !channelSlotFailure {
-			_ = metadata.Service.MarkBillingUncertain(metadata.BillingOrderID, "上游调用日志写入失败，费用状态待核对")
+	metadata.Service.EnrichAPICallLog(&callLog, responseBody)
+	if err := metadata.Service.LogAPICall(callLog); err != nil {
+		if !channelSlotFailure && metadata.Billing != nil {
+			if uncertainErr := metadata.Billing.MarkBillingUncertain(metadata.BillingOrderID, "上游调用日志写入失败，费用状态待核对"); uncertainErr != nil {
+				// 这里无法把日志落库错误返回给已完成的 HTTP 请求，只能把计费边界失败写入进程日志，交给待核对审计继续处理。
+				log.Printf("provider billing uncertainty update failed: task_id=%s billing_order_id=%s error=%v", metadata.TaskID, metadata.BillingOrderID, uncertainErr)
+			}
 		}
 	}
 }
@@ -4405,29 +4098,73 @@ func providerRequestKind(method string, path string) string {
 }
 
 func apiURL(baseURL string, path string) string {
-	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if strings.HasPrefix(path, "/v2/") {
-		if strings.HasSuffix(strings.ToLower(base), "/v2") {
-			return base + strings.TrimPrefix(path, "/v2")
-		}
-		return base + path
-	}
-	// `/openapi` 本身就是上游的 API 根（如 AIStarsLab），官方路径直接挂在它下面；再补 `/v1` 会拿到 404。
-	if isVersionedAPIBase(base) {
-		return base + path
-	}
-	return base + "/v1" + path
+	return apiURLWithDefaultPrefix(baseURL, path, "/v1")
 }
 
-// 已经带版本或已经是 API 根的 base 不能再被补上 `/v1`。
-func isVersionedAPIBase(base string) bool {
-	lower := strings.ToLower(base)
-	for _, suffix := range []string{"/v1", "/v1beta", "/v2", "/api/v3", "/api/plan/v3", "/openapi"} {
-		if strings.HasSuffix(lower, suffix) {
-			return true
+// ChannelAPIURL is the single URL join point for provider requests. A channel
+// may be configured as host, host/, host/v1 or host/v1/; callers should pass
+// protocol paths without hard-coding a version prefix whenever possible.
+func ChannelAPIURL(baseURL string, path string) string {
+	return apiURL(baseURL, path)
+}
+
+// ChannelAPIURLForProtocol keeps protocol-specific defaults at the transport
+// boundary. In particular, Gemini uses v1beta while OpenAI-compatible APIs
+// conventionally use v1. An explicit version in either input wins.
+func ChannelAPIURLForProtocol(baseURL string, path string, interfaceType model.ChannelInterfaceType) string {
+	defaultPrefix := "/v1"
+	if interfaceType == model.ChannelInterfaceGeminiVeo || interfaceType == model.ChannelInterfaceGeminiImage {
+		defaultPrefix = "/v1beta"
+	}
+	return apiURLWithDefaultPrefix(baseURL, path, defaultPrefix)
+}
+
+var channelAPIPrefixes = []string{"/api/plan/v3", "/api/v3", "/api/v1", "/v1beta", "/v1", "/v2", "/v3"}
+
+func apiURLWithDefaultPrefix(baseURL string, path string, defaultPrefix string) string {
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	requestPath := strings.TrimSpace(path)
+	if requestPath == "" {
+		return base
+	}
+	if !strings.HasPrefix(requestPath, "/") {
+		requestPath = "/" + requestPath
+	}
+
+	requestPrefix := requestAPIPathPrefix(requestPath)
+	basePrefix := baseAPIPathPrefix(base)
+	if requestPrefix != "" {
+		if basePrefix == requestPrefix {
+			return base + strings.TrimPrefix(requestPath, requestPrefix)
+		}
+		// An explicit request version takes precedence over a version accidentally
+		// left on the configured base URL (for example base=/v1, path=/v2/...).
+		return strings.TrimSuffix(base, basePrefix) + requestPath
+	}
+	if basePrefix != "" {
+		return base + requestPath
+	}
+	return base + defaultPrefix + requestPath
+}
+
+func requestAPIPathPrefix(value string) string {
+	lower := strings.ToLower(value)
+	for _, prefix := range channelAPIPrefixes {
+		if lower == prefix || strings.HasPrefix(lower, prefix+"/") || strings.HasPrefix(lower, prefix+"?") || strings.HasPrefix(lower, prefix+"#") {
+			return prefix
 		}
 	}
-	return false
+	return ""
+}
+
+func baseAPIPathPrefix(value string) string {
+	lower := strings.ToLower(strings.TrimRight(value, "/"))
+	for _, prefix := range channelAPIPrefixes {
+		if lower == prefix || strings.HasSuffix(lower, prefix) {
+			return prefix
+		}
+	}
+	return ""
 }
 
 func writeField(writer *multipart.Writer, key string, value string) {
@@ -4587,27 +4324,26 @@ func withSystemPrompt(config providerConfig, prompt string) string {
 
 func seedanceContent(input canvasGenerationInput) ([]map[string]interface{}, error) {
 	content := make([]map[string]interface{}, 0, 1+len(input.ReferenceImages)+len(input.ReferenceVideos)+len(input.ReferenceAudios))
-	allowVolcengineAssetURI := input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo) || isArkPlanVideoConfig(input.Config)
 	text := seedancePromptText(input)
 	if strings.TrimSpace(text) != "" {
 		content = append(content, map[string]interface{}{"type": "text", "text": text})
 	}
 	for _, image := range input.ReferenceImages {
-		url, err := mediaReferenceURL(image, allowVolcengineAssetURI)
+		url, err := mediaReferenceURL(image)
 		if err != nil {
 			return nil, err
 		}
 		content = append(content, map[string]interface{}{"type": "image_url", "image_url": map[string]interface{}{"url": url}, "role": seedanceImageRole(input, image)})
 	}
 	for _, video := range input.ReferenceVideos {
-		url, err := mediaReferenceURL(video, allowVolcengineAssetURI)
+		url, err := mediaReferenceURL(video)
 		if err != nil {
 			return nil, err
 		}
 		content = append(content, map[string]interface{}{"type": "video_url", "video_url": map[string]interface{}{"url": url}, "role": "reference_video"})
 	}
 	for _, audio := range input.ReferenceAudios {
-		url, err := mediaReferenceURL(audio, allowVolcengineAssetURI)
+		url, err := mediaReferenceURL(audio)
 		if err != nil {
 			return nil, err
 		}
@@ -4641,6 +4377,9 @@ func newAPIVideoPromptText(input canvasGenerationInput) string {
 }
 
 func seedanceVideosRequestBody(input canvasGenerationInput) (seedanceVideosRequest, error) {
+	if (len(input.ReferenceVideos) > 0 || len(input.ReferenceAudios) > 0) && len(input.ReferenceImages) == 0 {
+		return seedanceVideosRequest{}, errors.New("Seedance 参考视频或参考音频需要同时连接至少 1 张主参考图")
+	}
 	body := seedanceVideosRequest{
 		Model:       input.Config.Model,
 		Prompt:      seedanceVideosPromptText(input),
@@ -4659,14 +4398,17 @@ func seedanceVideosRequestBody(input canvasGenerationInput) (seedanceVideosReque
 		}
 		imageURLs = append(imageURLs, url)
 	}
-	orderedImageURLs, err := videoFrameImageURLs(input, imageURLs)
+	frameImageURLs, err := videoFrameImageURLs(input, imageURLs)
 	if err != nil {
 		return seedanceVideosRequest{}, err
 	}
-	if len(orderedImageURLs) > 0 {
-		body.Images = orderedImageURLs
+	if len(frameImageURLs) > 0 {
+		body.ImageURLs = frameImageURLs
 	} else if len(imageURLs) > 0 {
-		body.Images = imageURLs
+		body.ImageURL = imageURLs[0]
+		if len(imageURLs) > 1 {
+			body.ReferenceImageURLs = imageURLs[1:]
+		}
 	}
 	videoURLs := make([]string, 0, len(input.ReferenceVideos))
 	for _, video := range input.ReferenceVideos {
@@ -4677,7 +4419,7 @@ func seedanceVideosRequestBody(input canvasGenerationInput) (seedanceVideosReque
 		videoURLs = append(videoURLs, url)
 	}
 	if len(videoURLs) > 0 {
-		body.Videos = videoURLs
+		body.ReferenceVideos = videoURLs
 	}
 	audioURLs := make([]string, 0, len(input.ReferenceAudios))
 	for _, audio := range input.ReferenceAudios {
@@ -4688,7 +4430,7 @@ func seedanceVideosRequestBody(input canvasGenerationInput) (seedanceVideosReque
 		audioURLs = append(audioURLs, url)
 	}
 	if len(audioURLs) > 0 {
-		body.Audios = audioURLs
+		body.ReferenceAudios = audioURLs
 	}
 	return body, nil
 }
@@ -4765,14 +4507,9 @@ func metadataString(metadata map[string]interface{}, key string) string {
 	return strings.TrimSpace(value)
 }
 
-func mediaReferenceURL(media providerMedia, allowVolcengineAssetURI bool) (string, error) {
-	if allowVolcengineAssetURI {
-		if assetURI := volcengineAssetURI(media); assetURI != "" {
-			return assetURI, nil
-		}
-	}
+func mediaReferenceURL(media providerMedia) (string, error) {
 	value := strings.TrimSpace(media.URL)
-	if isPublicMediaURL(value) || strings.HasPrefix(value, "data:") {
+	if isPublicMediaURL(value) || strings.HasPrefix(value, "asset://") || strings.HasPrefix(value, "data:") {
 		return value, nil
 	}
 	value = strings.TrimSpace(media.DataURL)
@@ -4780,40 +4517,6 @@ func mediaReferenceURL(media providerMedia, allowVolcengineAssetURI bool) (strin
 		return value, nil
 	}
 	return "", errors.New("参考素材需要公网 URL、asset:// 素材 ID 或 data URL")
-}
-
-func volcengineAssetURI(media providerMedia) string {
-	return normalizeVolcengineAssetURI(media.VolcengineAssetURI, media.ID, media.URL, media.DataURL)
-}
-
-func normalizeVolcengineAssetURI(values ...string) string {
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if strings.HasPrefix(value, "asset://") {
-			assetID := strings.TrimPrefix(value, "asset://")
-			if isVolcengineAssetID(assetID) {
-				return "asset://" + assetID
-			}
-			continue
-		}
-		if isVolcengineAssetID(value) {
-			return "asset://" + value
-		}
-	}
-	return ""
-}
-
-func isVolcengineAssetID(value string) bool {
-	if !strings.HasPrefix(value, "asset-") || len(value) <= len("asset-") || strings.IndexFunc(value, unicode.IsSpace) >= 0 {
-		return false
-	}
-	for _, char := range value {
-		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' {
-			continue
-		}
-		return false
-	}
-	return true
 }
 
 func seedanceVideosMediaURL(media providerMedia) (string, error) {

@@ -29,6 +29,9 @@ export type FeatureAvailability = {
     taskCenterEnabled: boolean;
     creditsEnabled: boolean;
     customChannelsEnabled: boolean;
+    frontendModelsEnabled: boolean;
+    pluginCenterEnabled: boolean;
+    systemPluginsVisibleToUsers: boolean;
     desktopLocalChannelsEnabled: boolean;
     configured?: boolean;
     updatedBy?: string;
@@ -39,7 +42,10 @@ export const defaultFeatureAvailability: FeatureAvailability = {
     shortDramaEnabled: true,
     taskCenterEnabled: true,
     creditsEnabled: true,
-    customChannelsEnabled: false,
+    customChannelsEnabled: true,
+    frontendModelsEnabled: false,
+    pluginCenterEnabled: true,
+    systemPluginsVisibleToUsers: true,
     desktopLocalChannelsEnabled: false,
 };
 
@@ -66,7 +72,7 @@ export const useUserStore = create<UserStore>()((set) => ({
     setUser: (user) => set({ user }),
     setRuntimeLimits: (runtimeLimits) => set({ runtimeLimits: runtimeLimits || { activeTaskLimit: 5, resourceUploadMB: 50, sessionUploadMB: 32 } }),
     setDrawingEngine: (drawingEngine) => set({ drawingEngine: drawingEngine || { defaultEngine: DEFAULT_DRAWING_ENGINE } }),
-    setFeatures: (features) => set({ features: features ? { ...defaultFeatureAvailability, ...features, customChannelsEnabled: false } : defaultFeatureAvailability }),
+    setFeatures: (features) => set({ features: features ? { ...defaultFeatureAvailability, ...features } : defaultFeatureAvailability }),
     setHydrated: (hydrated) => set({ hydrated }),
     clearSession: () => set({ user: null, runtimeLimits: { activeTaskLimit: 5, resourceUploadMB: 50, sessionUploadMB: 32 }, drawingEngine: { defaultEngine: DEFAULT_DRAWING_ENGINE }, features: defaultFeatureAvailability }),
 }));

@@ -5,15 +5,15 @@ import type { AiConfig } from "@/stores/use-config-store";
  * text-replay 前端发布器：为前端直连模型生成的文本，在后端维护一个
  * text_replay 任务作持久化存档 + 回放。
  *
- * - start()：创建后端 text_replay 任务（不排队、不计费），拿到 taskId 后通过
- *   onTaskId 回写消息，否则刷新页面时消息没有 taskIds，恢复链路无法触发；
+ * - start()：创建后端 text_replay 任务（不排队、不计费），拿到 taskId；
  * - publish(fullText)：按阈值节流地把新增片段通过 appendTaskTextDelta 上报
  *   （生成中途刷新页面也能读到已生成部分）；
- * - finish(finalText)：把最终正文写入任务并置为 succeeded，恢复时即可读到正文。
+ * - finish(finalText)：把最终正文写入任务并置为 succeeded，queryTaskTextReplay
+ *   即可读到 finalText。
  *
  * 全部失败静默降级：文本直连生成是主流程，后端持久化只是增强，失败不阻塞生成。
  */
-export function createTextReplayPublisher(config: AiConfig, prompt: string, onTaskId?: (taskId: string) => void) {
+export function createTextReplayPublisher(config: AiConfig, prompt: string) {
     let taskId: string | null = null;
     let lastLen = 0;
     let buffered = "";
@@ -56,7 +56,6 @@ export function createTextReplayPublisher(config: AiConfig, prompt: string, onTa
                 },
             });
             taskId = task?.id || null;
-            if (taskId) onTaskId?.(taskId);
         } catch {
             taskId = null; // 降级：无持久化，不影响主流程
         }
@@ -77,10 +76,10 @@ export function createTextReplayPublisher(config: AiConfig, prompt: string, onTa
             flushTimer = null;
         }
         if (!taskId) return;
-        const pending = buffered;
-        buffered = "";
-        if (pending.trim()) void appendTaskTextDelta(taskId, pending).catch(() => {});
-        if (finalText.trim()) void completeTextReplayTask(taskId, finalText).catch(() => {});
+        void appendTaskTextDelta(taskId, buffered).catch(() => {});
+        if (finalText && finalText.trim()) {
+            void completeTextReplayTask(taskId, finalText).catch(() => {});
+        }
     };
 
     return { start, publish, finish };

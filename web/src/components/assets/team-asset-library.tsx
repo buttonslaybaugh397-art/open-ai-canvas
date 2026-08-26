@@ -12,7 +12,7 @@ import { createTeamAssetFolder, deleteTeamAsset, deleteTeamAssetFolder, listTeam
 import type { Asset, AssetKind } from "@/stores/use-asset-store";
 import { useUserStore } from "@/stores/use-user-store";
 
-export type TeamLibraryAsset = Exclude<Asset, { kind: "entity" }>;
+export type TeamLibraryAsset = Exclude<Asset, { kind: "entity" }> & { folderId?: string };
 
 const teamKindOptions = [
     { label: "全部", value: "all" },

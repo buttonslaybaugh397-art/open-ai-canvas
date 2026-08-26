@@ -1,7 +1,7 @@
 import { DREAMINA_SUBMIT_ERROR_MESSAGES, generationErrorMessage } from "@/lib/generation-error";
 import { apiClient, request, type BackendEnvelope } from "@/services/api/request";
+import { recordDiagnosticEvent } from "@/services/diagnostics/client-diagnostics";
 import {
-    cancelLocalDreaminaGenerationTask,
     deleteLocalDreaminaGenerationTask,
     listLocalDreaminaGenerationTaskPage,
     queryLocalDreaminaGenerationTask,
@@ -13,12 +13,9 @@ import { isLocalDreaminaTaskId, projectLocalDreaminaDiagnosticLog, projectLocalD
 
 export type { BackendEnvelope } from "@/services/api/request";
 
-// text_replay 是前端自管的文本存档状态：任务不进 worker 队列，由前端直连生成并上报增量，
-// 完成时才收尾为 succeeded；浏览器中途关闭会让任务一直停在该状态。
-export type TaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "text_replay";
+export type TaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type TaskBillingStatus = "reserved" | "running" | "settled" | "refunded" | "uncertain";
 export type ProviderCancelStatus = "requested" | "confirmed" | "uncertain";
-const GENERATION_TASK_CANCEL_ABORT_REASON = "generation-task-cancel";
 export type AgentSessionStatus = "active" | "completed" | "failed";
 export type GenerationTaskResultState = "NOT_AVAILABLE" | "PENDING_MATERIALIZATION" | "MATERIALIZING" | "READY" | "FAILED_RETRYABLE" | "FAILED_PERMANENT";
 export type GenerationTaskOutput = {
@@ -223,6 +220,7 @@ export function uploadAgentFile(sessionId: string, file: File) {
 
 export function createGenerationTask(input: CreateTaskInput) {
     return request<GenerationTask>(api.post("/tasks", input)).then((task) => {
+        recordDiagnosticEvent({ level: "info", category: "task", message: "任务已创建", taskId: task.id, projectId: task.projectId });
         notifyCanvasTaskCreated(task);
         // 创建任务时积分已被预占，不能等任务结束后才刷新可用余额。
         window.dispatchEvent(new CustomEvent("wallet:updated"));
@@ -406,23 +404,19 @@ export function retryGenerationTask(id: string) {
     return request<GenerationTask>(api.post(`/tasks/${encodeURIComponent(id)}/retry`));
 }
 
-export function queryFailedVideoProviderTask(id: string) {
-    return request<ProviderTaskQueryResult>(api.post(`/tasks/${encodeURIComponent(id)}/query-provider`));
-}
-
 export function cancelGenerationTask(id: string) {
     if (isLocalDreaminaTaskId(id)) {
-        return cancelLocalDreaminaGenerationTask(stripLocalDreaminaTaskPrefix(id)).then((task) => projectLocalDreaminaTask(task));
+        return Promise.reject(new Error("官方即梦 CLI 当前不支持可靠取消"));
     }
-    return request<GenerationTask>(api.post(`/tasks/${encodeURIComponent(id)}/cancel`));
+    return request<GenerationTask>(api.post(`/tasks/${encodeURIComponent(id)}/cancel`)).then((task) => {
+        window.dispatchEvent(new CustomEvent("canvas:task-cancelled", { detail: { task } }));
+        window.dispatchEvent(new CustomEvent("wallet:updated"));
+        return task;
+    });
 }
 
-export function abortGenerationTask(controller: AbortController) {
-    controller.abort(GENERATION_TASK_CANCEL_ABORT_REASON);
-}
-
-export function generationTaskAbortRequestsCancellation(signal?: AbortSignal) {
-    return signal?.aborted === true && signal.reason === GENERATION_TASK_CANCEL_ABORT_REASON;
+export function queryFailedVideoProviderTask(id: string) {
+    return request<ProviderTaskQueryResult>(api.post(`/tasks/${encodeURIComponent(id)}/query-provider`));
 }
 
 export function refreshGenerationTaskStatus(id: string, options?: { signal?: AbortSignal }) {
@@ -542,10 +536,7 @@ export async function waitForGenerationTask(id: string, options?: { signal?: Abo
         }
     } catch (error) {
         if (options?.signal?.aborted) {
-            if (generationTaskAbortRequestsCancellation(options.signal)) {
-                await cancelGenerationTask(id).catch(() => undefined);
-                window.dispatchEvent(new CustomEvent("wallet:updated"));
-            }
+            // Abort 只停止当前页面的状态监听，不能把已发起的上游任务改成取消状态。
             throw new DOMException("Aborted", "AbortError");
         }
         throw error;

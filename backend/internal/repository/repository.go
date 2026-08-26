@@ -27,6 +27,8 @@ var ErrTextReplayClosed = errors.New("text replay task is closed")
 
 var ErrProjectAssetFolderNotEmpty = errors.New("project asset folder is not empty")
 
+var ErrProjectHasActiveTasks = errors.New("project has active tasks")
+
 type Repository struct {
 	db *gorm.DB
 }
@@ -322,6 +324,17 @@ func (r *Repository) ActiveTaskCountForUser(userID string) (int64, error) {
 	return count, err
 }
 
+func (r *Repository) ActiveTaskCountForProjectIDs(userID string, projectIDs []string) (int64, error) {
+	if len(projectIDs) == 0 {
+		return 0, nil
+	}
+	var count int64
+	err := r.db.Model(&model.Task{}).
+		Where("user_id = ? AND project_id IN ? AND status IN ?", userID, projectIDs, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).
+		Count(&count).Error
+	return count, err
+}
+
 // 任务领取以数据库租约为真相；PostgreSQL 锁行跳过竞争任务，SQLite 继续依赖条件更新保证单实例原子性。
 func (r *Repository) ClaimNextTask(owner string, leaseDuration time.Duration) (*model.Task, error) {
 	var task model.Task
@@ -486,28 +499,11 @@ func (r *Repository) UpdateTaskTerminalState(id string, expected model.TaskStatu
 	return result.RowsAffected == 1, result.Error
 }
 
-func (r *Repository) RequeueProviderVideoTask(id string, expected model.TaskStatus, stage string, nextPollAt *time.Time) (bool, error) {
-	result := r.db.Model(&model.Task{}).
-		Where("id = ? AND status = ?", id, expected).
-		Updates(map[string]any{
-			"status":           model.TaskStatusQueued,
-			"stage":            stage,
-			"progress":         35,
-			"error":            "",
-			"completed_at":     nil,
-			"next_poll_at":     nextPollAt,
-			"lease_owner":      "",
-			"lease_expires_at": nil,
-			"updated_at":       time.Now(),
-		})
-	return result.RowsAffected == 1, result.Error
-}
-
 func (r *Repository) CancelTaskIfStatus(userID string, id string, expected model.TaskStatus, now time.Time) (bool, error) {
 	result := r.db.Model(&model.Task{}).
 		Where("id = ? AND user_id = ? AND status = ?", id, userID, expected).
 		Updates(map[string]any{
-			"status": model.TaskStatusCancelled, "stage": "任务已取消", "completed_at": &now,
+			"status": model.TaskStatusCancelled, "stage": "任务已取消", "error": "任务已取消", "completed_at": &now,
 			"lease_owner": "", "lease_expires_at": nil, "updated_at": now,
 		})
 	return result.RowsAffected == 1, result.Error
@@ -788,6 +784,32 @@ func (r *Repository) SaveSystemSettings(settings ...*model.SystemSetting) error 
 	})
 }
 
+func (r *Repository) ArkPrivateAssetBinding(resourceID string, projectName string) (*model.ArkPrivateAssetBinding, error) {
+	var binding model.ArkPrivateAssetBinding
+	if err := r.db.Where("resource_id = ? AND project_name = ?", resourceID, projectName).First(&binding).Error; err != nil {
+		return nil, err
+	}
+	return &binding, nil
+}
+
+// CreateArkPrivateAssetBinding establishes a single uploader for a resource
+// and Ark Project. Other workers can wait for that binding instead of
+// importing the same image repeatedly.
+func (r *Repository) CreateArkPrivateAssetBinding(binding *model.ArkPrivateAssetBinding) (bool, error) {
+	result := r.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "resource_id"}, {Name: "project_name"}},
+		DoNothing: true,
+	}).Create(binding)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
+}
+
+func (r *Repository) SaveArkPrivateAssetBinding(binding *model.ArkPrivateAssetBinding) error {
+	return r.db.Save(binding).Error
+}
+
 func (r *Repository) DeleteSystemSetting(key string) error {
 	return r.db.Delete(&model.SystemSetting{}, "key = ?", key).Error
 }
@@ -871,6 +893,10 @@ func (r *Repository) SaveResource(resource *model.Resource) error {
 	return r.db.Save(resource).Error
 }
 
+func (r *Repository) DeleteResource(userID string, id string) error {
+	return r.db.Delete(&model.Resource{}, "id = ? AND user_id = ?", id, userID).Error
+}
+
 func (r *Repository) Resource(id string) (*model.Resource, error) {
 	var resource model.Resource
 	if err := r.db.First(&resource, "id = ?", id).Error; err != nil {
@@ -882,15 +908,6 @@ func (r *Repository) Resource(id string) (*model.Resource, error) {
 func (r *Repository) ResourceForUser(userID string, id string) (*model.Resource, error) {
 	var resource model.Resource
 	if err := r.db.First(&resource, "id = ? AND user_id = ?", id, userID).Error; err != nil {
-		return nil, err
-	}
-	return &resource, nil
-}
-
-func (r *Repository) ResourceForUserOrTeam(userID string, id string) (*model.Resource, error) {
-	var resource model.Resource
-	sharedResource := r.db.Model(&model.TeamAssetResource{}).Select("resource_id").Where("resource_id = ?", id)
-	if err := r.db.Where("id = ? AND (user_id = ? OR id IN (?))", id, userID, sharedResource).First(&resource).Error; err != nil {
 		return nil, err
 	}
 	return &resource, nil
@@ -909,117 +926,6 @@ func (r *Repository) Assets(userID string) ([]model.Asset, error) {
 	var assets []model.Asset
 	err := r.db.Order("updated_at desc").Find(&assets, "user_id = ?", userID).Error
 	return assets, err
-}
-
-func (r *Repository) TeamAssets() ([]model.TeamAsset, error) {
-	var assets []model.TeamAsset
-	err := r.db.Order("updated_at desc").Find(&assets).Error
-	return assets, err
-}
-
-func (r *Repository) TeamAsset(id string) (*model.TeamAsset, error) {
-	var asset model.TeamAsset
-	if err := r.db.First(&asset, "id = ?", id).Error; err != nil {
-		return nil, err
-	}
-	return &asset, nil
-}
-
-func (r *Repository) TeamAssetFolder(id string) (*model.TeamAssetFolder, error) {
-	var folder model.TeamAssetFolder
-	if err := r.db.First(&folder, "id = ?", id).Error; err != nil {
-		return nil, err
-	}
-	return &folder, nil
-}
-
-func (r *Repository) SaveTeamAssetFolder(folder *model.TeamAssetFolder) error {
-	return r.db.Save(folder).Error
-}
-
-func (r *Repository) TeamAssetResourceIDs(id string) ([]string, error) {
-	var resourceIDs []string
-	err := r.db.Model(&model.TeamAssetResource{}).
-		Where("team_asset_id = ?", id).
-		Pluck("resource_id", &resourceIDs).Error
-	return resourceIDs, err
-}
-
-func (r *Repository) TeamAssetStorageUsage(userID string) (int64, int64, error) {
-	var usage struct {
-		Count int64
-		Bytes int64
-	}
-	lengthExpression := "length(CAST(COALESCE(payload_json, '') AS BLOB))"
-	if r.Dialect() == "postgres" {
-		lengthExpression = "octet_length(COALESCE(payload_json, ''))"
-	}
-	err := r.db.Model(&model.TeamAsset{}).
-		Select("COUNT(*) AS count, COALESCE(SUM("+lengthExpression+"), 0) AS bytes").
-		Where("owner_user_id = ?", userID).
-		Scan(&usage).Error
-	return usage.Count, usage.Bytes, err
-}
-
-func (r *Repository) UpsertTeamAsset(asset *model.TeamAsset, resourceIDs []string) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&model.TeamAsset{}).
-			Where("id = ? AND owner_user_id = ?", asset.ID, asset.OwnerUserID).
-			Updates(map[string]any{"folder_id": asset.FolderID, "kind": asset.Kind, "category": asset.Category, "status": asset.Status, "title": asset.Title, "payload_json": asset.PayloadJSON, "updated_at": asset.UpdatedAt})
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			if err := tx.Create(asset).Error; err != nil {
-				return err
-			}
-		}
-		if err := tx.Delete(&model.TeamAssetResource{}, "team_asset_id = ?", asset.ID).Error; err != nil {
-			return err
-		}
-		for _, resourceID := range resourceIDs {
-			if err := tx.Create(&model.TeamAssetResource{TeamAssetID: asset.ID, ResourceID: resourceID, CreatedAt: asset.UpdatedAt}).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-func (r *Repository) TeamAssetFolders() ([]model.TeamAssetFolder, error) {
-	var folders []model.TeamAssetFolder
-	err := r.db.Order("name asc").Find(&folders).Error
-	return folders, err
-}
-
-func (r *Repository) TeamAssetsInFolder(folderID string) ([]model.TeamAsset, error) {
-	var assets []model.TeamAsset
-	err := r.db.Find(&assets, "folder_id = ?", folderID).Error
-	return assets, err
-}
-
-func (r *Repository) DeleteTeamAssetFolder(folderID string, assets []model.TeamAsset) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		for index := range assets {
-			if err := tx.Model(&model.TeamAsset{}).Where("id = ?", assets[index].ID).Updates(map[string]any{"folder_id": "", "payload_json": assets[index].PayloadJSON, "updated_at": assets[index].UpdatedAt}).Error; err != nil {
-				return err
-			}
-		}
-		return tx.Delete(&model.TeamAssetFolder{}, "id = ?", folderID).Error
-	})
-}
-
-func (r *Repository) MoveTeamAsset(assetID string, folderID string, payloadJSON string, updatedAt time.Time) error {
-	return r.db.Model(&model.TeamAsset{}).Where("id = ?", assetID).Updates(map[string]any{"folder_id": folderID, "payload_json": payloadJSON, "updated_at": updatedAt}).Error
-}
-
-func (r *Repository) DeleteTeamAsset(id string) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Delete(&model.TeamAssetResource{}, "team_asset_id = ?", id).Error; err != nil {
-			return err
-		}
-		return tx.Delete(&model.TeamAsset{}, "id = ?", id).Error
-	})
 }
 
 func (r *Repository) AssetSummaries(userID string) ([]model.Asset, error) {
@@ -1047,7 +953,7 @@ func (r *Repository) UpsertAsset(asset *model.Asset) error {
 }
 
 func (r *Repository) DeleteAsset(userID string, id string) error {
-	return r.DeleteAssetAndResources(userID, id, nil)
+	return r.DeleteAssetAndResources(userID, id, nil, nil)
 }
 
 func (r *Repository) ReplaceAssets(userID string, assets []model.Asset) error {
@@ -1093,13 +999,41 @@ func (r *Repository) UpsertCanvasProject(project *model.CanvasProject) error {
 }
 
 func (r *Repository) DeleteCanvasProject(userID string, id string) error {
-	return r.db.Delete(&model.CanvasProject{}, "id = ? AND user_id = ?", id, userID).Error
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("user_id = ? AND project_id = ?", userID, id).Delete(&model.CanvasShare{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("canvas_id = ?", id).Delete(&model.CanvasUnitLink{}).Error; err != nil {
+			return err
+		}
+		// 任务和会话是审计记录，不随独立画布实体保留归属 ID，避免删除后继续挂住画布上下文。
+		if err := tx.Model(&model.Task{}).Where("user_id = ? AND project_id = ?", userID, id).Update("project_id", "").Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.Session{}).Where("user_id = ? AND project_id = ?", userID, id).Update("project_id", "").Error; err != nil {
+			return err
+		}
+		return tx.Delete(&model.CanvasProject{}, "id = ? AND user_id = ?", id, userID).Error
+	})
 }
 
 func (r *Repository) Projects(userID string) ([]model.Project, error) {
 	var projects []model.Project
 	err := r.db.Where("user_id = ?", userID).Order("updated_at desc").Find(&projects).Error
 	return projects, err
+}
+
+func (r *Repository) ProjectsPage(userID string, page int, pageSize int) ([]model.Project, int64, error) {
+	var projects []model.Project
+	var total int64
+	query := r.db.Model(&model.Project{}).Where("user_id = ?", userID)
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	if err := query.Order("updated_at desc").Offset((page - 1) * pageSize).Limit(pageSize).Find(&projects).Error; err != nil {
+		return nil, 0, err
+	}
+	return projects, total, nil
 }
 
 func (r *Repository) ProjectForUser(userID string, id string) (*model.Project, error) {
@@ -1122,13 +1056,47 @@ func (r *Repository) UpdateProject(project *model.Project) error {
 	}).Error
 }
 
-func (r *Repository) DeleteProject(userID string, id string) error {
+func (r *Repository) DeleteProject(userID string, id string, canvasUpdates []model.CanvasProject) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&model.CanvasProject{}).Where("user_id = ? AND project_id = ?", userID, id).Update("project_id", "").Error; err != nil {
+		var canvasIDs []string
+		if err := tx.Model(&model.CanvasProject{}).
+			Where("user_id = ? AND project_id = ?", userID, id).
+			Pluck("id", &canvasIDs).Error; err != nil {
+			return err
+		}
+		projectScopeIDs := append([]string{id}, canvasIDs...)
+		var activeTaskCount int64
+		if err := tx.Model(&model.Task{}).
+			Where("user_id = ? AND project_id IN ? AND status IN ?", userID, projectScopeIDs, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).
+			Count(&activeTaskCount).Error; err != nil {
+			return err
+		}
+		if activeTaskCount > 0 {
+			return ErrProjectHasActiveTasks
+		}
+		if err := tx.Where("user_id = ? AND project_id = ?", userID, id).Delete(&model.CanvasShare{}).Error; err != nil {
 			return err
 		}
 		if err := tx.Where("project_id = ?", id).Delete(&model.CanvasUnitLink{}).Error; err != nil {
 			return err
+		}
+		for _, canvas := range canvasUpdates {
+			result := tx.Model(&model.CanvasProject{}).
+				Where("id = ? AND user_id = ? AND project_id = ?", canvas.ID, userID, id).
+				Updates(map[string]any{"project_id": "", "payload_json": canvas.PayloadJSON, "updated_at": canvas.UpdatedAt})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return gorm.ErrRecordNotFound
+			}
+		}
+		var remainingCanvasCount int64
+		if err := tx.Model(&model.CanvasProject{}).Where("user_id = ? AND project_id = ?", userID, id).Count(&remainingCanvasCount).Error; err != nil {
+			return err
+		}
+		if remainingCanvasCount != 0 {
+			return fmt.Errorf("项目删除时仍有 %d 个画布关联未处理", remainingCanvasCount)
 		}
 		shotIDs := tx.Model(&model.Shot{}).Select("id").Where("project_id = ?", id)
 		if err := tx.Where("shot_id IN (?)", shotIDs).Delete(&model.ShotAssetReference{}).Error; err != nil {
@@ -1158,6 +1126,12 @@ func (r *Repository) DeleteProject(userID string, id string) error {
 			return err
 		}
 		if err := tx.Where("project_id = ?", id).Delete(&model.ProjectUnit{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.Task{}).Where("user_id = ? AND project_id = ?", userID, id).Update("project_id", "").Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.Session{}).Where("user_id = ? AND project_id = ?", userID, id).Update("project_id", "").Error; err != nil {
 			return err
 		}
 		return tx.Delete(&model.Project{}, "id = ? AND user_id = ?", id, userID).Error

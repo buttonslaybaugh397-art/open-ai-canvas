@@ -82,13 +82,11 @@ export function modelCompatibilityError(config: AiConfig, model: string, require
         const profile = modelCapabilityConfigFor(config, model).video!;
         if (requirements.videoSeconds && !videoDurationAllowed(profile, Number(requirements.videoSeconds))) return "不支持当前视频时长";
         if (!input) return "";
-        if (input.videoCount > 0 && profile.references.maxVideos === 0) return "当前视频模型不支持参考视频";
-        if (input.audioCount > 0 && profile.references.maxAudios === 0) return "当前视频模型不支持参考音频";
         if (visualInputCount > profile.references.maxImages) return `最多支持 ${profile.references.maxImages} 张参考图`;
         if (input.videoCount > profile.references.maxVideos) return `最多支持 ${profile.references.maxVideos} 个参考视频`;
         if (input.audioCount > profile.references.maxAudios) return `最多支持 ${profile.references.maxAudios} 个参考音频`;
         const operation = resolveVideoOperation(input, requirements.videoOperation);
-        if (operation !== "concat" && !videoOperationSupported(profile.operations, operation)) return `不支持${videoOperationLabel(operation)}`;
+        if (operation !== "concat" && !profile.operations.includes(operation)) return `不支持${videoOperationLabel(operation)}`;
         return "";
     }
 
@@ -130,7 +128,7 @@ function logicalModelCompatibilityError(spec: NonNullable<NonNullable<AiConfig["
         if (constraint && (count < constraint.min || count > constraint.max)) return `${kind}输入需为 ${constraint.min}-${constraint.max} 个`;
     }
     const operation = requirements.capability === "video" && input ? resolveVideoOperation(input, requirements.videoOperation) : requirements.videoOperation;
-    if (operation && spec.operations?.length && !videoOperationSupported(spec.operations, operation)) return "不支持当前生成模式";
+    if (operation && spec.operations?.length && !spec.operations.includes(operation)) return "不支持当前生成模式";
     // 图片创作状态也会携带全局默认视频时长；这个字段只对视频模型有意义，
     // 不能把它拼进图片逻辑模型的能力匹配，否则图片模型会被误判为“不支持当前时长”。
     const options = {
@@ -147,7 +145,10 @@ function logicalModelCompatibilityError(spec: NonNullable<NonNullable<AiConfig["
 }
 
 function logicalOptionMatches(name: string, constraint: { values?: unknown[]; min?: number; max?: number; step?: number }, value: unknown) {
-    if (constraint.values?.length) return constraint.values.some((candidate) => logicalOptionValueMatches(name, candidate, value));
+    if (constraint.values?.length) {
+        const requested = normalizeLogicalOptionValue(name, value);
+        return constraint.values.some((candidate) => normalizeLogicalOptionValue(name, candidate) === requested);
+    }
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return false;
     if (constraint.min !== undefined && numeric < constraint.min) return false;
@@ -156,11 +157,15 @@ function logicalOptionMatches(name: string, constraint: { values?: unknown[]; mi
     return true;
 }
 
-function logicalOptionValueMatches(name: string, candidate: unknown, value: unknown) {
-    const left = String(candidate).trim().toLowerCase();
-    const right = String(value).trim().toLowerCase();
-    if (name === "vquality" || name === "resolution") return left.replace(/p$/, "") === right.replace(/p$/, "");
-    return left === right;
+function normalizeLogicalOptionValue(name: string, value: unknown) {
+    const normalized = String(value).trim().toLowerCase();
+    if (name !== "vquality" && name !== "resolution") return normalized;
+    if (normalized === "low") return "480p";
+    if (["auto", "medium", "high"].includes(normalized)) return "720p";
+    if (normalized === "2k") return "1440p";
+    if (normalized === "4k") return "2160p";
+    const resolution = normalized.replace(/p$/i, "");
+    return resolution ? `${resolution}p` : "";
 }
 
 function logicalOptionError(name: string) {
@@ -245,7 +250,11 @@ export function resolveModelGenerationDefaults(
     const channel = resolveModelChannel(config, model);
     const cost = channel.modelCosts?.find((item) => item.model === modelOptionName(model));
     const isManagedModel = Boolean(cost?.logicalModelId || cost?.logicalCapabilitySpec);
-    const source = (key: keyof ModelGenerationDefaults) => explicit[key] ?? (isManagedModel ? undefined : fallback[key]);
+    // A channel model capability profile is an explicit per-model contract too.
+    // The persisted global values are legacy defaults and must not override a
+    // model's configured duration, ratio, or resolution on a new canvas node.
+    const hasModelCapabilityProfile = Boolean(cost?.capabilityConfig);
+    const source = (key: keyof ModelGenerationDefaults) => explicit[key] ?? (isManagedModel || hasModelCapabilityProfile ? undefined : fallback[key]);
     const profile = modelCapabilityConfigFor(config, model);
 
     if (capability === "image" && profile.image) {
@@ -314,41 +323,24 @@ export function modelGroupReferenceLimits(config: AiConfig, selected: string, ca
 
 export function inferVideoOperation(input: ModelInputSummary) {
     const visualInputCount = input.imageCount + input.characterCount;
-    if (input.audioCount > 0 && visualInputCount === 0 && input.videoCount === 0) return "audio_to_video";
-    if (input.videoCount > 0) return "reference_to_video";
+    // 纯音频参考使用独立能力；音频与图片、角色或视频组合时属于全模态参考，
+    // 不能把组合请求误路由到只支持 audio_to_video 的细分模型。
+    if (input.audioCount > 0) return visualInputCount > 0 || input.videoCount > 0 ? "reference_to_video" : "audio_to_video";
+    if (input.videoCount > 0 || visualInputCount > 2) return "reference_to_video";
     if (visualInputCount > 0) return "image_to_video";
     return "text_to_video";
 }
 
 export function resolveVideoOperation(input: ModelInputSummary, storedOperation?: string) {
-    const normalizedStoredOperation = storedOperation?.trim();
-    if (normalizedStoredOperation === "extend" || normalizedStoredOperation === "concat") return normalizedStoredOperation;
-    if (input.videoCount > 0) return "reference_to_video";
-    if (normalizedStoredOperation && !["text_to_video", "image_to_video", "audio_to_video", "reference_to_video"].includes(normalizedStoredOperation)) return normalizedStoredOperation;
+    if (storedOperation && !["text_to_video", "image_to_video", "audio_to_video", "extend", "reference_to_video"].includes(storedOperation)) return storedOperation;
     return inferVideoOperation(input);
-}
-
-export function modelReferenceLimits(config: AiConfig, selected: string, capability: ModelCapability): ModelReferenceLimits | undefined {
-    if (capability !== "image" && capability !== "video") return undefined;
-    const profile = modelCapabilityConfigFor(config, selected);
-    if (capability === "image") return { maxImages: profile.image!.references.maxImages, maxVideos: 0, maxAudios: 0 };
-    return {
-        maxImages: profile.video!.references.maxImages,
-        maxVideos: profile.video!.references.maxVideos,
-        maxAudios: profile.video!.references.maxAudios,
-    };
 }
 
 function videoOperationLabel(operation: string) {
     if (operation === "text_to_video") return "文生视频";
     if (operation === "image_to_video") return "图生视频";
-    if (operation === "reference_to_video") return "参考视频生视频";
     if (operation === "audio_to_video") return "音频生视频";
+    if (operation === "reference_to_video") return "全模态参考";
     if (operation === "extend") return "视频续写";
     return "当前生成模式";
-}
-
-function videoOperationSupported(operations: string[], operation: string) {
-    if (operations.includes(operation)) return true;
-    return operation === "reference_to_video" && operations.includes("image_to_video");
 }

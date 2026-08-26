@@ -3,10 +3,12 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/repository"
 
 	"gorm.io/gorm"
 )
@@ -67,12 +69,21 @@ type ProjectSummary struct {
 	CompletedUnitCount int           `json:"completedUnitCount"`
 }
 
+type ProjectListPage struct {
+	Projects []ProjectSummary `json:"projects"`
+	Page     int              `json:"page"`
+	PageSize int              `json:"pageSize"`
+	Total    int64            `json:"total"`
+	HasMore  bool             `json:"hasMore"`
+}
+
 type ProjectDetail struct {
 	Project         model.Project                 `json:"project"`
 	Units           []model.ProjectUnit           `json:"units"`
 	Canvases        []model.CanvasProject         `json:"canvases"`
 	CanvasUnitLinks []model.CanvasUnitLink        `json:"canvasUnitLinks"`
 	Assets          []ProjectAssetSummary         `json:"assets"`
+	AssetFolders    []model.ProjectAssetFolder    `json:"assetFolders"`
 	Workflows       []ProjectWorkflowDetail       `json:"workflows"`
 	Shots           []model.Shot                  `json:"shots"`
 	ShotReferences  []model.ShotAssetReference    `json:"shotReferences"`
@@ -84,6 +95,22 @@ func (s *Service) ListProjects(userID string) ([]ProjectSummary, error) {
 	if err != nil {
 		return nil, err
 	}
+	return s.summarizeProjects(userID, projects)
+}
+
+func (s *Service) ListProjectsPage(userID string, page int, pageSize int) (ProjectListPage, error) {
+	projects, total, err := s.repo.ProjectsPage(userID, page, pageSize)
+	if err != nil {
+		return ProjectListPage{}, err
+	}
+	result, err := s.summarizeProjects(userID, projects)
+	if err != nil {
+		return ProjectListPage{}, err
+	}
+	return ProjectListPage{Projects: result, Page: page, PageSize: pageSize, Total: total, HasMore: int64(page*pageSize) < total}, nil
+}
+
+func (s *Service) summarizeProjects(userID string, projects []model.Project) ([]ProjectSummary, error) {
 	result := make([]ProjectSummary, 0, len(projects))
 	for _, project := range projects {
 		units, unitsErr := s.repo.ProjectUnitSummaries(project.ID)
@@ -138,6 +165,10 @@ func (s *Service) ProjectDetail(userID string, id string) (ProjectDetail, error)
 	if err != nil {
 		return ProjectDetail{}, err
 	}
+	assetFolders, err := s.ProjectAssetFolders(userID, project.ID)
+	if err != nil {
+		return ProjectDetail{}, err
+	}
 	workflows, err := s.ProjectWorkflows(project.ID)
 	if err != nil {
 		return ProjectDetail{}, err
@@ -154,7 +185,7 @@ func (s *Service) ProjectDetail(userID string, id string) (ProjectDetail, error)
 	if err != nil {
 		return ProjectDetail{}, err
 	}
-	return ProjectDetail{Project: *project, Units: units, Canvases: canvases, CanvasUnitLinks: canvasUnitLinks, Assets: assets, Workflows: workflows, Shots: shots, ShotReferences: shotReferences, AssetCandidates: candidates}, nil
+	return ProjectDetail{Project: *project, Units: units, Canvases: canvases, CanvasUnitLinks: canvasUnitLinks, Assets: assets, AssetFolders: assetFolders, Workflows: workflows, Shots: shots, ShotReferences: shotReferences, AssetCandidates: candidates}, nil
 }
 
 func (s *Service) CreateProject(userID string, req CreateProjectRequest) (model.Project, error) {
@@ -191,7 +222,9 @@ func (s *Service) CreateProject(userID string, req CreateProjectRequest) (model.
 		return model.Project{}, err
 	}
 	if _, err := s.createProjectWorkflow(project.ID, "", "project"); err != nil {
-		_ = s.repo.DeleteProject(userID, project.ID)
+		if deleteErr := s.repo.DeleteProject(userID, project.ID, nil); deleteErr != nil {
+			return model.Project{}, errors.Join(err, fmt.Errorf("项目初始化失败，回滚项目记录失败：%w", deleteErr))
+		}
 		return model.Project{}, err
 	}
 	project.Revision++
@@ -250,7 +283,38 @@ func (s *Service) DeleteProject(userID string, id string) error {
 	if _, err := s.repo.ProjectForUser(userID, id); err != nil {
 		return err
 	}
-	return s.repo.DeleteProject(userID, id)
+	canvases, err := s.repo.ProjectCanvasDocuments(userID, id)
+	if err != nil {
+		return err
+	}
+	projectScopeIDs := make([]string, 0, len(canvases)+1)
+	projectScopeIDs = append(projectScopeIDs, id)
+	canvasUpdates := make([]model.CanvasProject, 0, len(canvases))
+	deleteTime := time.Now()
+	for _, canvas := range canvases {
+		payloadJSON, payloadErr := canvasPayloadWithoutProject(canvas.PayloadJSON, deleteTime)
+		if payloadErr != nil {
+			return payloadErr
+		}
+		canvas.PayloadJSON = payloadJSON
+		canvas.UpdatedAt = deleteTime
+		canvasUpdates = append(canvasUpdates, canvas)
+		projectScopeIDs = append(projectScopeIDs, canvas.ID)
+	}
+	activeTaskCount, err := s.repo.ActiveTaskCountForProjectIDs(userID, projectScopeIDs)
+	if err != nil {
+		return err
+	}
+	if activeTaskCount > 0 {
+		return BadAuthRequest("项目仍有进行中的生成任务，请等待任务完成或取消后再删除")
+	}
+	if err := s.repo.DeleteProject(userID, id, canvasUpdates); err != nil {
+		if errors.Is(err, repository.ErrProjectHasActiveTasks) {
+			return BadAuthRequest("项目仍有进行中的生成任务，请等待任务完成或取消后再删除")
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Service) CreateProjectUnit(userID string, projectID string, req CreateProjectUnitRequest) (model.ProjectUnit, error) {

@@ -1,9 +1,9 @@
 import { useMemo } from "react";
 
 import { AssetLibraryPickerModal, type AssetLibraryPickerItem } from "@/components/assets/asset-library-picker-modal";
-import type { InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
+import { useExternalAssetSources } from "@/hooks/use-external-asset-sources";
+import { externalAssetToInsertPayload, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { compileCharacterReferencePrompt } from "@/lib/canvas/canvas-character-reference";
-import { volcengineAssetUriForAsset } from "@/lib/volcengine-asset";
 import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 import type { ProjectAsset, ProjectDetail } from "@/services/api/projects";
 import { getRemoteAsset } from "@/services/api/user-data";
@@ -14,6 +14,7 @@ type ProjectPickerItem = { id: string; category: string; folderId?: string; proj
 
 export function CanvasProjectAssetModal({ open, detail, initialCategory = "all", initialFolderId = "all", onClose, onInsert, onInsertFolder }: { open: boolean; detail?: ProjectDetail; initialCategory?: string; initialFolderId?: string; onClose: () => void; onInsert: (payloads: InsertAssetPayload[]) => Promise<void> | void; onInsertFolder?: (folderId: string) => Promise<void> | void }) {
     const mediaAssets = useAssetStore((state) => state.assets);
+    const externalAssetSources = useExternalAssetSources(open);
     const items = useMemo<ProjectPickerItem[]>(() => {
         const mediaById = new Map(mediaAssets.map((asset) => [asset.id, asset]));
         const projectItems = (detail?.assets || []).flatMap((asset): ProjectPickerItem[] => {
@@ -27,7 +28,7 @@ export function CanvasProjectAssetModal({ open, detail, initialCategory = "all",
             .filter((asset) => asset.kind !== "model" && asset.kind !== "entity")
             .map((media): ProjectPickerItem => ({ id: media.id, category: media.category || "other", media }));
     }, [detail?.assets, mediaAssets]);
-    const pickerItems = useMemo<AssetLibraryPickerItem[]>(() => items.map((item) => {
+    const localPickerItems = useMemo<AssetLibraryPickerItem[]>(() => items.map((item) => {
         const character = item.character;
         const project = item.project;
         const media = item.media;
@@ -51,24 +52,30 @@ export function CanvasProjectAssetModal({ open, detail, initialCategory = "all",
             searchText: [media?.tags.join(" ") || "", project?.previewText || ""].join(" "),
         };
     }), [items]);
+    const pickerItems = useMemo<AssetLibraryPickerItem[]>(() => [...localPickerItems, ...externalAssetSources.items], [externalAssetSources.items, localPickerItems]);
 
     return (
         <AssetLibraryPickerModal
             open={open}
             items={pickerItems}
-            categoryLabels={categoryLabels}
+            categoryLabels={{ ...categoryLabels, ...externalAssetSources.categoryLabels }}
             initialCategory={initialCategory}
             initialFolderId={initialFolderId}
-            folders={detail?.assetFolders || []}
+            folders={externalAssetSources.folders}
+            folderActionSource="local"
             title="项目资产"
             confirmLabel={(count) => `引入已选资产${count ? `（${count}）` : ""}`}
             emptyTitle="此分类没有可引用资产"
             emptyDescription={detail ? "先在项目角色与资产中完成角色确认或素材关联。" : "当前为自由画布，可先在素材库添加内容。"}
-            footerNote="角色引用会在生成时解析当前角色版本"
+            footerNote={externalAssetSources.error || "角色引用会在生成时解析当前角色版本"}
             onFolderAction={onInsertFolder ? async (folderId) => { await onInsertFolder(folderId); onClose(); } : undefined}
             onClose={onClose}
             onConfirm={async (ids) => {
-                const payloads = await Promise.all(items.filter((item) => ids.includes(item.id)).map(async (item) => {
+                const payloads = await Promise.all(ids.map(async (id) => {
+                    const external = externalAssetSources.items.find((item) => item.id === id)?.external;
+                    if (external) return externalAssetToInsertPayload(external);
+                    const item = items.find((candidate) => candidate.id === id);
+                    if (!item) throw new Error("所选资产已不存在，请重新选择");
                     if (item.media || item.character || !item.project) return toInsertPayload(item);
                     const { asset } = await getRemoteAsset(item.project.id);
                     return toInsertPayload({ ...item, media: asset });
@@ -91,16 +98,16 @@ function toInsertPayload(item: ProjectPickerItem): InsertAssetPayload {
         const resourceId = resourceIdFromStorageKey(project.storageKey);
         const remoteUrl = resourceId ? resourceFileUrl(resourceId) : "";
         if (project.mediaType === "text" && project.previewText) return { kind: "text", content: project.previewText, title: project.title, assetId: project.id };
-        if (project.mediaType === "video" && remoteUrl) return { kind: "video", url: remoteUrl, storageKey: project.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(project), title: project.title, assetId: project.id };
-        if (project.mediaType === "audio" && remoteUrl) return { kind: "audio", url: remoteUrl, storageKey: project.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(project), title: project.title, assetId: project.id };
-        if (project.mediaType === "image" && remoteUrl) return { kind: "image", dataUrl: remoteUrl, storageKey: project.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(project), title: project.title, assetId: project.id };
+        if (project.mediaType === "video" && remoteUrl) return { kind: "video", url: remoteUrl, storageKey: project.storageKey, title: project.title, assetId: project.id };
+        if (project.mediaType === "audio" && remoteUrl) return { kind: "audio", url: remoteUrl, storageKey: project.storageKey, title: project.title, assetId: project.id };
+        if (project.mediaType === "image" && remoteUrl) return { kind: "image", dataUrl: remoteUrl, storageKey: project.storageKey, title: project.title, assetId: project.id };
         throw new Error(`“${project.title}”缺少可读取的内容`);
     }
     if (!asset) throw new Error("项目资产不可用");
     if (asset.kind === "text") return { kind: "text", content: asset.data.content, title: asset.title, assetId: asset.id };
-    if (asset.kind === "video") return { kind: "video", url: projectAssetMediaUrl(asset.data.storageKey, asset.data.url), storageKey: asset.data.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(asset), title: asset.title, width: asset.data.width, height: asset.data.height, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
-    if (asset.kind === "audio") return { kind: "audio", url: projectAssetMediaUrl(asset.data.storageKey, asset.data.url), storageKey: asset.data.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(asset), title: asset.title, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
-    if (asset.kind === "image") return { kind: "image", dataUrl: projectAssetMediaUrl(asset.data.storageKey, asset.data.dataUrl), storageKey: asset.data.storageKey, volcengineAssetUri: volcengineAssetUriForAsset(asset), title: asset.title, assetId: asset.id };
+    if (asset.kind === "video") return { kind: "video", url: projectAssetMediaUrl(asset.data.storageKey, asset.data.url), storageKey: asset.data.storageKey, title: asset.title, width: asset.data.width, height: asset.data.height, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
+    if (asset.kind === "audio") return { kind: "audio", url: projectAssetMediaUrl(asset.data.storageKey, asset.data.url), storageKey: asset.data.storageKey, title: asset.title, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
+    if (asset.kind === "image") return { kind: "image", dataUrl: projectAssetMediaUrl(asset.data.storageKey, asset.data.dataUrl), storageKey: asset.data.storageKey, title: asset.title, assetId: asset.id };
     throw new Error("当前项目资产不能直接插入画布");
 }
 

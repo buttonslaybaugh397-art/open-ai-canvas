@@ -1,13 +1,7 @@
 import { projectDesktopLocalChannelRuntime } from "@/lib/desktop-local-channel";
-import { channelPluginRelayFormat } from "@/lib/channel-plugins";
-import { isSystemProxyBaseUrl, resolveBackendApiUrl, type AiConfig, type ChannelHeader, type ChannelInterfaceType } from "@/stores/use-config-store";
+import { isSystemProxyBaseUrl, resolveBackendApiUrl, type AiConfig, type ChannelHeader } from "@/stores/use-config-store";
 
-type RelayConfig = Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat"> & {
-    allowLocalChannel?: boolean;
-    headers?: ChannelHeader[];
-    interfaceType?: ChannelInterfaceType;
-    connectionType?: AiConfig["channels"][number]["connectionType"];
-};
+type RelayConfig = Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat"> & { allowLocalChannel?: boolean; headers?: ChannelHeader[] };
 
 export type ChannelRequest = {
     url: string;
@@ -29,7 +23,7 @@ export function channelRequest(config: RelayConfig, upstreamUrl: string, headers
     normalizedHeaders.delete("x-goog-api-key");
     normalizedHeaders.set("Authorization", `Bearer ${runtimeConfig.apiKey}`);
     normalizedHeaders.set("X-Canvas-Upstream-URL", normalizedUpstreamUrl);
-    normalizedHeaders.set("X-Canvas-Upstream-Format", channelPluginRelayFormat(runtimeConfig) || (runtimeConfig.apiFormat === "gemini" ? "gemini" : "openai"));
+    normalizedHeaders.set("X-Canvas-Upstream-Format", runtimeConfig.apiFormat === "gemini" ? "gemini" : runtimeConfig.apiFormat === "claude" ? "claude" : "openai");
     if (runtimeConfig.allowLocalChannel === true) {
         normalizedHeaders.set("X-Canvas-Allow-Local-Channel", "1");
         normalizedHeaders.set("X-Canvas-Upstream-Base-URL", normalizedBaseUrl);

@@ -3,7 +3,7 @@ import { getNodeResourceKind } from "@/lib/canvas/node-registry";
 import { seedanceReferenceLabel } from "@/lib/seedance-video";
 import type { Skill } from "@/services/api/skills";
 import type { Asset, AssetCategory } from "@/stores/use-asset-store";
-import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
+import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeTypeId } from "@/types/canvas";
 
 export type CanvasResourceKind = "image" | "video" | "audio" | "text" | "skill" | "character";
 
@@ -17,7 +17,7 @@ export type CanvasResourceReference = {
     storageKey?: string;
     text?: string;
     active: boolean;
-    sourceType?: CanvasNodeType;
+    sourceType?: CanvasNodeTypeId;
     skill?: Skill;
     assetId?: string;
     category?: AssetCategory;
@@ -27,6 +27,17 @@ export function canvasResourceMentionToken(reference: CanvasResourceReference) {
     if (reference.kind === "skill" && reference.skill?.skill_id) return `@[skill:${reference.skill.skill_id}]`;
     if (reference.assetId) return `@[asset:${reference.assetId}]`;
     return `@[node:${reference.nodeId}]`;
+}
+
+export function removeCanvasResourceMention(prompt: string, reference: CanvasResourceReference) {
+    const token = canvasResourceMentionToken(reference);
+    if (!token || !prompt.includes(token)) return prompt;
+    return prompt
+        .split(token)
+        .join("")
+        .replace(/[ \t]{2,}/g, " ")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
 }
 
 export function buildAssetMentionReferences(assets: Asset[]): CanvasResourceReference[] {
@@ -100,7 +111,11 @@ export function collectUpstreamVideoNodes(nodeId: string, nodes: CanvasNodeData[
     return result;
 }
 
-function getContextResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
+/**
+ * 该节点的直接上游素材节点（按连线取 fromNodeId，只保留构成素材的）。
+ * 扩展节点经 CanvasNodeGraphContext 复用它，不要另写一份取上游的逻辑。
+ */
+export function getContextResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
     return connections
         .filter((connection) => connection.toNodeId === nodeId)
         .map((connection) => nodes.find((node) => node.id === connection.fromNodeId))

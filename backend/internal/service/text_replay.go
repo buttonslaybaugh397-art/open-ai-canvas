@@ -47,7 +47,7 @@ func isTextReplayTaskRequest(input map[string]any) bool {
 }
 
 // CompleteTextReplayTask 在文本生成结束后把最终正文写入任务，收尾为 succeeded，
-// 关闭 delta 写入窗口并触发 text-deltas 归并，使 TaskTextReplay 能读到 finalText。
+// 关闭 delta 写入窗口并触发 text-deltas 归并，使 queryTaskTextReplay 能读到 finalText。
 func (s *Service) CompleteTextReplayTask(userID string, taskID string, text string) (*model.Task, error) {
 	if strings.TrimSpace(text) == "" {
 		return nil, BadAuthRequest("文本内容不能为空")

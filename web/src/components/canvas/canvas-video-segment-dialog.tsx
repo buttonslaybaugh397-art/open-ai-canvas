@@ -76,7 +76,7 @@ export function CanvasVideoSegmentDialog({ node, nodes, connections, open, mode,
         const initialModel = eligibleModels.includes(defaultModel) ? defaultModel : eligibleModels[0] || defaultModel;
         setModel(initialModel);
         const profile = initialModel ? modelCapabilityConfigFor(config, initialModel).video : undefined;
-        setOperation(profile?.operations.includes("reference_to_video") ? "reference_to_video" : (profile?.operations.includes("extend") ? "extend" : (profile?.operations[0] as CanvasVideoEditOperation | undefined) || "extend"));
+        setOperation(profile?.operations.includes("extend") ? "extend" : (profile?.operations[0] as CanvasVideoEditOperation | undefined) || "extend");
         const storageKey = node.metadata?.storageKey || "";
         const fallback = node.metadata?.content || "";
         const applyUrl = (url: string) => {
@@ -128,10 +128,10 @@ export function CanvasVideoSegmentDialog({ node, nodes, connections, open, mode,
     const hasEligibleModels = eligibleModels.length > 0;
     const firstEligibleModel = eligibleModels[0] || "";
 
-    // 切换模型后保持所选模式仍然有效，参考视频优先回退到参考视频生成。
+    // 切换模型后保持所选模式仍然有效，优先回退到“视频续写”。
     useEffect(() => {
         if (!videoProfile?.operations.length || videoProfile.operations.includes(operation)) return;
-        setOperation(videoProfile.operations.includes("reference_to_video") ? "reference_to_video" : (videoProfile.operations.includes("extend") ? "extend" : (videoProfile.operations[0] as CanvasVideoEditOperation)));
+        setOperation(videoProfile.operations.includes("extend") ? "extend" : (videoProfile.operations[0] as CanvasVideoEditOperation));
     }, [operation, videoProfile]);
 
     const operationOptions = (videoProfile?.operations || []).map((value) => {
@@ -413,7 +413,7 @@ function videoOperationLabel(operation: CanvasVideoEditOperation) {
     const labels: Record<CanvasVideoEditOperation, string> = {
         text_to_video: "文生视频",
         image_to_video: "图生视频",
-        reference_to_video: "参考视频生视频",
+        reference_to_video: "全模态参考",
         extend: "视频续写",
         inpaint: "局部修改",
         replace_element: "元素替换",

@@ -6,7 +6,6 @@ export const statusLabel: Record<TaskStatus, string> = {
     succeeded: "已完成",
     failed: "失败",
     cancelled: "已取消",
-    text_replay: "文本存档中",
 };
 
 type GenerationTaskDisplayTarget = Pick<GenerationTask, "provider" | "status" | "stage" | "officialStatus"> & Partial<Pick<GenerationTask, "errorCode">>;
@@ -44,7 +43,7 @@ export const operationOptions = [
     { label: "Agent 会话：拆解影视工作流", value: "agent_session" },
     { label: "文生视频", value: "text_to_video" },
     { label: "图生视频", value: "image_to_video" },
-    { label: "参考视频生视频", value: "reference_to_video" },
+    { label: "全模态参考", value: "reference_to_video" },
     { label: "视频续写", value: "extend" },
     { label: "视频局部修改", value: "inpaint" },
     { label: "元素替换", value: "replace_element" },

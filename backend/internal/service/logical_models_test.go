@@ -65,49 +65,6 @@ func TestMatchCapabilityTreatsVideoResolutionSuffixAsEquivalent(t *testing.T) {
 	}
 }
 
-func TestModelRequestIntentNormalizesLegacyReferenceVideoOperation(t *testing.T) {
-	input := map[string]any{
-		"mode":            "video",
-		"referenceImages": []any{map[string]any{"id": "image-1"}, map[string]any{"id": "image-2"}, map[string]any{"id": "image-3"}},
-		"referenceAudios": []any{map[string]any{"id": "audio-1"}},
-	}
-	intent := ModelRequestIntentFromTaskInput(input, "canvas_video", "reference_to_video")
-	if intent.Operation != "image_to_video" {
-		t.Fatalf("operation = %q, want image_to_video", intent.Operation)
-	}
-	spec := CapabilitySpec{
-		Version:    1,
-		Capability: "video",
-		Operations: []string{"text_to_video", "image_to_video"},
-		Inputs: map[string]InputConstraint{
-			"image": {Min: 0, Max: 30},
-			"video": {Min: 0, Max: 10},
-			"audio": {Min: 0, Max: 10},
-		},
-	}
-	if match := MatchCapability(spec, intent); !match.Matched {
-		t.Fatalf("normalized AIStarsLab intent should match: %#v", match.Reasons)
-	}
-}
-
-func TestModelRequestIntentKeepsReferenceVideoSeparateFromExtend(t *testing.T) {
-	input := map[string]any{
-		"mode":            "video",
-		"referenceVideos": []any{map[string]any{"id": "video-1"}},
-	}
-	intent := ModelRequestIntentFromTaskInput(input, "canvas_video", "reference_to_video")
-	if intent.Operation != "reference_to_video" {
-		t.Fatalf("operation = %q, want reference_to_video", intent.Operation)
-	}
-	if explicit := ModelRequestIntentFromTaskInput(input, "canvas_video", "extend"); explicit.Operation != "extend" {
-		t.Fatalf("explicit operation = %q, want extend", explicit.Operation)
-	}
-	spec := CapabilitySpec{Version: 1, Capability: "video", Operations: []string{"image_to_video"}, Inputs: map[string]InputConstraint{"video": {Min: 0, Max: 3}}}
-	if match := MatchCapability(spec, intent); !match.Matched {
-		t.Fatalf("reference video should use the image-capable route alias: %#v", match.Reasons)
-	}
-}
-
 func TestValidateProductSpecWithinRoutesRejectsUnsupportedCapabilityValue(t *testing.T) {
 	routes := []CapabilitySpec{
 		{
@@ -190,6 +147,21 @@ func TestLogicalModelAvailabilityErrorRequiresSettlementReadyCoverage(t *testing
 	}
 	if message := logicalModelAvailabilityError("unified", product, structural, nil); message != "" {
 		t.Fatalf("unified pricing unexpectedly required channel prices: %q", message)
+	}
+}
+
+func TestSupportsLogicalModelTokenBillingForArkVideoRoutes(t *testing.T) {
+	if !supportsLogicalModelTokenBilling("text", nil) {
+		t.Fatal("text logical models should support Token billing")
+	}
+	if !supportsLogicalModelTokenBilling("video", []model.ChannelInterfaceType{model.ChannelInterfaceVolcengineArkVideo}) {
+		t.Fatal("Ark video-only routes should support Token billing")
+	}
+	if supportsLogicalModelTokenBilling("video", nil) {
+		t.Fatal("video logical models without an enabled route must not support Token billing")
+	}
+	if supportsLogicalModelTokenBilling("video", []model.ChannelInterfaceType{model.ChannelInterfaceVolcengineArkVideo, model.ChannelInterfaceNewAPIVideo}) {
+		t.Fatal("mixed video protocols must not support Token billing")
 	}
 }
 
