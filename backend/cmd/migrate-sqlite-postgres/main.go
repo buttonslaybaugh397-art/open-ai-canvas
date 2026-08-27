@@ -237,10 +237,9 @@ func migrations() []tableMigration {
 		migrateTable[model.UserSkillState]("user_skill_states"),
 		migrateTable[model.Resource]("resources"),
 		migrateTable[model.Asset]("assets"),
-		// TODO: 待合并 Group A 文件夹系统后添加
-		// migrateTable[model.TeamAsset]("team_assets"),
-		// migrateTable[model.TeamAssetFolder]("team_asset_folders"),
-		// migrateTable[model.TeamAssetResource]("team_asset_resources"),
+		migrateTable[model.TeamAsset]("team_assets"),
+		migrateTable[model.TeamAssetFolder]("team_asset_folders"),
+		migrateTable[model.TeamAssetResource]("team_asset_resources"),
 		migrateTable[model.ProjectAssetLink]("project_asset_links"),
 		migrateTable[model.ProjectAssetCandidate]("project_asset_candidates"),
 		migrateTable[model.AssetVersion]("asset_versions"),

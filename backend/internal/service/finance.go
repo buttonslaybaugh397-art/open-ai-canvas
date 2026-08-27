@@ -20,13 +20,13 @@ import (
 const CreditScale int64 = 1_000_000
 
 type WalletSummary struct {
-	Account model.CreditAccount       `json:"account"`
-	Entries []model.CreditLedgerEntry `json:"entries"`
-	Total   int64                     `json:"total"`
-	Page    int                       `json:"page"`
-	Limit   int                       `json:"limit"`
-	Consumption CreditConsumptionStats `json:"consumption"`
-	Policy  PublicCreditPolicy        `json:"policy"`
+	Account     model.CreditAccount       `json:"account"`
+	Entries     []model.CreditLedgerEntry `json:"entries"`
+	Total       int64                     `json:"total"`
+	Page        int                       `json:"page"`
+	Limit       int                       `json:"limit"`
+	Consumption CreditConsumptionStats    `json:"consumption"`
+	Policy      PublicCreditPolicy        `json:"policy"`
 }
 
 type CreditConsumptionStats struct {
@@ -45,20 +45,20 @@ func creditConsumptionWindow(now time.Time) repository.CreditConsumptionWindow {
 	weekStart := todayStart.AddDate(0, 0, -daysSinceMonday)
 	monthStart := time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, creditConsumptionLocation)
 	return repository.CreditConsumptionWindow{
-		TodayFrom: todayStart,
+		TodayFrom:     todayStart,
 		YesterdayFrom: todayStart.AddDate(0, 0, -1),
-		TodayTo: localNow,
-		WeekFrom: weekStart,
-		MonthFrom: monthStart,
+		TodayTo:       localNow,
+		WeekFrom:      weekStart,
+		MonthFrom:     monthStart,
 	}
 }
 
 func creditConsumptionStatsFromTotals(totals repository.CreditConsumptionTotals) CreditConsumptionStats {
 	return CreditConsumptionStats{
-		TodayMicrocredits: totals.Today,
+		TodayMicrocredits:     totals.Today,
 		YesterdayMicrocredits: totals.Yesterday,
-		WeekMicrocredits: totals.Week,
-		MonthMicrocredits: totals.Month,
+		WeekMicrocredits:      totals.Week,
+		MonthMicrocredits:     totals.Month,
 	}
 }
 
@@ -686,6 +686,40 @@ func channelModelPriceTierForBilling(channelModel model.ChannelModel, priceTierI
 		return nil
 	}
 	return channelModelPriceTierForIntent(channelModel, ModelRequestIntent{Capability: capability, Options: map[string]any{}})
+}
+
+func decodeResolutionPrices(encoded string) map[string]int64 {
+	prices := make(map[string]int64)
+	if strings.TrimSpace(encoded) == "" {
+		return prices
+	}
+	if err := json.Unmarshal([]byte(encoded), &prices); err != nil {
+		return make(map[string]int64)
+	}
+	return prices
+}
+
+func channelModelUnitPrice(item *model.ChannelModel, requestedResolution string) (string, int64) {
+	if item == nil {
+		return "", 0
+	}
+	if item.Capability != "video" {
+		return "", item.UnitPriceMicrocredits
+	}
+	resolution := strings.TrimSpace(requestedResolution)
+	if resolution == "" || strings.EqualFold(resolution, "auto") || strings.EqualFold(resolution, "default") {
+		if profile, err := DecodeModelCapabilityConfig(item.CapabilityConfigJSON); err == nil && profile != nil && profile.Video != nil {
+			resolution = profile.Video.DefaultResolution
+		}
+	}
+	if strings.TrimSpace(resolution) == "" {
+		return "", item.UnitPriceMicrocredits
+	}
+	resolution = normalizeResolution(resolution)
+	if price, ok := decodeResolutionPrices(item.ResolutionPricesJSON)[resolution]; ok {
+		return resolution, price
+	}
+	return resolution, item.UnitPriceMicrocredits
 }
 
 func estimateTaskTokens(input map[string]any) tokenBillingEstimate {

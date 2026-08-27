@@ -145,42 +145,304 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 		return nil, err
 	}
 	// 使用服务端保存的渠道密钥和请求头访问上游，避免敏感配置再次经过浏览器。
-	models, err := s.FetchChannelModels(ctx, actor, ChannelModelsRequest{BaseURL: channel.BaseURL, AllowLocalChannel: channel.AllowLocalChannel, APIKey: channel.APIKey, APIFormat: channel.APIFormat, Headers: headers})
+	catalog, err := s.FetchChannelModelCatalog(ctx, actor, ChannelModelsRequest{BaseURL: channel.BaseURL, AllowLocalChannel: channel.AllowLocalChannel, APIKey: channel.APIKey, APIFormat: channel.APIFormat, ConnectionType: channelConnectionType(channel), Headers: headers})
 	if err != nil {
 		return nil, err
+	}
+	models := make([]string, 0, len(catalog))
+	for _, item := range catalog {
+		if name := strings.TrimSpace(item.ID); name != "" {
+			models = append(models, name)
+		}
 	}
 	// 只按当前未删除记录去重；普通手动删除的模型仍可重新拉取，已合并进模型家族的 SKU 除外。
 	existing, err := s.repo.ChannelModels(channelID, true)
 	if err != nil {
 		return nil, err
 	}
-	known := make(map[string]struct{}, len(existing))
-	for _, item := range existing {
-		known[channelModelCatalogKey(item.ModelKey)] = struct{}{}
+	known := make(map[string]int, len(existing))
+	for index := range existing {
+		known[channelModelCatalogKey(existing[index].ModelKey)] = index
 	}
 	retired := retiredChannelModelKeys(channel.RetiredModelsJSON)
-	missing := make([]model.ChannelModel, 0, len(models))
-	for _, name := range models {
-		name = strings.TrimPrefix(strings.TrimSpace(name), "models/")
+	missing := make([]model.ChannelModel, 0, len(catalog))
+	inCatalog := make(map[string]bool, len(catalog))
+	repaired := false
+	for index := range catalog {
+		item := &catalog[index]
+		name := strings.TrimPrefix(strings.TrimSpace(item.ID), "models/")
 		key := channelModelCatalogKey(name)
-		if _, ok := known[key]; ok || retired[key] {
+		if key == "" || retired[key] {
+			continue
+		}
+		inCatalog[name] = true
+		if existingIndex, ok := known[key]; ok {
+			if syncChannelModelContract(*channel, &existing[existingIndex], item.SupportedEndpointTypes, item) {
+				if saveErr := s.repo.SaveChannelModel(&existing[existingIndex]); saveErr != nil {
+					return nil, saveErr
+				}
+				repaired = true
+			}
 			continue
 		}
 		// 自动发现不能绕过定价边界；新模型由管理员定价后再手动启用。
-		modelID, idErr := s.repo.NextPrefixedID("MODEL")
-		if idErr != nil {
-			return nil, idErr
+		missing = append(missing, discoveredChannelModel(*channel, name, item.SupportedEndpointTypes, item))
+	}
+	if channelConnectionType(channel) == "aistarslab" {
+		for index := range existing {
+			item := &existing[index]
+			if inCatalog[item.ModelKey] {
+				continue
+			}
+			legacy := aiStarsLabCatalogItemForLegacyKey(catalog, item.ModelKey)
+			if legacy == nil {
+				continue
+			}
+			if syncChannelModelContract(*channel, item, legacy.SupportedEndpointTypes, legacy) {
+				if saveErr := s.repo.SaveChannelModel(item); saveErr != nil {
+					return nil, saveErr
+				}
+				repaired = true
+			}
 		}
-		missing = append(missing, model.ChannelModel{ID: modelID, ChannelID: channelID, ModelKey: name, DisplayName: name, BillingMode: "fixed_request", Enabled: false, PriceVersion: 1})
 	}
 	added, err := s.repo.CreateMissingChannelModels(missing)
 	if err != nil {
 		return nil, err
 	}
-	if added > 0 {
+	if added > 0 || repaired {
 		s.invalidateRouteCatalog()
 	}
 	return &AdminChannelModelFetchResult{Models: models, Added: added}, nil
+}
+
+func discoveredChannelModel(channel model.ModelChannel, name string, endpointTypes []string, catalogItems ...*ChannelModelCatalogItem) model.ChannelModel {
+	var catalog *ChannelModelCatalogItem
+	if len(catalogItems) > 0 {
+		catalog = catalogItems[0]
+	}
+	displayName := name
+	if catalog != nil && strings.TrimSpace(catalog.DisplayName) != "" {
+		displayName = strings.TrimSpace(catalog.DisplayName)
+	}
+	item := model.ChannelModel{ID: newID(), ChannelID: channel.ID, ModelKey: name, DisplayName: displayName, BillingMode: "fixed_request", Enabled: false, PriceVersion: 1}
+	syncChannelModelContract(channel, &item, endpointTypes, catalog)
+	return item
+}
+
+func catalogItemByID(items []ChannelModelCatalogItem, id string) *ChannelModelCatalogItem {
+	for index := range items {
+		if items[index].ID == id {
+			return &items[index]
+		}
+	}
+	return nil
+}
+
+func aiStarsLabCatalogItemForLegacyKey(items []ChannelModelCatalogItem, modelKey string) *ChannelModelCatalogItem {
+	modelName := strings.TrimSpace(modelKey)
+	if modelName == "" || strings.Contains(modelName, ":") {
+		return nil
+	}
+	var matched *ChannelModelCatalogItem
+	for index := range items {
+		route := items[index].AIStarsLab
+		if route == nil || !strings.EqualFold(strings.TrimSpace(route.Model), modelName) {
+			continue
+		}
+		if matched != nil {
+			return nil
+		}
+		matched = &items[index]
+	}
+	return matched
+}
+
+func channelConnectionType(channel *model.ModelChannel) string {
+	if channel != nil && isAiStarsLabBaseURL(channel.BaseURL) {
+		return "aistarslab"
+	}
+	return ""
+}
+
+func syncChannelModelContract(channel model.ModelChannel, item *model.ChannelModel, endpointTypes []string, catalog *ChannelModelCatalogItem) bool {
+	if item == nil {
+		return false
+	}
+	if catalog != nil && catalog.AIStarsLab != nil {
+		route := catalog.AIStarsLab
+		capability := "video"
+		protocol := model.ChannelInterfaceAIStarsLabVideo
+		if strings.EqualFold(strings.TrimSpace(route.Capability), "image") {
+			capability = "image"
+			protocol = model.ChannelInterfaceAIStarsLabImage
+		}
+		changed := item.Protocol != protocol || item.Capability != capability
+		item.Protocol = protocol
+		item.Capability = capability
+		config := DefaultModelCapabilityConfigForModel(string(protocol), route.Model)
+		config.AIStarsLab = &AIStarsLabCapabilityConfig{
+			Channel: route.Channel, Capability: route.Capability, Model: route.Model,
+			Qualities: append([]string(nil), route.Qualities...), AspectRatios: append([]string(nil), route.AspectRatios...),
+			Duration: append([]int(nil), route.Duration...), DurationMin: route.DurationMin, DurationMax: route.DurationMax,
+			Modes: append([]string(nil), route.Modes...), InputImagesMax: route.InputImagesMax,
+			InputVideosMax: route.InputVideosMax, InputAudiosMax: route.InputAudiosMax,
+		}
+		if capability == "video" && config.Video != nil {
+			config.Video.References.MaxImages = route.InputImagesMax
+			config.Video.References.MaxVideos = route.InputVideosMax
+			config.Video.References.MaxAudios = route.InputAudiosMax
+			if len(route.Qualities) > 0 {
+				config.Video.Resolutions = append([]string(nil), route.Qualities...)
+				config.Video.DefaultResolution = route.Qualities[0]
+			}
+			if len(route.Duration) > 0 {
+				config.Video.Duration = VideoDurationConfig{Selection: "enum", Values: append([]int(nil), route.Duration...), Default: route.Duration[0]}
+			} else if route.DurationMin > 0 && route.DurationMax >= route.DurationMin {
+				config.Video.Duration = VideoDurationConfig{Selection: "range", Min: route.DurationMin, Max: route.DurationMax, Step: 1, Default: route.DurationMin}
+			}
+			if len(route.AspectRatios) > 0 {
+				config.Video.Ratios = append([]string(nil), route.AspectRatios...)
+				config.Video.DefaultRatio = route.AspectRatios[0]
+			}
+		}
+		encoded, err := json.Marshal(config)
+		if err == nil && item.CapabilityConfigJSON != string(encoded) {
+			item.CapabilityConfigJSON = string(encoded)
+			item.CapabilityVersion++
+			changed = true
+		}
+		return changed
+	}
+	return syncHuiQuYunModelContract(channel, item, endpointTypes)
+}
+
+func syncHuiQuYunModelContract(channel model.ModelChannel, item *model.ChannelModel, endpointTypes []string) bool {
+	if item == nil || !isHuiQuYunBaseURL(channel.BaseURL) {
+		return false
+	}
+	if item.PriceConfigured && validHuiQuYunProtocol(item.Protocol) && capabilityForProtocolValue(item.Protocol) == item.Capability {
+		// 已定价模型保留管理员选择，但已知视频 SKU 的错误文本协议必须修复，
+		// 否则生成请求会走聊天接口并被上游拒绝。
+		expected := huiQuYunProtocolForModel(item.ModelKey, endpointTypes)
+		if expected != model.ChannelInterfaceHuiQuYunVideo || item.Protocol == expected {
+			return false
+		}
+	}
+	protocol := huiQuYunProtocolForModel(item.ModelKey, endpointTypes)
+	capability := capabilityForProtocolValue(protocol)
+	changed := item.Protocol != protocol || item.Capability != capability
+	item.Protocol = protocol
+	item.Capability = capability
+	if capability == "image" || capability == "video" {
+		if changed || strings.TrimSpace(item.CapabilityConfigJSON) == "" {
+			config := DefaultModelCapabilityConfigForModel(string(protocol), item.ModelKey)
+			if capability == "video" && isHuiQuYunMJSD933Model(item.ModelKey) && config.Video != nil {
+				config.Video.Resolutions = []string{"480p", "720p"}
+				config.Video.DefaultResolution = "720p"
+			}
+			encoded, err := json.Marshal(config)
+			if err == nil && item.CapabilityConfigJSON != string(encoded) {
+				item.CapabilityConfigJSON = string(encoded)
+				item.CapabilityVersion++
+				changed = true
+			}
+		}
+	} else if item.CapabilityConfigJSON != "" || item.CapabilityVersion != 0 {
+		item.CapabilityConfigJSON = ""
+		item.CapabilityVersion = 0
+		changed = true
+	}
+	return changed
+}
+
+func capabilityForProtocolValue(protocol model.ChannelInterfaceType) string {
+	switch protocol {
+	case model.ChannelInterfaceOpenAIImage, model.ChannelInterfaceAIStarsLabImage:
+		return "image"
+	case model.ChannelInterfaceOpenAIAudio:
+		return "audio"
+	case model.ChannelInterfaceHuiQuYunVideo, model.ChannelInterfaceAIStarsLabVideo, model.ChannelInterfaceVolcengineJiMengVideo, model.ChannelInterfaceVolcengineArkVideo:
+		return "video"
+	case model.ChannelInterfaceChatCompletion, model.ChannelInterfaceOpenAIResponse:
+		return "text"
+	default:
+		return ""
+	}
+}
+
+func validHuiQuYunProtocol(protocol model.ChannelInterfaceType) bool {
+	return capabilityForProtocolValue(protocol) != ""
+}
+
+func isHuiQuYunBaseURL(value string) bool {
+	normalized := strings.ToLower(strings.TrimRight(strings.TrimSpace(value), "/"))
+	return normalized == "https://api.bjhuiqu.net" || normalized == "https://api.bjhuiqu.net/v1"
+}
+
+func isAiStarsLabBaseURL(value string) bool {
+	normalized := strings.ToLower(strings.TrimRight(strings.TrimSpace(value), "/"))
+	return normalized == "https://api.video.aistarslab.com/openapi"
+}
+
+func huiQuYunProtocolForModel(name string, endpointTypes []string) model.ChannelInterfaceType {
+	for _, endpointType := range endpointTypes {
+		switch strings.ToLower(strings.TrimSpace(endpointType)) {
+		case "openai-chat", "chat-completion", "chat":
+			return model.ChannelInterfaceChatCompletion
+		case "openai-response", "responses":
+			return model.ChannelInterfaceOpenAIResponse
+		case "openai-image", "image":
+			return model.ChannelInterfaceOpenAIImage
+		case "openai-video", "video":
+			return model.ChannelInterfaceHuiQuYunVideo
+		case "openai-audio", "audio":
+			return model.ChannelInterfaceOpenAIAudio
+		}
+	}
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if huiQuYunModelContainsAny(normalized, "tts", "speech", "voice", "audio", "music", "sound") {
+		return model.ChannelInterfaceOpenAIAudio
+	}
+	if huiQuYunModelContainsAny(normalized, "mx933", "mj-sd", "seedance", "grok-video", "sora", "veo", "kling", "hailuo", "vidu", "wan-video", "jimeng-video", "doubao-video", "minimax-video", "video") {
+		return model.ChannelInterfaceHuiQuYunVideo
+	}
+	if huiQuYunModelContainsAny(normalized, "gpt-image", "nano-banana", "nanobanana", "seedream", "image", "dall-e", "dalle", "imagen", "flux", "sdxl", "stable-diffusion", "midjourney", "ideogram", "recraft") {
+		return model.ChannelInterfaceOpenAIImage
+	}
+	return model.ChannelInterfaceChatCompletion
+}
+
+func huiQuYunModelContainsAny(value string, markers ...string) bool {
+	for _, marker := range markers {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isHuiQuYunMJSD933Model(modelName string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(modelName))
+	return strings.Contains(normalized, "mj-sd2.0-933-720p")
+}
+
+func isHuiQuYunMX933VideoModel(modelName string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(modelName))
+	return strings.HasPrefix(normalized, "sd2-mx933-720-") || strings.HasPrefix(normalized, "sd2-mx933-720-fast-")
+}
+
+func huiQuYunFixedVideoDuration(modelName string) int {
+	normalized := strings.ToLower(strings.TrimSpace(modelName))
+	idx := strings.LastIndex(normalized, "-")
+	if idx < 0 || idx == len(normalized)-1 || !strings.HasSuffix(normalized, "s") {
+		return 0
+	}
+	value, err := strconv.Atoi(strings.TrimSuffix(normalized[idx+1:], "s"))
+	if err != nil || value <= 0 {
+		return 0
+	}
+	return value
 }
 
 func (s *Service) SaveAdminChannelModel(actor *model.User, channelID string, id string, req ChannelModelRequest) (*model.ChannelModel, error) {
@@ -664,18 +926,35 @@ func normalizeChannelModelContractWithRegistry(registry *protocol.Registry, chan
 	if capability == "" {
 		return "", "", "", "", BadAuthRequest("请选择模型能力")
 	}
+	requestedProtocol := model.ChannelInterfaceType(strings.TrimSpace(req.Protocol))
 	adapter, ok := registry.Resolve(strings.TrimSpace(req.Protocol))
-	if !ok || !adapter.Metadata().Enabled || adapter.Metadata().UnavailableReason != "" {
+	protocol := requestedProtocol
+	expectedCapability := capabilityForProtocolValue(protocol)
+	if ok {
+		if !adapter.Metadata().Enabled || adapter.Metadata().UnavailableReason != "" {
+			return "", "", "", "", BadAuthRequest("请选择有效的模型请求协议")
+		}
+		protocol = model.ChannelInterfaceType(adapter.Metadata().ID)
+		expectedCapability = protocolCapabilityFromMetadata(adapter.Metadata())
+	} else if !isHostBackedChannelProtocol(protocol) {
 		return "", "", "", "", BadAuthRequest("请选择有效的模型请求协议")
 	}
-	protocol := model.ChannelInterfaceType(adapter.Metadata().ID)
-	if expected := protocolCapabilityFromMetadata(adapter.Metadata()); expected != "" && expected != capability {
+	if expectedCapability != "" && expectedCapability != capability {
 		return "", "", "", "", BadAuthRequest("模型能力与请求协议不匹配")
 	}
 	if (protocol == model.ChannelInterfaceVolcengineJiMengImage || protocol == model.ChannelInterfaceVolcengineJiMengVideo) && (strings.TrimSpace(channel.APIKey) == "" || strings.TrimSpace(channel.SecretKey) == "") {
 		return "", "", "", "", BadAuthRequest("即梦官方协议需要先在渠道中配置 Access Key 和 Secret Key")
 	}
 	return modelKey, providerModelKey, capability, protocol, nil
+}
+
+func isHostBackedChannelProtocol(protocol model.ChannelInterfaceType) bool {
+	switch protocol {
+	case model.ChannelInterfaceGlobalAiOpcVideo, model.ChannelInterfaceHuiQuYunVideo, model.ChannelInterfaceAIStarsLabImage, model.ChannelInterfaceAIStarsLabVideo:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) DeleteAdminChannelModel(actor *model.User, channelID string, id string) error {

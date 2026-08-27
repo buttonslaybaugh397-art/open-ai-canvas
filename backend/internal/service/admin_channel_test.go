@@ -166,7 +166,7 @@ func TestDiscoveredHuiQuYunModelUsesDedicatedProtocol(t *testing.T) {
 
 func TestHuiQuYunChannelAcceptsExplicitModelContract(t *testing.T) {
 	channel := &model.ModelChannel{BaseURL: "https://api.bjhuiqu.net"}
-	modelKey, capability, protocol, err := normalizeChannelModelContract(channel, ChannelModelRequest{ModelKey: "ambiguous-model", Capability: "video", Protocol: string(model.ChannelInterfaceHuiQuYunVideo)})
+	modelKey, _, capability, protocol, err := normalizeChannelModelContract(channel, ChannelModelRequest{ModelKey: "ambiguous-model", Capability: "video", Protocol: string(model.ChannelInterfaceHuiQuYunVideo)})
 	if err != nil || modelKey != "ambiguous-model" || capability != "video" || protocol != model.ChannelInterfaceHuiQuYunVideo {
 		t.Fatalf("normalizeChannelModelContract() = %q, %q, %q, %v", modelKey, capability, protocol, err)
 	}
