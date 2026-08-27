@@ -938,7 +938,7 @@ func (s *Service) EnrichAPICallLog(log *model.ApiCallLog, responseBody []byte) {
 	if log == nil {
 		return
 	}
-	if log.ProviderRequestID == "" {
+	if log.ProviderRequestID == "" && log.RequestKind != "create" {
 		log.ProviderRequestID = providerRequestIDFromPath(log.Path)
 	}
 	payloads := providerResponsePayloads(responseBody)

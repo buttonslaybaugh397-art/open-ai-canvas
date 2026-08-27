@@ -21,8 +21,9 @@ func TestPluginViewIncludesDocumentationForEveryBundledProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	plugins := center.list()
-	if len(plugins) != len(protocol.Builtins().List("", "", true)) {
-		t.Fatalf("plugin views = %d, builtins = %d", len(plugins), len(protocol.Builtins().List("", "", true)))
+	expectedCount := len(protocol.Builtins().List("", "", true)) - len(protocol.BundledHostProviderIDs()) + len(protocol.BundledHostManifests())
+	if len(plugins) != expectedCount {
+		t.Fatalf("plugin views = %d, want %d", len(plugins), expectedCount)
 	}
 	for _, plugin := range plugins {
 		if plugin.Source != "bundled" {
@@ -31,6 +32,26 @@ func TestPluginViewIncludesDocumentationForEveryBundledProtocol(t *testing.T) {
 		document := strings.TrimSpace(plugin.Manifest.Documentation)
 		if document == "" || !strings.Contains(document, "## 影策运行时合同") {
 			t.Errorf("bundled plugin %q has no complete documentation in PluginView", plugin.Manifest.ID)
+		}
+	}
+}
+
+func TestBundledChannelPluginControlsAllContributedProviders(t *testing.T) {
+	center, err := newPluginRuntime(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"globalaiopc-image", "globalaiopc-video"} {
+		if !center.registrySnapshot().IsCapability(id, protocol.Capability(strings.TrimPrefix(id, "globalaiopc-"))) {
+			t.Fatalf("provider %q was not enabled", id)
+		}
+	}
+	if _, err := center.setEnabled("globalaiopc-channel", false); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"globalaiopc-image", "globalaiopc-video"} {
+		if center.registrySnapshot().IsCapability(id, protocol.Capability(strings.TrimPrefix(id, "globalaiopc-"))) {
+			t.Fatalf("provider %q remained selectable after disabling channel plugin", id)
 		}
 	}
 }

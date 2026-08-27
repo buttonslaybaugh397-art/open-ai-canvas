@@ -334,10 +334,7 @@ func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string
 		}
 	}
 	if resumedProviderRequestID(ctx) == "" {
-		requirePublicURL := input.Config.InterfaceType == "newapi-channel-1" || input.Config.InterfaceType == "newapi-channel-2" || input.Config.InterfaceType == string(model.ChannelInterfaceVolcengineArkVideo) || input.Config.InterfaceType == string(model.ChannelInterfaceMiniMaxVideo)
-		if adapter, ok := declarativeProtocolAdapterForContext(ctx, input.Config.InterfaceType); ok {
-			requirePublicURL = requirePublicURL || adapter.Metadata().RequiresPublicMediaURLs
-		}
+		requirePublicURL := generationRequiresPublicReferenceURL(ctx, input)
 		if err := s.hydrateGenerationMedia(userID, &input, requirePublicURL); err != nil {
 			return nil, err
 		}
@@ -1154,6 +1151,9 @@ func systemChannelIDFromBaseURL(baseURL string) string {
 func runImageTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
 	if _, ok := declarativeProtocolAdapterForContext(ctx, input.Config.InterfaceType); ok {
 		return runDeclarativeProtocolTask(ctx, input)
+	}
+	if input.Config.InterfaceType == string(model.ChannelInterfaceGlobalAiOpcImage) {
+		return runGlobalAiOpcTask(ctx, input, "image")
 	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceGrokImage) {
 		return runGrokImageTask(ctx, input)
@@ -2333,6 +2333,9 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 	if _, ok := declarativeProtocolAdapterForContext(ctx, input.Config.InterfaceType); ok {
 		return runDeclarativeProtocolTask(ctx, input)
 	}
+	if input.Config.InterfaceType == string(model.ChannelInterfaceGlobalAiOpcVideo) {
+		return runGlobalAiOpcTask(ctx, input, "video")
+	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceHuiQuYunVideo) {
 		return runHuiQuYunVideoTask(ctx, input)
 	}
@@ -2478,6 +2481,17 @@ func protocolRequiresPublicReferenceURL(interfaceType string) bool {
 	default:
 		return false
 	}
+}
+
+func generationRequiresPublicReferenceURL(ctx context.Context, input canvasGenerationInput) bool {
+	requirePublicURL := protocolRequiresPublicReferenceURL(input.Config.InterfaceType) || input.Config.InterfaceType == string(model.ChannelInterfaceMiniMaxVideo)
+	if adapter, ok := protocolAdapterForContext(ctx, input.Config.InterfaceType); ok {
+		requirePublicURL = requirePublicURL || adapter.Metadata().RequiresPublicMediaURLs
+	}
+	if input.Config.InterfaceType == string(model.ChannelInterfaceHuiQuYunVideo) && huiQuYunUsesMultipartVideoRequest(input) {
+		return false
+	}
+	return requirePublicURL
 }
 
 func runAiStarsLabImageTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
@@ -2762,7 +2776,7 @@ func huiQuYunVideoRequestBody(input canvasGenerationInput) (map[string]interface
 	}
 	seconds, _ := strconv.Atoi(strings.TrimSpace(input.Config.VideoSeconds))
 	ratio := input.Config.Size
-	if isHuiQuYunMX933VideoModel(input.Config.Model) {
+	if isHuiQuYun933MultipartVideoModel(input.Config.Model) {
 		if hasHuiQuYunVideoReferences(input) {
 			return nil, errors.New("汇取云 MX933 参考素材必须使用 multipart 文件上传")
 		}
@@ -2875,7 +2889,7 @@ func normalizeHuiQuYunVideoInput(input *canvasGenerationInput) {
 		}
 	}
 	input.Config.VideoSeconds = strconv.Itoa(seconds)
-	if isHuiQuYunMX933VideoModel(input.Config.Model) {
+	if isHuiQuYun933MultipartVideoModel(input.Config.Model) {
 		input.Config.Size = normalizeHuiQuYunMX933VideoRatio(input.Config.Size)
 		quality := strings.ToLower(strings.TrimSpace(input.Config.VQuality))
 		if quality != "480p" && quality != "720p" {
@@ -2941,11 +2955,15 @@ func huiQuYunVideoError(state map[string]interface{}) string {
 	return firstNonEmptyString(stringField(state, "error"), stringField(state, "message"), stringField(state, "msg"), "上游返回失败")
 }
 
+func huiQuYunUsesMultipartVideoRequest(input canvasGenerationInput) bool {
+	return isHuiQuYun933MultipartVideoModel(input.Config.Model) && hasHuiQuYunVideoReferences(input)
+}
+
 func runHuiQuYunVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
 	id := resumedProviderRequestID(ctx)
 	if id == "" {
 		var created map[string]interface{}
-		if isHuiQuYunMX933VideoModel(input.Config.Model) && hasHuiQuYunVideoReferences(input) {
+		if huiQuYunUsesMultipartVideoRequest(input) {
 			body, contentType, err := huiQuYunMX933MultipartBody(input)
 			if err != nil {
 				return nil, err

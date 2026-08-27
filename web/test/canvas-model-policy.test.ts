@@ -195,6 +195,27 @@ describe("逻辑模型选择", () => {
         expect(inferVideoOperation({ textCount: 1, imageCount: 0, videoCount: 1, audioCount: 1, characterCount: 0 })).toBe("reference_to_video");
     });
 
+    test("多张纯图片参考仍按后台图生视频能力匹配", () => {
+        const model = "relay::multi-image";
+        const capabilityConfig = defaultModelCapabilityConfig(undefined, "multi-image");
+        capabilityConfig.video!.operations = ["image_to_video"];
+        capabilityConfig.video!.references.maxImages = 9;
+        const channel: ModelChannel = {
+            id: "relay",
+            name: "中转渠道",
+            baseUrl: "https://api.example.com",
+            apiKey: "test-key",
+            apiFormat: "openai",
+            models: ["multi-image"],
+            modelCosts: [{ model: "multi-image", capability: "video", billingMode: "per_second", unitPriceMicrocredits: 1, capabilityConfig }],
+        };
+        const config: AiConfig = { ...defaultConfig, channels: [channel], models: [model], videoModels: [model], videoModel: model, model };
+        const input = { textCount: 1, imageCount: 9, videoCount: 0, audioCount: 0, characterCount: 0 };
+
+        expect(inferVideoOperation(input)).toBe("image_to_video");
+        expect(modelCompatibilityError(config, model, { capability: "video", input })).toBe("");
+    });
+
     test("逻辑视频模型将 720 与 720p 视为同一分辨率", () => {
         const model = "cinema-720p";
         const channel: ModelChannel = {

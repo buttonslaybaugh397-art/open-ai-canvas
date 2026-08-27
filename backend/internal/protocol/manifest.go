@@ -67,24 +67,33 @@ func LoadInstalledProviders(data []byte, resolve AdapterResolver) ([]Adapter, er
 		return nil, err
 	}
 	if strings.HasPrefix(strings.TrimSpace(manifest.Runtime.Backend), "host:") {
-		if len(manifest.Contributes.Providers) != 1 {
-			return nil, fmt.Errorf("host-backed plugin must declare exactly one provider")
+		if len(manifest.Contributes.Providers) == 0 {
+			return nil, fmt.Errorf("host-backed plugin must declare at least one provider")
 		}
 		if resolve == nil {
 			return nil, fmt.Errorf("plugin %q requires a host execution engine", manifest.Metadata.ID)
 		}
 		name := strings.TrimPrefix(strings.TrimSpace(manifest.Runtime.Backend), "host:")
-		adapter, ok := resolve(name)
-		if !ok {
-			return nil, fmt.Errorf("plugin host execution %q is unavailable", name)
+		if len(manifest.Contributes.Providers) > 1 && name != "providers" {
+			return nil, fmt.Errorf("multi-provider host plugin must use host:providers runtime")
 		}
-		if err := ValidateManifest(manifest); err != nil {
-			return nil, err
+		result := make([]Adapter, 0, len(manifest.Contributes.Providers))
+		for index, provider := range manifest.Contributes.Providers {
+			execution := name
+			if name == "providers" {
+				execution = provider.ID
+			}
+			adapter, ok := resolve(execution)
+			if !ok {
+				return nil, fmt.Errorf("plugin host execution %q is unavailable", execution)
+			}
+			providerManifest := manifest
+			if err := normalizeManifestForProvider(&providerManifest, index); err != nil {
+				return nil, err
+			}
+			result = append(result, metadataAdapter{metadata: providerManifest.Metadata, delegate: adapter})
 		}
-		if err := normalizeManifest(&manifest); err != nil {
-			return nil, err
-		}
-		return []Adapter{metadataAdapter{metadata: manifest.Metadata, delegate: adapter}}, nil
+		return result, nil
 	}
 	if len(manifest.Contributes.Providers) == 0 {
 		adapter, err := loadDeclarativeManifest(manifest)
@@ -219,7 +228,20 @@ func ValidateManifest(manifest Manifest) error {
 	if len(manifest.Contributes.Providers) == 0 {
 		return nil
 	}
-	provider := manifest.Contributes.Providers[0]
+	seenProviders := make(map[string]struct{}, len(manifest.Contributes.Providers))
+	for _, provider := range manifest.Contributes.Providers {
+		if err := validateManifestProvider(provider); err != nil {
+			return err
+		}
+		if _, exists := seenProviders[provider.ID]; exists {
+			return fmt.Errorf("duplicate provider contribution %q", provider.ID)
+		}
+		seenProviders[provider.ID] = struct{}{}
+	}
+	return nil
+}
+
+func validateManifestProvider(provider ManifestProvider) error {
 	if strings.TrimSpace(provider.ID) == "" || strings.TrimSpace(provider.Label) == "" {
 		return fmt.Errorf("provider contribution requires id and label")
 	}

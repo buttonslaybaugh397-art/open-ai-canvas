@@ -5448,6 +5448,10 @@
     .wallet-balance-metric span { color: color-mix(in srgb, var(--foreground) 50%, transparent); font-size: var(--fs-tiny); }
     .wallet-balance-metric strong { margin-top: 3px; overflow: hidden; font-size: var(--fs-heading); font-variant-numeric: tabular-nums; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
     .wallet-balance-metric small { margin-top: 2px; overflow: hidden; color: color-mix(in srgb, var(--foreground) 35%, transparent); font-size: var(--fs-tiny); text-overflow: ellipsis; white-space: nowrap; }
+    .wallet-consumption-grid { display: grid; min-width: 0; grid-column: 1 / -1; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; }
+    .wallet-consumption-metric { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+    .wallet-consumption-metric span { color: color-mix(in srgb, var(--foreground) 48%, transparent); font-size: var(--fs-tiny); line-height: 1.4; }
+    .wallet-consumption-metric strong { min-width: 0; overflow: hidden; font-size: var(--fs-caption); font-variant-numeric: tabular-nums; font-weight: 620; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
     .wallet-library-page .wallet-redeem-icon { background: color-mix(in srgb, var(--foreground) 6%, transparent); color: color-mix(in srgb, var(--foreground) 72%, transparent); }
     .wallet-library-page .wallet-ledger-panel { margin-top: 28px; }
     .wallet-library-page .wallet-ledger-panel .app-table-surface { border: 0; box-shadow: none; }
@@ -5464,6 +5468,7 @@
         .wallet-balance-number { margin-top: 32px; }
         .wallet-balance-details { grid-template-columns: minmax(0, 1fr); gap: 16px; }
         .wallet-account-status { grid-row: auto; grid-column: auto; }
+        .wallet-consumption-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
     }
 
     .library-loading-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 26px 18px; margin-top: 20px; }

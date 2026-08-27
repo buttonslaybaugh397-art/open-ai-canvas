@@ -71,12 +71,14 @@ func Builtins() *Registry {
 	if builtinRegistry != nil {
 		return builtinRegistry
 	}
-	registry, err := NewRegistry(
+	adapters := []Adapter{
 		openAIChatAdapter(), openAIResponsesAdapter(), claudeAdapter(),
 		openAIImagesAdapter(), grokImagesAdapter(), arkImagesAdapter(), jimengImagesAdapter(), geminiImagesAdapter(),
 		openAIVideosAdapter(), newAPIChannel1Adapter(), newAPIVideosAdapter(), xAIVideosAdapter(), arkVideosAdapter(), jimengVideosAdapter(), geminiVeoAdapter(), novitaVideosAdapter(), miniMaxVideosAdapter(),
 		openAIAudioAdapter(), asyncAudioAdapter(), agnesAdapter(),
-	)
+	}
+	adapters = append(adapters, customChannelAdapters()...)
+	registry, err := NewRegistry(adapters...)
 	if err != nil {
 		panic(err)
 	}

@@ -1,6 +1,12 @@
 package service
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"infinite-canvas/backend/internal/model"
+)
 
 func TestChannelPluginForMatchesDedicatedChannels(t *testing.T) {
 	tests := []struct {
@@ -20,6 +26,21 @@ func TestChannelPluginForMatchesDedicatedChannels(t *testing.T) {
 				t.Fatalf("plugin = %#v, want %q", plugin, test.wantID)
 			}
 		})
+	}
+}
+
+func TestChannelCatalogRespectsPluginState(t *testing.T) {
+	center, err := newPluginRuntime(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := center.setEnabled("globalaiopc-channel", false); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{pluginRuntime: center}
+	_, err = svc.FetchChannelModelCatalog(context.Background(), &model.User{ID: "user-1"}, ChannelModelsRequest{BaseURL: "https://zcbservice.aizfw.cn/kyyReactApiServer", APIKey: "test"})
+	if err == nil || !strings.Contains(err.Error(), "插件未启用") {
+		t.Fatalf("disabled plugin catalog error = %v", err)
 	}
 }
 

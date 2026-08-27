@@ -136,6 +136,25 @@ func DefaultImageCapabilityConfig(protocol string, modelName string) *ImageCapab
 		MaxOutputs:            15,
 	}
 	switch model.ChannelInterfaceType(protocol) {
+	case model.ChannelInterfaceGlobalAiOpcImage:
+		image.References.MaskSupported = false
+		image.Size = ImageSizeConfig{Parameter: "aspect_ratio", Values: []string{"1:1", "3:4", "4:3", "16:9", "9:16", "3:2", "2:3", "21:9"}, Default: "1:1", AllowCustom: false}
+		if strings.EqualFold(strings.TrimSpace(modelName), "seedream_5.0Pro") {
+			image.Quality = ImageQualityConfig{Supported: true, Values: []string{"1K", "2K"}, Default: "1K"}
+		} else {
+			image.Quality = ImageQualityConfig{Supported: true, Values: []string{"2K", "3K", "4K"}, Default: "2K"}
+		}
+		image.TransparentBackground = VideoBooleanConfig{Supported: false, Default: false}
+		image.ResponseFormat = ParameterSupport{Supported: false}
+		image.OutputFormat = ParameterSupport{Supported: false}
+		image.MaxOutputs = 1
+	case model.ChannelInterfaceAIStarsLabImage:
+		image.References.MaskSupported = false
+		image.Size = ImageSizeConfig{Parameter: "aspect_ratio", Values: []string{"1:1", "3:4", "4:3", "16:9", "9:16"}, Default: "1:1", AllowCustom: false}
+		image.TransparentBackground = VideoBooleanConfig{Supported: false, Default: false}
+		image.ResponseFormat = ParameterSupport{Supported: false}
+		image.OutputFormat = ParameterSupport{Supported: false}
+		image.MaxOutputs = 1
 	case model.ChannelInterfaceGrokImage:
 		image.References.MaxImages = 1
 		image.References.MaskSupported = false
@@ -215,6 +234,26 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		DefaultOperation:  "text_to_video",
 	}
 	switch model.ChannelInterfaceType(protocol) {
+	case model.ChannelInterfaceGlobalAiOpcVideo:
+		video.Operations = append(video.Operations, "reference_to_video", "audio_to_video")
+		video.References.MaxVideos, video.References.MaxAudios = 3, 3
+		video.References.MaxVideoBytes, video.References.MaxAudioBytes = 200*1024*1024, 30*1024*1024
+		video.References.MaxVideoDuration, video.References.MaxAudioDuration = 30, 30
+		video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
+		video.Watermark = VideoBooleanConfig{Supported: true, Default: false}
+	case model.ChannelInterfaceHuiQuYunVideo:
+		video.Operations = append(video.Operations, "reference_to_video", "audio_to_video")
+		video.References.MaxVideos, video.References.MaxAudios = 3, 1
+		video.References.MaxVideoBytes, video.References.MaxAudioBytes = 200*1024*1024, 30*1024*1024
+		video.References.MaxVideoDuration, video.References.MaxAudioDuration = 30, 30
+		video.GenerateAudio = VideoBooleanConfig{Supported: true, Default: true}
+		video.Resolutions = []string{"480p", "720p"}
+		video.DefaultResolution = "720p"
+	case model.ChannelInterfaceAIStarsLabVideo:
+		video.Operations = append(video.Operations, "reference_to_video", "audio_to_video")
+		video.References.MaxVideos, video.References.MaxAudios = 3, 3
+		video.References.MaxVideoBytes, video.References.MaxAudioBytes = 200*1024*1024, 30*1024*1024
+		video.References.MaxVideoDuration, video.References.MaxAudioDuration = 30, 30
 	case model.ChannelInterfaceVolcengineJiMengVideo:
 		video.Duration = VideoDurationConfig{Selection: "enum", Values: []int{5, 10}, Default: 5}
 		video.Resolutions = []string{"720p"}

@@ -326,7 +326,7 @@ export function inferVideoOperation(input: ModelInputSummary) {
     // 纯音频参考使用独立能力；音频与图片、角色或视频组合时属于全模态参考，
     // 不能把组合请求误路由到只支持 audio_to_video 的细分模型。
     if (input.audioCount > 0) return visualInputCount > 0 || input.videoCount > 0 ? "reference_to_video" : "audio_to_video";
-    if (input.videoCount > 0 || visualInputCount > 2) return "reference_to_video";
+    if (input.videoCount > 0) return "reference_to_video";
     if (visualInputCount > 0) return "image_to_video";
     return "text_to_video";
 }

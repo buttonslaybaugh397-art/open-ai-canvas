@@ -12,8 +12,8 @@ func TestBuiltinCatalogContainsRequestedProtocols(t *testing.T) {
 	registry := Builtins()
 	expected := []string{
 		"chat-completion", "openai-response", "claude-api",
-		"openai-image", "grok-image", "volcengine-ark-image", "volcengine-jimeng-image", "gemini-image",
-		"newapi", "newapi-channel-2", "xai-video", "volcengine-ark-video", "volcengine-jimeng-video", "gemini-veo", "novita-video", "minimax-video", "agnes-video",
+		"openai-image", "grok-image", "globalaiopc-image", "aistarslab-image", "volcengine-ark-image", "volcengine-jimeng-image", "gemini-image",
+		"newapi", "newapi-channel-2", "xai-video", "globalaiopc-video", "huiquyun-video", "aistarslab-video", "volcengine-ark-video", "volcengine-jimeng-video", "gemini-veo", "novita-video", "minimax-video", "agnes-video",
 	}
 	for _, id := range expected {
 		if _, ok := registry.Get(id); !ok {
@@ -44,6 +44,31 @@ func TestBuiltinCatalogContainsRequestedProtocols(t *testing.T) {
 	}
 	if _, ok := registry.Get("autodl-comfyui"); ok {
 		t.Fatal("AutoDL must be provided by the uploaded plugin package, not the host registry")
+	}
+}
+
+func TestBundledChannelPluginsGroupHostProviders(t *testing.T) {
+	manifests := BundledHostManifests()
+	if len(manifests) != 3 {
+		t.Fatalf("bundled channel manifests = %d, want 3", len(manifests))
+	}
+	for _, manifest := range manifests {
+		data, err := json.Marshal(manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		adapters, err := LoadInstalledProviders(data, Builtins().Resolve)
+		if err != nil {
+			t.Fatalf("load %s: %v", manifest.Metadata.ID, err)
+		}
+		if len(adapters) != len(manifest.Contributes.Providers) {
+			t.Fatalf("%s adapters = %d, providers = %d", manifest.Metadata.ID, len(adapters), len(manifest.Contributes.Providers))
+		}
+		for index, adapter := range adapters {
+			if adapter.Metadata().ID != manifest.Contributes.Providers[index].ID {
+				t.Fatalf("%s adapter[%d] = %q", manifest.Metadata.ID, index, adapter.Metadata().ID)
+			}
+		}
 	}
 }
 

@@ -432,6 +432,10 @@ func isHuiQuYunMX933VideoModel(modelName string) bool {
 	return strings.HasPrefix(normalized, "sd2-mx933-720-") || strings.HasPrefix(normalized, "sd2-mx933-720-fast-")
 }
 
+func isHuiQuYun933MultipartVideoModel(modelName string) bool {
+	return isHuiQuYunMX933VideoModel(modelName) || isHuiQuYunMJSD933Model(modelName)
+}
+
 func huiQuYunFixedVideoDuration(modelName string) int {
 	normalized := strings.ToLower(strings.TrimSpace(modelName))
 	idx := strings.LastIndex(normalized, "-")

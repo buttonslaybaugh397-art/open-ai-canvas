@@ -9,6 +9,7 @@ import (
 // 生成协议仍由各接口实现负责，插件只提供可复用的渠道边界，避免渠道判断散落在 handler 和页面。
 type ChannelPlugin struct {
 	ID            string
+	ProtocolID    string
 	Label         string
 	BaseURL       string
 	RelayFormat   string
@@ -18,9 +19,9 @@ type ChannelPlugin struct {
 }
 
 var channelPlugins = []ChannelPlugin{
-	{ID: "globalaiopc", Label: "GlobalAiOpc", BaseURL: "https://zcbservice.aizfw.cn/kyyReactApiServer", RelayFormat: "globalaiopc", Dedicated: true, StaticCatalog: globalAiOpcCatalog},
-	{ID: "huiquyun", Label: "汇取云", BaseURL: "https://api.bjhuiqu.net/v1", RelayFormat: "openai", Dedicated: true},
-	{ID: "aistarslab", Label: "AIStarsLab", BaseURL: "https://api.video.aistarslab.com/openapi", RelayFormat: "aistarslab", Dedicated: true, FetchCatalog: func(s *Service, ctx context.Context, baseURL, apiKey string, allowLocal bool, headers []OutboundHeader) ([]ChannelModelCatalogItem, error) {
+	{ID: "globalaiopc", ProtocolID: "globalaiopc-image", Label: "GlobalAiOpc", BaseURL: "https://zcbservice.aizfw.cn/kyyReactApiServer", RelayFormat: "globalaiopc", Dedicated: true, StaticCatalog: globalAiOpcCatalog},
+	{ID: "huiquyun", ProtocolID: "huiquyun-video", Label: "汇取云", BaseURL: "https://api.bjhuiqu.net/v1", RelayFormat: "openai", Dedicated: true},
+	{ID: "aistarslab", ProtocolID: "aistarslab-image", Label: "AIStarsLab", BaseURL: "https://api.video.aistarslab.com/openapi", RelayFormat: "aistarslab", Dedicated: true, FetchCatalog: func(s *Service, ctx context.Context, baseURL, apiKey string, allowLocal bool, headers []OutboundHeader) ([]ChannelModelCatalogItem, error) {
 		return s.fetchAiStarsLabCatalog(ctx, baseURL, apiKey, allowLocal, headers)
 	}},
 }

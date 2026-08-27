@@ -219,6 +219,9 @@ func (s *Service) FetchChannelModelCatalog(ctx context.Context, actor *model.Use
 		return nil, BadAuthRequest("请填写 API Key")
 	}
 	if plugin := ChannelPluginFor(baseURL, input.ConnectionType); plugin != nil {
+		if !s.protocolIsSelectable(plugin.ProtocolID) {
+			return nil, BadAuthRequest(plugin.Label + "渠道插件未启用，请先在插件中心启用")
+		}
 		if plugin.StaticCatalog != nil {
 			return plugin.StaticCatalog(), nil
 		}

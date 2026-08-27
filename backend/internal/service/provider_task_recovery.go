@@ -108,7 +108,7 @@ func (s *Service) queryFailedVideoTask(ctx context.Context, task *model.Task, cl
 		return nil, BadAuthRequest("当前视频渠道暂不支持人工查询上游任务")
 	}
 	input.Config = config
-	if err := s.hydrateGenerationMedia(task.UserID, &input, true); err != nil {
+	if err := s.hydrateGenerationMedia(task.UserID, &input, generationRequiresPublicReferenceURL(ctx, input)); err != nil {
 		return nil, err
 	}
 	task.InputJSON = decryptedInput
