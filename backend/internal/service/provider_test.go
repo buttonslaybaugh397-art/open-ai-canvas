@@ -369,6 +369,7 @@ func TestProviderPayloadErrorMessageUsesSafeActionableCategories(t *testing.T) {
 	}{
 		{name: "moderation", raw: "request blocked by content policy: prompt=private", want: "安全审核"},
 		{name: "quota", raw: "insufficient quota for api-key=secret", want: "额度不足"},
+		{name: "chinese quota", raw: "积分不足", want: "额度不足"},
 		{name: "model access", raw: "model not found for tenant secret-id", want: "模型不存在"},
 		{name: "unknown", raw: "trace_id=private internal stack", want: "模型服务返回失败"},
 	}

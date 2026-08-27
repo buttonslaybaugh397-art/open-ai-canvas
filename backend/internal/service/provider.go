@@ -252,7 +252,7 @@ func providerPayloadErrorMessage(raw string) string {
 	switch {
 	case strings.Contains(normalized, "safety"), strings.Contains(normalized, "moderation"), strings.Contains(normalized, "content policy"), strings.Contains(normalized, "blocked"):
 		return "请求内容未通过模型服务安全审核，请调整后重试"
-	case strings.Contains(normalized, "quota"), strings.Contains(normalized, "insufficient"), strings.Contains(normalized, "balance"), strings.Contains(normalized, "billing"):
+	case strings.Contains(normalized, "quota"), strings.Contains(normalized, "insufficient"), strings.Contains(normalized, "balance"), strings.Contains(normalized, "billing"), strings.Contains(normalized, "积分不足"), strings.Contains(normalized, "余额不足"), strings.Contains(normalized, "额度不足"), strings.Contains(normalized, "配额不足"):
 		return "模型服务额度不足，请检查渠道余额或配额"
 	case strings.Contains(normalized, "model") && (strings.Contains(normalized, "not found") || strings.Contains(normalized, "permission") || strings.Contains(normalized, "access")):
 		return "模型不存在或当前渠道未获得模型权限"
