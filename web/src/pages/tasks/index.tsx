@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
 import { MediaPreview } from "@/components/media-preview";
+import { parseTaskMediaSources, type TaskMediaSource } from "@/lib/task-media";
 import { ListToolbar, PageHeader, PaginationBar, WorkspacePage } from "@/components/layout/workspace-page";
 import { WorkspaceState } from "@/components/layout/workspace-state";
 import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError } from "@/lib/generation-error";
@@ -567,7 +568,7 @@ export default function TasksPage() {
                 {mediaPreview ? (
                     <MediaPreview
                         src={mediaPreview.url}
-                        kind={mediaPreview.kind}
+                        kind={mediaPreview.kind === "video" ? "video" : "image"}
                         alt={mediaPreview.title}
                         controls={mediaPreview.kind === "video"}
                         className="max-h-[76vh] w-full bg-black object-contain"
@@ -603,13 +604,15 @@ function TaskResultMedia({ value, taskType }: { value?: string; taskType: string
         <div>
             <Typography.Text strong>生成结果</Typography.Text>
             <div className="mt-2 grid max-h-[360px] grid-cols-2 gap-2 overflow-auto rounded-lg bg-stone-950 p-2 md:grid-cols-3">
-                {urls.map((url, index) => {
-                    const isVideo = isVideoResult(url, taskType);
+                {sources.map((source, index) => {
+                    const url = source.url;
+                    const isVideo = source.kind === "video" || isVideoResult(url, taskType);
                     return (
                         <MediaPreview
                             key={`${url}-${index}`}
                             src={url}
                             kind={isVideo ? "video" : "image"}
+                            fallbackStorageKey={source.storageKey}
                             alt={`生成结果 ${index + 1}`}
                             controls={isVideo}
                             className={isVideo ? "task-result-media is-video" : "task-result-media"}

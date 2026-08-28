@@ -21,6 +21,8 @@ export const seedanceRatioOptions = [
 
 export const seedanceDurationOptions = VIDEO_DURATION_OPTIONS;
 
+export const SEEDANCE_REFERENCE_LIMITS = { images: 30, videos: 10, audios: 10 } as const;
+
 const seedancePixels = {
     "480p": {
         "16:9": "864x496",
@@ -129,3 +131,7 @@ export function buildSeedancePromptText(prompt: string, _images: ReferenceImage[
 }
 
 export const seedanceVideoReferenceHint = "参考视频需为 mp4/mov，H.264/H.265，FPS 24-60；含真人人脸素材请使用火山授权 asset:// 素材。";
+
+export function seedanceVideoReferenceError(videos: ReferenceVideo[]) {
+    return videos.length > SEEDANCE_REFERENCE_LIMITS.videos ? "参考视频最多 " + SEEDANCE_REFERENCE_LIMITS.videos + " 个" : "";
+}

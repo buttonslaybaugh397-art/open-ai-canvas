@@ -296,50 +296,34 @@ func (s *Service) deleteStoredResourceObject(userID string, resource *model.Reso
 	if strings.TrimSpace(resource.ObjectKey) == "" {
 		return fmt.Errorf("资源 %s 的存储路径为空", resource.ID)
 	}
-	deletePrimary := func() error {
-		switch strings.ToLower(strings.TrimSpace(resource.Provider)) {
-		case "", "local":
-			return s.deleteLocalResourceObject(resource.ObjectKey)
-		case aliyunOSSProvider:
-			setting, err := s.ossSettingForResource(userID, resource)
-			if err != nil {
-				return fmt.Errorf("无法读取阿里云 OSS 配置：%w", err)
-			}
-			return deleteAliyunOSSObject(setting, resource.ObjectKey)
-		case tencentCOSProvider:
-			setting, err := s.ossSettingForResource(userID, resource)
-			if err != nil {
-				return fmt.Errorf("无法读取腾讯云 COS 配置：%w", err)
-			}
-			return deleteTencentCOSObject(setting, resource.ObjectKey)
-		case qiniuKodoProvider:
-			setting, err := s.ossSettingForResource(userID, resource)
-			if err != nil {
-				return fmt.Errorf("无法读取七牛云 Kodo 配置：%w", err)
-			}
-			return deleteQiniuObject(setting, resource.ObjectKey)
-		default:
-			return fmt.Errorf("资源 %s 使用了不支持的存储类型 %q", resource.ID, resource.Provider)
+	var deletePrimary func() error
+	switch strings.ToLower(strings.TrimSpace(resource.Provider)) {
+	case "", "local":
+		deletePrimary = func() error { return s.deleteLocalResourceObject(resource.ObjectKey) }
+	case aliyunOSSProvider:
+		setting, err := s.ossSettingForResource(userID, resource)
+		if err != nil {
+			return fmt.Errorf("无法读取阿里云 OSS 配置：%w", err)
 		}
-		return deleteAliyunOSSObject(setting, resource.ObjectKey)
+		deletePrimary = func() error { return deleteAliyunOSSObject(setting, resource.ObjectKey) }
 	case tencentCOSProvider:
 		setting, err := s.ossSettingForResource(userID, resource)
 		if err != nil {
 			return fmt.Errorf("无法读取腾讯云 COS 配置：%w", err)
 		}
-		return deleteTencentCOSObject(setting, resource.ObjectKey)
+		deletePrimary = func() error { return deleteTencentCOSObject(setting, resource.ObjectKey) }
 	case qiniuKodoProvider:
 		setting, err := s.ossSettingForResource(userID, resource)
 		if err != nil {
 			return fmt.Errorf("无法读取七牛云 Kodo 配置：%w", err)
 		}
-		return deleteQiniuObject(setting, resource.ObjectKey)
+		deletePrimary = func() error { return deleteQiniuObject(setting, resource.ObjectKey) }
 	case s3Provider:
 		setting, err := s.ossSettingForResource(userID, resource)
 		if err != nil {
 			return fmt.Errorf("无法读取 S3 配置：%w", err)
 		}
-		return deleteS3Object(setting, resource.ObjectKey)
+		deletePrimary = func() error { return deleteS3Object(setting, resource.ObjectKey) }
 	default:
 		return fmt.Errorf("资源 %s 使用了不支持的存储类型 %q", resource.ID, resource.Provider)
 	}

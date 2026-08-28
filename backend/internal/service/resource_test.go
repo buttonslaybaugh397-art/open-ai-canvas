@@ -332,8 +332,9 @@ func TestOSSCDNBaseURLRejectsNonDomainParts(t *testing.T) {
 func TestPlatformProviderSwitchKeepsHistoricalCredentials(t *testing.T) {
 	current := ossSettingValue{
 		Provider: aliyunOSSProvider, Region: "cn-hangzhou", Endpoint: "https://oss-cn-hangzhou.aliyuncs.com",
-		CDNBaseURL: "https://aliyun.example.com", Bucket: "aliyun-bucket", PathPrefix: "canvas",
-		AccessKeyID: "aliyun-id", AccessKeySecret: "aliyun-secret",
+		CDNBaseURL: "https://aliyun.example.com", Bucket: "aliyun-bucket", PathPrefix: "projects/custom",
+		AccessKeyID: "aliyun-id", AccessKeySecret: "aliyun-secret", PublicBaseURL: "https://public.aliyun.example.com",
+		S3Preset: "r2", PathStyle: true, SessionToken: "aliyun-session", StorageLocationID: "aliyun-location",
 	}
 	next := archiveOSSProviderCredentials(ossSettingValue{
 		Provider: tencentCOSProvider, Region: "ap-guangzhou", Endpoint: "https://cos.ap-guangzhou.myqcloud.com",
@@ -357,8 +358,9 @@ func TestPlatformProviderSwitchKeepsHistoricalCredentials(t *testing.T) {
 func TestPlatformProviderSwitchRestoresArchivedSettingWhenFormIsEmpty(t *testing.T) {
 	aliyun := ossSettingValue{
 		Provider: aliyunOSSProvider, Region: "cn-hangzhou", Endpoint: "https://oss-cn-hangzhou.aliyuncs.com",
-		CDNBaseURL: "https://aliyun.example.com", Bucket: "aliyun-bucket", PathPrefix: "canvas",
-		AccessKeyID: "aliyun-id", AccessKeySecret: "aliyun-secret",
+		CDNBaseURL: "https://aliyun.example.com", Bucket: "aliyun-bucket", PathPrefix: "projects/custom",
+		AccessKeyID: "aliyun-id", AccessKeySecret: "aliyun-secret", PublicBaseURL: "https://public.aliyun.example.com",
+		S3Preset: "r2", PathStyle: true, SessionToken: "aliyun-session", StorageLocationID: "aliyun-location",
 	}
 	tencent, err := ossSettingFromRequest(OSSSettingRequest{
 		Enabled: true, Provider: tencentCOSProvider, Region: "ap-guangzhou",
@@ -375,7 +377,8 @@ func TestPlatformProviderSwitchRestoresArchivedSettingWhenFormIsEmpty(t *testing
 	}
 	if restored.Provider != aliyun.Provider || restored.Region != aliyun.Region || restored.Endpoint != aliyun.Endpoint ||
 		restored.CDNBaseURL != aliyun.CDNBaseURL || restored.Bucket != aliyun.Bucket || restored.PathPrefix != aliyun.PathPrefix ||
-		restored.AccessKeyID != aliyun.AccessKeyID || restored.AccessKeySecret != aliyun.AccessKeySecret {
+		restored.AccessKeyID != aliyun.AccessKeyID || restored.AccessKeySecret != aliyun.AccessKeySecret || restored.PublicBaseURL != aliyun.PublicBaseURL ||
+		restored.S3Preset != aliyun.S3Preset || !restored.PathStyle || restored.SessionToken != aliyun.SessionToken || restored.StorageLocationID != aliyun.StorageLocationID {
 		t.Fatalf("restored setting = %#v", restored)
 	}
 }

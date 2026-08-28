@@ -43,7 +43,9 @@ export default function StorageSettingsPage() {
     const s3Preset = Form.useWatch("s3Preset", form) || "custom";
     const accessKeyIdLabel = isTencentCOS ? "SecretId" : isQiniuKodo ? "AccessKey" : "AccessKey ID";
     const accessKeySecretLabel = isTencentCOS ? "SecretKey" : isQiniuKodo ? "SecretKey" : "AccessKey Secret";
-    const hasCurrentProviderSecret = Boolean(setting && setting.provider === mode && setting.hasAccessKeySecret);
+    const selectedProviderSetting = mode === "local" ? undefined : setting?.providerSettings?.[mode];
+    const hasCurrentProviderSecret = Boolean(setting && (setting.provider === mode ? setting.hasAccessKeySecret : selectedProviderSetting?.hasAccessKeySecret));
+    const hasCurrentProviderSessionToken = Boolean(setting && (setting.provider === mode ? setting.hasSessionToken : selectedProviderSetting?.hasSessionToken));
     const userNameById = useMemo(() => new Map(references.users.map((user) => [user.id, user.displayName || user.username])), [references.users]);
 
     useEffect(() => {
@@ -154,7 +156,21 @@ export default function StorageSettingsPage() {
                                 onChange={(value) => {
                                     const nextMode = value as StorageMode;
                                     const switchingProvider = nextMode !== "local" && ((mode !== "local" && mode !== nextMode) || (mode === "local" && setting?.provider !== nextMode));
-                                    if (switchingProvider) form.setFieldsValue({ s3Preset: "custom", region: "", endpoint: "", cdnBaseUrl: "", bucket: "", accessKeyId: "", accessKeySecret: "", sessionToken: "", pathStyle: false });
+                                    if (switchingProvider) {
+                                        const historical = setting?.providerSettings?.[nextMode];
+                                        form.setFieldsValue({
+                                            s3Preset: historical?.s3Preset || "custom",
+                                            region: historical?.region || "",
+                                            endpoint: historical?.endpoint || "",
+                                            cdnBaseUrl: historical?.cdnBaseUrl || "",
+                                            bucket: historical?.bucket || "",
+                                            accessKeyId: historical?.accessKeyId || "",
+                                            accessKeySecret: "",
+                                            sessionToken: "",
+                                            pathPrefix: historical?.pathPrefix || DEFAULT_OSS_PATH_PREFIX,
+                                            pathStyle: historical?.pathStyle === true,
+                                        });
+                                    }
                                 }}
                             />
                         </Form.Item>
@@ -206,8 +222,8 @@ export default function StorageSettingsPage() {
                                 </div>
                                 {isS3 ? (
                                     <div className="grid gap-x-4 gap-y-1 md:grid-cols-2">
-                                        <Form.Item name="sessionToken" label={setting?.hasSessionToken ? `Session Token（${configuredSecretText}，留空保留）` : "Session Token（可选）"}>
-                                            <Input.Password autoComplete="new-password" placeholder={setting?.hasSessionToken ? "留空保留原 Token" : "临时凭证使用的 Session Token"} />
+                                        <Form.Item name="sessionToken" label={hasCurrentProviderSessionToken ? `Session Token（${configuredSecretText}，留空保留）` : "Session Token（可选）"}>
+                                            <Input.Password autoComplete="new-password" placeholder={hasCurrentProviderSessionToken ? "留空保留原 Token" : "临时凭证使用的 Session Token"} />
                                         </Form.Item>
                                         <Form.Item name="pathStyle" label="Path Style" valuePropName="checked" extra="开启后强制使用 path-style；关闭时由后端自动选择。">
                                             <Switch checkedChildren="强制" unCheckedChildren="自动" />

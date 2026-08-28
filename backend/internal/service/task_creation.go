@@ -10,6 +10,21 @@ import (
 	"infinite-canvas/backend/internal/repository"
 )
 
+func isTextReplayTaskRequest(input map[string]any) bool {
+	value, ok := input["replay"]
+	if !ok {
+		return false
+	}
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true")
+	default:
+		return false
+	}
+}
+
 // CreateTask 收敛任务进入系统前的 admission 流程：输入标准化、逻辑模型路由、
 // 能力/额度校验和持久化。执行阶段由 worker 与 provider 相关模块负责。
 func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task, error) {

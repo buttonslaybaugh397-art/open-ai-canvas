@@ -30,16 +30,6 @@ export type TextCapabilityConfig = {
     };
 };
 
-export type TextCapabilityConfig = {
-    references: {
-        promptMaxChars: number;
-        maxImages: number;
-        maxImageBytes: number;
-        maxVideos: number;
-        maxVideoBytes: number;
-    };
-};
-
 export type ImageSizeParameter = "none" | "size" | "aspect_ratio";
 
 export type ImageCapabilityConfig = {

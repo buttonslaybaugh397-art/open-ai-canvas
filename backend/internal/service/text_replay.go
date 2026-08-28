@@ -33,68 +33,7 @@ type TextReplayResult struct {
 	Error     string                `json:"error,omitempty"`
 }
 
-// isTextReplayTaskRequest 识别前端自管的文本持久化请求（input 带 replay=true）。
-// 这类任务由前端直连模型流式生成，仅作正文的后端存档与回放，不经过 worker 队列生成。
-func isTextReplayTaskRequest(input map[string]any) bool {
-	value, ok := input["replay"]
-	if !ok {
-		return false
-	}
-	switch v := value.(type) {
-	case bool:
-		return v
-	case string:
-		return strings.EqualFold(strings.TrimSpace(v), "true")
-	default:
-		return false
-	}
-}
-
-// CompleteTextReplayTask 在文本生成结束后把最终正文写入任务，收尾为 succeeded，
-// 关闭 delta 写入窗口并触发 text-deltas 归并，使 queryTaskTextReplay 能读到 finalText。
-func (s *Service) CompleteTextReplayTask(userID string, taskID string, text string) (*model.Task, error) {
-	if strings.TrimSpace(text) == "" {
-		return nil, BadAuthRequest("文本内容不能为空")
-	}
-	if len([]byte(text)) > textReplayMaxTaskBytes {
-		return nil, BadAuthRequest("文本内容过大")
-	}
-	if _, err := s.repo.TaskForUser(userID, taskID); err != nil {
-		return nil, err
-	}
-	resultJSON, _ := json.Marshal(map[string]any{"mode": "text", "text": text})
-	completed, err := s.repo.CompleteTextReplayTask(userID, taskID, string(resultJSON), time.Now())
-	if err != nil {
-		return nil, err
-	}
-	if !completed {
-		return nil, BadAuthRequest("该文本任务已结束或不属于你，无法完成")
-	}
-	if compactErr := s.finalizeTaskTextReplay(taskID, model.TaskStatusSucceeded); compactErr != nil {
-		_ = s.log(userID, taskID, "error", "文本回放窗口更新失败", compactErr.Error())
-	}
-	return s.repo.TaskForUser(userID, taskID)
-}
-
-// isTextReplayTaskRequest 识别前端自管的文本持久化请求（input 带 replay=true）。
-// 这类任务由前端直连模型流式生成，仅作正文的后端存档与回放，不经过 worker 队列生成。
-func isTextReplayTaskRequest(input map[string]any) bool {
-	value, ok := input["replay"]
-	if !ok {
-		return false
-	}
-	switch v := value.(type) {
-	case bool:
-		return v
-	case string:
-		return strings.EqualFold(strings.TrimSpace(v), "true")
-	default:
-		return false
-	}
-}
-
-// CompleteTextReplayTask 在文本生成结束后把最终正文写入任务，收尾为 succeeded，
-// 关闭 delta 写入窗口并触发 text-deltas 归并，使 queryTaskTextReplay 能读到 finalText。
+// CompleteTextReplayTask atomically stores the final text for a frontend-owned replay task.
 func (s *Service) CompleteTextReplayTask(userID string, taskID string, text string) (*model.Task, error) {
 	if strings.TrimSpace(text) == "" {
 		return nil, BadAuthRequest("文本内容不能为空")

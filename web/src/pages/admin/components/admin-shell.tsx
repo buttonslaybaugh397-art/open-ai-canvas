@@ -4,6 +4,7 @@ import {
     BarChart3,
     BellRing,
     CloudUpload,
+    ChartSpline,
     Coins,
     FileClock,
     HardDrive,

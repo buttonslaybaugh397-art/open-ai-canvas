@@ -32,6 +32,7 @@ import { createTextReplayPublisher } from "@/lib/creation-text-replay";
 import { isLocalDreaminaWaitStopped, localDreaminaCancellationMessage } from "@/services/local-dreamina-task-projection";
 import { getMediaBlob, uploadMediaFile } from "@/services/file-storage";
 import { uploadImage } from "@/services/image-storage";
+import { downloadMediaFile } from "@/services/resource-download";
 import { consumeGenerationTaskMessage, generationTaskMaterializedUrls, generationTaskMediaSources, materializeGenerationTaskAssets, projectGenerationTaskResult } from "@/services/project-asset-sync";
 import type { TaskMediaSource } from "@/lib/task-media";
 import { applyGenerationConsumerEffect } from "@/services/generation-consumer-dedupe";
@@ -1117,7 +1118,7 @@ function MediaResult({ item, onRetryFailure, onCreateVariant }: { item: Creation
     const isVideo = item.mode === "video";
     return <div className="creation-media-result">
         {isVideo && videoSource ? <button type="button" className="creation-video-result" onClick={() => { setPreviewType("video"); setPreviewUrl(videoSource.url); }} aria-label="预览生成视频"><MediaPreview src={videoSource.url} kind="video" fallbackStorageKey={videoSource.storageKey} className="size-full object-cover" /><span><Maximize2 />预览视频</span></button> : <div className="creation-image-result-grid">{resultUrls.map((url) => <button key={url} type="button" className="creation-image-result" onClick={() => { setPreviewType("image"); setPreviewUrl(url); }} aria-label="预览生成图片"><img src={url} alt="生成结果" /><span><Maximize2 /></span></button>)}</div>}
-        <div className="creation-media-actions"><span>{isVideo ? "视频结果" : `${resultUrls.length} 张图片`}</span><button type="button" onClick={onCreateVariant}><RefreshCw />生成同款</button><Link to={canvasPath}>{resultAssetIds.length ? "添加到画布" : "打开画布"}</Link>{isVideo && videoSource ? <CreationMediaDownloadLink source={videoSource} /> : resultUrls.map((url, index) => <a key={`${url}-download`} href={url} download>{resultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</a>)}</div>
+        <div className="creation-media-actions"><span>{isVideo ? "视频结果" : `${resultUrls.length} 张图片`}</span><button type="button" onClick={onCreateVariant}><RefreshCw />生成同款</button><Link to={canvasPath}>{resultAssetIds.length ? "添加到画布" : "打开画布"}</Link>{isVideo && videoSource ? <CreationMediaDownloadLink source={videoSource} /> : resultUrls.map((url, index) => <CreationMediaDownloadLink key={`${url}-download`} source={creationMediaSourceForUrl(resultSources, url)} fileName={resultUrls.length > 1 ? `生成图片-${index + 1}.png` : "生成图片.png"} />)}</div>
         <CreationMediaPreviewModal source={resultSources.find((source) => source.url === previewUrl)} url={previewUrl} type={previewType} onClose={() => setPreviewUrl("")} />
     </div>;
 }
@@ -1134,7 +1135,18 @@ function CreationMessageReferences({ references }: { references: CreationReferen
 }
 
 function CreationMediaPreviewModal({ url, type, source, onClose }: { url: string; type: "image" | "video"; source?: TaskMediaSource; onClose: () => void }) {
-    return <Modal open={Boolean(url)} title={null} footer={null} centered destroyOnHidden width={type === "video" ? "min(1160px, calc(100vw - 32px))" : "min(980px, calc(100vw - 32px))"} onCancel={onClose} className="creation-media-preview-modal" styles={{ body: { padding: 0 } }}>{url ? type === "video" ? <MediaPreview src={source?.url || url} kind="video" fallbackStorageKey={source?.storageKey} controls className="creation-media-preview-video" /> : <img className="creation-media-preview-image" src={url} alt="媒体预览" /> : null}</Modal>;
+    return <Modal open={Boolean(url)} title={null} footer={null} centered destroyOnHidden width={type === "video" ? "min(1160px, calc(100vw - 32px))" : "min(980px, calc(100vw - 32px))"} onCancel={onClose} className="creation-media-preview-modal" styles={{ body: { padding: 0 } }}>{url ? <MediaPreview src={source?.url || url} kind={type} fallbackStorageKey={source?.storageKey} controls={type === "video"} className={type === "video" ? "creation-media-preview-video" : "creation-media-preview-image"} /> : null}</Modal>;
+}
+
+function CreationMediaDownloadLink({ source, fileName = source.kind === "video" ? "生成视频.mp4" : "生成图片.png" }: { source: TaskMediaSource; fileName?: string }) {
+    return <a href={source.url} download={fileName} onClick={(event) => {
+        event.preventDefault();
+        void downloadMediaFile({ url: source.url, storageKey: source.storageKey, fileName }).catch(() => undefined);
+    }}><Download />下载</a>;
+}
+
+function creationMediaSourceForUrl(sources: TaskMediaSource[], url: string): TaskMediaSource {
+    return sources.find((source) => source.url === url) || { url, kind: "image" };
 }
 
 function CreationAttachmentThumbnail({ item, onPreview, onRemove }: {
@@ -1219,12 +1231,8 @@ function CreationComposer(props: ComposerProps) {
         model: modelOptionName(props.model),
         count: props.mode === "image" ? props.count : 1,
         seconds: props.mode === "video" ? props.seconds : 1,
-        capability: props.mode,
-        config: props.config,
-        requirements: quoteRequirements,
     });
-    const credits = routeQuote ? routeQuote.amountMicrocredits / 1_000_000 : logicalFallbackCredits ?? legacyCredits;
-    const showCost = creditsEnabled && credits !== null && credits !== undefined;
+    const showCost = creditsEnabled && credits !== null;
     const formattedCredits = credits?.toLocaleString("zh-CN", { maximumFractionDigits: 6 });
     const actionLabel = props.referenceReplacementBusy ? "正在替换参考图" : props.busy ? "生成中" : showCost ? `预计消耗 ${formattedCredits} 积分，发送` : "发送";
     const placeholder = props.mode === "text"
@@ -1680,7 +1688,7 @@ function StoryboardShotCard({ shot, shotNumber, modelName, busy, onRetryFailure,
                 {status === "error" ? <button type="button" onClick={onRetryFailure} disabled={busy}><RefreshCw />重新生成</button> : null}
                 {status === "done" && result?.resultUrls?.length ? <button type="button" onClick={onCreateVariant} disabled={busy}><RefreshCw />生成变体</button> : null}
                 {status === "done" && resultUrls.length ? <Link to={canvasPath}>{canvasHandoffPath ? "添加到画布" : "打开画布"}</Link> : null}
-                {mode === "video" && resultSources[0] ? <CreationMediaDownloadLink source={resultSources[0]} /> : resultUrls.map((url, index) => <a key={`${url}-download`} href={url} download>{resultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</a>)}
+                {mode === "video" && resultSources[0] ? <CreationMediaDownloadLink source={resultSources[0]} /> : resultUrls.map((url, index) => <CreationMediaDownloadLink key={`${url}-download`} source={creationMediaSourceForUrl(resultSources, url)} fileName={resultUrls.length > 1 ? `生成图片-${index + 1}.png` : "生成图片.png"} />)}
             </div>
         </header>
         <div className="storyboard-workbench-card-body">
@@ -1768,7 +1776,7 @@ function StoryboardShotResult({ result, onRetryFailure, onCreateVariant, canvasP
     return <>
         {mode === "video" && videoSource ? <button type="button" className="creation-video-result" onClick={() => openPreview(videoSource.url, "video")} aria-label="预览生成视频"><MediaPreview src={videoSource.url} kind="video" fallbackStorageKey={videoSource.storageKey} className="size-full object-cover" /><span><Maximize2 />预览视频</span></button> : <div className="creation-image-result-grid">{resultUrls.map((url) => <button key={url} type="button" className="creation-image-result" onClick={() => openPreview(url, "image")} aria-label="预览生成图片"><img src={url} alt="生成结果" /><span><Maximize2 /></span></button>)}</div>}
         {note ? <p className="storyboard-workbench-director-note"><span>导演手记</span>{note}</p> : null}
-        <div className="storyboard-workbench-media-meta"><span>{mode === "video" ? "视频结果" : `${resultUrls.length} 张图片`}</span><button type="button" onClick={onCreateVariant}><RefreshCw />生成变体</button><Link to={canvasPath}>{canvasHandoffAvailable ? "添加到画布" : "打开画布"}</Link>{mode === "video" && videoSource ? <CreationMediaDownloadLink source={videoSource} /> : resultUrls.map((url, index) => <a key={`${url}-download`} href={url} download>{resultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</a>)}</div>
+        <div className="storyboard-workbench-media-meta"><span>{mode === "video" ? "视频结果" : `${resultUrls.length} 张图片`}</span><button type="button" onClick={onCreateVariant}><RefreshCw />生成变体</button><Link to={canvasPath}>{canvasHandoffAvailable ? "添加到画布" : "打开画布"}</Link>{mode === "video" && videoSource ? <CreationMediaDownloadLink source={videoSource} /> : resultUrls.map((url, index) => <CreationMediaDownloadLink key={`${url}-download`} source={creationMediaSourceForUrl(resultSources, url)} fileName={resultUrls.length > 1 ? `生成图片-${index + 1}.png` : "生成图片.png"} />)}</div>
         <CreationMediaPreviewModal source={resultSources.find((source) => source.url === previewUrl)} url={previewUrl} type={previewType} onClose={() => setPreviewUrl("")} />
     </>;
 }

@@ -13,18 +13,25 @@ type Resource struct {
 	Endpoint string         `json:"endpoint"`
 	Bucket   string         `json:"bucket" gorm:"size:160"`
 	// 用户 OSS 每次修改都会生成新版本，资源固定引用创建时的存储与密钥；只有同一存储位置才可复用当前 CDN。
-	StorageSettingID string    `json:"-" gorm:"index;size:36"`
-	ObjectKey        string    `json:"objectKey" gorm:"index"`
-	PublicURL        string    `json:"publicUrl"`
-	MimeType         string    `json:"mimeType" gorm:"size:120"`
-	Size             int64     `json:"size"`
-	Width            int       `json:"width"`
-	Height           int       `json:"height"`
-	DurationMs       int64     `json:"durationMs"`
-	ETag             string    `json:"etag" gorm:"size:160"`
-	Error            string    `json:"error"`
-	CreatedAt        time.Time `json:"createdAt" gorm:"index:idx_resources_user_created,priority:2"`
-	UpdatedAt        time.Time `json:"updatedAt"`
+	StorageSettingID        string                  `json:"-" gorm:"index;size:36"`
+	ObjectKey               string                  `json:"objectKey" gorm:"index"`
+	LocalBackupKey          string                  `json:"-" gorm:"index"`
+	CloudSyncStatus         ResourceCloudSyncStatus `json:"cloudSyncStatus,omitempty" gorm:"index;size:24"`
+	CloudSyncAttempts       int                     `json:"cloudSyncAttempts,omitempty"`
+	CloudSyncError          string                  `json:"cloudSyncError,omitempty" gorm:"type:text"`
+	CloudSyncNextAttemptAt  *time.Time              `json:"-" gorm:"index"`
+	CloudSyncLeaseOwner     string                  `json:"-" gorm:"index;size:120"`
+	CloudSyncLeaseExpiresAt *time.Time              `json:"-" gorm:"index"`
+	PublicURL               string                  `json:"publicUrl"`
+	MimeType                string                  `json:"mimeType" gorm:"size:120"`
+	Size                    int64                   `json:"size"`
+	Width                   int                     `json:"width"`
+	Height                  int                     `json:"height"`
+	DurationMs              int64                   `json:"durationMs"`
+	ETag                    string                  `json:"etag" gorm:"size:160"`
+	Error                   string                  `json:"error"`
+	CreatedAt               time.Time               `json:"createdAt" gorm:"index:idx_resources_user_created,priority:2"`
+	UpdatedAt               time.Time               `json:"updatedAt"`
 }
 
 // ResourceDeletionJob is the durable handoff between database deletion and
@@ -39,6 +46,7 @@ type ResourceDeletionJob struct {
 	Bucket           string                 `json:"bucket" gorm:"size:160"`
 	StorageSettingID string                 `json:"-" gorm:"index;size:36"`
 	ObjectKey        string                 `json:"objectKey" gorm:"index"`
+	LocalBackupKey   string                 `json:"-" gorm:"index"`
 	Status           ResourceDeletionStatus `json:"status" gorm:"index:idx_resource_deletion_jobs_due,priority:1;size:24"`
 	Attempts         int                    `json:"attempts"`
 	LastError        string                 `json:"lastError" gorm:"type:text"`

@@ -948,6 +948,19 @@ func (r *Repository) SaveResource(resource *model.Resource) error {
 	return r.db.Save(resource).Error
 }
 
+func (r *Repository) MarkResourceCloudSyncPending(id string, lastError string, nextAttemptAt time.Time) error {
+	return r.db.Model(&model.Resource{}).
+		Where("id = ? AND provider <> ? AND local_backup_key <> ''", id, "local").
+		Updates(map[string]any{
+			"cloud_sync_status":           model.ResourceCloudSyncStatusPending,
+			"cloud_sync_error":            lastError,
+			"cloud_sync_next_attempt_at":  nextAttemptAt,
+			"cloud_sync_lease_owner":      "",
+			"cloud_sync_lease_expires_at": nil,
+			"updated_at":                  time.Now(),
+		}).Error
+}
+
 func (r *Repository) DeleteResource(userID string, id string) error {
 	return r.db.Delete(&model.Resource{}, "id = ? AND user_id = ?", id, userID).Error
 }

@@ -427,7 +427,7 @@ func (s *Service) storeResource(userID string, kind string, fileName string, mim
 		resource.Bucket = setting.Bucket
 		resource.StorageSettingID = storageSettingID
 		resource.ObjectKey = objectKey
-		resource.LocalBackupKey = localObjectKey(userID, "backup", fileName, now)
+		resource.LocalBackupKey = localObjectKey(userID, "backup", fileName, mimeType, now)
 		resource.CloudSyncStatus = model.ResourceCloudSyncStatusPending
 	}
 	if err := s.repo.CreateResource(&resource); err != nil {

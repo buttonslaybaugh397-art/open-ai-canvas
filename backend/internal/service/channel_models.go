@@ -150,6 +150,12 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 	if err != nil {
 		return nil, err
 	}
+	models := make([]string, 0, len(catalog))
+	for _, item := range catalog {
+		if name := strings.TrimSpace(item.ID); name != "" {
+			models = append(models, name)
+		}
+	}
 	// 只按当前未删除记录去重；普通手动删除的模型仍可重新拉取，已合并进模型家族的 SKU 除外。
 	existing, err := s.repo.ChannelModels(channelID, true)
 	if err != nil {
@@ -900,17 +906,35 @@ func normalizeChannelModelContractWithRegistry(registry *protocol.Registry, chan
 		return "", "", "", "", BadAuthRequest("请选择模型能力")
 	}
 	adapter, ok := registry.Resolve(strings.TrimSpace(req.Protocol))
-	if !ok || !adapter.Metadata().Enabled || adapter.Metadata().UnavailableReason != "" {
+	requestedProtocol := model.ChannelInterfaceType(strings.TrimSpace(req.Protocol))
+	if !ok && !isHostBackedChannelProtocol(requestedProtocol) {
 		return "", "", "", "", BadAuthRequest("请选择有效的模型请求协议")
 	}
-	protocol := model.ChannelInterfaceType(adapter.Metadata().ID)
-	if expected := protocolCapabilityFromMetadata(adapter.Metadata()); expected != "" && expected != capability {
+	protocol := requestedProtocol
+	expectedCapability := capabilityForProtocolValue(protocol)
+	if ok {
+		if !adapter.Metadata().Enabled || adapter.Metadata().UnavailableReason != "" {
+			return "", "", "", "", BadAuthRequest("请选择有效的模型请求协议")
+		}
+		protocol = model.ChannelInterfaceType(adapter.Metadata().ID)
+		expectedCapability = protocolCapabilityFromMetadata(adapter.Metadata())
+	}
+	if expectedCapability != "" && expectedCapability != capability {
 		return "", "", "", "", BadAuthRequest("模型能力与请求协议不匹配")
 	}
 	if (protocol == model.ChannelInterfaceVolcengineJiMengImage || protocol == model.ChannelInterfaceVolcengineJiMengVideo) && (strings.TrimSpace(channel.APIKey) == "" || strings.TrimSpace(channel.SecretKey) == "") {
 		return "", "", "", "", BadAuthRequest("即梦官方协议需要先在渠道中配置 Access Key 和 Secret Key")
 	}
 	return modelKey, providerModelKey, capability, protocol, nil
+}
+
+func isHostBackedChannelProtocol(protocol model.ChannelInterfaceType) bool {
+	switch protocol {
+	case model.ChannelInterfaceGlobalAiOpcImage, model.ChannelInterfaceGlobalAiOpcVideo, model.ChannelInterfaceHuiQuYunVideo, model.ChannelInterfaceAIStarsLabImage, model.ChannelInterfaceAIStarsLabVideo:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) DeleteAdminChannelModel(actor *model.User, channelID string, id string) error {

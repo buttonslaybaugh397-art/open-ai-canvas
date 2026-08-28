@@ -9,6 +9,7 @@ import { applyBatchPrimaryImage, applyNodeConfigPatch } from "@/lib/canvas/canva
 import { resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
 import { CONTENT_MODERATION_ERROR_CODE, isContentModerationError } from "@/lib/generation-error";
 import { ensureCanvasNodeAsset } from "@/services/project-asset-sync";
+import { downloadMediaFile } from "@/services/resource-download";
 import { CanvasNodeType, type CanvasFolderStyle, type CanvasFolderTheme, type CanvasNodeData, type CanvasNodeMetadata, type Position } from "@/types/canvas";
 
 type UseCanvasNodeEditorOptions = {
@@ -182,7 +183,7 @@ export function useCanvasNodeEditor({
 
     const downloadNodeImage = useCallback((node: CanvasNodeData) => {
         if ((node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || !node.metadata?.content) return;
-        saveAs(node.metadata.content, buildCanvasMediaDownloadFileName(canvasTitle, node));
+        void downloadMediaFile({ url: node.metadata.content, storageKey: node.metadata.storageKey, fileName: buildCanvasMediaDownloadFileName(canvasTitle, node) }).catch((error) => message.error(error instanceof Error ? error.message : "媒体下载失败，请稍后重试"));
     }, [canvasTitle]);
 
     const saveNodeAsset = useCallback(async (node: CanvasNodeData) => {

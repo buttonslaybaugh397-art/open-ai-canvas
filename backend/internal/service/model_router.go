@@ -1086,7 +1086,7 @@ func (s *Service) switchTaskToNextRoute(task *model.Task, attempts []model.Route
 		if capability == "" {
 			capability = capabilityFromTaskType(task.Type)
 		}
-		replacement, err = s.newBillingOrderWithPriceTier(task.UserID, task.ID, "route-switch:"+task.ID+":"+selected.Route.ID, selected.ChannelModel.ChannelID, selected.ChannelModel.ModelKey, capability, firstNonEmpty(strings.TrimSpace(task.Operation), task.Type), billingQuantity(capability, config["videoSeconds"]), estimateTaskBillingTokens(nextInput, capability), strings.TrimSpace(fmt.Sprint(config["priceTierId"])))
+		replacement, err = s.newBillingOrderWithPriceTier(task.UserID, task.ID, "route-switch:"+task.ID+":"+selected.Route.ID, selected.ChannelModel.ChannelID, selected.ChannelModel.ModelKey, capability, firstNonEmpty(strings.TrimSpace(task.Operation), task.Type), billingQuantity(capability, config["videoSeconds"]), estimateTaskBillingTokens(nextInput, capability), strings.TrimSpace(fmt.Sprint(config["priceTierId"])), billingIntentFromTaskInput(nextInput, task.Type, task.Operation))
 		if err != nil {
 			return nil, err
 		}

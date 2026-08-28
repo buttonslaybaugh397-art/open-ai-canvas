@@ -1417,6 +1417,9 @@ func (s *Service) resolveProviderConfig(config providerConfig) (providerConfig, 
 	if channelModel.Protocol == "" {
 		return providerConfig{}, errors.New("当前模型尚未配置请求协议")
 	}
+	if profile, decodeErr := DecodeModelCapabilityConfig(channelModel.CapabilityConfigJSON); decodeErr == nil && profile != nil {
+		config.CapabilityConfig = profile
+	}
 	providerModelKey := strings.TrimPrefix(strings.TrimSpace(config.ProviderModelKey), "models/")
 	if config.PriceTierID != "" {
 		matched := false
@@ -4667,6 +4670,9 @@ func apiURLWithDefaultPrefix(baseURL string, path string, defaultPrefix string) 
 		return strings.TrimSuffix(base, basePrefix) + requestPath
 	}
 	if basePrefix != "" {
+		return base + requestPath
+	}
+	if strings.HasSuffix(strings.ToLower(base), "/openapi") {
 		return base + requestPath
 	}
 	return base + defaultPrefix + requestPath

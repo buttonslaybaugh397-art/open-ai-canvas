@@ -21,8 +21,10 @@ func TestPluginViewIncludesDocumentationForEveryBundledProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	plugins := center.list()
-	if len(plugins) != len(protocol.Builtins().List("", "", true))+2 {
-		t.Fatalf("plugin views = %d, builtins plus workflow plugins = %d", len(plugins), len(protocol.Builtins().List("", "", true))+2)
+	expected := len(protocol.Builtins().List("", "", true)) -
+		len(protocol.BundledHostProviderIDs()) + len(protocol.BundledHostManifests()) + 2
+	if len(plugins) != expected {
+		t.Fatalf("plugin views = %d, bundled protocol lifecycle plugins plus workflow plugins = %d", len(plugins), expected)
 	}
 	for _, plugin := range plugins {
 		if plugin.Source != "bundled" {

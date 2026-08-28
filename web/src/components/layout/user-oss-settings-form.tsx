@@ -37,7 +37,9 @@ export function UserOSSSettingsForm() {
     const isQiniuKodo = provider === "qiniu";
     const isS3 = provider === "s3";
     const s3Preset = Form.useWatch("s3Preset", form) || "custom";
-    const hasCurrentProviderSecret = Boolean(setting && setting.provider === provider && setting.hasAccessKeySecret);
+    const selectedProviderSetting = setting?.providerSettings?.[provider];
+    const hasCurrentProviderSecret = Boolean(setting && (setting.provider === provider ? setting.hasAccessKeySecret : selectedProviderSetting?.hasAccessKeySecret));
+    const hasCurrentProviderSessionToken = Boolean(setting && (setting.provider === provider ? setting.hasSessionToken : selectedProviderSetting?.hasSessionToken));
     const accessKeyIdLabel = isTencentCOS ? "SecretId" : isQiniuKodo ? "AccessKey" : "AccessKey ID";
     const accessKeySecretLabel = isTencentCOS ? "SecretKey" : isQiniuKodo ? "SecretKey" : "AccessKey Secret";
 
@@ -136,7 +138,21 @@ export function UserOSSSettingsForm() {
                     <Select
                         options={[{ label: "阿里云 OSS", value: "aliyun" }, { label: "腾讯云 COS", value: "tencent" }, { label: "七牛云 Kodo", value: "qiniu" }, { label: "S3 兼容存储", value: "s3", disabled: setting?.allowUserS3 === false }]}
                         onChange={(nextProvider: OSSFormValues["provider"]) => {
-                            if (nextProvider !== provider) form.setFieldsValue({ s3Preset: "custom", region: "", endpoint: "", cdnBaseUrl: "", bucket: "", accessKeyId: "", accessKeySecret: "", sessionToken: "", pathStyle: false });
+                            if (nextProvider !== provider) {
+                                const historical = setting?.providerSettings?.[nextProvider];
+                                form.setFieldsValue({
+                                    s3Preset: historical?.s3Preset || "custom",
+                                    region: historical?.region || "",
+                                    endpoint: historical?.endpoint || "",
+                                    cdnBaseUrl: historical?.cdnBaseUrl || "",
+                                    bucket: historical?.bucket || "",
+                                    accessKeyId: historical?.accessKeyId || "",
+                                    accessKeySecret: "",
+                                    sessionToken: "",
+                                    pathPrefix: historical?.pathPrefix || DEFAULT_OSS_PATH_PREFIX,
+                                    pathStyle: historical?.pathStyle === true,
+                                });
+                            }
                         }}
                     />
                 </Form.Item>
@@ -178,8 +194,8 @@ export function UserOSSSettingsForm() {
                 </Form.Item>
                 {isS3 ? (
                     <>
-                        <Form.Item name="sessionToken" label={setting?.hasSessionToken ? "Session Token（留空保留）" : "Session Token（可选）"} className="mb-3">
-                            <Input.Password autoComplete="new-password" spellCheck={false} placeholder={setting?.hasSessionToken ? "留空保留已加密 Token" : "临时凭证使用的 Session Token"} />
+                        <Form.Item name="sessionToken" label={hasCurrentProviderSessionToken ? "Session Token（留空保留）" : "Session Token（可选）"} className="mb-3">
+                            <Input.Password autoComplete="new-password" spellCheck={false} placeholder={hasCurrentProviderSessionToken ? "留空保留已加密 Token" : "临时凭证使用的 Session Token"} />
                         </Form.Item>
                         <Form.Item name="pathStyle" label="Path Style" valuePropName="checked" extra="开启后强制 path-style；关闭时自动选择。" className="mb-3">
                             <Switch checkedChildren="强制" unCheckedChildren="自动" />

@@ -786,7 +786,6 @@ function ObjectInspector({ object, rendered, playhead, selectedBone, capabilitie
     const updateSelectedBoneRotation = (rotation: DirectorQuat) => {
         if (!selectedBoneId) return;
         const patch: Partial<DirectorObject> = { boneOverrides: { ...object.boneOverrides, [selectedBoneId]: rotation } };
-        if (autoKey) patch.boneTracks = upsertDirectorBoneKeyframe(object.boneTracks || [], selectedBoneId, playhead, rotation);
         onUpdate(patch);
     };
     const applyPose = (pose: DirectorPose) => onUpdate({ pose, activeMotionClipId: undefined, boneOverrides: {} });

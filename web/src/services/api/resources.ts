@@ -48,6 +48,22 @@ export type UserOSSSetting = {
     historyCount?: number;
     referencedResourceCount?: number;
     updatedAt?: string;
+    providerSettings?: Partial<Record<OSSProvider, UserOSSProviderSetting>>;
+};
+
+export type UserOSSProviderSetting = {
+    region: string;
+    endpoint: string;
+    cdnBaseUrl: string;
+    bucket: string;
+    accessKeyId: string;
+    hasAccessKeySecret: boolean;
+    publicBaseUrl?: string;
+    pathPrefix: string;
+    s3Preset?: S3Preset;
+    pathStyle?: boolean;
+    hasSessionToken?: boolean;
+    storageLocationId?: string;
 };
 
 export type UserOSSSettingInput = Pick<UserOSSSetting, "enabled" | "provider" | "s3Preset" | "region" | "endpoint" | "cdnBaseUrl" | "bucket" | "accessKeyId" | "pathPrefix" | "pathStyle"> & {

@@ -267,7 +267,7 @@ func (s *Service) decorateAPICallLogs(logs []model.ApiCallLog) error {
 		}
 		if task, exists := taskByID[logs[index].TaskID]; exists && task.UserID == logs[index].UserID {
 			logs[index].TaskStatus = task.Status
-			previewURL, previewKind, _ := taskMediaPreview(task.ResultJSON, task.Type)
+				previewURL, previewKind := taskMediaPreview(task.ResultJSON, task.Type)
 			if canvasResourceID(previewURL) != "" {
 				logs[index].MediaPreviewURL = "/api/admin/api-logs/" + logs[index].ID + "/media"
 				logs[index].MediaPreviewKind = previewKind
@@ -324,7 +324,7 @@ func (s *Service) adminAPICallLogMediaResource(actor *model.User, logID string) 
 	if task.UserID != log.UserID {
 		return "", nil, BadAuthRequest("请求与媒体归属不一致")
 	}
-	previewURL, _, _ := taskMediaPreview(task.ResultJSON, task.Type)
+	previewURL, _ := taskMediaPreview(task.ResultJSON, task.Type)
 	resourceID := canvasResourceID(previewURL)
 	if resourceID == "" {
 		return "", nil, BadAuthRequest("该请求没有已持久化媒体")

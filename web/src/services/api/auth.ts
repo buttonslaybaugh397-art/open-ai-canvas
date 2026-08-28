@@ -281,6 +281,7 @@ export type AdminOSSSetting = {
     updatedBy?: string;
     createdAt?: string;
     updatedAt?: string;
+    providerSettings?: Partial<Record<OSSProvider, AdminOSSProviderSetting>>;
 };
 
 export type AdminArkPrivateAssetSetting = {
@@ -303,19 +304,12 @@ export type AdminOSSProviderSetting = {
     bucket: string;
     accessKeyId: string;
     hasAccessKeySecret: boolean;
+    publicBaseUrl?: string;
     pathPrefix: string;
-};
-
-export type AdminArkPrivateAssetSetting = {
-    enabled: boolean;
-    region: string;
-    projectName: string;
-    accessKeyId: string;
-    accessKeySecret?: string;
-    hasAccessKeySecret: boolean;
-    updatedBy?: string;
-    createdAt?: string;
-    updatedAt?: string;
+    s3Preset?: S3Preset;
+    pathStyle?: boolean;
+    hasSessionToken?: boolean;
+    storageLocationId?: string;
 };
 
 export type RuntimeResourcePolicy = {
