@@ -24,18 +24,25 @@ func TestBuiltinCatalogContainsRequestedProtocols(t *testing.T) {
 		t.Fatal("legacy OpenAI video alias was not registered")
 	}
 	available := registry.List(SurfaceUserCustomChannel, CapabilityVideo, false)
+	var availableAgnes bool
 	for _, item := range available {
 		if item.ID == "agnes-video" {
-			t.Fatal("unavailable Agnes adapter was selectable")
+			availableAgnes = true
+			if !item.Enabled || item.UnavailableReason != "" {
+				t.Fatalf("Agnes metadata must be enabled: %#v", item)
+			}
 		}
+	}
+	if !availableAgnes {
+		t.Fatal("enabled Agnes adapter was omitted from the user catalog")
 	}
 	all := registry.List(SurfaceAdminSystemChannel, CapabilityVideo, true)
 	var found bool
 	for _, item := range all {
 		if item.ID == "agnes-video" {
 			found = true
-			if item.UnavailableReason == "" || item.Enabled {
-				t.Fatalf("Agnes metadata must explain that it is disabled: %#v", item)
+			if !item.Enabled || item.UnavailableReason != "" {
+				t.Fatalf("Agnes metadata must be enabled: %#v", item)
 			}
 		}
 	}

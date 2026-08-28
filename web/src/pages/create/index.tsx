@@ -1151,7 +1151,9 @@ function CreationComposer(props: ComposerProps) {
         model: modelOptionName(props.model),
         count: props.mode === "image" ? props.count : 1,
         seconds: props.mode === "video" ? props.seconds : 1,
-        resolution: props.mode === "video" ? props.videoQuality : props.quality,
+        capability: props.mode,
+        config: props.config,
+        requirements: quoteRequirements,
     });
     const credits = routeQuote ? routeQuote.amountMicrocredits / 1_000_000 : logicalFallbackCredits ?? legacyCredits;
     const showCost = creditsEnabled && credits !== null && credits !== undefined;
