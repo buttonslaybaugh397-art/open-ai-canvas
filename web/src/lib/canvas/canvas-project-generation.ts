@@ -217,6 +217,21 @@ export function audioExtension(mimeType?: string) {
     return "mp3";
 }
 
+export function canvasMediaDownloadFileName(node: Pick<CanvasNodeData, "id" | "type" | "title" | "metadata">) {
+    const extension = node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata?.mimeType) : imageExtension(node.metadata?.content || "");
+    const fallback = "canvas-" + node.type + "-" + node.id;
+    return (safeCanvasFileName(node.title) || fallback) + "." + extension;
+}
+
+function safeCanvasFileName(value: string) {
+    const sanitized = value
+        .trim()
+        .replace(/[<>:"/\|?*]/g, "_")
+        .replace(/[. ]+$/g, "");
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(sanitized)) return "_" + sanitized;
+    return sanitized;
+}
+
 export function buildImageGenerationMetadata(type: CanvasImageGenerationType, config: AiConfig, count: number, references: ReferenceImage[]): CanvasNodeMetadata {
     return {
         ...generationWorkflowMetadata(config),

@@ -32,11 +32,14 @@ func TestTaskForOutputRedactsRoutingAndSecrets(t *testing.T) {
 }
 
 func TestTaskMediaPreviewUsesSafeMediaURLs(t *testing.T) {
-	previewURL, previewKind := taskMediaPreview(`{"images":["data:image/png;base64,AAAA","/api/resources/resource-1/file"],"video":"https://cdn.example.com/output.mp4"}`, "video")
+	previewURL, previewKind, previewStorageKey := taskMediaPreview(`{"images":["data:image/png;base64,AAAA",{"dataUrl":"/api/resources/resource-1/file","storageKey":"resource:resource-1"}],"video":"https://cdn.example.com/output.mp4"}`, "video")
 	if previewURL != "/api/resources/resource-1/file" || previewKind != "image" {
 		t.Fatalf("unexpected preview: url=%q kind=%q", previewURL, previewKind)
 	}
-	if previewURL, _ := taskMediaPreview(`{"url":"file:///tmp/output.mp4"}`, "video"); previewURL != "" {
+	if previewStorageKey != "resource:resource-1" {
+		t.Fatalf("unexpected preview storage key: %q", previewStorageKey)
+	}
+	if previewURL, _, _ := taskMediaPreview(`{"url":"file:///tmp/output.mp4"}`, "video"); previewURL != "" {
 		t.Fatalf("unsafe local URL was exposed: %q", previewURL)
 	}
 }

@@ -13,6 +13,7 @@ import { createLocalDreaminaTaskEffectStore } from "@/services/local-dreamina-ge
 import { createProviderNeutralGenerationTaskEffectStore } from "@/services/provider-neutral-generation-effects";
 import { saveRemoteUserDataNow } from "@/services/user-data-sync";
 import { getActiveUserScope } from "@/lib/user-scope";
+import type { TaskMediaSource } from "@/lib/task-media";
 import { runGenerationConsumer } from "@/services/generation-consumer-lifecycle";
 import { useAssetStore, type AssetCategory, type AssetStatus, type NewAsset } from "@/stores/use-asset-store";
 import type { CanvasNodeData } from "@/types/canvas";
@@ -476,7 +477,7 @@ export async function consumeGenerationTaskAgent(
 export async function consumeGenerationTaskMessage(
     task: GenerationTask,
     messageId: string,
-    consumer: (input: { task: GenerationTask; resultUrls: string[]; effectKey: string; signal?: AbortSignal }) => Promise<void> | void,
+    consumer: (input: { task: GenerationTask; resultUrls: string[]; resultSources: TaskMediaSource[]; effectKey: string; signal?: AbortSignal }) => Promise<void> | void,
     dependencies: {
         signal?: AbortSignal;
         managed?: true;
@@ -490,6 +491,7 @@ export async function consumeGenerationTaskMessage(
     }
     const materialized = await (dependencies.materialize ?? materializeGenerationTaskAssets)(task, dependencies.signal);
     const resultUrls = (dependencies.materializedUrls ?? generationTaskMaterializedUrls)(materialized);
+    const resultSources = generationTaskMediaSources(materialized);
     const attach = dependencies.attachMessage ?? attachGenerationTaskMessage;
     const outputs = materialized.outputs?.filter((output) => output.materializedAssetId) ?? [];
     for (const output of outputs) {
@@ -498,7 +500,7 @@ export async function consumeGenerationTaskMessage(
             messageId,
             output.outputIndex,
             async ({ effectKey, signal }) => {
-                await consumer({ task: materialized, resultUrls, effectKey, signal });
+                await consumer({ task: materialized, resultUrls, resultSources, effectKey, signal });
             },
             dependencies.signal,
         );
@@ -513,6 +515,31 @@ export function generationTaskMaterializedUrls(task: GenerationTask): string[] {
         if (!asset) return [];
         if (asset.kind === "image") return [asset.data.dataUrl || asset.coverUrl];
         if (asset.kind === "video" || asset.kind === "audio") return [asset.data.url];
+        return [];
+    });
+}
+
+export function generationTaskMediaSources(task: GenerationTask): TaskMediaSource[] {
+    const result = generationTaskResult(task);
+    const mediaResults: Array<TaskMediaSource & { outputIndex: number }> = [];
+    if (result.images?.length) {
+        result.images.forEach((image, outputIndex) => mediaResults.push({ url: image.dataUrl, storageKey: image.storageKey, kind: "image", outputIndex }));
+    } else if (result.video) {
+        mediaResults.push({ url: result.video.dataUrl, storageKey: result.video.storageKey, kind: "video", outputIndex: 0 });
+    } else if (result.audio) {
+        mediaResults.push({ url: result.audio.dataUrl, storageKey: result.audio.storageKey, kind: "audio", outputIndex: 0 });
+    }
+
+    const assets = useAssetStore.getState().assets;
+    return (task.outputs || []).flatMap((output) => {
+        const primary = mediaResults.find((candidate) => candidate.outputIndex === output.outputIndex);
+        const asset = output.materializedAssetId ? assets.find((candidate) => candidate.id === output.materializedAssetId) : undefined;
+        const assetStorageKey = asset && (asset.kind === "image" || asset.kind === "video" || asset.kind === "audio") ? asset.data.storageKey : undefined;
+        if (primary?.url) return [{ url: primary.url, kind: primary.kind, storageKey: primary.storageKey || assetStorageKey }];
+        if (asset) {
+            if (asset.kind === "image") return [{ url: asset.data.dataUrl || asset.coverUrl, kind: "image" as const, storageKey: assetStorageKey }];
+            if (asset.kind === "video" || asset.kind === "audio") return [{ url: asset.data.url, kind: asset.kind, storageKey: assetStorageKey }];
+        }
         return [];
     });
 }

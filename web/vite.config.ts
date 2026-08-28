@@ -29,6 +29,20 @@ export default defineConfig({
             },
         },
     },
+    preview: {
+        proxy: {
+            "/api": {
+                target: apiProxyTarget,
+                changeOrigin: true,
+                xfwd: true,
+            },
+            "/oauth/linuxdo/callback": {
+                target: apiProxyTarget,
+                changeOrigin: true,
+                xfwd: true,
+            },
+        },
+    },
     resolve: {
         alias: {
             "@": resolve(webDir, "src"),

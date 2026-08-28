@@ -5,6 +5,7 @@ import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Clap
 import { Link } from "react-router";
 
 import { AIMessageMarkdown } from "@/components/ai/ai-message-markdown";
+import { MediaPreview } from "@/components/media-preview";
 import { GenerationToolCard, type GenerationToolStatus } from "@/components/ai/generation-tool-card";
 import { MessageReasoning } from "@/components/ai/message-reasoning";
 import { AssetLibraryPickerModal, type AssetLibraryPickerItem } from "@/components/assets/asset-library-picker-modal";
@@ -18,6 +19,7 @@ import { createGenerationBatchRetryContexts, createGenerationRetryContext, runGe
 import { createClientId } from "@/lib/client-id";
 import { generationErrorCode, generationErrorMessage } from "@/lib/generation-error";
 import { useCopyText } from "@/hooks/use-copy-text";
+import { useResolvedVideoFallbackUrl } from "@/lib/task-media";
 import { useExternalAssetSources } from "@/hooks/use-external-asset-sources";
 import { buildImageResolutionOptions, formatImageResolutionSize, imageRatioForSize, imageResolutionChoices, imageResolutionOption, imageSizeForResolution, supportsImageResolutionPresets, type ImageResolutionChoice } from "@/lib/image-resolution-tiers";
 import { VIDEO_RESOLUTION_OPTIONS } from "@/lib/video-generation-options";
@@ -32,7 +34,8 @@ import { createTextReplayPublisher } from "@/lib/creation-text-replay";
 import { isLocalDreaminaWaitStopped, localDreaminaCancellationMessage } from "@/services/local-dreamina-task-projection";
 import { getMediaBlob, uploadMediaFile } from "@/services/file-storage";
 import { uploadImage } from "@/services/image-storage";
-import { consumeGenerationTaskMessage, generationTaskMaterializedUrls, materializeGenerationTaskAssets, projectGenerationTaskResult } from "@/services/project-asset-sync";
+import { consumeGenerationTaskMessage, generationTaskMaterializedUrls, generationTaskMediaSources, materializeGenerationTaskAssets, projectGenerationTaskResult } from "@/services/project-asset-sync";
+import type { TaskMediaSource } from "@/lib/task-media";
 import { applyGenerationConsumerEffect } from "@/services/generation-consumer-dedupe";
 import { beginGenerationConsumer, runGenerationConsumer } from "@/services/generation-consumer-lifecycle";
 import { loadCreationConversations, pendingCreationTaskIds, pendingCreationTaskKey, removeCreationConversationSnapshot, saveCreationConversations, updateCreationConversationSnapshot } from "@/services/creation-conversation-store";
@@ -62,6 +65,7 @@ type CreationMessage = {
     status?: CreationStatus;
     model?: string;
     resultUrls?: string[];
+    resultSources?: TaskMediaSource[];
     error?: string;
     generationErrorCode?: string;
     generationOperation?: string;
@@ -290,10 +294,10 @@ export default function CreatePage() {
             taskSyncWarningRef.current = false;
             const attachable = persistedTasks.filter((task) => task.status === "succeeded" && Boolean(task.clientContext?.messageId) && Boolean(task.creationResultUrls?.length));
             for (const task of attachable) {
-                await consumeGenerationTaskMessage(task, task.clientContext!.messageId!, async ({ effectKey, resultUrls }) => {
+                await consumeGenerationTaskMessage(task, task.clientContext!.messageId!, async ({ effectKey, resultUrls, resultSources }) => {
                     if (cancelled) return;
                     await updateConversationMessage(task.clientContext!.conversationId!, task.clientContext!.messageId!, (item) =>
-                        applyGenerationConsumerEffect(item, effectKey, (current) => ({ ...current, status: "done" as const, resultUrls: Array.from(new Set([...(current.resultUrls || []), ...resultUrls])) })).value,
+                        applyGenerationConsumerEffect(item, effectKey, (current) => ({ ...current, status: "done" as const, resultUrls: Array.from(new Set([...(current.resultUrls || []), ...resultUrls])), resultSources: mergeCreationMediaSources(current.resultSources, resultSources) })).value,
                     );
                 }, { signal: observationController.signal, materialize: async () => task, materializedUrls: generationTaskMaterializedUrls });
             }
@@ -625,8 +629,8 @@ export default function CreatePage() {
                 const storedImages = await Promise.allSettled(generatedImages.map(async ({ image, taskId, batchIndex }) => {
                     if (!taskId) throw new Error("生成任务缺少稳定任务标识");
                     const task = completedCreationGenerationTask({ taskId, task: boundTasks.get(taskId), mode: "image", prompt: expandedPrompt, result: { mode: "image", images: [image] }, conversationId: activeConversation.id, messageId: assistantMessage.id, batchIndex, batchCount: taskCount });
-                    const materialized = await consumeGenerationTaskMessage(task, assistantMessage.id, async ({ resultUrls, effectKey }) => {
-                        await updateOriginAssistant((item) => applyGenerationConsumerEffect(item, effectKey, (current) => ({ ...current, status: "done" as const, content: "图片已生成", resultUrls: Array.from(new Set([...(current.resultUrls || []), ...resultUrls])) })).value);
+                    const materialized = await consumeGenerationTaskMessage(task, assistantMessage.id, async ({ resultUrls, resultSources, effectKey }) => {
+                        await updateOriginAssistant((item) => applyGenerationConsumerEffect(item, effectKey, (current) => ({ ...current, status: "done" as const, content: "图片已生成", resultUrls: Array.from(new Set([...(current.resultUrls || []), ...resultUrls])), resultSources: mergeCreationMediaSources(current.resultSources, resultSources) })).value);
                     }, { signal: requestLifecycle.signal });
                     const url = generationTaskMaterializedUrls(materialized)[0];
                     if (!url) throw new Error("图片结果资源不可用");
@@ -658,8 +662,8 @@ export default function CreatePage() {
                 const taskId = Array.from(boundTaskIds)[0];
                 if (!taskId) throw new Error("生成任务缺少稳定任务标识");
                 const task = completedCreationGenerationTask({ taskId, task: boundTasks.get(taskId), mode: "video", prompt: expandedPrompt, result, conversationId: activeConversation.id, messageId: assistantMessage.id });
-                const materialized = await consumeGenerationTaskMessage(task, assistantMessage.id, async ({ resultUrls, effectKey }) => {
-                    await updateOriginAssistant((item) => applyGenerationConsumerEffect(item, effectKey, (current) => ({ ...current, status: "done" as const, content: "视频已生成", resultUrls })).value);
+                const materialized = await consumeGenerationTaskMessage(task, assistantMessage.id, async ({ resultUrls, resultSources, effectKey }) => {
+                    await updateOriginAssistant((item) => applyGenerationConsumerEffect(item, effectKey, (current) => ({ ...current, status: "done" as const, content: "视频已生成", resultUrls, resultSources: mergeCreationMediaSources(current.resultSources, resultSources) })).value);
                 }, { signal: requestLifecycle.signal });
                 if (!generationTaskMaterializedUrls(materialized)[0]) throw new Error("视频结果资源不可用");
             }
@@ -1043,6 +1047,8 @@ function MediaResult({ item, onRetryFailure, onCreateVariant }: { item: Creation
     const [previewType, setPreviewType] = useState<"image" | "video">("image");
     const assets = useAssetStore((state) => state.assets);
     const resultUrls = item.resultUrls || [];
+    const resultSources = creationMediaSources(item);
+    const videoSource = resultSources.find((source) => source.kind === "video") || (item.mode === "video" && resultUrls[0] ? { url: resultUrls[0], kind: "video" as const } : undefined);
     const resultAssetIds = resultUrls.length ? creationResultAssetIds(assets, { messageId: item.id, taskIds: item.taskIds || [], resultUrls }) : [];
     const canvasPath = creationCanvasHandoffPath(resultAssetIds) || "/canvas";
     if (item.status === "pending") return <CreationMediaPending mode={item.mode || "image"} ratio={item.settings?.ratio} />;
@@ -1050,9 +1056,9 @@ function MediaResult({ item, onRetryFailure, onCreateVariant }: { item: Creation
     if (!resultUrls.length) return <div className="creation-media-empty">没有返回可预览结果 <button type="button" onClick={onRetryFailure}>重试</button></div>;
     const isVideo = item.mode === "video";
     return <div className="creation-media-result">
-        {isVideo ? <button type="button" className="creation-video-result" onClick={() => { setPreviewType("video"); setPreviewUrl(resultUrls[0]); }} aria-label="预览生成视频"><video muted preload="metadata" src={resultUrls[0]} /><span><Maximize2 />预览视频</span></button> : <div className="creation-image-result-grid">{resultUrls.map((url) => <button key={url} type="button" className="creation-image-result" onClick={() => { setPreviewType("image"); setPreviewUrl(url); }} aria-label="预览生成图片"><img src={url} alt="生成结果" /><span><Maximize2 /></span></button>)}</div>}
-        <div className="creation-media-actions"><span>{isVideo ? "视频结果" : `${resultUrls.length} 张图片`}</span><button type="button" onClick={onCreateVariant}><RefreshCw />生成同款</button><Link to={canvasPath}>{resultAssetIds.length ? "添加到画布" : "打开画布"}</Link>{resultUrls.map((url, index) => <a key={`${url}-download`} href={url} download>{resultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</a>)}</div>
-        <CreationMediaPreviewModal url={previewUrl} type={previewType} onClose={() => setPreviewUrl("")} />
+        {isVideo && videoSource ? <button type="button" className="creation-video-result" onClick={() => { setPreviewType("video"); setPreviewUrl(videoSource.url); }} aria-label="预览生成视频"><MediaPreview src={videoSource.url} kind="video" fallbackStorageKey={videoSource.storageKey} className="size-full object-cover" /><span><Maximize2 />预览视频</span></button> : <div className="creation-image-result-grid">{resultUrls.map((url) => <button key={url} type="button" className="creation-image-result" onClick={() => { setPreviewType("image"); setPreviewUrl(url); }} aria-label="预览生成图片"><img src={url} alt="生成结果" /><span><Maximize2 /></span></button>)}</div>}
+        <div className="creation-media-actions"><span>{isVideo ? "视频结果" : `${resultUrls.length} 张图片`}</span><button type="button" onClick={onCreateVariant}><RefreshCw />生成同款</button><Link to={canvasPath}>{resultAssetIds.length ? "添加到画布" : "打开画布"}</Link>{isVideo && videoSource ? <CreationMediaDownloadLink source={videoSource} /> : resultUrls.map((url, index) => <a key={`${url}-download`} href={url} download>{resultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</a>)}</div>
+        <CreationMediaPreviewModal source={resultSources.find((source) => source.url === previewUrl)} url={previewUrl} type={previewType} onClose={() => setPreviewUrl("")} />
     </div>;
 }
 
@@ -1067,8 +1073,13 @@ function CreationMessageReferences({ references }: { references: CreationReferen
     })}</div>;
 }
 
-function CreationMediaPreviewModal({ url, type, onClose }: { url: string; type: "image" | "video"; onClose: () => void }) {
-    return <Modal open={Boolean(url)} title={null} footer={null} centered destroyOnHidden width={type === "video" ? "min(1160px, calc(100vw - 32px))" : "min(980px, calc(100vw - 32px))"} onCancel={onClose} className="creation-media-preview-modal" styles={{ body: { padding: 0 } }}>{url ? type === "video" ? <video controls autoPlay className="creation-media-preview-video" src={url} /> : <img className="creation-media-preview-image" src={url} alt="媒体预览" /> : null}</Modal>;
+function CreationMediaPreviewModal({ url, type, source, onClose }: { url: string; type: "image" | "video"; source?: TaskMediaSource; onClose: () => void }) {
+    return <Modal open={Boolean(url)} title={null} footer={null} centered destroyOnHidden width={type === "video" ? "min(1160px, calc(100vw - 32px))" : "min(980px, calc(100vw - 32px))"} onCancel={onClose} className="creation-media-preview-modal" styles={{ body: { padding: 0 } }}>{url ? type === "video" ? <MediaPreview src={source?.url || url} kind="video" fallbackStorageKey={source?.storageKey} controls className="creation-media-preview-video" /> : <img className="creation-media-preview-image" src={url} alt="媒体预览" /> : null}</Modal>;
+}
+
+function CreationMediaDownloadLink({ source }: { source: TaskMediaSource }) {
+    const fallbackUrl = useResolvedVideoFallbackUrl(source.url);
+    return <a href={fallbackUrl || source.url} download><Download />下载</a>;
 }
 
 function CreationAttachmentThumbnail({ item, onPreview, onRemove }: {
@@ -1544,6 +1555,7 @@ function StoryboardShotCard({ shot, shotNumber, modelName, busy, onRetryFailure,
     const assets = useAssetStore((state) => state.assets);
     const visiblePrompt = user ? displayCreationPrompt(user.content, user.references || []) : "";
     const resultUrls = result?.resultUrls || [];
+    const resultSources = result ? creationMediaSources(result) : [];
     const resultAssetIds = result && resultUrls.length ? creationResultAssetIds(assets, { messageId: result.id, taskIds: result.taskIds || [], resultUrls }) : [];
     const canvasHandoffPath = result ? creationCanvasHandoffPath(resultAssetIds, resultUrls.length) : "";
     const canvasPath = canvasHandoffPath || "/canvas";
@@ -1559,7 +1571,7 @@ function StoryboardShotCard({ shot, shotNumber, modelName, busy, onRetryFailure,
                 {status === "error" ? <button type="button" onClick={onRetryFailure} disabled={busy}><RefreshCw />重新生成</button> : null}
                 {status === "done" && result?.resultUrls?.length ? <button type="button" onClick={onCreateVariant} disabled={busy}><RefreshCw />生成变体</button> : null}
                 {status === "done" && resultUrls.length ? <Link to={canvasPath}>{canvasHandoffPath ? "添加到画布" : "打开画布"}</Link> : null}
-                {resultUrls.map((url, index) => <a key={`${url}-download`} href={url} download>{resultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</a>)}
+                {mode === "video" && resultSources[0] ? <CreationMediaDownloadLink source={resultSources[0]} /> : resultUrls.map((url, index) => <a key={`${url}-download`} href={url} download>{resultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</a>)}
             </div>
         </header>
         <div className="storyboard-workbench-card-body">
@@ -1630,6 +1642,8 @@ function StoryboardShotResult({ result, onRetryFailure, onCreateVariant, canvasP
     const mode = result.mode || "video";
     const status = result.status || "queued";
     const resultUrls = result.resultUrls || [];
+    const resultSources = creationMediaSources(result);
+    const videoSource = resultSources.find((source) => source.kind === "video") || (mode === "video" && resultUrls[0] ? { url: resultUrls[0], kind: "video" as const } : undefined);
     if (status === "pending" || status === "queued") {
         const thinking = thinkingFor(mode);
         return <div className="storyboard-workbench-pending"><div className="storyboard-workbench-thinking">
@@ -1643,10 +1657,10 @@ function StoryboardShotResult({ result, onRetryFailure, onCreateVariant, canvasP
     if (!resultUrls.length) return <div className="storyboard-workbench-empty"><Film />没有返回可预览结果 <button type="button" onClick={onRetryFailure}>重试</button></div>;
     const note = result.settings ? directorNoteFor(mode, result.settings) : "";
     return <>
-        {mode === "video" ? <button type="button" className="creation-video-result" onClick={() => openPreview(resultUrls[0], "video")} aria-label="预览生成视频"><video muted preload="metadata" className="size-full object-cover" src={resultUrls[0]} /><span><Maximize2 />预览视频</span></button> : <div className="creation-image-result-grid">{resultUrls.map((url) => <button key={url} type="button" className="creation-image-result" onClick={() => openPreview(url, "image")} aria-label="预览生成图片"><img src={url} alt="生成结果" /><span><Maximize2 /></span></button>)}</div>}
+        {mode === "video" && videoSource ? <button type="button" className="creation-video-result" onClick={() => openPreview(videoSource.url, "video")} aria-label="预览生成视频"><MediaPreview src={videoSource.url} kind="video" fallbackStorageKey={videoSource.storageKey} className="size-full object-cover" /><span><Maximize2 />预览视频</span></button> : <div className="creation-image-result-grid">{resultUrls.map((url) => <button key={url} type="button" className="creation-image-result" onClick={() => openPreview(url, "image")} aria-label="预览生成图片"><img src={url} alt="生成结果" /><span><Maximize2 /></span></button>)}</div>}
         {note ? <p className="storyboard-workbench-director-note"><span>导演手记</span>{note}</p> : null}
-        <div className="storyboard-workbench-media-meta"><span>{mode === "video" ? "视频结果" : `${resultUrls.length} 张图片`}</span><button type="button" onClick={onCreateVariant}><RefreshCw />生成变体</button><Link to={canvasPath}>{canvasHandoffAvailable ? "添加到画布" : "打开画布"}</Link>{resultUrls.map((url, index) => <a key={`${url}-download`} href={url} download>{resultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</a>)}</div>
-        <CreationMediaPreviewModal url={previewUrl} type={previewType} onClose={() => setPreviewUrl("")} />
+        <div className="storyboard-workbench-media-meta"><span>{mode === "video" ? "视频结果" : `${resultUrls.length} 张图片`}</span><button type="button" onClick={onCreateVariant}><RefreshCw />生成变体</button><Link to={canvasPath}>{canvasHandoffAvailable ? "添加到画布" : "打开画布"}</Link>{mode === "video" && videoSource ? <CreationMediaDownloadLink source={videoSource} /> : resultUrls.map((url, index) => <a key={`${url}-download`} href={url} download>{resultUrls.length > 1 ? `下载 ${index + 1}` : <><Download />下载</>}</a>)}</div>
+        <CreationMediaPreviewModal source={resultSources.find((source) => source.url === previewUrl)} url={previewUrl} type={previewType} onClose={() => setPreviewUrl("")} />
     </>;
 }
 
@@ -1716,7 +1730,21 @@ function isImageAttachment(attachment: CreationAttachment): attachment is Creati
     return creationAttachmentKind(attachment) === "image";
 }
 
-type PersistedCreationTask = GenerationTask & { creationResultUrls?: string[]; creationError?: string };
+type PersistedCreationTask = GenerationTask & { creationResultUrls?: string[]; creationResultSources?: TaskMediaSource[]; creationError?: string };
+
+function creationMediaSources(item: Pick<CreationMessage, "resultUrls" | "resultSources" | "mode">): TaskMediaSource[] {
+    if (item.resultSources?.length) return item.resultSources;
+    return (item.resultUrls || []).map((url) => ({ url, kind: item.mode === "video" ? "video" : "image" }));
+}
+
+function mergeCreationMediaSources(current: TaskMediaSource[] | undefined, next: TaskMediaSource[]) {
+    const merged = new Map<string, TaskMediaSource>((current || []).map((source) => [source.url, source]));
+    for (const source of next) {
+        const existing = merged.get(source.url);
+        merged.set(source.url, { ...existing, ...source, storageKey: source.storageKey || existing?.storageKey });
+    }
+    return Array.from(merged.values());
+}
 
 function attachCreationTaskContexts(tasks: GenerationTask[], conversations: CreationConversation[]) {
     const contexts = new Map<string, { prompt: string; clientContext: NonNullable<GenerationTask["clientContext"]> }>();
@@ -1740,7 +1768,8 @@ async function materializeCreationTaskResults(tasks: GenerationTask[], signal?: 
         try {
             const materialized = await runGenerationConsumer(signal, (managedSignal) => materializeGenerationTaskAssets(task, managedSignal));
             const creationResultUrls = generationTaskMaterializedUrls(materialized);
-            return creationResultUrls.length ? { ...materialized, creationResultUrls } : materialized;
+            const creationResultSources = generationTaskMediaSources(materialized);
+            return creationResultUrls.length ? { ...materialized, creationResultUrls, creationResultSources } : materialized;
         } catch (error) {
             return { ...task, creationError: error instanceof Error ? error.message : "生成结果资源化失败" };
         }
@@ -1770,6 +1799,7 @@ function reconcileCreationTaskMessages(conversations: CreationConversation[], ta
             if (!matches.length || (expectedTaskCount > 0 && matches.length < expectedTaskCount) || matches.some((task) => task.status === "queued" || task.status === "running")) return message;
 
             const resultUrls = Array.from(new Set(matches.filter((task) => task.status === "succeeded").flatMap(creationTaskResultUrls)));
+            const resultSources = mergeCreationMediaSources(undefined, matches.filter((task) => task.status === "succeeded").flatMap((task) => task.creationResultSources || []));
             const failedCount = matches.filter((task) => task.status !== "succeeded" || Boolean(task.creationError)).length;
             const nextTaskIds = Array.from(new Set([...(message.taskIds || []), ...matches.map((task) => task.id)]));
             completedAt = matches.reduce((latest, task) => conversationTimestamp(task.updatedAt) > conversationTimestamp(latest) ? task.updatedAt : latest, completedAt);
@@ -1778,7 +1808,7 @@ function reconcileCreationTaskMessages(conversations: CreationConversation[], ta
 
             if (resultUrls.length) {
                 const content = message.mode === "video" ? "视频已生成" : failedCount ? `${resultUrls.length} 张图片已生成，${failedCount} 张失败` : "图片已生成";
-                return { ...message, status: "done" as const, content, resultUrls, error: undefined, taskIds: nextTaskIds };
+                return { ...message, status: "done" as const, content, resultUrls, resultSources, error: undefined, taskIds: nextTaskIds };
             }
             if (matches.every((task) => task.status === "cancelled")) {
                 const localOnly = matches.find(isLocalDreaminaWaitStopped);

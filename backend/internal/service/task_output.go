@@ -31,6 +31,7 @@ type TaskSummary struct {
 	ErrorCode                 string                     `json:"errorCode,omitempty"`
 	PreviewURL                string                     `json:"previewUrl,omitempty"`
 	PreviewKind               string                     `json:"previewKind,omitempty"`
+	PreviewStorageKey         string                     `json:"previewStorageKey,omitempty"`
 	Attempts                  int                        `json:"attempts"`
 	StartedAt                 *time.Time                 `json:"startedAt"`
 	CompletedAt               *time.Time                 `json:"completedAt"`
@@ -92,7 +93,7 @@ func taskSummaryForOutput(task model.Task) TaskSummary {
 	if isContentModerationFailure(task.Error) {
 		errorCode = contentModerationErrorCode
 	}
-	previewURL, previewKind := taskMediaPreview(task.ResultJSON, task.Type)
+	previewURL, previewKind, previewStorageKey := taskMediaPreview(task.ResultJSON, task.Type)
 	return TaskSummary{
 		ID:                        task.ID,
 		SessionID:                 task.SessionID,
@@ -114,6 +115,7 @@ func taskSummaryForOutput(task model.Task) TaskSummary {
 		ErrorCode:                 errorCode,
 		PreviewURL:                previewURL,
 		PreviewKind:               previewKind,
+		PreviewStorageKey:         previewStorageKey,
 		Attempts:                  task.Attempts,
 		StartedAt:                 task.StartedAt,
 		CompletedAt:               task.CompletedAt,
@@ -146,13 +148,13 @@ func taskClientContext(raw string) *TaskClientContext {
 }
 
 // 列表只暴露首个可访问媒体地址，避免把完整生成结果和内嵌数据带回前端。
-func taskMediaPreview(raw string, taskType string) (string, string) {
+func taskMediaPreview(raw string, taskType string) (string, string, string) {
 	if strings.TrimSpace(raw) == "" {
-		return "", ""
+		return "", "", ""
 	}
 	var payload any
 	if json.Unmarshal([]byte(raw), &payload) != nil {
-		return "", ""
+		return "", "", ""
 	}
 	defaultKind := "image"
 	if strings.Contains(strings.ToLower(taskType), "video") {
@@ -161,12 +163,12 @@ func taskMediaPreview(raw string, taskType string) (string, string) {
 	return findTaskMediaPreview(payload, defaultKind)
 }
 
-func findTaskMediaPreview(value any, hint string) (string, string) {
+func findTaskMediaPreview(value any, hint string) (string, string, string) {
 	switch item := value.(type) {
 	case string:
 		text := strings.TrimSpace(item)
 		if !strings.HasPrefix(text, "/api/resources/") && !strings.HasPrefix(text, "http://") && !strings.HasPrefix(text, "https://") {
-			return "", ""
+			return "", "", ""
 		}
 		kind := hint
 		lower := strings.ToLower(text)
@@ -175,14 +177,15 @@ func findTaskMediaPreview(value any, hint string) (string, string) {
 		} else if kind != "video" {
 			kind = "image"
 		}
-		return text, kind
+		return text, kind, ""
 	case []any:
 		for _, child := range item {
-			if previewURL, previewKind := findTaskMediaPreview(child, hint); previewURL != "" {
-				return previewURL, previewKind
+			if previewURL, previewKind, storageKey := findTaskMediaPreview(child, hint); previewURL != "" {
+				return previewURL, previewKind, storageKey
 			}
 		}
 	case map[string]any:
+		storageKey, _ := item["storageKey"].(string)
 		for _, key := range []string{"images", "image", "video", "dataUrl", "url", "resultUrl", "outputUrl"} {
 			child, exists := item[key]
 			if !exists {
@@ -194,12 +197,15 @@ func findTaskMediaPreview(value any, hint string) (string, string) {
 			} else if key == "images" || key == "image" {
 				childHint = "image"
 			}
-			if previewURL, previewKind := findTaskMediaPreview(child, childHint); previewURL != "" {
-				return previewURL, previewKind
+			if previewURL, previewKind, childStorageKey := findTaskMediaPreview(child, childHint); previewURL != "" {
+				if childStorageKey == "" {
+					childStorageKey = storageKey
+				}
+				return previewURL, previewKind, childStorageKey
 			}
 		}
 	}
-	return "", ""
+	return "", "", ""
 }
 
 func truncateRunes(value string, limit int) string {

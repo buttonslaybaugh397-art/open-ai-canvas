@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
 import { MediaPreview } from "@/components/media-preview";
+import { parseTaskMediaSources, taskPreviewSource, type TaskMediaSource } from "@/lib/task-media";
 import { ListToolbar, PageHeader, PaginationBar, WorkspacePage } from "@/components/layout/workspace-page";
 import { WorkspaceState } from "@/components/layout/workspace-state";
 import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError } from "@/lib/generation-error";
@@ -86,7 +87,7 @@ export default function TasksPage() {
     const [detailLoading, setDetailLoading] = useState(false);
     const [taskLogs, setTaskLogs] = useState<TaskLog[]>([]);
     const [logsLoading, setLogsLoading] = useState(false);
-    const [mediaPreview, setMediaPreview] = useState<{ url: string; kind: "image" | "video"; title: string } | null>(null);
+    const [mediaPreview, setMediaPreview] = useState<(TaskMediaSource & { title: string }) | null>(null);
     const [tasks, setTasks] = useState<GenerationTask[]>([]);
     const syncedCanvasTaskIdsRef = useRef(new Set<string>());
     const tasksRef = useRef<GenerationTask[]>([]);
@@ -169,7 +170,7 @@ export default function TasksPage() {
             actingId={actingId}
             onOpen={() => void openTaskDetail(task)}
             onRetry={() => void runAction(task.id)}
-            onPreview={() => task.previewUrl && setMediaPreview({ url: task.previewUrl, kind: task.previewKind === "video" ? "video" : "image", title: task.prompt || formatTaskKind(task) })}
+            onPreview={() => { const source = taskPreviewSource(task); if (source) setMediaPreview({ ...source, kind: source.kind || (task.previewKind === "video" ? "video" : "image"), title: task.prompt || formatTaskKind(task) }); }}
         />
     );
 
@@ -567,7 +568,8 @@ export default function TasksPage() {
                 {mediaPreview ? (
                     <MediaPreview
                         src={mediaPreview.url}
-                        kind={mediaPreview.kind}
+                        kind={mediaPreview.kind === "video" ? "video" : "image"}
+                        fallbackStorageKey={mediaPreview.storageKey}
                         alt={mediaPreview.title}
                         controls={mediaPreview.kind === "video"}
                         className="max-h-[76vh] w-full bg-black object-contain"
@@ -597,19 +599,21 @@ function reconcileTaskSummaries(current: GenerationTask[], next: GenerationTask[
 }
 
 function TaskResultMedia({ value, taskType }: { value?: string; taskType: string }) {
-    const urls = resultMediaUrls(value);
-    if (!urls.length) return null;
+    const sources = parseTaskMediaSources(value);
+    if (!sources.length) return null;
     return (
         <div>
             <Typography.Text strong>生成结果</Typography.Text>
             <div className="mt-2 grid max-h-[360px] grid-cols-2 gap-2 overflow-auto rounded-lg bg-stone-950 p-2 md:grid-cols-3">
-                {urls.map((url, index) => {
-                    const isVideo = isVideoResult(url, taskType);
+                {sources.map((source, index) => {
+                    const url = source.url;
+                    const isVideo = source.kind === "video" || isVideoResult(url, taskType);
                     return (
                         <MediaPreview
                             key={`${url}-${index}`}
                             src={url}
                             kind={isVideo ? "video" : "image"}
+                            fallbackStorageKey={source.storageKey}
                             alt={`生成结果 ${index + 1}`}
                             controls={isVideo}
                             className={isVideo ? "task-result-media is-video" : "task-result-media"}
@@ -620,30 +624,6 @@ function TaskResultMedia({ value, taskType }: { value?: string; taskType: string
             </div>
         </div>
     );
-}
-
-function resultMediaUrls(value?: string) {
-    if (!value) return [];
-    let parsed: unknown;
-    try {
-        parsed = JSON.parse(value);
-    } catch {
-        parsed = value;
-    }
-    const urls: string[] = [];
-    const visit = (item: unknown, key = "") => {
-        if (typeof item === "string") {
-            const isInlineMedia = /^(data:image\/|data:video\/)/.test(item);
-            const isMediaPath = /\.(png|jpe?g|webp|gif|avif|mp4|webm|mov)(?:$|\?)/i.test(item);
-            const isNamedMediaUrl = /^(https?:|blob:)/.test(item) && /(url|image|video|result|output|media)/i.test(key);
-            if ((isInlineMedia || isMediaPath || isNamedMediaUrl) && !urls.includes(item)) urls.push(item);
-            return;
-        }
-        if (Array.isArray(item)) return item.forEach((value) => visit(value, key));
-        if (item && typeof item === "object") Object.entries(item).forEach(([field, value]) => visit(value, field));
-    };
-    visit(parsed);
-    return urls.slice(0, 12);
 }
 
 function isVideoResult(value: string, taskType: string) {

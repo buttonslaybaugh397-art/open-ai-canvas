@@ -52,6 +52,7 @@ export type GenerationTask = {
     receiptRecorded?: boolean;
     previewUrl?: string;
     previewKind?: "image" | "video";
+    previewStorageKey?: string;
     inputJson?: string;
     resultJson?: string;
     resultState?: GenerationTaskResultState;
