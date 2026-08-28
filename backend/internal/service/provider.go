@@ -865,11 +865,21 @@ func styleAssetSupportsModel(baseModels []string, generationModel string) bool {
 func (s *Service) validateResolvedVideoCapability(input *canvasGenerationInput) error {
 	channelID := strings.TrimSpace(input.Config.ChannelID)
 	if channelID == "" {
-		if input.Config.CapabilityConfig == nil || input.Config.CapabilityConfig.Video == nil {
-			return nil
+		profile := input.Config.CapabilityConfig
+		if profile == nil || profile.Video == nil {
+			if input.Config.InterfaceType != string(model.ChannelInterfaceAgnesVideo) {
+				return nil
+			}
+			profile = DefaultModelCapabilityConfigForModel(input.Config.InterfaceType, input.Config.Model)
 		}
-		input.VideoCapability = input.Config.CapabilityConfig.Video
-		return validateVideoTask(input.VideoCapability, *input)
+		normalized, err := NormalizeModelCapabilityConfigForModel("video", input.Config.InterfaceType, input.Config.Model, profile)
+		if err != nil || normalized == nil || normalized.Video == nil {
+			return errors.New("当前视频模型能力参数无效")
+		}
+		input.Config.CapabilityConfig = normalized
+		input.VideoCapability = normalized.Video
+		applyFixedVideoResolution(input, normalized.Video)
+		return validateVideoTask(normalized.Video, *input)
 	}
 	item, err := s.repo.ChannelModelByKey(channelID, providerChannelModelKey(input.Config))
 	if err != nil {
@@ -879,9 +889,13 @@ func (s *Service) validateResolvedVideoCapability(input *canvasGenerationInput) 
 	if err != nil || profile == nil || profile.Video == nil {
 		return errors.New("当前视频模型尚未配置能力参数")
 	}
-	input.VideoCapability = profile.Video
-	applyFixedVideoResolution(input, profile.Video)
-	return validateVideoTask(profile.Video, *input)
+	normalized, err := NormalizeModelCapabilityConfigForModel("video", string(item.Protocol), firstNonEmpty(item.ProviderModelKey, item.ModelKey), profile)
+	if err != nil || normalized == nil || normalized.Video == nil {
+		return errors.New("当前视频模型能力参数无效")
+	}
+	input.VideoCapability = normalized.Video
+	applyFixedVideoResolution(input, normalized.Video)
+	return validateVideoTask(normalized.Video, *input)
 }
 
 func (s *Service) validateResolvedImageCapability(input *canvasGenerationInput) error {
@@ -1928,6 +1942,10 @@ func runDeclarativeProtocolTask(ctx context.Context, input canvasGenerationInput
 	if !ok {
 		return nil, fmt.Errorf("接口类型 %s 未安装声明式适配器", input.Config.InterfaceType)
 	}
+	return runProtocolAdapterTask(ctx, input, adapter)
+}
+
+func runProtocolAdapterTask(ctx context.Context, input canvasGenerationInput, adapter protocol.Adapter) (map[string]interface{}, error) {
 	request := protocolRequestFromInput(input)
 	taskID := resumedProviderRequestID(ctx)
 	var created protocol.CreateResult
@@ -1997,7 +2015,7 @@ func protocolRequestFromInput(input canvasGenerationInput) protocol.GenerationRe
 		Quality:       input.Config.Quality,
 		GenerateAudio: parseBool(input.Config.VideoGenerateAudio, false),
 		Watermark:     parseBool(input.Config.VideoWatermark, false),
-		Operation:     metadataString(input.Metadata, "videoOperation"),
+		Operation:     firstNonEmpty(metadataString(input.Metadata, "videoEditOperation"), metadataString(input.Metadata, "videoOperation")),
 		Extra: map[string]any{
 			"videoSeconds": input.Config.VideoSeconds,
 			"audioVoice":   input.Config.AudioVoice,
@@ -2042,7 +2060,11 @@ func executeProtocolRequest(ctx context.Context, config providerConfig, spec pro
 		}
 		body = bytes.NewReader(data)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, apiURL(config.BaseURL, spec.Path), body)
+	requestURL, err := protocolRequestURL(config.BaseURL, spec)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, requestURL, body)
 	if err != nil {
 		return nil, err
 	}
@@ -2056,6 +2078,25 @@ func executeProtocolRequest(ctx context.Context, config providerConfig, spec pro
 	ApplyOutboundHeaders(req, config.Headers)
 	data, _, err := doBinary(req)
 	return data, err
+}
+
+func protocolRequestURL(baseURL string, spec protocol.RequestSpec) (string, error) {
+	if !spec.OriginPath {
+		return apiURL(baseURL, spec.Path), nil
+	}
+	base, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return "", fmt.Errorf("协议根路径请求的 Base URL 无效")
+	}
+	requestPath, err := url.Parse(spec.Path)
+	if err != nil || !strings.HasPrefix(requestPath.Path, "/") {
+		return "", fmt.Errorf("协议根路径请求必须使用绝对路径")
+	}
+	base.Path = requestPath.Path
+	base.RawPath = requestPath.RawPath
+	base.RawQuery = requestPath.RawQuery
+	base.Fragment = ""
+	return base.String(), nil
 }
 
 func finishProtocolResult(ctx context.Context, config providerConfig, mode string, result *protocol.Result) (map[string]interface{}, error) {
@@ -2341,6 +2382,13 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceAIStarsLabVideo) {
 		return runAiStarsLabVideoTask(ctx, input)
+	}
+	if input.Config.InterfaceType == string(model.ChannelInterfaceAgnesVideo) {
+		adapter, ok := protocolAdapterForContext(ctx, input.Config.InterfaceType)
+		if !ok {
+			return nil, errors.New("Agnes 视频插件未安装")
+		}
+		return runProtocolAdapterTask(ctx, input, adapter)
 	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceMiniMaxVideo) {
 		return runMiniMaxVideoTask(ctx, input)
@@ -4713,6 +4761,17 @@ func ChannelAPIURL(baseURL string, path string) string {
 // boundary. In particular, Gemini uses v1beta while OpenAI-compatible APIs
 // conventionally use v1. An explicit version in either input wins.
 func ChannelAPIURLForProtocol(baseURL string, path string, interfaceType model.ChannelInterfaceType) string {
+	if interfaceType == model.ChannelInterfaceAgnesVideo && strings.HasPrefix(strings.TrimSpace(path), "/agnesapi") {
+		base, err := url.Parse(strings.TrimSpace(baseURL))
+		requestPath, pathErr := url.Parse(strings.TrimSpace(path))
+		if err == nil && pathErr == nil && base.Scheme != "" && base.Host != "" && strings.HasPrefix(requestPath.Path, "/") {
+			base.Path = requestPath.Path
+			base.RawPath = requestPath.RawPath
+			base.RawQuery = requestPath.RawQuery
+			base.Fragment = ""
+			return base.String()
+		}
+	}
 	defaultPrefix := "/v1"
 	if interfaceType == model.ChannelInterfaceGeminiVeo || interfaceType == model.ChannelInterfaceGeminiImage {
 		defaultPrefix = "/v1beta"

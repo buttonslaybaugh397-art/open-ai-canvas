@@ -7,6 +7,20 @@ function source(path: string) {
 }
 
 describe("media fallback", () => {
+    test("restores cached canvas media from storage keys without blocking on persistence", () => {
+        const nodeContent = source("../src/components/canvas/canvas-node-content.tsx");
+        const cachedImage = source("../src/components/cached-resource-image.tsx");
+        const cache = source("../src/services/resource-blob-cache.ts");
+
+        expect(nodeContent).toContain("Boolean(props.node.metadata?.content || props.node.metadata?.storageKey)");
+        expect(nodeContent).toContain("!node.metadata?.content && !node.metadata?.storageKey");
+        expect(nodeContent).toContain("resourceFileUrl(resourceId)");
+        expect(cachedImage).toContain('!src.startsWith("blob:")');
+        expect(cachedImage).toContain("resourceFileUrl(resourceId)");
+        expect(cache).toContain("void enqueuePersist(target, blob)");
+        expect(cache).not.toContain("await enqueuePersist(target, blob)");
+    });
+
     test("replaces failed image and video elements with an unavailable state", () => {
         const preview = source("../src/components/media-preview.tsx");
 

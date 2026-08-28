@@ -102,7 +102,7 @@ async function downloadResourceBlob(storageKey: string, target: ResourceCacheMet
     const blob = await getResourceBlob(storageKey);
     if (!blob) return null;
     sessionBlobs.set(target.key, blob);
-    if (blob.size <= MAX_CACHE_BYTES) await enqueuePersist(target, blob);
+    if (blob.size <= MAX_CACHE_BYTES) void enqueuePersist(target, blob);
     return blob;
 }
 

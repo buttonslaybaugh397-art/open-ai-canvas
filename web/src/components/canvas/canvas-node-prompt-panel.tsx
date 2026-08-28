@@ -26,6 +26,7 @@ import { canvasResourceMentionToken, type CanvasResourceReference } from "@/lib/
 import { promptOptimizerPlugin, PROMPT_OPTIMIZER_PLUGIN_ID } from "@/lib/plugins/builtin/prompt-optimizer";
 import { createPluginHostContext } from "@/services/plugin-host";
 import { usePluginStore } from "@/stores/use-plugin-store";
+import { useResolvedCanvasResourceReferences } from "./use-resolved-canvas-resource-references";
 
 export type CanvasNodeGenerationMode = CanvasGenerationMode;
 
@@ -75,7 +76,8 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     const [manualExpandedPromptHeight, setManualExpandedPromptHeight] = useState<number | null>(null);
     const [paramsExpanded, setParamsExpanded] = useState(false); // #98 决策2：B区参数区折叠状态（手风琴）
     const [promptOptimizerOpen, setPromptOptimizerOpen] = useState(false);
-    const activeReferences = mentionReferences.filter((item) => item.active && item.kind !== "skill");
+    const resolvedMentionReferences = useResolvedCanvasResourceReferences(mentionReferences);
+    const activeReferences = resolvedMentionReferences.filter((item) => item.active && item.kind !== "skill");
     const requirements: ModelRequirements = {
         capability: mode,
         input: {
@@ -117,11 +119,13 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
         model: modelOptionName(config.model),
         count: mode === "image" ? generationCount : 1,
         seconds: mode === "video" ? config.videoSeconds : 1,
-        resolution: mode === "video" ? config.vquality : config.quality,
+        capability: mode,
+        config,
+        requirements,
     });
     const credits = routeQuote ? routeQuote.amountMicrocredits / 1_000_000 : logicalFallbackCredits ?? legacyCredits;
     const activeReferenceCount = activeReferences.length;
-    const videoFrameOptions = mentionReferences.filter((item) => item.active && item.kind === "image").map((item) => ({ nodeId: item.nodeId, label: item.label, title: item.title, previewUrl: item.previewUrl }));
+    const videoFrameOptions = resolvedMentionReferences.filter((item) => item.active && item.kind === "image").map((item) => ({ nodeId: item.nodeId, label: item.label, title: item.title, previewUrl: item.previewUrl }));
     const hasVideoPromptTools = mode === "video" && !simpleMode && videoFrameOptions.length > 0;
     const monochromeAccent = theme.node.activeStroke;
     const composerTokens = {
@@ -160,7 +164,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
         setManualExpandedPromptHeight(null);
     }, [node.id]);
 
-    const skillReferences = useMemo(() => mentionReferences.filter((item) => item.kind === "skill"), [mentionReferences]);
+    const skillReferences = useMemo(() => resolvedMentionReferences.filter((item) => item.kind === "skill"), [resolvedMentionReferences]);
 
     const updatePrompt = (value: string) => {
         setPrompt(value);
@@ -276,7 +280,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
         return (
             <Button
                 type="text"
-                className={`canvas-node-composer-submit ${showCost ? "has-cost" : ""}`}
+                className={`canvas-node-composer-submit canvas-node-composer-submit-canvas ${showCost ? "has-cost" : ""}`}
                 disabled={isRunning || isSubmitDisabled}
                 style={
                     {
@@ -373,10 +377,10 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
         return (
             <>
                 <div className="canvas-node-composer-editor" style={{ height }}>
-                    <ConnectedReferenceShelf references={mentionReferences} theme={theme} onInsert={insertPromptReference} onRemove={(reference) => onRemoveReference?.(node.id, reference)} />
+                    <ConnectedReferenceShelf references={resolvedMentionReferences} theme={theme} onInsert={insertPromptReference} onRemove={(reference) => onRemoveReference?.(node.id, reference)} />
                     <CanvasResourceMentionTextarea
                         value={prompt}
-                        references={mentionReferences}
+                        references={resolvedMentionReferences}
                         includeAssetLibrary
                         onChange={updatePrompt}
                         onContentSizeChange={expanded ? setExpandedPromptContentHeight : setPromptContentHeight}

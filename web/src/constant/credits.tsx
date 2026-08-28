@@ -1,6 +1,8 @@
 import type { ComponentProps } from "react";
 import { Coins } from "lucide-react";
 
+export { requestCreditCost } from "@/lib/model-pricing";
+
 export function CreditSymbol({ className, ...props }: ComponentProps<"span">) {
     return (
         <span {...props} className={`inline-flex items-center justify-center ${className || ""}`}>
@@ -17,34 +19,6 @@ export type ModelCreditCost = {
     resolutionPriceMicrocredits?: Record<string, number>;
 };
 
-function modelCreditCost(modelCosts: ModelCreditCost[] | undefined, model: string) {
-    return modelCosts?.find((item) => item.model === model) || null;
-}
-
 export function formatCredits(value: number, maximumFractionDigits = 6) {
     return (value / 1_000_000).toLocaleString("zh-CN", { maximumFractionDigits });
-}
-
-export function requestCreditCost(options: { channelMode: string; modelCosts?: ModelCreditCost[]; model: string; count?: string | number; seconds?: string | number; resolution?: string }) {
-    if (options.channelMode !== "remote") return null;
-    const cost = modelCreditCost(options.modelCosts, options.model);
-    if (!cost) return null;
-    // 跟随供应价格的前台模型只有后端完成能力路由后才能确定价格，前端不展示误导性预估。
-    if (cost.pricePolicy === "channel") return null;
-    // Token 订单由服务端按请求体预授权并在 usage 返回后结算，前端不展示无依据的固定价格。
-    if (cost.billingMode === "token") return null;
-    const quantity = cost.billingMode === "per_second"
-        ? Math.max(1, Math.floor(Math.abs(Number(options.seconds)) || 1))
-        : Math.max(1, Math.floor(Math.abs(Number(options.count)) || 1));
-    const resolution = normalizeResolutionPriceKey(options.resolution);
-    const unitPrice = resolution ? (cost.resolutionPriceMicrocredits?.[resolution] ?? cost.unitPriceMicrocredits) : cost.unitPriceMicrocredits;
-    return (unitPrice / 1_000_000) * quantity;
-}
-
-function normalizeResolutionPriceKey(value?: string) {
-    const normalized = String(value || "").trim().toLowerCase().replace(/p$/, "");
-    if (!normalized || normalized === "auto" || normalized === "default") return "";
-    if (normalized === "2k") return "1440p";
-    if (normalized === "4k") return "2160p";
-    return `${normalized}p`;
 }

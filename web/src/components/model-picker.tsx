@@ -4,8 +4,8 @@ import { Popover } from "antd";
 
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { modelCapabilityConfigFor, videoDurationOptions } from "@/lib/model-capabilities";
+import { normalizeTierResolution, priceTiersForCurrentSelection } from "@/lib/model-pricing";
 import { compatibleModelInGroup, configuredModelDisplayName, groupModelsByDisplayName, modelCompatibilityError, resolveCompatibleModel, type ModelRequirements } from "@/lib/model-selection";
-import { normalizeVideoResolution } from "@/lib/video-generation-options";
 import { cn } from "@/lib/utils";
 import { modelDisplayName, modelIcon, modelOptionName, PUBLIC_MODEL_CATALOG_ID, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -379,48 +379,6 @@ function pickerModelOptionLabel(config: AiConfig, model: string, showConfiguredM
     const displayName = showConfiguredModelName ? configuredModelDisplayName(config, model) : modelDisplayName(config, model);
     const channel = resolveModelChannel(config, model);
     return channel.scope === "system" ? displayName : `${displayName}（${channel.name}）`;
-}
-
-function priceTiersForCurrentSelection(
-    tiers: NonNullable<NonNullable<AiConfig["channels"][number]["modelCosts"]>[number]["logicalPriceTiers"]>,
-	capability: ModelCapability | undefined,
-	config: AiConfig,
-	requirements?: ModelRequirements,
-) {
-    const requested: Record<string, string> = {};
-	if (capability === "video") {
-		const imageCount = (requirements?.input?.imageCount || 0) + (requirements?.input?.characterCount || 0);
-		if (imageCount > 0) requested.imageCount = String(imageCount);
-		const resolution = normalizeTierResolution(config.vquality);
-        if (resolution !== "*") requested.vquality = resolution;
-        const seconds = Math.max(0, Math.floor(Number(config.videoSeconds) || 0));
-        if (seconds > 0) requested.videoSeconds = String(seconds);
-    }
-    if (capability === "image") {
-        if (config.quality && config.quality !== "auto") requested.quality = config.quality.toLowerCase();
-        if (config.size && config.size !== "auto") requested.size = config.size.toLowerCase();
-    }
-    let bestScore = -1;
-    let matched: typeof tiers = [];
-    for (const tier of tiers) {
-		const selector = tier.selector || {};
-		const conditions = Object.entries(selector).filter(([, value]) => value && value !== "*");
-		if (conditions.some(([key, value]) => requested[key] !== value)) continue;
-		const score = conditions.length;
-        if (score > bestScore) {
-            bestScore = score;
-            matched = [tier];
-        } else if (score === bestScore) {
-            matched.push(tier);
-        }
-    }
-    return matched;
-}
-
-function normalizeTierResolution(value: string) {
-    const raw = String(value || "").trim();
-    if (!raw || raw === "*") return "*";
-    return `${normalizeVideoResolution(raw)}p`;
 }
 
 function channelTierPriceSummary(

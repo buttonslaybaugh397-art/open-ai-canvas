@@ -168,7 +168,7 @@ function systemChannelModelChannels(channels: PublicChannelCatalog[]): ModelChan
                     model: model.modelKey,
                     displayName: model.displayName,
                     description: "",
-                    icon: "",
+                    icon: model.icon || "",
                     capability: model.capability as ModelCapability,
                     protocol: model.protocol as any,
                     pricePolicy: "channel" as const,
