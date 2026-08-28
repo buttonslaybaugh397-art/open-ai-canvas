@@ -18,6 +18,9 @@ export type RemoteResource = {
     height?: number;
     durationMs?: number;
     etag?: string;
+    cloudSyncStatus?: "synced" | "pending" | "recovering" | string;
+    cloudSyncAttempts?: number;
+    cloudSyncError?: string;
     error?: string;
     createdAt: string;
     updatedAt: string;
@@ -150,7 +153,7 @@ export function resourceFileUrl(id: string) {
     return `${base}/resources/${encodeURIComponent(id)}/file`;
 }
 
-function resourceProxyFileUrl(id: string) {
+export function resourceProxyFileUrl(id: string) {
     const base = String(apiBaseURL).replace(/\/+$/, "");
     return `${base}/resources/${encodeURIComponent(id)}/file?proxy=1`;
 }
@@ -166,9 +169,19 @@ export async function getResourceBlob(storageKey: string) {
     const id = resourceIdFromStorageKey(storageKey);
     if (!id) return null;
     const url = resourceProxyFileUrl(id);
-    const response = await fetch(url, { credentials: isResourceUrl(url) ? "include" : "same-origin" });
-    if (!response.ok) return null;
-    return response.blob();
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+            const response = await fetch(url, { credentials: isResourceUrl(url) ? "include" : "same-origin" });
+            if (response.ok) return response.blob();
+            lastError = new Error(`资源读取失败（${response.status}）`);
+        } catch (error) {
+            lastError = error;
+        }
+        if (attempt < 2) await new Promise((resolve) => window.setTimeout(resolve, 250 * (attempt + 1)));
+    }
+    void lastError;
+    return null;
 }
 
 function extensionFromMime(mimeType: string, kind: string) {

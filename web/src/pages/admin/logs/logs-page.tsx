@@ -1,7 +1,6 @@
 import { App, Button, Input, Modal, Select } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { Download, Eye, Play, Search } from "lucide-react";
-import { saveAs } from "file-saver";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 
@@ -9,6 +8,7 @@ import { PaginationBar } from "@/components/layout/workspace-page";
 import { MediaPreview } from "@/components/media-preview";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { exportAdminApiLogs, listAdminApiLogs, type ApiCallLog } from "@/services/api/auth";
+import { downloadMediaFile } from "@/services/resource-download";
 import { ApiLogDetailDrawer } from "../components/api-log-detail-drawer";
 import { AdminPageFrame } from "../components/admin-shell";
 import { AdminBatchBar, AdminDataTable, AdminExportButton, AdminFilterChip, AdminStatusBadge, AdminTableEmpty } from "../components/admin-ui";
@@ -115,7 +115,7 @@ function MediaResult({ log, onPreview }: { log: ApiCallLog; onPreview: (url: str
 }
 
 function downloadMedia(url: string, kind: "image" | "video") {
-    saveAs(url, `api-call-${kind}.${kind === "video" ? "mp4" : "png"}`);
+    void downloadMediaFile({ url, fileName: `api-call-${kind}.${kind === "video" ? "mp4" : "png"}` }).catch(() => undefined);
 }
 
 function CallStatus({ log }: { log: ApiCallLog }) {

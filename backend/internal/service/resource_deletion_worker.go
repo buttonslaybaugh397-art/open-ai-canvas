@@ -38,7 +38,7 @@ func (s *Service) drainResourceDeletionJobs(limit int) {
 		resource := &model.Resource{
 			ID: job.ResourceID, UserID: job.UserID, Provider: job.Provider,
 			Endpoint: job.Endpoint, Bucket: job.Bucket, StorageSettingID: job.StorageSettingID,
-			ObjectKey: job.ObjectKey,
+			ObjectKey: job.ObjectKey, LocalBackupKey: job.LocalBackupKey,
 		}
 		if err := s.deleteStoredResourceObject(job.UserID, resource); err != nil {
 			delay := resourceDeletionRetryDelay(job.Attempts)

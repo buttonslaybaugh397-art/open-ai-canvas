@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { App, Button, Dropdown, Input, Modal, Pagination, Tag } from "antd";
 import { Copy, Download, FolderInput, MoreHorizontal, PencilLine, Search, Trash2 } from "lucide-react";
-import { saveAs } from "file-saver";
 import { useEffect, useMemo, useState } from "react";
 
 import { AssetFolderBar, ASSET_FOLDER_ALL, ASSET_FOLDER_ROOT, type AssetFolderView } from "@/components/assets/asset-folder-bar";
@@ -11,6 +10,7 @@ import { useCopyText } from "@/hooks/use-copy-text";
 import { createTeamAssetFolder, deleteTeamAsset, deleteTeamAssetFolder, listTeamAssetFolders, listTeamAssets, moveTeamAsset, renameTeamAssetFolder, upsertTeamAsset, type TeamAssetFolder, type TeamAssetItem } from "@/services/api/team-assets";
 import type { Asset, AssetKind } from "@/stores/use-asset-store";
 import { useUserStore } from "@/stores/use-user-store";
+import { downloadMediaFile } from "@/services/resource-download";
 
 export type TeamLibraryAsset = Exclude<Asset, { kind: "entity" }> & { folderId?: string };
 
@@ -178,7 +178,7 @@ function downloadTeamAsset(asset: TeamLibraryAsset) {
     if (asset.kind === "text") return;
     const url = asset.kind === "image" ? asset.data.dataUrl : asset.data.url;
     const extension = asset.kind === "model" ? asset.data.fileName.split(".").pop() || "glb" : asset.data.mimeType.split("/")[1]?.split(";")[0] || "bin";
-    saveAs(url, (asset.title || "asset") + "." + extension);
+    void downloadMediaFile({ url, storageKey: asset.data.storageKey, fileName: `${asset.title || "asset"}.${extension}` }).catch(() => undefined);
 }
 
 function copyTeamAssetText(asset: TeamLibraryAsset, copyText: (value: string, successText?: string) => void) {

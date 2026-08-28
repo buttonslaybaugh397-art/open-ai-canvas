@@ -42,19 +42,30 @@ type OSSSettingRequest struct {
 }
 
 type PublicOSSSetting struct {
-	Enabled            bool      `json:"enabled"`
-	Provider           string    `json:"provider"`
-	Region             string    `json:"region"`
-	Endpoint           string    `json:"endpoint"`
-	CDNBaseURL         string    `json:"cdnBaseUrl"`
-	Bucket             string    `json:"bucket"`
-	AccessKeyID        string    `json:"accessKeyId"`
-	HasAccessKeySecret bool      `json:"hasAccessKeySecret"`
-	PublicBaseURL      string    `json:"publicBaseUrl"`
-	PathPrefix         string    `json:"pathPrefix"`
-	UpdatedBy          string    `json:"updatedBy"`
-	CreatedAt          time.Time `json:"createdAt"`
-	UpdatedAt          time.Time `json:"updatedAt"`
+	Enabled            bool                                `json:"enabled"`
+	Provider           string                              `json:"provider"`
+	Region             string                              `json:"region"`
+	Endpoint           string                              `json:"endpoint"`
+	CDNBaseURL         string                              `json:"cdnBaseUrl"`
+	Bucket             string                              `json:"bucket"`
+	AccessKeyID        string                              `json:"accessKeyId"`
+	HasAccessKeySecret bool                                `json:"hasAccessKeySecret"`
+	PublicBaseURL      string                              `json:"publicBaseUrl"`
+	PathPrefix         string                              `json:"pathPrefix"`
+	UpdatedBy          string                              `json:"updatedBy"`
+	CreatedAt          time.Time                           `json:"createdAt"`
+	UpdatedAt          time.Time                           `json:"updatedAt"`
+	ProviderSettings   map[string]PublicOSSProviderSetting `json:"providerSettings,omitempty"`
+}
+
+type PublicOSSProviderSetting struct {
+	Region             string `json:"region"`
+	Endpoint           string `json:"endpoint"`
+	CDNBaseURL         string `json:"cdnBaseUrl"`
+	Bucket             string `json:"bucket"`
+	AccessKeyID        string `json:"accessKeyId"`
+	HasAccessKeySecret bool   `json:"hasAccessKeySecret"`
+	PathPrefix         string `json:"pathPrefix"`
 }
 
 type ossSettingValue struct {
@@ -70,11 +81,23 @@ type ossSettingValue struct {
 	PathPrefix      string `json:"pathPrefix"`
 	// 平台切换云厂商后仍需读取历史资源，因此仅归档非当前厂商的访问密钥。
 	ArchivedCredentials map[string]ossProviderCredentials `json:"archivedCredentials,omitempty"`
+	// 平台切换云厂商后保留各供应商的完整配置，避免覆盖其他供应商。
+	ArchivedSettings map[string]ossProviderSetting `json:"archivedSettings,omitempty"`
 }
 
 type ossProviderCredentials struct {
 	AccessKeyID     string `json:"accessKeyId"`
 	AccessKeySecret string `json:"accessKeySecret"`
+}
+
+type ossProviderSetting struct {
+	Region          string `json:"region"`
+	Endpoint        string `json:"endpoint"`
+	CDNBaseURL      string `json:"cdnBaseUrl"`
+	Bucket          string `json:"bucket"`
+	AccessKeyID     string `json:"accessKeyId"`
+	AccessKeySecret string `json:"accessKeySecret"`
+	PathPrefix      string `json:"pathPrefix"`
 }
 
 func (s *Service) AdminOSSSetting(actor *model.User) (*PublicOSSSetting, error) {
@@ -109,7 +132,7 @@ func (s *Service) UpdateOSSSetting(actor *model.User, req OSSSettingRequest) (*P
 			return nil, fmt.Errorf("服务器访问地址无效：%w", err)
 		}
 	}
-	next = archiveOSSProviderCredentials(next, currentValue)
+	next = archiveOSSProviderSettings(next, currentValue)
 	stored, err := s.encryptOSSSettingSecrets(next)
 	if err != nil {
 		return nil, err
@@ -258,6 +281,14 @@ func (s *Service) encryptOSSSettingSecrets(value ossSettingValue) (ossSettingVal
 		}
 		value.ArchivedCredentials[provider] = credentials
 	}
+	value.ArchivedSettings = cloneOSSProviderSettings(value.ArchivedSettings)
+	for provider, setting := range value.ArchivedSettings {
+		setting.AccessKeySecret, err = s.encryptSettingSecret(setting.AccessKeySecret)
+		if err != nil {
+			return ossSettingValue{}, err
+		}
+		value.ArchivedSettings[provider] = setting
+	}
 	return value, nil
 }
 
@@ -278,6 +309,17 @@ func (s *Service) decryptOSSSettingSecrets(value *ossSettingValue) (bool, error)
 			return false, err
 		}
 		value.ArchivedCredentials[provider] = credentials
+	}
+	value.ArchivedSettings = cloneOSSProviderSettings(value.ArchivedSettings)
+	for provider, setting := range value.ArchivedSettings {
+		if setting.AccessKeySecret != "" && !strings.HasPrefix(setting.AccessKeySecret, encryptedSettingPrefix) {
+			needsMigration = true
+		}
+		setting.AccessKeySecret, err = s.decryptSettingSecret(setting.AccessKeySecret)
+		if err != nil {
+			return false, err
+		}
+		value.ArchivedSettings[provider] = setting
 	}
 	return needsMigration, nil
 }
@@ -472,8 +514,26 @@ func ossSettingFromRequest(req OSSSettingRequest, current ossSettingValue) (ossS
 	}
 	current = normalizeOSSSetting(current)
 	// 不同云厂商的密钥不能复用；只有继续使用同一厂商时，留空才表示保留原密钥。
-	if next.AccessKeySecret == "" && next.Provider == current.Provider {
+	if next.Provider != current.Provider {
+		next = restoreArchivedOSSProviderSetting(next, current)
+	}
+	if !next.Enabled && next.Provider == current.Provider && !hasOSSProviderSetting(next) {
+		// 切换到服务器本地时，前端不会提交隐藏的云存储字段；停用只改变启用状态，
+		// 必须保留当前供应商配置，方便之后重新启用时直接恢复。
+		next.Region = current.Region
+		next.Endpoint = current.Endpoint
+		next.CDNBaseURL = current.CDNBaseURL
+		next.Bucket = current.Bucket
+		next.AccessKeyID = current.AccessKeyID
 		next.AccessKeySecret = current.AccessKeySecret
+		next.PathPrefix = current.PathPrefix
+	}
+	if next.AccessKeySecret == "" {
+		if next.Provider == current.Provider {
+			next.AccessKeySecret = current.AccessKeySecret
+		} else if archived, ok := archivedOSSProviderSetting(current, next.Provider); ok {
+			next.AccessKeySecret = archived.AccessKeySecret
+		}
 	}
 	if next.Enabled {
 		if next.Bucket == "" {
@@ -509,16 +569,29 @@ func ossSettingFromRequest(req OSSSettingRequest, current ossSettingValue) (ossS
 	return next, nil
 }
 
-func archiveOSSProviderCredentials(next ossSettingValue, current ossSettingValue) ossSettingValue {
+func archiveOSSProviderSettings(next ossSettingValue, current ossSettingValue) ossSettingValue {
+	next = normalizeOSSSetting(next)
+	current = normalizeOSSSetting(current)
+	next.ArchivedSettings = cloneOSSProviderSettings(current.ArchivedSettings)
 	next.ArchivedCredentials = cloneOSSProviderCredentials(current.ArchivedCredentials)
-	if current.Provider != next.Provider && (current.AccessKeyID != "" || current.AccessKeySecret != "") {
+	if current.Provider != next.Provider && hasOSSProviderSetting(current) {
+		if next.ArchivedSettings == nil {
+			next.ArchivedSettings = make(map[string]ossProviderSetting)
+		}
+		next.ArchivedSettings[current.Provider] = ossProviderSettingFromValue(current)
 		if next.ArchivedCredentials == nil {
 			next.ArchivedCredentials = make(map[string]ossProviderCredentials)
 		}
 		next.ArchivedCredentials[current.Provider] = ossProviderCredentials{AccessKeyID: current.AccessKeyID, AccessKeySecret: current.AccessKeySecret}
 	}
+	delete(next.ArchivedSettings, next.Provider)
 	delete(next.ArchivedCredentials, next.Provider)
 	return next
+}
+
+// 保留旧函数名，兼容已有测试和历史内部调用。
+func archiveOSSProviderCredentials(next ossSettingValue, current ossSettingValue) ossSettingValue {
+	return archiveOSSProviderSettings(next, current)
 }
 
 func cloneOSSProviderCredentials(source map[string]ossProviderCredentials) map[string]ossProviderCredentials {
@@ -533,6 +606,73 @@ func cloneOSSProviderCredentials(source map[string]ossProviderCredentials) map[s
 		}
 	}
 	return cloned
+}
+
+func cloneOSSProviderSettings(source map[string]ossProviderSetting) map[string]ossProviderSetting {
+	if len(source) == 0 {
+		return nil
+	}
+	cloned := make(map[string]ossProviderSetting, len(source))
+	for provider, setting := range source {
+		cloned[strings.ToLower(strings.TrimSpace(provider))] = normalizeOSSProviderSetting(setting)
+	}
+	return cloned
+}
+
+func normalizeOSSProviderSetting(value ossProviderSetting) ossProviderSetting {
+	value.Region = strings.TrimSpace(value.Region)
+	value.Endpoint = strings.TrimRight(strings.TrimSpace(value.Endpoint), "/")
+	value.CDNBaseURL = strings.TrimRight(strings.TrimSpace(value.CDNBaseURL), "/")
+	value.Bucket = strings.TrimSpace(value.Bucket)
+	value.AccessKeyID = strings.TrimSpace(value.AccessKeyID)
+	value.AccessKeySecret = strings.TrimSpace(value.AccessKeySecret)
+	value.PathPrefix = strings.Trim(strings.TrimSpace(value.PathPrefix), "/")
+	return value
+}
+
+func ossProviderSettingFromValue(value ossSettingValue) ossProviderSetting {
+	return normalizeOSSProviderSetting(ossProviderSetting{
+		Region: value.Region, Endpoint: value.Endpoint, CDNBaseURL: value.CDNBaseURL, Bucket: value.Bucket,
+		AccessKeyID: value.AccessKeyID, AccessKeySecret: value.AccessKeySecret, PathPrefix: value.PathPrefix,
+	})
+}
+
+func ossSettingValueFromProviderSetting(provider string, value ossProviderSetting) ossSettingValue {
+	value = normalizeOSSProviderSetting(value)
+	return ossSettingValue{
+		Provider: provider, Region: value.Region, Endpoint: value.Endpoint, CDNBaseURL: value.CDNBaseURL,
+		Bucket: value.Bucket, AccessKeyID: value.AccessKeyID, AccessKeySecret: value.AccessKeySecret, PathPrefix: value.PathPrefix,
+	}
+}
+
+func hasOSSProviderSetting(value ossSettingValue) bool {
+	return value.Region != "" || value.Endpoint != "" || value.CDNBaseURL != "" || value.Bucket != "" ||
+		value.AccessKeyID != "" || value.AccessKeySecret != "" || value.PathPrefix != ""
+}
+
+func archivedOSSProviderSetting(setting ossSettingValue, provider string) (ossProviderSetting, bool) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if value, ok := setting.ArchivedSettings[provider]; ok {
+		return normalizeOSSProviderSetting(value), true
+	}
+	if credentials, ok := setting.ArchivedCredentials[provider]; ok {
+		return normalizeOSSProviderSetting(ossProviderSetting{AccessKeyID: credentials.AccessKeyID, AccessKeySecret: credentials.AccessKeySecret}), true
+	}
+	return ossProviderSetting{}, false
+}
+
+func restoreArchivedOSSProviderSetting(next ossSettingValue, current ossSettingValue) ossSettingValue {
+	archived, ok := archivedOSSProviderSetting(current, next.Provider)
+	if !ok {
+		return next
+	}
+	next.Region = firstNonEmpty(next.Region, archived.Region)
+	next.Endpoint = firstNonEmpty(next.Endpoint, archived.Endpoint)
+	next.CDNBaseURL = firstNonEmpty(next.CDNBaseURL, archived.CDNBaseURL)
+	next.Bucket = firstNonEmpty(next.Bucket, archived.Bucket)
+	next.PathPrefix = firstNonEmpty(next.PathPrefix, archived.PathPrefix)
+	next.AccessKeyID = firstNonEmpty(next.AccessKeyID, archived.AccessKeyID)
+	return next
 }
 
 func normalizeOSSSetting(value ossSettingValue) ossSettingValue {
@@ -552,6 +692,7 @@ func normalizeOSSSetting(value ossSettingValue) ossSettingValue {
 	value.PublicBaseURL = strings.TrimRight(strings.TrimSpace(value.PublicBaseURL), "/")
 	value.PathPrefix = strings.Trim(strings.TrimSpace(value.PathPrefix), "/")
 	value.ArchivedCredentials = cloneOSSProviderCredentials(value.ArchivedCredentials)
+	value.ArchivedSettings = cloneOSSProviderSettings(value.ArchivedSettings)
 	return value
 }
 
@@ -571,11 +712,34 @@ func publicOSSSetting(setting *model.SystemSetting, value ossSettingValue) Publi
 		HasAccessKeySecret: strings.TrimSpace(value.AccessKeySecret) != "",
 		PublicBaseURL:      value.PublicBaseURL,
 		PathPrefix:         value.PathPrefix,
+		ProviderSettings:   publicOSSProviderSettings(value),
 	}
 	if setting != nil {
 		result.UpdatedBy = setting.UpdatedBy
 		result.CreatedAt = setting.CreatedAt
 		result.UpdatedAt = setting.UpdatedAt
+	}
+	return result
+}
+
+func publicOSSProviderSettings(value ossSettingValue) map[string]PublicOSSProviderSetting {
+	result := make(map[string]PublicOSSProviderSetting)
+	for provider, setting := range value.ArchivedSettings {
+		result[provider] = PublicOSSProviderSetting{
+			Region: setting.Region, Endpoint: setting.Endpoint, CDNBaseURL: setting.CDNBaseURL,
+			Bucket: setting.Bucket, AccessKeyID: setting.AccessKeyID,
+			HasAccessKeySecret: setting.AccessKeySecret != "", PathPrefix: setting.PathPrefix,
+		}
+	}
+	if value.Provider != "" {
+		result[value.Provider] = PublicOSSProviderSetting{
+			Region: value.Region, Endpoint: value.Endpoint, CDNBaseURL: value.CDNBaseURL,
+			Bucket: value.Bucket, AccessKeyID: value.AccessKeyID,
+			HasAccessKeySecret: value.AccessKeySecret != "", PathPrefix: value.PathPrefix,
+		}
+	}
+	if len(result) == 0 {
+		return nil
 	}
 	return result
 }

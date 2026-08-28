@@ -76,13 +76,11 @@ export async function primeResourceBlobCache(storageKey: string, blob: Blob) {
 export async function getCachedResourceBlob(storageKey: string) {
     const target = await cacheTarget(storageKey);
     if (!target) return null;
-    const cached = await blobStore.getItem<Blob>(target.key);
+    const cached = await getStoredResourceBlob(storageKey);
     if (cached) {
         void touchCacheMeta(target).catch(() => undefined);
         return cached;
     }
-    const sessionBlob = sessionBlobs.get(target.key);
-    if (sessionBlob) return sessionBlob;
     const pending = inFlight.get(target.key);
     if (pending) {
         await pending;
@@ -104,6 +102,12 @@ async function downloadResourceBlob(storageKey: string, target: ResourceCacheMet
     sessionBlobs.set(target.key, blob);
     if (blob.size <= MAX_CACHE_BYTES) void enqueuePersist(target, blob);
     return blob;
+}
+
+export async function getStoredResourceBlob(storageKey: string) {
+    const target = await cacheTarget(storageKey);
+    if (!target) return null;
+    return (await blobStore.getItem<Blob>(target.key)) || sessionBlobs.get(target.key) || null;
 }
 
 function enqueuePersist(target: ResourceCacheMeta, blob: Blob) {

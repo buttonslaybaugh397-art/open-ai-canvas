@@ -271,6 +271,17 @@ export type AdminOSSSetting = {
     updatedBy?: string;
     createdAt?: string;
     updatedAt?: string;
+    providerSettings?: Partial<Record<"aliyun" | "tencent" | "qiniu", AdminOSSProviderSetting>>;
+};
+
+export type AdminOSSProviderSetting = {
+    region: string;
+    endpoint: string;
+    cdnBaseUrl: string;
+    bucket: string;
+    accessKeyId: string;
+    hasAccessKeySecret: boolean;
+    pathPrefix: string;
 };
 
 export type AdminArkPrivateAssetSetting = {

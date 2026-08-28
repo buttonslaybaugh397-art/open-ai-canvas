@@ -124,6 +124,7 @@ func (s *Service) taskBilling() *taskBillingCoordinator {
 func (s *Service) StartWorker() {
 	s.taskWorker().start()
 	s.startResourceDeletionWorker()
+	s.startResourceStorageRecoveryWorker()
 }
 
 func (s *Service) CreateSession(userID string, req CreateSessionRequest) (*SessionDetail, error) {

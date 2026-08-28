@@ -38,12 +38,16 @@ import (
 
 const providerResourceURLTTL = 4 * time.Hour
 const directResourceURLTTL = 5 * time.Minute
+const resourceStorageRetryAttempts = 3
+const resourceStorageRetryDelay = 200 * time.Millisecond
+const resourceRecoveryInitialDelay = 15 * time.Second
 
 var errInvalidGeneratedDataURL = errors.New("生成内容 data URL 无效")
 
 type ResourceStream struct {
 	Resource      *model.Resource
 	Body          io.ReadCloser
+	Local         bool
 	StatusCode    int
 	ContentLength int64
 	ContentRange  string
@@ -96,6 +100,9 @@ func (s *Service) directResourceURL(resource *model.Resource, expiresAt time.Tim
 	if resource.Provider == "local" {
 		return s.signedPublicResourceURL(resource.ID, expiresAt)
 	}
+	if s.resourceCloudBackupAvailable(resource) && resourceNeedsCloudRecovery(resource) {
+		return s.signedPublicResourceURL(resource.ID, expiresAt)
+	}
 	setting, err := s.ossSettingForResource(resource.UserID, resource)
 	if err != nil {
 		return "", err
@@ -125,7 +132,7 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 	if resource.Status != model.ResourceStatusReady {
 		return nil, BadAuthRequest("资源尚未上传完成")
 	}
-	if resource.Provider != "local" && !options.ForceProxy {
+	if resource.Provider != "local" && !options.ForceProxy && !(s.resourceCloudBackupAvailable(resource) && resourceNeedsCloudRecovery(resource)) {
 		setting, err := s.ossSettingForResource(userID, resource)
 		if err != nil {
 			return nil, err
@@ -323,11 +330,11 @@ func (s *Service) OpenPublicResourceRange(id string, expires string, signature s
 	if err != nil {
 		return nil, Forbidden("匿名下载链接无效")
 	}
-	if resource.Provider != "local" {
-		return nil, Forbidden("匿名下载链接无效")
-	}
 	if err := s.verifyPublicResourceSignature(resource.ID, expires, signature); err != nil {
 		return nil, err
+	}
+	if resource.Provider != "local" && !s.resourceCloudBackupAvailable(resource) {
+		return nil, Forbidden("匿名下载链接无效")
 	}
 	return s.openResourceRange(resource.UserID, resource, rangeHeader)
 }
@@ -337,27 +344,40 @@ func (s *Service) openResourceRange(userID string, resource *model.Resource, ran
 		return nil, BadAuthRequest("资源尚未上传完成")
 	}
 	if resource.Provider == "local" {
-		body, err := os.Open(filepath.Join(s.dataDir, "resources", filepath.FromSlash(resource.ObjectKey)))
-		if err != nil {
-			return nil, err
+		return s.openLocalResourceStream(resource, resource.ObjectKey)
+	}
+	if resourceNeedsCloudRecovery(resource) && s.resourceCloudBackupAvailable(resource) {
+		return s.openLocalResourceStream(resource, resource.LocalBackupKey)
+	}
+	rangeHeader = normalizeSingleByteRange(rangeHeader)
+	setting, settingErr := s.ossSettingForResource(userID, resource)
+	var cloudErr error
+	if settingErr == nil {
+		setting.Provider = firstNonEmpty(resource.Provider, setting.Provider)
+		setting.Endpoint = firstNonEmpty(resource.Endpoint, setting.Endpoint)
+		setting.Bucket = firstNonEmpty(resource.Bucket, setting.Bucket)
+		stream, err := getOSSObjectRangeWithRetry(setting, resource.ObjectKey, rangeHeader)
+		if err == nil {
+			return &ResourceStream{Resource: resource, Body: stream.body, StatusCode: stream.statusCode, ContentLength: stream.contentLength, ContentRange: stream.contentRange, AcceptRanges: stream.acceptRanges}, nil
 		}
-		return &ResourceStream{Resource: resource, Body: body, StatusCode: http.StatusOK, ContentLength: resource.Size, AcceptRanges: "bytes"}, nil
+		cloudErr = err
+		if setting.CDNBaseURL != "" {
+			originSetting := setting
+			originSetting.CDNBaseURL = ""
+			stream, originErr := getOSSObjectRangeWithRetry(originSetting, resource.ObjectKey, rangeHeader)
+			if originErr == nil {
+				return &ResourceStream{Resource: resource, Body: stream.body, StatusCode: stream.statusCode, ContentLength: stream.contentLength, ContentRange: stream.contentRange, AcceptRanges: stream.acceptRanges}, nil
+			}
+			cloudErr = errors.Join(cloudErr, originErr)
+		}
+	} else {
+		cloudErr = settingErr
 	}
-	setting, err := s.ossSettingForResource(userID, resource)
-	if err != nil {
-		return nil, err
+	if s.resourceCloudBackupAvailable(resource) {
+		_ = s.repo.MarkResourceCloudSyncPending(resource.ID, storageErrorText(cloudErr), time.Now().Add(resourceRecoveryInitialDelay))
+		return s.openLocalResourceStream(resource, resource.LocalBackupKey)
 	}
-	if setting.AccessKeyID == "" || setting.AccessKeySecret == "" {
-		return nil, errors.New("对象存储访问密钥不可用")
-	}
-	setting.Provider = firstNonEmpty(resource.Provider, setting.Provider)
-	setting.Endpoint = firstNonEmpty(resource.Endpoint, setting.Endpoint)
-	setting.Bucket = firstNonEmpty(resource.Bucket, setting.Bucket)
-	stream, err := getOSSObjectRange(setting, resource.ObjectKey, normalizeSingleByteRange(rangeHeader))
-	if err != nil {
-		return nil, err
-	}
-	return &ResourceStream{Resource: resource, Body: stream.body, StatusCode: stream.statusCode, ContentLength: stream.contentLength, ContentRange: stream.contentRange, AcceptRanges: stream.acceptRanges}, nil
+	return nil, cloudErr
 }
 
 func (s *Service) storeResource(userID string, kind string, fileName string, mimeType string, size int64, width int, height int, durationMs int64, body io.Reader) (*model.Resource, error) {
@@ -378,26 +398,27 @@ func (s *Service) storeResource(userID string, kind string, fileName string, mim
 		resource.Bucket = setting.Bucket
 		resource.StorageSettingID = storageSettingID
 		resource.ObjectKey = objectKey
+		resource.LocalBackupKey = localObjectKey(userID, "backup", fileName, now)
+		resource.CloudSyncStatus = model.ResourceCloudSyncStatusPending
 	}
 	if err := s.repo.CreateResource(&resource); err != nil {
 		return nil, err
 	}
 	var etag string
 	if provider == "local" {
-		filePath := filepath.Join(s.dataDir, "resources", filepath.FromSlash(objectKey))
-		if err = os.MkdirAll(filepath.Dir(filePath), 0o750); err == nil {
-			var file *os.File
-			file, err = os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
-			if err == nil {
-				_, err = io.Copy(file, body)
-				closeErr := file.Close()
-				if err == nil {
-					err = closeErr
-				}
+		err = s.writeLocalResourceObject(objectKey, body)
+	} else {
+		err = s.writeLocalResourceObject(resource.LocalBackupKey, body)
+		if err == nil {
+			var cloudErr error
+			etag, cloudErr = s.putOSSObjectWithRetry(setting, objectKey, mimeType, size, resource.LocalBackupKey)
+			if cloudErr == nil {
+				resource.CloudSyncStatus = model.ResourceCloudSyncStatusSynced
+			} else {
+				resource.CloudSyncError = storageErrorText(cloudErr)
+				resource.CloudSyncNextAttemptAt = timePtr(time.Now().Add(resourceRecoveryInitialDelay))
 			}
 		}
-	} else {
-		etag, err = putOSSObject(setting, objectKey, mimeType, size, body)
 	}
 	resource.UpdatedAt = time.Now()
 	if err != nil {
@@ -434,6 +455,191 @@ func (s *Service) storeResource(userID string, kind string, fileName string, mim
 func localObjectKey(userID string, kind string, fileName string, now time.Time) string {
 	ext := strings.ToLower(filepath.Ext(fileName))
 	return path.Join("users", safeObjectSegment(userID), kind, now.Format("2006/01/02"), newID()+ext)
+}
+
+func (s *Service) resourceLocalPath(objectKey string) (string, error) {
+	root, err := filepath.Abs(filepath.Join(s.dataDir, "resources"))
+	if err != nil {
+		return "", fmt.Errorf("解析服务器本地资源目录失败：%w", err)
+	}
+	cleanKey := strings.TrimLeft(objectKey, "/\\")
+	if strings.TrimSpace(cleanKey) == "" {
+		return "", errors.New("本地资源路径为空")
+	}
+	convertedKey := filepath.FromSlash(cleanKey)
+	if filepath.IsAbs(convertedKey) || filepath.VolumeName(convertedKey) != "" {
+		return "", errors.New("本地资源路径不允许使用绝对路径")
+	}
+	target, err := filepath.Abs(filepath.Join(root, convertedKey))
+	if err != nil {
+		return "", fmt.Errorf("解析服务器本地资源路径失败：%w", err)
+	}
+	relative, err := filepath.Rel(root, target)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", errors.New("本地资源路径超出允许目录")
+	}
+	return target, nil
+}
+
+func (s *Service) writeLocalResourceObject(objectKey string, body io.Reader) error {
+	filePath, err := s.resourceLocalPath(objectKey)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o750); err != nil {
+		return fmt.Errorf("创建服务器本地资源目录失败：%w", err)
+	}
+	if err := s.verifyLocalResourceParent(filePath); err != nil {
+		return err
+	}
+	if info, statErr := os.Lstat(filePath); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("本地资源文件不允许使用符号链接")
+	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("检查本地资源文件失败：%w", statErr)
+	}
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY, 0o640)
+	if err != nil {
+		return fmt.Errorf("创建服务器本地资源文件失败：%w", err)
+	}
+	if err := s.verifyOpenedLocalResource(filePath, file); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Truncate(0); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("清空服务器本地资源文件失败：%w", err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("定位服务器本地资源文件失败：%w", err)
+	}
+	_, copyErr := io.Copy(file, body)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return fmt.Errorf("写入服务器本地资源失败：%w", copyErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("关闭服务器本地资源文件失败：%w", closeErr)
+	}
+	return nil
+}
+
+func (s *Service) verifyOpenedLocalResource(filePath string, file *os.File) error {
+	pathInfo, pathErr := os.Lstat(filePath)
+	if pathErr != nil {
+		return fmt.Errorf("检查已打开的本地资源路径失败：%w", pathErr)
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("本地资源文件不允许使用符号链接")
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("检查已打开的本地资源文件失败：%w", err)
+	}
+	resolvedRoot, rootErr := filepath.EvalSymlinks(filepath.Join(s.dataDir, "resources"))
+	resolvedTarget, targetErr := filepath.EvalSymlinks(filePath)
+	if rootErr != nil || targetErr != nil || !pathWithinDirectory(resolvedRoot, resolvedTarget) {
+		return errors.New("本地资源真实路径超出允许目录")
+	}
+	resolvedInfo, statErr := os.Stat(resolvedTarget)
+	if statErr != nil || !os.SameFile(info, resolvedInfo) {
+		return errors.New("本地资源文件已发生变化")
+	}
+	if info.IsDir() {
+		return errors.New("本地资源路径指向目录")
+	}
+	return nil
+}
+
+func (s *Service) openLocalResourceStream(resource *model.Resource, objectKey string) (*ResourceStream, error) {
+	body, info, err := s.openVerifiedLocalResource(objectKey)
+	if err != nil {
+		return nil, err
+	}
+	return &ResourceStream{Resource: resource, Body: body, Local: true, StatusCode: http.StatusOK, ContentLength: info.Size(), AcceptRanges: "bytes"}, nil
+}
+
+// openVerifiedLocalResource validates the resolved target after opening it.
+// This keeps the descriptor used for serving/uploading inside the resource root
+// even when a stale or tampered database key points at a symlink.
+func (s *Service) openVerifiedLocalResource(objectKey string) (*os.File, os.FileInfo, error) {
+	filePath, err := s.resourceLocalPath(objectKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	body, err := os.Open(filePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := body.Stat()
+	if err != nil {
+		_ = body.Close()
+		return nil, nil, err
+	}
+	resolvedRoot, rootErr := filepath.EvalSymlinks(filepath.Join(s.dataDir, "resources"))
+	resolvedTarget, targetErr := filepath.EvalSymlinks(filePath)
+	if rootErr != nil || targetErr != nil || !pathWithinDirectory(resolvedRoot, resolvedTarget) {
+		_ = body.Close()
+		return nil, nil, errors.New("本地资源真实路径超出允许目录")
+	}
+	resolvedInfo, statErr := os.Stat(resolvedTarget)
+	if statErr != nil || !os.SameFile(info, resolvedInfo) {
+		_ = body.Close()
+		return nil, nil, errors.New("本地资源文件已发生变化")
+	}
+	if info.IsDir() {
+		_ = body.Close()
+		return nil, nil, errors.New("本地资源路径指向目录")
+	}
+	return body, info, nil
+}
+
+func (s *Service) verifyLocalResourceParent(filePath string) error {
+	root, err := filepath.EvalSymlinks(filepath.Join(s.dataDir, "resources"))
+	if err != nil {
+		return fmt.Errorf("检查本地资源目录失败：%w", err)
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(filePath))
+	if err != nil || !pathWithinDirectory(root, parent) {
+		return errors.New("本地资源真实路径超出允许目录")
+	}
+	return nil
+}
+
+func pathWithinDirectory(root string, target string) bool {
+	relative, err := filepath.Rel(root, target)
+	return err == nil && relative != "." && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func (s *Service) resourceCloudBackupAvailable(resource *model.Resource) bool {
+	if resource == nil || resource.Provider == "local" || strings.TrimSpace(resource.LocalBackupKey) == "" {
+		return false
+	}
+	body, _, err := s.openVerifiedLocalResource(resource.LocalBackupKey)
+	if err != nil {
+		return false
+	}
+	_ = body.Close()
+	return true
+}
+
+func resourceNeedsCloudRecovery(resource *model.Resource) bool {
+	return resource != nil && resource.CloudSyncStatus != model.ResourceCloudSyncStatusSynced
+}
+
+func timePtr(value time.Time) *time.Time {
+	return &value
+}
+
+func storageErrorText(err error) string {
+	if err == nil {
+		return "对象存储操作失败"
+	}
+	message := strings.TrimSpace(err.Error())
+	if len(message) > 1000 {
+		message = message[:1000] + "..."
+	}
+	return message
 }
 
 func (s *Service) persistGeneratedMediaResult(userID string, result map[string]interface{}) (map[string]interface{}, error) {
@@ -790,14 +996,13 @@ func ossSettingForProvider(setting ossSettingValue, provider string) (ossSetting
 	if provider == "" || provider == setting.Provider {
 		return setting, nil
 	}
-	credentials, ok := setting.ArchivedCredentials[provider]
-	if !ok || credentials.AccessKeyID == "" || credentials.AccessKeySecret == "" {
+	archived, ok := archivedOSSProviderSetting(setting, provider)
+	if !ok || archived.AccessKeyID == "" || archived.AccessKeySecret == "" {
 		return ossSettingValue{}, errors.New("历史对象存储访问密钥不可用")
 	}
-	setting.Provider = provider
-	setting.AccessKeyID = credentials.AccessKeyID
-	setting.AccessKeySecret = credentials.AccessKeySecret
-	return setting, nil
+	restored := ossSettingValueFromProviderSetting(provider, archived)
+	restored.PublicBaseURL = setting.PublicBaseURL
+	return restored, nil
 }
 
 func validateActiveOSSSetting(setting ossSettingValue, disabledMessage string, incompleteMessage string) (ossSettingValue, error) {
@@ -850,6 +1055,26 @@ func putOSSObject(setting ossSettingValue, objectKey string, mimeType string, si
 	return putAliyunOSSObject(setting, objectKey, mimeType, size, body)
 }
 
+func (s *Service) putOSSObjectWithRetry(setting ossSettingValue, objectKey string, mimeType string, size int64, localBackupKey string) (string, error) {
+	var lastErr error
+	for attempt := 0; attempt < resourceStorageRetryAttempts; attempt++ {
+		body, _, err := s.openVerifiedLocalResource(localBackupKey)
+		if err != nil {
+			return "", fmt.Errorf("打开本地灾备副本失败：%w", err)
+		}
+		etag, putErr := putOSSObject(setting, objectKey, mimeType, size, body)
+		_ = body.Close()
+		if putErr == nil {
+			return etag, nil
+		}
+		lastErr = putErr
+		if attempt+1 < resourceStorageRetryAttempts {
+			time.Sleep(resourceStorageRetryDelay * time.Duration(attempt+1))
+		}
+	}
+	return "", lastErr
+}
+
 // 阿里云 OSS 继续沿用原有 V1 签名和请求路径，避免已有部署行为发生变化。
 func putAliyunOSSObject(setting ossSettingValue, objectKey string, mimeType string, size int64, body io.Reader) (string, error) {
 	if mimeType == "" {
@@ -894,6 +1119,21 @@ func getOSSObjectRange(setting ossSettingValue, objectKey string, rangeHeader st
 		return getQiniuObjectRange(setting, objectKey, rangeHeader)
 	}
 	return getAliyunOSSObjectRange(setting, objectKey, rangeHeader)
+}
+
+func getOSSObjectRangeWithRetry(setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
+	var lastErr error
+	for attempt := 0; attempt < resourceStorageRetryAttempts; attempt++ {
+		stream, err := getOSSObjectRange(setting, objectKey, rangeHeader)
+		if err == nil {
+			return stream, nil
+		}
+		lastErr = err
+		if attempt+1 < resourceStorageRetryAttempts {
+			time.Sleep(resourceStorageRetryDelay * time.Duration(attempt+1))
+		}
+	}
+	return nil, lastErr
 }
 
 func getAliyunOSSObjectRange(setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {

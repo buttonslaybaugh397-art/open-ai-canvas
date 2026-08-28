@@ -33,7 +33,9 @@ export default function StorageSettingsPage() {
     const isQiniuKodo = mode === "qiniu";
     const accessKeyIdLabel = isTencentCOS ? "SecretId" : isQiniuKodo ? "AccessKey" : "AccessKey ID";
     const accessKeySecretLabel = isTencentCOS ? "SecretKey" : isQiniuKodo ? "SecretKey" : "AccessKey Secret";
-    const hasCurrentProviderSecret = Boolean(setting && setting.provider === mode && setting.hasAccessKeySecret);
+    const hasCurrentProviderSecret = Boolean(
+        mode !== "local" && (setting?.providerSettings?.[mode]?.hasAccessKeySecret || (setting && setting.provider === mode && setting.hasAccessKeySecret)),
+    );
     const userNameById = useMemo(() => new Map(references.users.map((user) => [user.id, user.displayName || user.username])), [references.users]);
 
     useEffect(() => {
@@ -117,7 +119,10 @@ export default function StorageSettingsPage() {
                                 onChange={(value) => {
                                     const nextMode = value as StorageMode;
                                     const switchingProvider = nextMode !== "local" && ((mode !== "local" && mode !== nextMode) || (mode === "local" && setting?.provider !== nextMode));
-                                    if (switchingProvider) form.setFieldsValue({ region: "", endpoint: "", cdnBaseUrl: "", bucket: "", accessKeyId: "", accessKeySecret: "" });
+                                    if (switchingProvider) {
+                                        const saved = setting?.providerSettings?.[nextMode];
+                                        form.setFieldsValue(saved ? { ...saved, accessKeySecret: "" } : { region: "", endpoint: "", cdnBaseUrl: "", bucket: "", accessKeyId: "", accessKeySecret: "", pathPrefix: "" });
+                                    }
                                 }}
                             />
                         </Form.Item>

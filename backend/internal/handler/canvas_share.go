@@ -110,7 +110,7 @@ func RegisterCanvasShareRoutes(r *gin.RouterGroup, svc *service.Service) {
 		for key, value := range headers {
 			c.Header(key, value)
 		}
-		if resource.Provider == "local" {
+		if stream.Local {
 			if seeker, ok := stream.Body.(io.ReadSeeker); ok {
 				c.Header("Content-Type", mimeType)
 				http.ServeContent(c.Writer, c.Request, resource.ID, resource.UpdatedAt, seeker)

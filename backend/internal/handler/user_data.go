@@ -275,7 +275,7 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		if resource.MimeType == "" {
 			resource.MimeType = "application/octet-stream"
 		}
-		if resource.Provider == "local" {
+		if stream.Local {
 			if seeker, ok := stream.Body.(io.ReadSeeker); ok {
 				c.Header("Content-Type", resource.MimeType)
 				http.ServeContent(c.Writer, c.Request, resource.ID, resource.UpdatedAt, seeker)

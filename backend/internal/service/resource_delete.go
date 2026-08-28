@@ -98,6 +98,13 @@ func (s *Service) deleteUserAssetWithResources(userID string, assetID string) er
 			return countErr
 		}
 		if sharedCount > 0 {
+			if resource.LocalBackupKey != "" {
+				backup := *resource
+				backup.Provider = "local"
+				backup.ObjectKey = resource.LocalBackupKey
+				backup.LocalBackupKey = ""
+				physicalObjects["local-backup\x00"+resource.LocalBackupKey] = &backup
+			}
 			continue
 		}
 		physicalObjects[resourceStorageIdentity(resource)] = resource
@@ -127,7 +134,7 @@ func resourceDeletionJobs(userID string, physicalObjects map[string]*model.Resou
 		jobs = append(jobs, model.ResourceDeletionJob{
 			ID: newID(), UserID: userID, ResourceID: resource.ID,
 			Provider: resource.Provider, Endpoint: resource.Endpoint, Bucket: resource.Bucket,
-			StorageSettingID: resource.StorageSettingID, ObjectKey: resource.ObjectKey,
+			StorageSettingID: resource.StorageSettingID, ObjectKey: resource.ObjectKey, LocalBackupKey: resource.LocalBackupKey,
 			Status: model.ResourceDeletionStatusPending, NextAttemptAt: now,
 		})
 	}
@@ -289,44 +296,45 @@ func (s *Service) deleteStoredResourceObject(userID string, resource *model.Reso
 	if strings.TrimSpace(resource.ObjectKey) == "" {
 		return fmt.Errorf("资源 %s 的存储路径为空", resource.ID)
 	}
-	switch strings.ToLower(strings.TrimSpace(resource.Provider)) {
-	case "", "local":
-		return s.deleteLocalResourceObject(resource.ObjectKey)
-	case aliyunOSSProvider:
-		setting, err := s.ossSettingForResource(userID, resource)
-		if err != nil {
-			return fmt.Errorf("无法读取阿里云 OSS 配置：%w", err)
+	deletePrimary := func() error {
+		switch strings.ToLower(strings.TrimSpace(resource.Provider)) {
+		case "", "local":
+			return s.deleteLocalResourceObject(resource.ObjectKey)
+		case aliyunOSSProvider:
+			setting, err := s.ossSettingForResource(userID, resource)
+			if err != nil {
+				return fmt.Errorf("无法读取阿里云 OSS 配置：%w", err)
+			}
+			return deleteAliyunOSSObject(setting, resource.ObjectKey)
+		case tencentCOSProvider:
+			setting, err := s.ossSettingForResource(userID, resource)
+			if err != nil {
+				return fmt.Errorf("无法读取腾讯云 COS 配置：%w", err)
+			}
+			return deleteTencentCOSObject(setting, resource.ObjectKey)
+		case qiniuKodoProvider:
+			setting, err := s.ossSettingForResource(userID, resource)
+			if err != nil {
+				return fmt.Errorf("无法读取七牛云 Kodo 配置：%w", err)
+			}
+			return deleteQiniuObject(setting, resource.ObjectKey)
+		default:
+			return fmt.Errorf("资源 %s 使用了不支持的存储类型 %q", resource.ID, resource.Provider)
 		}
-		return deleteAliyunOSSObject(setting, resource.ObjectKey)
-	case tencentCOSProvider:
-		setting, err := s.ossSettingForResource(userID, resource)
-		if err != nil {
-			return fmt.Errorf("无法读取腾讯云 COS 配置：%w", err)
-		}
-		return deleteTencentCOSObject(setting, resource.ObjectKey)
-	case qiniuKodoProvider:
-		setting, err := s.ossSettingForResource(userID, resource)
-		if err != nil {
-			return fmt.Errorf("无法读取七牛云 Kodo 配置：%w", err)
-		}
-		return deleteQiniuObject(setting, resource.ObjectKey)
-	default:
-		return fmt.Errorf("资源 %s 使用了不支持的存储类型 %q", resource.ID, resource.Provider)
 	}
+	if err := deletePrimary(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(resource.LocalBackupKey) != "" {
+		return s.deleteLocalResourceObject(resource.LocalBackupKey)
+	}
+	return nil
 }
 
 func (s *Service) deleteLocalResourceObject(objectKey string) error {
-	root, err := filepath.Abs(filepath.Join(s.dataDir, "resources"))
-	if err != nil {
-		return fmt.Errorf("解析本地资源目录失败：%w", err)
-	}
-	target, err := filepath.Abs(filepath.Join(root, filepath.FromSlash(strings.TrimLeft(objectKey, "/\\"))))
+	target, err := s.resourceLocalPath(objectKey)
 	if err != nil {
 		return fmt.Errorf("解析本地资源路径失败：%w", err)
-	}
-	relative, err := filepath.Rel(root, target)
-	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return errors.New("本地资源路径超出允许目录")
 	}
 	fileInfo, err := os.Lstat(target)
 	if errors.Is(err, os.ErrNotExist) {
@@ -337,7 +345,7 @@ func (s *Service) deleteLocalResourceObject(objectKey string) error {
 	if fileInfo.IsDir() {
 		return errors.New("本地资源路径指向目录，已停止删除")
 	}
-	resolvedRoot, err := filepath.EvalSymlinks(root)
+	resolvedRoot, err := filepath.EvalSymlinks(filepath.Join(s.dataDir, "resources"))
 	if err != nil {
 		return fmt.Errorf("检查本地资源目录失败：%w", err)
 	}

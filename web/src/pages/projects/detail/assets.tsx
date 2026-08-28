@@ -5,6 +5,7 @@ import { Box, Check, ChevronDown, Download, FileText, FolderOpen, FolderPlus, Im
 
 import { WorkspaceState } from "@/components/layout/workspace-state";
 import { AssetMediaPreview } from "@/components/asset-media-preview";
+import { MediaPreview } from "@/components/media-preview";
 import { CachedResourceImage } from "@/components/cached-resource-image";
 import { AssetLibraryCard, AssetLibraryCardMedia } from "@/components/assets/asset-library-card";
 import { AssetLibraryPickerModal, type AssetLibraryPickerItem } from "@/components/assets/asset-library-picker-modal";
@@ -35,10 +36,10 @@ import {
     type ProjectDetail,
 } from "@/services/api/projects";
 import { saveRemoteUserDataNow } from "@/services/user-data-sync";
+import { downloadMediaFile } from "@/services/resource-download";
 import { useAssetStore, type Asset, type AssetCategory, type AssetStatus, type EntityAsset, type ImageAsset } from "@/stores/use-asset-store";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { CanvasNodeType, type CanvasFolderStyle, type CanvasFolderTheme, type CanvasNodeData } from "@/types/canvas";
-import { saveAs } from "file-saver";
 
 import { ProjectCharacterCard } from "./project-character-card";
 import { generateCharacterTurnaround } from "./project-character-media";
@@ -249,14 +250,16 @@ export default function ProjectAssetsView({ detail, refreshProject }: ProjectDet
         if (personal && (personal.kind === "image" || personal.kind === "video" || personal.kind === "audio" || personal.kind === "model")) {
             const url = personal.kind === "image" ? personal.data.dataUrl : personal.data.url;
             const extension = personal.kind === "model" ? personal.data.fileName.split(".").pop() || "glb" : personal.data.mimeType.split("/")[1] || "bin";
-            saveAs(url, `${asset.title || "asset"}.${extension}`);
+            void downloadMediaFile({ url, storageKey: personal.data.storageKey, fileName: `${asset.title || "asset"}.${extension}` }).catch((error) => message.error(error instanceof Error ? error.message : "媒体下载失败，请稍后重试"));
             return;
         }
         const cover = asset.character?.representations.find((item) => item.role === "turnaround_sheet") || asset.character?.representations.find((item) => item.role === "primary") || asset.character?.representations[0];
-        if (cover) saveAs(resourceFileUrl(cover.resourceId), `${asset.title || "character"}.png`);
+        if (cover) {
+            void downloadMediaFile({ url: resourceFileUrl(cover.resourceId), storageKey: `resource:${cover.resourceId}`, fileName: `${asset.title || "character"}.png` }).catch((error) => message.error(error instanceof Error ? error.message : "媒体下载失败，请稍后重试"));
+        }
         else {
             const remoteUrl = projectAssetRemoteUrl(asset);
-            if (remoteUrl) saveAs(remoteUrl, `${asset.title || "asset"}.${projectAssetFileExtension(asset.mediaType)}`);
+            if (remoteUrl) void downloadMediaFile({ url: remoteUrl, storageKey: asset.storageKey, fileName: `${asset.title || "asset"}.${projectAssetFileExtension(asset.mediaType)}` }).catch((error) => message.error(error instanceof Error ? error.message : "媒体下载失败，请稍后重试"));
             else message.warning("当前资产没有可下载的媒体文件");
         }
     };
@@ -527,7 +530,7 @@ function ProjectAssetMedia({ asset, personalAsset }: { asset: ProjectAsset; pers
     if (personalAsset) return <AssetMediaPreview asset={personalAsset} alt={asset.title} className="h-full w-full bg-black object-cover" fallback={<div className="grid h-full place-items-center text-foreground/25"><MediaIcon kind={asset.mediaType} /></div>} />;
     const remoteUrl = projectAssetRemoteUrl(asset);
     if (asset.mediaType === "image" && remoteUrl) return <img src={remoteUrl} alt={asset.title} className="h-full w-full bg-black object-cover" />;
-    if (asset.mediaType === "video" && remoteUrl) return <video src={remoteUrl} muted preload="metadata" className="h-full w-full bg-black object-cover" />;
+    if (asset.mediaType === "video" && remoteUrl) return <MediaPreview src={remoteUrl} kind="video" fallbackStorageKey={asset.storageKey} className="h-full w-full bg-black object-cover" />;
     if (asset.mediaType === "text" && asset.previewText) return <p className="line-clamp-6 h-full overflow-hidden p-4 text-left text-xs leading-5 text-foreground/62">{asset.previewText}</p>;
     return <div className="grid h-full place-items-center text-foreground/25"><MediaIcon kind={asset.mediaType} /></div>;
 }

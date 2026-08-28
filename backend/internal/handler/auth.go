@@ -659,7 +659,7 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *service.Service) {
 			}
 			c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=api-log-media%s", extension))
 		}
-		if resource.Provider == "local" {
+		if stream.Local {
 			if seeker, ok := stream.Body.(io.ReadSeeker); ok {
 				c.Header("Content-Type", mimeType)
 				http.ServeContent(c.Writer, c.Request, resource.ID, resource.UpdatedAt, seeker)
