@@ -4,15 +4,14 @@ import { Popover } from "antd";
 
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { modelCapabilityConfigFor, videoDurationOptions } from "@/lib/model-capabilities";
-import { normalizeTierResolution, priceTiersForCurrentSelection } from "@/lib/model-pricing";
+import { modelQuoteRequest, normalizeTierResolution, priceTiersForCurrentSelection } from "@/lib/model-pricing";
 import { compatibleModelInGroup, configuredModelDisplayName, groupModelsByDisplayName, modelCompatibilityError, resolveCompatibleModel, type ModelRequirements } from "@/lib/model-selection";
 import { cn } from "@/lib/utils";
 import { modelDisplayName, modelIcon, modelOptionName, PUBLIC_MODEL_CATALOG_ID, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { ModelLogo } from "@/components/model-logo";
-import { type LogicalModelQuote } from "@/services/api/logical-models";
-import { useLogicalModelQuote } from "@/lib/model-quote";
+import { quoteLogicalModel, type LogicalModelQuote } from "@/services/api/logical-models";
 
 type ModelPickerProps = {
     config: AiConfig;
@@ -64,7 +63,8 @@ export function ModelPicker({ config, value, onChange, capability, className, po
     // 旧画布可能保存过已下架或前端历史内置模型；它们不能重新进入当前可选目录。
     const current = options.includes(resolvedCurrent) ? resolvedCurrent : "";
 	const currentPrice = modelMenuPrice(config, current, capability, false, requirements);
-    const routeQuote = useLogicalModelQuote(config, current, capability, requirements, showSelectedPrice && creditsEnabled);
+    const quoteRequest = useMemo(() => modelQuoteRequest(config, current, capability, requirements), [capability, config, current, requirements]);
+    const [routeQuote, setRouteQuote] = useState<LogicalModelQuote | undefined>();
     const creationVariant = variant === "creation";
 
     useLayoutEffect(() => {
@@ -76,6 +76,21 @@ export function ModelPicker({ config, value, onChange, capability, className, po
         observer.observe(trigger);
         return () => observer.disconnect();
     }, [className, fullWidth, showSelectedPrice, variant, value]);
+
+    useEffect(() => {
+        if (!showSelectedPrice || !creditsEnabled || !quoteRequest) {
+            setRouteQuote(undefined);
+            return;
+        }
+        const controller = new AbortController();
+        setRouteQuote(undefined);
+        quoteLogicalModel(quoteRequest.logicalModelID, quoteRequest.intent, controller.signal)
+            .then((payload) => setRouteQuote(payload.quote))
+            .catch(() => {
+                if (!controller.signal.aborted) setRouteQuote(undefined);
+            });
+        return () => controller.abort();
+    }, [creditsEnabled, quoteRequest, showSelectedPrice]);
 
     useEffect(() => {
         const closeOtherPicker = (event: Event) => {

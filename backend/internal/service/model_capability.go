@@ -13,26 +13,10 @@ import (
 
 // ModelCapabilityConfig 是模型能力声明，不包含供应商字段名；协议适配器负责把统一参数映射到上游请求。
 type ModelCapabilityConfig struct {
-	Version    int                         `json:"version"`
-	Text       *TextCapabilityConfig       `json:"text,omitempty"`
-	Image      *ImageCapabilityConfig      `json:"image,omitempty"`
-	Video      *VideoCapabilityConfig      `json:"video,omitempty"`
-	AIStarsLab *AIStarsLabCapabilityConfig `json:"aistarslab,omitempty"`
-}
-
-type AIStarsLabCapabilityConfig struct {
-	Channel        string   `json:"channel"`
-	Capability     string   `json:"capability"`
-	Model          string   `json:"model"`
-	Qualities      []string `json:"qualities,omitempty"`
-	AspectRatios   []string `json:"aspectRatios,omitempty"`
-	Duration       []int    `json:"duration,omitempty"`
-	DurationMin    int      `json:"durationMin,omitempty"`
-	DurationMax    int      `json:"durationMax,omitempty"`
-	Modes          []string `json:"modes,omitempty"`
-	InputImagesMax int      `json:"inputImagesMax,omitempty"`
-	InputVideosMax int      `json:"inputVideosMax,omitempty"`
-	InputAudiosMax int      `json:"inputAudiosMax,omitempty"`
+	Version int                    `json:"version"`
+	Text    *TextCapabilityConfig  `json:"text,omitempty"`
+	Image   *ImageCapabilityConfig `json:"image,omitempty"`
+	Video   *VideoCapabilityConfig `json:"video,omitempty"`
 }
 
 type TextCapabilityConfig struct {
@@ -348,7 +332,7 @@ func NormalizeModelCapabilityConfigForModel(capability string, protocol string, 
 	if input == nil || input.Video == nil {
 		return nil, BadAuthRequest("请配置视频模型能力参数")
 	}
-	value := &ModelCapabilityConfig{Version: 1, Video: applyModelSpecificVideoCapability(input.Video, protocol, modelName), AIStarsLab: input.AIStarsLab}
+	value := &ModelCapabilityConfig{Version: 1, Video: applyModelSpecificVideoCapability(input.Video, protocol, modelName)}
 	if err := validateVideoCapabilityConfig(value.Video); err != nil {
 		return nil, err
 	}

@@ -11,9 +11,9 @@ import type { MiniMaxVideoCreateResponse, MiniMaxVideoTask, RequestOptions, Reso
 import type { VideoProviderDeps } from "./video-provider-deps";
 
 export async function createMiniMaxVideoTask(deps: VideoProviderDeps, config: ResolvedAiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
-    const imageUrls = await Promise.all(references.map((image) => resolveMiniMaxImageUrl(image)));
-    const videoUrls = await Promise.all(videoReferences.map((video) => resolveMiniMaxMediaUrl(video, "参考视频")));
-    const audioUrls = await Promise.all(audioReferences.map((audio) => resolveMiniMaxMediaUrl(audio, "参考音频")));
+    const imageUrls = await Promise.all(references.slice(0, 9).map((image) => resolveMiniMaxImageUrl(image)));
+    const videoUrls = await Promise.all(videoReferences.slice(0, 3).map((video) => resolveMiniMaxMediaUrl(video, "参考视频")));
+    const audioUrls = await Promise.all(audioReferences.slice(0, 3).map((audio) => resolveMiniMaxMediaUrl(audio, "参考音频")));
     const content: Array<Record<string, unknown>> = [{ type: "text", text: prompt.trim() }];
     imageUrls.forEach((url, index) => {
         // 首尾帧只允许成对出现；三张及以上图片统一作为多模态参考图，避免提交非法组合。

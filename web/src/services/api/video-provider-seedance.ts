@@ -1,5 +1,5 @@
 import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
-import { boolConfig, buildSeedancePromptText, isArkPlanBaseUrl, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution } from "@/lib/seedance-video";
+import { boolConfig, buildSeedancePromptText, isArkPlanBaseUrl, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceVideoReferenceError, SEEDANCE_REFERENCE_LIMITS } from "@/lib/seedance-video";
 import { getResourceOSSUrl } from "@/services/api/resources";
 import { getMediaBlob } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
@@ -54,6 +54,8 @@ export async function pollSeedanceTask(deps: VideoProviderDeps, config: Resolved
 }
 
 function assertSeedanceVideoReferences(videoReferences: ReferenceVideo[]) {
+    const error = seedanceVideoReferenceError(videoReferences);
+    if (error) throw new Error(error);
     let total = 0;
     for (const video of videoReferences) {
         if (!video.durationMs) continue;
@@ -101,13 +103,13 @@ async function buildSeedanceAgentPlanPayload(config: ResolvedAiConfig, model: st
 async function buildVolcengineArkContent(prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[]) {
     const content: Array<Record<string, unknown>> = [];
     if (prompt.trim()) content.push({ type: "text", text: prompt.trim() });
-    for (const image of references) {
+    for (const image of references.slice(0, SEEDANCE_REFERENCE_LIMITS.images)) {
         content.push({ type: "image_url", image_url: { url: await resolveVolcengineArkReferenceUrl(image.url || image.dataUrl, image.storageKey) }, role: "reference_image" });
     }
-    for (const video of videoReferences) {
+    for (const video of videoReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.videos)) {
         content.push({ type: "video_url", video_url: { url: await resolveVolcengineArkReferenceUrl(video.url, video.storageKey) }, role: "reference_video" });
     }
-    for (const audio of audioReferences) {
+    for (const audio of audioReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.audios)) {
         content.push({ type: "audio_url", audio_url: { url: await resolveVolcengineArkReferenceUrl(audio.url, audio.storageKey) }, role: "reference_audio" });
     }
     return content;
@@ -123,9 +125,9 @@ async function buildSeedanceVideosPayload(config: AiConfig, model: string, promp
     if ((videoReferences.length || audioReferences.length) && !references.length) {
         throw new Error("Seedance 参考视频或参考音频需要同时连接至少 1 张主参考图");
     }
-    const imageUrls = await Promise.all(references.map(resolveSeedanceVideosImageUrl));
-    const videoUrls = await Promise.all(videoReferences.map((media) => resolveSeedanceVideosMediaUrl(media, deps)));
-    const audioUrls = await Promise.all(audioReferences.map((media) => resolveSeedanceVideosMediaUrl(media, deps)));
+    const imageUrls = await Promise.all(references.slice(0, SEEDANCE_REFERENCE_LIMITS.images).map(resolveSeedanceVideosImageUrl));
+    const videoUrls = await Promise.all(videoReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.videos).map((media) => resolveSeedanceVideosMediaUrl(media, deps)));
+    const audioUrls = await Promise.all(audioReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.audios).map((media) => resolveSeedanceVideosMediaUrl(media, deps)));
     const ratio = normalizeSeedanceRatio(config.size);
     const duration = normalizeSeedanceDuration(config.videoSeconds);
     const profile = modelCapabilityConfigFor(config, model).video!;
@@ -146,13 +148,13 @@ async function buildSeedanceContent(config: AiConfig, prompt: string, references
     const content: Array<Record<string, unknown>> = [];
     const text = buildSeedancePromptText(prompt, references, videoReferences, audioReferences);
     if (text) content.push({ type: "text", text });
-    for (const image of references) {
+    for (const image of references.slice(0, SEEDANCE_REFERENCE_LIMITS.images)) {
         content.push({ type: "image_url", image_url: { url: await resolveSeedanceImageUrl(image) }, role: "reference_image" });
     }
-    for (const video of videoReferences) {
+    for (const video of videoReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.videos)) {
         content.push({ type: "video_url", video_url: { url: await resolveSeedanceMediaUrl(video, deps, "参考视频") }, role: "reference_video" });
     }
-    for (const audio of audioReferences) {
+    for (const audio of audioReferences.slice(0, SEEDANCE_REFERENCE_LIMITS.audios)) {
         content.push({ type: "audio_url", audio_url: { url: await resolveSeedanceMediaUrl(audio, deps, "参考音频") }, role: "reference_audio" });
     }
     return content;

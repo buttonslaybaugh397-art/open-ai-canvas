@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { modelQuoteRequest, priceTiersForCurrentSelection, requestCreditCost } from "../src/lib/model-pricing";
+import { modelQuoteRequest, normalizeTierResolution, priceTiersForCurrentSelection, requestCreditCost } from "../src/lib/model-pricing";
 import type { ModelRequirements } from "../src/lib/model-selection";
 import { createModelChannel, defaultConfig, normalizeConfigSnapshot, resolveModelChannel, type AiConfig } from "../src/stores/use-config-store";
 
@@ -15,22 +15,24 @@ function systemConfig(input: { capability?: "image" | "video"; logicalModelId?: 
         apiKey: "system",
         apiFormat: "openai",
         models: [model],
-        modelCosts: [{
-            model,
-            capability,
-            pricePolicy: "channel",
-            billingMode: input.tiers[0]?.billingMode || "fixed_request",
-            unitPriceMicrocredits: input.tiers[0]?.unitPriceMicrocredits || 0,
-            logicalModelId: input.logicalModelId,
-            logicalPriceTiers: input.tiers.map((tier) => ({
-                ...tier,
-                resolution: tier.selector.vquality || "*",
-                videoSeconds: Number(tier.selector.videoSeconds || 0),
-                inputTokenPriceMicrocredits: 0,
-                outputTokenPriceMicrocredits: 0,
-                cachedTokenPriceMicrocredits: 0,
-            })),
-        }],
+        modelCosts: [
+            {
+                model,
+                capability,
+                pricePolicy: "channel",
+                billingMode: input.tiers[0]?.billingMode || "fixed_request",
+                unitPriceMicrocredits: input.tiers[0]?.unitPriceMicrocredits || 0,
+                logicalModelId: input.logicalModelId,
+                logicalPriceTiers: input.tiers.map((tier) => ({
+                    ...tier,
+                    resolution: tier.selector.vquality || "*",
+                    videoSeconds: Number(tier.selector.videoSeconds || 0),
+                    inputTokenPriceMicrocredits: 0,
+                    outputTokenPriceMicrocredits: 0,
+                    cachedTokenPriceMicrocredits: 0,
+                })),
+            },
+        ],
     });
     return normalizeConfigSnapshot({
         config: {
@@ -56,6 +58,11 @@ const textVideoRequirements: ModelRequirements = {
 };
 
 describe("model request pricing", () => {
+    test("preserves provider-specific resolution enums when matching price tiers", () => {
+        expect(normalizeTierResolution("768P竖")).toBe("768p竖");
+        expect(normalizeTierResolution("HD_Portrait")).toBe("hd_portrait");
+    });
+
     test("matches the current Agnes resolution and duration tier and totals per-second credits", () => {
         const config = systemConfig({
             tiers: [
@@ -66,15 +73,17 @@ describe("model request pricing", () => {
         });
         const channel = resolveModelChannel(config, config.model);
 
-        expect(requestCreditCost({
-            channelMode: "remote",
-            modelCosts: channel.modelCosts,
-            model: "agnes-video-2.5",
-            capability: "video",
-            config,
-            requirements: textVideoRequirements,
-            seconds: "5",
-        })).toBe(0.125);
+        expect(
+            requestCreditCost({
+                channelMode: "remote",
+                modelCosts: channel.modelCosts,
+                model: "agnes-video-2.5",
+                capability: "video",
+                config,
+                requirements: textVideoRequirements,
+                seconds: "5",
+            }),
+        ).toBe(0.125);
     });
 
     test("uses reference count and operation to avoid a text-video price tier", () => {
@@ -101,15 +110,17 @@ describe("model request pricing", () => {
         });
         const channel = resolveModelChannel(config, config.model);
 
-        expect(requestCreditCost({
-            channelMode: "remote",
-            modelCosts: channel.modelCosts,
-            model: "image-model",
-            capability: "image",
-            config,
-            requirements: { capability: "image" },
-            count: 3,
-        })).toBe(0.03);
+        expect(
+            requestCreditCost({
+                channelMode: "remote",
+                modelCosts: channel.modelCosts,
+                model: "image-model",
+                capability: "image",
+                config,
+                requirements: { capability: "image" },
+                count: 3,
+            }),
+        ).toBe(0.03);
     });
 
     test("builds a logical-model quote using the normalized current request", () => {

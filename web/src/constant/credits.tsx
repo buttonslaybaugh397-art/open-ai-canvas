@@ -11,14 +11,6 @@ export function CreditSymbol({ className, ...props }: ComponentProps<"span">) {
     );
 }
 
-export type ModelCreditCost = {
-    model: string;
-    pricePolicy?: "channel" | "unified";
-    billingMode: "fixed_request" | "per_second" | "token";
-    unitPriceMicrocredits: number;
-    resolutionPriceMicrocredits?: Record<string, number>;
-};
-
 export function formatCredits(value: number, maximumFractionDigits = 6) {
     return (value / 1_000_000).toLocaleString("zh-CN", { maximumFractionDigits });
 }

@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 
 import { CachedResourceImage } from "@/components/cached-resource-image";
-import { MediaPreview } from "@/components/media-preview";
 import type { Asset } from "@/stores/use-asset-store";
 
 type AssetMediaPreviewProps = {

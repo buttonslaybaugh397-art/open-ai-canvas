@@ -5,6 +5,7 @@ import type { CanvasDrawingEngineSetting } from "@/lib/canvas/canvas-drawing-eng
 import type { FeatureAvailability } from "@/stores/use-user-store";
 import { apiClient, request } from "@/services/api/request";
 import type { PublicLogicalModel } from "@/services/api/logical-models";
+import type { OSSConnectionTestInput, OSSConnectionTestResult, OSSProvider, S3Preset } from "@/lib/oss-settings";
 
 const api = apiClient;
 
@@ -258,7 +259,8 @@ export type UserPromptPreference = {
 
 export type AdminOSSSetting = {
     enabled: boolean;
-    provider: "aliyun" | "tencent" | "qiniu";
+    provider: OSSProvider;
+    s3Preset: S3Preset;
     region: string;
     endpoint: string;
     cdnBaseUrl: string;
@@ -266,8 +268,28 @@ export type AdminOSSSetting = {
     accessKeyId: string;
     accessKeySecret?: string;
     hasAccessKeySecret: boolean;
+    sessionToken?: string;
+    hasSessionToken: boolean;
+    pathStyle: boolean;
+    allowUserS3: boolean;
     publicBaseUrl: string;
     pathPrefix: string;
+    testedAt?: string;
+    testedDigest?: string;
+    historyCount?: number;
+    referencedResourceCount?: number;
+    updatedBy?: string;
+    createdAt?: string;
+    updatedAt?: string;
+};
+
+export type AdminArkPrivateAssetSetting = {
+    enabled: boolean;
+    region: string;
+    projectName: string;
+    accessKeyId: string;
+    accessKeySecret?: string;
+    hasAccessKeySecret: boolean;
     updatedBy?: string;
     createdAt?: string;
     updatedAt?: string;
@@ -511,6 +533,10 @@ export function getAdminOSSSetting() {
 
 export function updateAdminOSSSetting(input: Partial<AdminOSSSetting>) {
     return request<{ setting: AdminOSSSetting }>(api.patch("/admin/settings/oss", input));
+}
+
+export function testAdminOSSConnection(input: OSSConnectionTestInput) {
+    return request<OSSConnectionTestResult>(api.post("/admin/settings/oss/test", input));
 }
 
 export function getAdminArkPrivateAssetSetting() {

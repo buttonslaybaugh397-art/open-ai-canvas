@@ -1,84 +1,27 @@
 import { describe, expect, test } from "bun:test";
 
-import { isolateCopiedNodeMetadata } from "../src/lib/canvas/canvas-node-copy";
-import { CanvasNodeType, type CanvasNodeData } from "../src/types/canvas";
+import { nextCopiedNodeTitle } from "@/lib/canvas/canvas-node-copy";
 
-describe("isolateCopiedNodeMetadata", () => {
-    test("视频副本只保留生成配置和参考关系，不继承输出媒体", () => {
-        const source: CanvasNodeData = {
-            id: "video-source",
-            type: CanvasNodeType.Video,
-            title: "成片",
-            position: { x: 0, y: 0 },
-            width: 640,
-            height: 360,
-            metadata: {
-                content: "https://example.com/result.mp4",
-                previewContent: "https://example.com/preview.mp4",
-                storageKey: "resource:video-result",
-                mimeType: "video/mp4",
-                bytes: 1024,
-                durationMs: 5000,
-                naturalWidth: 1280,
-                naturalHeight: 720,
-                assetId: "asset-result",
-                prompt: "镜头缓慢推进",
-                model: "video-model",
-                size: "16:9",
-                seconds: "5",
-                references: ["resource:image-reference"],
-                videoEditOperation: "image_to_video",
-                videoStartFrameNodeId: "image-reference",
-                status: "success",
-                taskId: "task-result",
-                generationEffectKeys: ["effect-result"],
-                agentGenerationContinuation: { id: "continuation", taskId: "task-result", status: "completed" },
-                versionOfNodeId: "video-source",
-                versionLabel: "A",
-                versionPrimary: true,
-            },
-        };
-
-        const metadata = isolateCopiedNodeMetadata(source, new Map());
-
-        expect(metadata).toMatchObject({
-            prompt: "镜头缓慢推进",
-            model: "video-model",
-            size: "16:9",
-            seconds: "5",
-            references: ["resource:image-reference"],
-            videoEditOperation: "image_to_video",
-            videoStartFrameNodeId: "image-reference",
-            status: "idle",
-            copiedFromNodeId: "video-source",
-        });
-        expect(metadata.content).toBeUndefined();
-        expect(metadata.previewContent).toBeUndefined();
-        expect(metadata.storageKey).toBeUndefined();
-        expect(metadata.assetId).toBeUndefined();
-        expect(metadata.taskId).toBeUndefined();
-        expect(metadata.generationEffectKeys).toBeUndefined();
-        expect(metadata.agentGenerationContinuation).toBeUndefined();
-        expect(metadata.versionOfNodeId).toBeUndefined();
-        expect(metadata.versionLabel).toBeUndefined();
-        expect(metadata.versionPrimary).toBeUndefined();
+describe("canvas node copy title", () => {
+    test("首次复制使用 copy1，后续按已有最大序号递增", () => {
+        expect(nextCopiedNodeTitle("女明星角色三视图", ["女明星角色三视图"])).toBe("女明星角色三视图_copy1");
+        expect(nextCopiedNodeTitle("女明星角色三视图", ["女明星角色三视图", "女明星角色三视图_copy1"])).toBe("女明星角色三视图_copy2");
+        expect(nextCopiedNodeTitle("女明星角色三视图", ["女明星角色三视图_copy1", "女明星角色三视图_copy3"])).toBe("女明星角色三视图_copy4");
     });
 
-    test("普通参考视频副本仍保留原媒体", () => {
-        const source: CanvasNodeData = {
-            id: "uploaded-video",
-            type: CanvasNodeType.Video,
-            title: "上传视频",
-            position: { x: 0, y: 0 },
-            width: 640,
-            height: 360,
-            metadata: { content: "https://example.com/reference.mp4", storageKey: "resource:reference-video", mimeType: "video/mp4", status: "success" },
-        };
+    test("复制已有副本时仍使用原始名称计算下一序号", () => {
+        expect(nextCopiedNodeTitle("女明星角色三视图_copy1", ["女明星角色三视图", "女明星角色三视图_copy1"])).toBe("女明星角色三视图_copy2");
+    });
 
-        const metadata = isolateCopiedNodeMetadata(source, new Map());
+    test("兼容旧版空格 Copy 后缀", () => {
+        expect(nextCopiedNodeTitle("女明星角色三视图 Copy", ["女明星角色三视图", "女明星角色三视图 Copy"])).toBe("女明星角色三视图_copy1");
+    });
 
-        expect(metadata.content).toBe(source.metadata?.content);
-        expect(metadata.storageKey).toBe(source.metadata?.storageKey);
-        expect(metadata.status).toBe("success");
+    test("同一批粘贴可以通过预留标题连续分配序号", () => {
+        const titles = new Set(["节点", "节点_copy1"]);
+        const first = nextCopiedNodeTitle("节点", titles);
+        titles.add(first);
+        const second = nextCopiedNodeTitle("节点", titles);
+        expect([first, second]).toEqual(["节点_copy2", "节点_copy3"]);
     });
 });

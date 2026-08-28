@@ -1,4 +1,5 @@
 import { defaultImageCapabilityConfig, modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, STANDARD_IMAGE_SIZE_VALUES, videoDurationAllowed, type ImageCapabilityConfig } from "@/lib/model-capabilities";
+import { videoResolutionComparisonKey } from "@/lib/video-generation-options";
 import { modelOptionName, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 
 export type ModelInputSummary = {
@@ -16,7 +17,6 @@ export type ModelRequirements = {
     videoSeconds?: string;
     imageSize?: string;
     options?: Record<string, unknown>;
-    quoteQuantity?: number;
 };
 
 export type DisplayModelGroup = {
@@ -161,12 +161,7 @@ function logicalOptionMatches(name: string, constraint: { values?: unknown[]; mi
 function normalizeLogicalOptionValue(name: string, value: unknown) {
     const normalized = String(value).trim().toLowerCase();
     if (name !== "vquality" && name !== "resolution") return normalized;
-    if (normalized === "low") return "480p";
-    if (["auto", "medium", "high"].includes(normalized)) return "720p";
-    if (normalized === "2k") return "1440p";
-    if (normalized === "4k") return "2160p";
-    const resolution = normalized.replace(/p$/i, "");
-    return resolution ? `${resolution}p` : "";
+    return videoResolutionComparisonKey(normalized);
 }
 
 function logicalOptionError(name: string) {
@@ -327,7 +322,7 @@ export function inferVideoOperation(input: ModelInputSummary) {
     // 纯音频参考使用独立能力；音频与图片、角色或视频组合时属于全模态参考，
     // 不能把组合请求误路由到只支持 audio_to_video 的细分模型。
     if (input.audioCount > 0) return visualInputCount > 0 || input.videoCount > 0 ? "reference_to_video" : "audio_to_video";
-    if (input.videoCount > 0) return "reference_to_video";
+    if (input.videoCount > 0 || visualInputCount > 2) return "reference_to_video";
     if (visualInputCount > 0) return "image_to_video";
     return "text_to_video";
 }

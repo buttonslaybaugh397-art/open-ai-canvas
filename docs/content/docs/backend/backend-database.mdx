@@ -36,17 +36,12 @@ description: 影策后端核心持久化表与状态边界
 
 请求表保存工作流执行 payload 和结果，但不保存 Bridge Token。任务取消时，未领取请求可以确定取消；已经领取的本机工作流无法可靠中止，迟到结果会被丢弃并进入费用核对流程。
 
-## 资源与对象存储灾备
+## 资源存储
 
-`resources` 保存媒体的逻辑记录和主存储位置。使用云对象存储创建的新资源同时保留一份服务器本地副本，`local_backup_key` 指向 `CANVAS_BACKEND_DATA_DIR/resources` 下的相对路径；本地存储资源该字段为空。
-
-| 字段 | 用途 | 说明 |
+| 表 | 用途 | 关键边界 |
 | --- | --- | --- |
-| `provider`、`endpoint`、`bucket`、`object_key` | 主对象存储位置 | 固定记录资源创建时的供应商和对象路径，避免切换平台后历史资源串库 |
-| `local_backup_key` | 本地灾备副本路径 | 只保存相对路径，服务端读取和删除时进行目录边界校验；部署必须持久化 `/data` 或 `CANVAS_BACKEND_DATA_DIR` |
-| `cloud_sync_status` | 云端同步状态 | `synced`、`pending`、`recovering`；云端暂不可用时资源仍保持 `ready`，优先从本地副本提供 |
-| `cloud_sync_attempts`、`cloud_sync_error` | 恢复观测信息 | 记录恢复尝试次数和最近一次安全错误摘要 |
-| `cloud_sync_next_attempt_at` | 下次恢复时间 | worker 按退避时间领取待恢复资源 |
-| `cloud_sync_lease_owner`、`cloud_sync_lease_expires_at` | worker 租约 | 防止多实例重复补传；过期租约可被其他实例接管 |
+| `resources` | 保存资源元数据和实际存储位置引用 | S3 资源必须通过 `storage_setting_id` 固定绑定创建时的位置；浏览器默认经同源接口读取 |
+| `storage_locations` | 保存平台或个人 S3 位置版本、加密凭据和连接测试摘要 | Endpoint、Bucket、Region、PathStyle、PathPrefix、Provider 组成不可变位置；同位置只轮换凭据，位置变化创建新记录 |
+| `resource_deletion_jobs` | 在业务记录删除后可靠清理物理对象 | 固化资源的存储位置与对象键；删除失败保留任务并重试，S3 404 按幂等成功处理 |
 
-资源删除通过 `resource_deletion_jobs` outbox 同时清理主对象和本地灾备副本。历史云资源若没有 `local_backup_key`，仍只能在云端读取，无法追溯补齐已有本地保护。
+`storage_locations.value_json` 中的 Secret Key 和 Session Token 使用后端设置密钥加密。启用 S3 前，关键位置字段和凭据摘要必须与最近一次 Put、Range Get、Delete 连接测试结果一致；历史资源继续按绑定的位置读取和删除，不随当前配置切换。

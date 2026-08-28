@@ -134,7 +134,7 @@ func resourceDeletionJobs(userID string, physicalObjects map[string]*model.Resou
 		jobs = append(jobs, model.ResourceDeletionJob{
 			ID: newID(), UserID: userID, ResourceID: resource.ID,
 			Provider: resource.Provider, Endpoint: resource.Endpoint, Bucket: resource.Bucket,
-			StorageSettingID: resource.StorageSettingID, ObjectKey: resource.ObjectKey, LocalBackupKey: resource.LocalBackupKey,
+			StorageSettingID: resource.StorageSettingID, ObjectKey: resource.ObjectKey,
 			Status: model.ResourceDeletionStatusPending, NextAttemptAt: now,
 		})
 	}
@@ -321,6 +321,27 @@ func (s *Service) deleteStoredResourceObject(userID string, resource *model.Reso
 		default:
 			return fmt.Errorf("资源 %s 使用了不支持的存储类型 %q", resource.ID, resource.Provider)
 		}
+		return deleteAliyunOSSObject(setting, resource.ObjectKey)
+	case tencentCOSProvider:
+		setting, err := s.ossSettingForResource(userID, resource)
+		if err != nil {
+			return fmt.Errorf("无法读取腾讯云 COS 配置：%w", err)
+		}
+		return deleteTencentCOSObject(setting, resource.ObjectKey)
+	case qiniuKodoProvider:
+		setting, err := s.ossSettingForResource(userID, resource)
+		if err != nil {
+			return fmt.Errorf("无法读取七牛云 Kodo 配置：%w", err)
+		}
+		return deleteQiniuObject(setting, resource.ObjectKey)
+	case s3Provider:
+		setting, err := s.ossSettingForResource(userID, resource)
+		if err != nil {
+			return fmt.Errorf("无法读取 S3 配置：%w", err)
+		}
+		return deleteS3Object(setting, resource.ObjectKey)
+	default:
+		return fmt.Errorf("资源 %s 使用了不支持的存储类型 %q", resource.ID, resource.Provider)
 	}
 	if err := deletePrimary(); err != nil {
 		return err

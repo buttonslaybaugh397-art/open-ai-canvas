@@ -23,15 +23,16 @@ const protocolPluginMaxBytes = protocol.PluginManifestMaxBytes
 // plugin center. Protocol-specific runtime data is nested under Protocol so
 // the public plugin contract can grow without adding another center API.
 type PluginView struct {
-	Manifest    PluginManifestView `json:"manifest"`
-	Source      string             `json:"source"`
-	FileName    string             `json:"fileName"`
-	Package     string             `json:"package"`
-	SHA256      string             `json:"sha256"`
-	InstalledAt time.Time          `json:"installedAt"`
-	UpdatedAt   time.Time          `json:"updatedAt"`
-	Status      string             `json:"status"`
-	Error       string             `json:"error,omitempty"`
+	Manifest    PluginManifestView   `json:"manifest"`
+	Source      string               `json:"source"`
+	FileName    string               `json:"fileName"`
+	Package     string               `json:"package"`
+	SHA256      string               `json:"sha256"`
+	InstalledAt time.Time            `json:"installedAt"`
+	UpdatedAt   time.Time            `json:"updatedAt"`
+	Status      string               `json:"status"`
+	Error       string               `json:"error,omitempty"`
+	Management  PluginManagementView `json:"management"`
 }
 
 type PluginManifestView struct {
@@ -113,18 +114,33 @@ func (c *pluginRuntime) bootstrapBundledPlugins() error {
 		byID[record.ID] = record
 	}
 	items := protocol.Builtins().List("", "", true)
-	groupedProviderIDs := protocol.BundledHostProviderIDs()
-	bundledIDs := make(map[string]struct{}, len(items))
+	bundledIDs := make(map[string]struct{}, len(items)+2)
 	for _, metadata := range items {
-		if _, grouped := groupedProviderIDs[metadata.ID]; grouped {
-			continue
-		}
+		bundledIDs[metadata.ID] = struct{}{}
 		protocol.AttachDocumentation(&metadata)
 		metadata.Installable = true
 		manifest, declarative := protocol.BundledManifest(metadata.ID)
-		expectedBackend := "host:" + metadata.ID
+		existing := []byte(nil)
+		if record, ok := byID[metadata.ID]; ok {
+			existing = record.Raw
+			var installed protocol.Manifest
+			if err := json.Unmarshal(existing, &installed); err != nil {
+				return fmt.Errorf("decode bundled plugin %s: %w", metadata.ID, err)
+			}
+			expectedBackend := "host:" + metadata.ID
+			if declarative {
+				expectedBackend = "declarative"
+			}
+			if installed.Runtime.Backend != expectedBackend {
+				return fmt.Errorf("protocol id %q is reserved by a bundled plugin", metadata.ID)
+			}
+			if metadata.Enabled {
+				metadata.Enabled = installed.Metadata.Enabled
+			}
+		}
 		if declarative {
-			expectedBackend = "declarative"
+			manifest.Metadata.Enabled = metadata.Enabled
+			manifest.Metadata.Installable = true
 		} else {
 			metadata.Execution = "host:" + metadata.ID
 			manifest = protocol.Manifest{
@@ -139,14 +155,48 @@ func (c *pluginRuntime) bootstrapBundledPlugins() error {
 				}}},
 			}
 		}
-		if err := reconcileBundledPlugin(byID, bundledIDs, manifest, expectedBackend); err != nil {
-			return err
+		data, err := json.Marshal(manifest)
+		if err != nil {
+			return fmt.Errorf("encode bundled protocol %s: %w", metadata.ID, err)
 		}
+		record := byID[metadata.ID]
+		if !bytes.Equal(record.Raw, data) {
+			now := time.Now().UTC()
+			if record.InstalledAt.IsZero() {
+				record.InstalledAt = now
+			}
+			record.UpdatedAt = now
+		}
+		record.ID, record.Raw, record.Source, record.PackagePath = metadata.ID, data, "bundled", ""
+		byID[metadata.ID] = record
 	}
-	for _, manifest := range protocol.BundledHostManifests() {
-		if err := reconcileBundledPlugin(byID, bundledIDs, manifest, manifest.Runtime.Backend); err != nil {
-			return err
+	for _, workflow := range bundledWorkflowPluginManifests() {
+		bundledIDs[workflow.Metadata.ID] = struct{}{}
+		data, err := json.Marshal(workflow)
+		if err != nil {
+			return fmt.Errorf("encode bundled workflow plugin %s: %w", workflow.Metadata.ID, err)
 		}
+		record := byID[workflow.Metadata.ID]
+		if len(record.Raw) > 0 {
+			var installed protocol.Manifest
+			if err := json.Unmarshal(record.Raw, &installed); err != nil {
+				return fmt.Errorf("decode bundled workflow plugin %s: %w", workflow.Metadata.ID, err)
+			}
+			workflow.Metadata.Enabled = installed.Metadata.Enabled
+			data, err = json.Marshal(workflow)
+			if err != nil {
+				return fmt.Errorf("encode bundled workflow plugin %s: %w", workflow.Metadata.ID, err)
+			}
+		}
+		if !bytes.Equal(record.Raw, data) {
+			now := time.Now().UTC()
+			if record.InstalledAt.IsZero() {
+				record.InstalledAt = now
+			}
+			record.UpdatedAt = now
+		}
+		record.ID, record.Raw, record.Source, record.PackagePath = workflow.Metadata.ID, data, "bundled", ""
+		byID[workflow.Metadata.ID] = record
 	}
 	result := make([]pluginRegistryRecord, 0, len(byID))
 	for _, record := range byID {
@@ -162,42 +212,6 @@ func (c *pluginRuntime) bootstrapBundledPlugins() error {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return c.writeRegistry(result)
-}
-
-func reconcileBundledPlugin(byID map[string]pluginRegistryRecord, bundledIDs map[string]struct{}, manifest protocol.Manifest, expectedBackend string) error {
-	id := strings.TrimSpace(manifest.Metadata.ID)
-	if id == "" {
-		return errors.New("bundled plugin has no id")
-	}
-	bundledIDs[id] = struct{}{}
-	if record, ok := byID[id]; ok {
-		var installed protocol.Manifest
-		if err := json.Unmarshal(record.Raw, &installed); err != nil {
-			return fmt.Errorf("decode bundled plugin %s: %w", id, err)
-		}
-		if installed.Runtime.Backend != expectedBackend {
-			return fmt.Errorf("protocol id %q is reserved by a bundled plugin", id)
-		}
-		if manifest.Metadata.Enabled {
-			manifest.Metadata.Enabled = installed.Metadata.Enabled
-		}
-	}
-	manifest.Metadata.Installable = true
-	data, err := json.Marshal(manifest)
-	if err != nil {
-		return fmt.Errorf("encode bundled protocol %s: %w", id, err)
-	}
-	record := byID[id]
-	if !bytes.Equal(record.Raw, data) {
-		now := time.Now().UTC()
-		if record.InstalledAt.IsZero() {
-			record.InstalledAt = now
-		}
-		record.UpdatedAt = now
-	}
-	record.ID, record.Raw, record.Source, record.PackagePath = id, data, "bundled", ""
-	byID[id] = record
-	return nil
 }
 
 func (c *pluginRuntime) reload() error {

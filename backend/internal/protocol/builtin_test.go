@@ -12,8 +12,8 @@ func TestBuiltinCatalogContainsRequestedProtocols(t *testing.T) {
 	registry := Builtins()
 	expected := []string{
 		"chat-completion", "openai-response", "claude-api",
-		"openai-image", "grok-image", "globalaiopc-image", "aistarslab-image", "volcengine-ark-image", "volcengine-jimeng-image", "gemini-image",
-		"newapi", "newapi-channel-2", "xai-video", "globalaiopc-video", "huiquyun-video", "aistarslab-video", "volcengine-ark-video", "volcengine-jimeng-video", "gemini-veo", "novita-video", "minimax-video", "agnes-video",
+		"openai-image", "grok-image", "volcengine-ark-image", "volcengine-jimeng-image", "gemini-image",
+		"newapi", "newapi-channel-2", "xai-video", "volcengine-ark-video", "volcengine-jimeng-video", "gemini-veo", "novita-video", "minimax-video", "agnes-video",
 	}
 	for _, id := range expected {
 		if _, ok := registry.Get(id); !ok {
@@ -24,17 +24,17 @@ func TestBuiltinCatalogContainsRequestedProtocols(t *testing.T) {
 		t.Fatal("legacy OpenAI video alias was not registered")
 	}
 	available := registry.List(SurfaceUserCustomChannel, CapabilityVideo, false)
-	var availableAgnes bool
+	var agnesAvailable bool
 	for _, item := range available {
 		if item.ID == "agnes-video" {
-			availableAgnes = true
-			if !item.Enabled || item.UnavailableReason != "" {
+			agnesAvailable = true
+			if !item.Enabled || !item.Installable || item.UnavailableReason != "" {
 				t.Fatalf("Agnes metadata must be enabled: %#v", item)
 			}
 		}
 	}
-	if !availableAgnes {
-		t.Fatal("enabled Agnes adapter was omitted from the user catalog")
+	if !agnesAvailable {
+		t.Fatal("Agnes adapter was not selectable")
 	}
 	all := registry.List(SurfaceAdminSystemChannel, CapabilityVideo, true)
 	var found bool
@@ -42,7 +42,7 @@ func TestBuiltinCatalogContainsRequestedProtocols(t *testing.T) {
 		if item.ID == "agnes-video" {
 			found = true
 			if !item.Enabled || item.UnavailableReason != "" {
-				t.Fatalf("Agnes metadata must be enabled: %#v", item)
+				t.Fatalf("Agnes metadata must stay enabled: %#v", item)
 			}
 		}
 	}
@@ -51,31 +51,6 @@ func TestBuiltinCatalogContainsRequestedProtocols(t *testing.T) {
 	}
 	if _, ok := registry.Get("autodl-comfyui"); ok {
 		t.Fatal("AutoDL must be provided by the uploaded plugin package, not the host registry")
-	}
-}
-
-func TestBundledChannelPluginsGroupHostProviders(t *testing.T) {
-	manifests := BundledHostManifests()
-	if len(manifests) != 3 {
-		t.Fatalf("bundled channel manifests = %d, want 3", len(manifests))
-	}
-	for _, manifest := range manifests {
-		data, err := json.Marshal(manifest)
-		if err != nil {
-			t.Fatal(err)
-		}
-		adapters, err := LoadInstalledProviders(data, Builtins().Resolve)
-		if err != nil {
-			t.Fatalf("load %s: %v", manifest.Metadata.ID, err)
-		}
-		if len(adapters) != len(manifest.Contributes.Providers) {
-			t.Fatalf("%s adapters = %d, providers = %d", manifest.Metadata.ID, len(adapters), len(manifest.Contributes.Providers))
-		}
-		for index, adapter := range adapters {
-			if adapter.Metadata().ID != manifest.Contributes.Providers[index].ID {
-				t.Fatalf("%s adapter[%d] = %q", manifest.Metadata.ID, index, adapter.Metadata().ID)
-			}
-		}
 	}
 }
 
@@ -158,6 +133,7 @@ func TestImageAndVideoAdaptersMapProviderShapes(t *testing.T) {
 		{"gemini-veo", "/v1beta/models/veo-test:predictLongRunning", "/v1beta/operations/video-1", GenerationRequest{Model: "veo-test", Prompt: "a clip"}},
 		{"novita-video", "/v3/video/create", "/v3/async/task-result?task_id=video-1", GenerationRequest{Model: "novita", Prompt: "a clip"}},
 		{"minimax-video", "/v2/video_generation", "/v2/query/video_generation/video-1", GenerationRequest{Model: "MiniMax-H3", Prompt: "a clip"}},
+		{"agnes-video", "/v1/videos", "/agnesapi?video_id=video-1&model_name=agnes-video-2.5", GenerationRequest{Model: "agnes-video-2.5", Prompt: "a clip", Duration: 5}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.id, func(t *testing.T) {
@@ -386,6 +362,19 @@ func TestDeclarativeManifestSupportsMediaPathsTransformsAndErrors(t *testing.T) 
 	failed, err := adapter.ParseCreate(context.Background(), []byte(`{"code":"RequestParameterIsWrong","msg":"invalid resolution"}`))
 	if err != nil || failed.Status != StatusFailed || failed.Message != "invalid resolution" {
 		t.Fatalf("failed response = %#v, err = %v", failed, err)
+	}
+}
+
+func TestDeclarativeManifestKeepsLegacyVideoResolutionTransformCompatible(t *testing.T) {
+	tests := map[string]string{
+		"768":   "768p",
+		"768P":  "768p",
+		"768P横": "768p横",
+	}
+	for input, expected := range tests {
+		if actual := applyManifestTransform(input, "video-resolution"); actual != expected {
+			t.Errorf("legacy video resolution transform %q = %#v, want %q", input, actual, expected)
+		}
 	}
 }
 

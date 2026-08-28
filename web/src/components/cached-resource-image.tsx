@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ImgHTMLAttributes, type ReactNode } from "react";
 
-import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
+import { resourceIdFromStorageKey } from "@/services/api/resources";
 import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
 
 type CachedResourceImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, "src"> & {
@@ -15,12 +15,11 @@ type CachedResourceImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, "src">
  * 普通外链、data URL 和本地 Blob URL 不经过资源缓存，保持原有行为。
  */
 export function CachedResourceImage({ storageKey, src = "", fallback = null, eager = false, onError, ...props }: CachedResourceImageProps) {
-    const resourceId = resourceIdFromStorageKey(storageKey);
-    const remoteResource = Boolean(resourceId);
-    const remoteFallbackSrc = src && !src.startsWith("blob:") ? src : resourceId ? resourceFileUrl(resourceId) : src;
+    const remoteResource = Boolean(resourceIdFromStorageKey(storageKey));
     const targetRef = useRef<HTMLSpanElement>(null);
     const [nearViewport, setNearViewport] = useState(eager || !remoteResource);
     const [cachedSrc, setCachedSrc] = useState(remoteResource ? "" : src);
+    const [cacheFailed, setCacheFailed] = useState(false);
 
     useEffect(() => {
         if (!remoteResource || eager) {
@@ -44,6 +43,7 @@ export function CachedResourceImage({ storageKey, src = "", fallback = null, eag
 
     useEffect(() => {
         let cancelled = false;
+        setCacheFailed(false);
         if (!remoteResource || !storageKey) {
             setCachedSrc(src);
             return () => { cancelled = true; };
@@ -56,19 +56,20 @@ export function CachedResourceImage({ storageKey, src = "", fallback = null, eag
         setCachedSrc("");
         const resolve = cacheResourceObjectUrl(storageKey);
         void resolve.then((url) => {
-            if (!cancelled) setCachedSrc(url || remoteFallbackSrc);
+            if (!cancelled) setCachedSrc(url || src);
         }).catch(() => {
             if (!cancelled) {
-                setCachedSrc(remoteFallbackSrc);
+                setCacheFailed(true);
+                setCachedSrc(src);
             }
         });
         return () => { cancelled = true; };
-    }, [nearViewport, remoteFallbackSrc, remoteResource, src, storageKey]);
+    }, [nearViewport, remoteResource, src, storageKey]);
 
     if (!remoteResource) return <img {...props} src={cachedSrc} onError={onError} />;
     return (
         <span ref={targetRef} className="cached-resource-image-shell">
-            {cachedSrc ? <img {...props} src={cachedSrc} onError={onError} /> : fallback}
+            {cachedSrc && !(cacheFailed && !src) ? <img {...props} src={cachedSrc} onError={onError} /> : fallback}
         </span>
     );
 }

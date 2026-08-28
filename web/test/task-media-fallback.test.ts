@@ -1,47 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { parseTaskMediaSources, taskPreviewSource } from "../src/lib/task-media";
 
 function source(path: string) {
     return readFileSync(resolve(import.meta.dir, path), "utf8");
 }
 
 describe("media fallback", () => {
-    test("keeps the API video URL paired with its resource storage key", () => {
-        const sources = parseTaskMediaSources(JSON.stringify({
-            mode: "video",
-            video: { dataUrl: "/api/resources/resource-1/file", storageKey: "resource:resource-1", mimeType: "video/mp4" },
-        }));
-        expect(sources).toEqual([{ url: "/api/resources/resource-1/file", storageKey: "resource:resource-1", kind: "video" }]);
-        expect(taskPreviewSource({ previewUrl: "/api/resources/resource-1/file", previewKind: "video", previewStorageKey: "resource:resource-1" })).toEqual({ url: "/api/resources/resource-1/file", storageKey: "resource:resource-1", kind: "video" });
-    });
-
-    test("does not resolve OSS/CDN during normal media source parsing", () => {
-        const preview = source("../src/components/media-preview.tsx");
-        expect(preview).toContain("getResourceOSSUrl(fallbackStorageKey)");
-        expect(preview.indexOf("getResourceOSSUrl(fallbackStorageKey)")).toBeGreaterThan(preview.indexOf('if (kind === "video" && activeSrc === src'));
-    });
-
-    test("restores cached canvas media from storage keys without blocking on persistence", () => {
-        const nodeContent = source("../src/components/canvas/canvas-node-content.tsx");
-        const cachedImage = source("../src/components/cached-resource-image.tsx");
-        const cache = source("../src/services/resource-blob-cache.ts");
-
-        expect(nodeContent).toContain("Boolean(props.node.metadata?.content || props.node.metadata?.storageKey)");
-        expect(nodeContent).toContain("!node.metadata?.content && !node.metadata?.storageKey");
-        expect(nodeContent).toContain("resourceFileUrl(resourceId)");
-        expect(cachedImage).toContain('!src.startsWith("blob:")');
-        expect(cachedImage).toContain("resourceFileUrl(resourceId)");
-        expect(cache).toContain("void enqueuePersist(target, blob)");
-        expect(cache).not.toContain("await enqueuePersist(target, blob)");
-    });
-
     test("replaces failed image and video elements with an unavailable state", () => {
         const preview = source("../src/components/media-preview.tsx");
 
-        expect(preview).toContain("setUnavailable(true)");
-        expect(preview).toContain("activeSrc === src");
+        expect(preview).toContain("failedSrc === src");
         expect(preview).toContain("onError={handleUnavailable}");
         expect(preview).toContain("预览不可用，素材可能已删除");
         expect(preview).toContain("<ImageOff");

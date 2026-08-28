@@ -21,9 +21,8 @@ func TestPluginViewIncludesDocumentationForEveryBundledProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	plugins := center.list()
-	expectedCount := len(protocol.Builtins().List("", "", true)) - len(protocol.BundledHostProviderIDs()) + len(protocol.BundledHostManifests())
-	if len(plugins) != expectedCount {
-		t.Fatalf("plugin views = %d, want %d", len(plugins), expectedCount)
+	if len(plugins) != len(protocol.Builtins().List("", "", true))+2 {
+		t.Fatalf("plugin views = %d, builtins plus workflow plugins = %d", len(plugins), len(protocol.Builtins().List("", "", true))+2)
 	}
 	for _, plugin := range plugins {
 		if plugin.Source != "bundled" {
@@ -36,23 +35,29 @@ func TestPluginViewIncludesDocumentationForEveryBundledProtocol(t *testing.T) {
 	}
 }
 
-func TestBundledChannelPluginControlsAllContributedProviders(t *testing.T) {
+func TestBundledWorkflowPluginsControlAvailability(t *testing.T) {
 	center, err := newPluginRuntime(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"globalaiopc-image", "globalaiopc-video"} {
-		if !center.registrySnapshot().IsCapability(id, protocol.Capability(strings.TrimPrefix(id, "globalaiopc-"))) {
-			t.Fatalf("provider %q was not enabled", id)
-		}
+	svc := &Service{pluginRuntime: center}
+	if err := svc.RequireWorkflowPluginForInterface("runninghub-workflow-image"); err == nil {
+		t.Fatal("bundled RunningHub plugin was enabled by default")
 	}
-	if _, err := center.setEnabled("globalaiopc-channel", false); err != nil {
+	if _, err := center.setEnabled(WorkflowPluginRunningHub, true); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"globalaiopc-image", "globalaiopc-video"} {
-		if center.registrySnapshot().IsCapability(id, protocol.Capability(strings.TrimPrefix(id, "globalaiopc-"))) {
-			t.Fatalf("provider %q remained selectable after disabling channel plugin", id)
-		}
+	if err := svc.RequireWorkflowPluginForInterface("runninghub-workflow-image"); err != nil {
+		t.Fatalf("enabled RunningHub plugin rejected: %v", err)
+	}
+	if _, err := center.setEnabled(WorkflowPluginRunningHub, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RequireWorkflowPluginForInterface("runninghub-workflow-video"); err == nil {
+		t.Fatal("disabled RunningHub plugin remained available")
+	}
+	if got := svc.WorkflowPluginStatuses()[WorkflowPluginRunningHub]; got != "disabled" {
+		t.Fatalf("RunningHub status = %q, want disabled", got)
 	}
 }
 

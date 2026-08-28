@@ -16,11 +16,10 @@ export type CreationAttachmentLimits = {
 };
 
 export function buildCreationMentionReferences(skills: Skill[], attachments: CreationAttachment[] = [], snapshots: CreationReference[] = []) {
-    const attachmentCounts = { image: 0, video: 0, audio: 0, file: 0 };
+    const counts = { image: 0, video: 0, audio: 0, file: 0 };
     const attachmentReferences = attachments.map((attachment) => {
         const kind = creationAttachmentKind(attachment);
-        const index = attachmentCounts[kind]++;
-        return attachmentReference(attachment, index);
+        return attachmentReference(attachment, counts[kind]++);
     });
     const skillReferences = buildSkillMentionReferences(skills) as CreationReference[];
     const current = [...attachmentReferences, ...skillReferences];
@@ -30,7 +29,7 @@ export function buildCreationMentionReferences(skills: Skill[], attachments: Cre
 }
 
 export function selectedCreationReferences(prompt: string, references: CreationReference[]) {
-    return references.filter((reference) => prompt.includes(canvasResourceMentionToken(reference)));
+    return references.filter((reference) => prompt.includes(canvasResourceMentionToken(reference)) || prompt.includes(`@${reference.label}`));
 }
 
 export function limitCreationAttachments(attachments: CreationAttachment[], limits: number | CreationAttachmentLimits) {
@@ -85,7 +84,35 @@ function normalizeAttachmentLimit(value: number | undefined) {
 }
 
 export function removeCreationReferenceTokens(value: string, references: CreationReference[]) {
-    return references.reduce((current, reference) => current.split(canvasResourceMentionToken(reference)).join(""), value);
+    return references.reduce((current, reference) => current.split(canvasResourceMentionToken(reference)).join("").split(`@${reference.label}`).join(""), value);
+}
+
+export function replaceCreationAttachmentReference(prompt: string, attachments: CreationAttachment[], targetAttachmentId: string, replacement: CreationAttachment) {
+    const targetIndex = attachments.findIndex((attachment) => attachment.id === targetAttachmentId);
+    if (targetIndex < 0) throw new Error("要替换的参考内容不存在");
+    if (replacement.id === targetAttachmentId) return { prompt, attachments };
+
+    const currentReferences = buildCreationMentionReferences([], attachments);
+    const targetReference = currentReferences.find((reference) => reference.attachmentId === targetAttachmentId);
+    if (!targetReference) throw new Error("要替换的提示词引用不存在");
+
+    const remainingAttachments = attachments.filter((attachment) => attachment.id !== targetAttachmentId && attachment.id !== replacement.id);
+    const insertionIndex = Math.min(targetIndex, remainingAttachments.length);
+    const nextAttachments = [
+        ...remainingAttachments.slice(0, insertionIndex),
+        replacement,
+        ...remainingAttachments.slice(insertionIndex),
+    ];
+    const replacementReference = buildCreationMentionReferences([], nextAttachments).find((reference) => reference.attachmentId === replacement.id);
+    if (!replacementReference) throw new Error("替换后的提示词引用无效");
+
+    const targetToken = canvasResourceMentionToken(targetReference);
+    const replacementToken = canvasResourceMentionToken(replacementReference);
+    const normalizedPrompt = replaceVisibleReferenceLabel(prompt, targetReference.label, replacementToken);
+    return {
+        prompt: normalizedPrompt.split(targetToken).join(replacementToken),
+        attachments: nextAttachments,
+    };
 }
 
 export function displayCreationPrompt(prompt: string, references: CreationReference[]) {
@@ -140,5 +167,11 @@ function attachmentReference(attachment: CreationAttachment, index: number): Cre
         storageKey: attachment.storageKey,
         active: true,
         attachmentId: attachment.id,
+        mentionToken: `@[attachment:${attachment.id}]`,
     };
+}
+
+function replaceVisibleReferenceLabel(value: string, label: string, replacementToken: string) {
+    const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return value.replace(new RegExp(`@${escapedLabel}(?=$|\\s|[,.!?;:，。！？；：、)\\]}】）])`, "gu"), replacementToken);
 }

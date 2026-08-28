@@ -6,7 +6,7 @@ Agnes AI 官方视频接口使用 Bearer API Key 和异步任务模型。影策�
 
 {{OPERATIONS}}
 
-创建请求发送到 `/v1/videos`。轮询接口位于同一主机的根路径 `/agnesapi`，而不是 Base URL 的 `/v1` 下。影策通过“同源根路径”合同拼接请求，因此配置 `https://apihub.agnes-ai.com/v1` 时会得到 `https://apihub.agnes-ai.com/agnesapi?...`，不会错误拼成 `/v1/agnesapi`，也不会把主机硬编码进协议适配器。
+创建请求发送到 `/v1/videos`。轮询接口比较特殊：它位于同一主机的根路径 `/agnesapi`，而不是 Base URL 的 `/v1` 下。影策通过“同源根路径”合同拼接请求，因此配置 `https://apihub.agnes-ai.com/v1` 时会得到 `https://apihub.agnes-ai.com/agnesapi?...`，不会错误拼成 `/v1/agnesapi`，也不会把主机硬编码进协议适配器。
 
 请求头使用 `Authorization: Bearer <API_KEY>` 和 `Content-Type: application/json`。创建响应优先读取 `video_id`，兼容读取 `task_id` 和 `id`；轮询始终携带 `video_id`，并在模型名可用时携带 `model_name`。
 

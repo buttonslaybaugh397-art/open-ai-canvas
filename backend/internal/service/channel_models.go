@@ -150,68 +150,35 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 	if err != nil {
 		return nil, err
 	}
-	models := make([]string, 0, len(catalog))
-	for _, item := range catalog {
-		if name := strings.TrimSpace(item.ID); name != "" {
-			models = append(models, name)
-		}
-	}
 	// 只按当前未删除记录去重；普通手动删除的模型仍可重新拉取，已合并进模型家族的 SKU 除外。
 	existing, err := s.repo.ChannelModels(channelID, true)
 	if err != nil {
 		return nil, err
 	}
-	known := make(map[string]int, len(existing))
-	for index := range existing {
-		known[channelModelCatalogKey(existing[index].ModelKey)] = index
+	known := make(map[string]struct{}, len(existing))
+	for _, item := range existing {
+		known[channelModelCatalogKey(item.ModelKey)] = struct{}{}
 	}
 	retired := retiredChannelModelKeys(channel.RetiredModelsJSON)
-	missing := make([]model.ChannelModel, 0, len(catalog))
-	inCatalog := make(map[string]bool, len(catalog))
-	repaired := false
-	for index := range catalog {
-		item := &catalog[index]
-		name := strings.TrimPrefix(strings.TrimSpace(item.ID), "models/")
+	missing := make([]model.ChannelModel, 0, len(models))
+	for _, name := range models {
+		name = strings.TrimPrefix(strings.TrimSpace(name), "models/")
 		key := channelModelCatalogKey(name)
-		if key == "" || retired[key] {
-			continue
-		}
-		inCatalog[name] = true
-		if existingIndex, ok := known[key]; ok {
-			if syncChannelModelContract(*channel, &existing[existingIndex], item.SupportedEndpointTypes, item) {
-				if saveErr := s.repo.SaveChannelModel(&existing[existingIndex]); saveErr != nil {
-					return nil, saveErr
-				}
-				repaired = true
-			}
+		if _, ok := known[key]; ok || retired[key] {
 			continue
 		}
 		// 自动发现不能绕过定价边界；新模型由管理员定价后再手动启用。
-		missing = append(missing, discoveredChannelModel(*channel, name, item.SupportedEndpointTypes, item))
-	}
-	if channelConnectionType(channel) == "aistarslab" {
-		for index := range existing {
-			item := &existing[index]
-			if inCatalog[item.ModelKey] {
-				continue
-			}
-			legacy := aiStarsLabCatalogItemForLegacyKey(catalog, item.ModelKey)
-			if legacy == nil {
-				continue
-			}
-			if syncChannelModelContract(*channel, item, legacy.SupportedEndpointTypes, legacy) {
-				if saveErr := s.repo.SaveChannelModel(item); saveErr != nil {
-					return nil, saveErr
-				}
-				repaired = true
-			}
+		modelID, idErr := s.repo.NextPrefixedID("MODEL")
+		if idErr != nil {
+			return nil, idErr
 		}
+		missing = append(missing, model.ChannelModel{ID: modelID, ChannelID: channelID, ModelKey: name, DisplayName: name, BillingMode: "fixed_request", Enabled: false, PriceVersion: 1})
 	}
 	added, err := s.repo.CreateMissingChannelModels(missing)
 	if err != nil {
 		return nil, err
 	}
-	if added > 0 || repaired {
+	if added > 0 {
 		s.invalidateRouteCatalog()
 	}
 	return &AdminChannelModelFetchResult{Models: models, Added: added}, nil
@@ -932,35 +899,18 @@ func normalizeChannelModelContractWithRegistry(registry *protocol.Registry, chan
 	if capability == "" {
 		return "", "", "", "", BadAuthRequest("请选择模型能力")
 	}
-	requestedProtocol := model.ChannelInterfaceType(strings.TrimSpace(req.Protocol))
 	adapter, ok := registry.Resolve(strings.TrimSpace(req.Protocol))
-	protocol := requestedProtocol
-	expectedCapability := capabilityForProtocolValue(protocol)
-	if ok {
-		if !adapter.Metadata().Enabled || adapter.Metadata().UnavailableReason != "" {
-			return "", "", "", "", BadAuthRequest("请选择有效的模型请求协议")
-		}
-		protocol = model.ChannelInterfaceType(adapter.Metadata().ID)
-		expectedCapability = protocolCapabilityFromMetadata(adapter.Metadata())
-	} else if !isHostBackedChannelProtocol(protocol) {
+	if !ok || !adapter.Metadata().Enabled || adapter.Metadata().UnavailableReason != "" {
 		return "", "", "", "", BadAuthRequest("请选择有效的模型请求协议")
 	}
-	if expectedCapability != "" && expectedCapability != capability {
+	protocol := model.ChannelInterfaceType(adapter.Metadata().ID)
+	if expected := protocolCapabilityFromMetadata(adapter.Metadata()); expected != "" && expected != capability {
 		return "", "", "", "", BadAuthRequest("模型能力与请求协议不匹配")
 	}
 	if (protocol == model.ChannelInterfaceVolcengineJiMengImage || protocol == model.ChannelInterfaceVolcengineJiMengVideo) && (strings.TrimSpace(channel.APIKey) == "" || strings.TrimSpace(channel.SecretKey) == "") {
 		return "", "", "", "", BadAuthRequest("即梦官方协议需要先在渠道中配置 Access Key 和 Secret Key")
 	}
 	return modelKey, providerModelKey, capability, protocol, nil
-}
-
-func isHostBackedChannelProtocol(protocol model.ChannelInterfaceType) bool {
-	switch protocol {
-	case model.ChannelInterfaceGlobalAiOpcVideo, model.ChannelInterfaceHuiQuYunVideo, model.ChannelInterfaceAIStarsLabImage, model.ChannelInterfaceAIStarsLabVideo:
-		return true
-	default:
-		return false
-	}
 }
 
 func (s *Service) DeleteAdminChannelModel(actor *model.User, channelID string, id string) error {

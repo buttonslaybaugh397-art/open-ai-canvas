@@ -1,5 +1,5 @@
 import { modelRequestOptions, resolveVideoOperation, type ModelRequirements } from "@/lib/model-selection";
-import { normalizeVideoResolution } from "@/lib/video-generation-options";
+import { videoResolutionComparisonKey } from "@/lib/video-generation-options";
 import type { ModelRequestIntent } from "@/services/api/logical-models";
 import { modelOptionName, resolveModelChannel, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 
@@ -13,16 +13,7 @@ type ModelCreditCost = {
     logicalPriceTiers?: ModelPriceTier[];
 };
 
-export function requestCreditCost(options: {
-    channelMode: string;
-    modelCosts?: ModelCreditCost[];
-    model: string;
-    count?: string | number;
-    seconds?: string | number;
-    capability?: ModelCapability;
-    config?: AiConfig;
-    requirements?: ModelRequirements;
-}) {
+export function requestCreditCost(options: { channelMode: string; modelCosts?: ModelCreditCost[]; model: string; count?: string | number; seconds?: string | number; capability?: ModelCapability; config?: AiConfig; requirements?: ModelRequirements }) {
     if (options.channelMode !== "remote") return null;
     const cost = options.modelCosts?.find((item) => item.model === options.model) || null;
     if (!cost) return null;
@@ -86,9 +77,7 @@ export function modelQuoteRequest(config: AiConfig, value: string, capability?: 
 }
 
 function creditAmount(billingMode: "fixed_request" | "per_second", unitPriceMicrocredits: number, count?: string | number, seconds?: string | number) {
-    const quantity = billingMode === "per_second"
-        ? Math.max(1, Math.floor(Math.abs(Number(seconds)) || 1))
-        : Math.max(1, Math.floor(Math.abs(Number(count)) || 1));
+    const quantity = billingMode === "per_second" ? Math.max(1, Math.floor(Math.abs(Number(seconds)) || 1)) : Math.max(1, Math.floor(Math.abs(Number(count)) || 1));
     return (unitPriceMicrocredits / 1_000_000) * quantity;
 }
 
@@ -126,5 +115,5 @@ function priceSelectorForTier(tier: ModelPriceTier) {
 export function normalizeTierResolution(value: string) {
     const raw = String(value || "").trim();
     if (!raw || raw === "*") return "*";
-    return `${normalizeVideoResolution(raw)}p`;
+    return videoResolutionComparisonKey(raw);
 }

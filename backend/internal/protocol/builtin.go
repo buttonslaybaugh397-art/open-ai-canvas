@@ -71,14 +71,12 @@ func Builtins() *Registry {
 	if builtinRegistry != nil {
 		return builtinRegistry
 	}
-	adapters := []Adapter{
+	registry, err := NewRegistry(
 		openAIChatAdapter(), openAIResponsesAdapter(), claudeAdapter(),
 		openAIImagesAdapter(), grokImagesAdapter(), arkImagesAdapter(), jimengImagesAdapter(), geminiImagesAdapter(),
 		openAIVideosAdapter(), newAPIChannel1Adapter(), newAPIVideosAdapter(), xAIVideosAdapter(), arkVideosAdapter(), jimengVideosAdapter(), geminiVeoAdapter(), novitaVideosAdapter(), miniMaxVideosAdapter(),
 		openAIAudioAdapter(), asyncAudioAdapter(), agnesAdapter(),
-	}
-	adapters = append(adapters, customChannelAdapters()...)
-	registry, err := NewRegistry(adapters...)
+	)
 	if err != nil {
 		panic(err)
 	}
@@ -384,6 +382,9 @@ func arkVideosAdapter() Adapter {
 	info := metadata("volcengine-ark-video", "火山方舟视频", "Volcengine Ark", CapabilityVideo, "POST /api/v3/contents/generations/tasks", "GET /api/v3/contents/generations/tasks/{task_id}", "application/json")
 	info.Parameters = videoParams()
 	return videoAdapter(info, func(r GenerationRequest) (RequestSpec, error) {
+		if len(r.Images) > 9 || len(r.Videos) > 3 || len(r.Audios) > 3 {
+			return RequestSpec{}, fmt.Errorf("火山方舟全模态参考最多支持 9 张图片、3 个视频和 3 个音频")
+		}
 		if len(r.Audios) > 0 && len(r.Images) == 0 && len(r.Videos) == 0 {
 			return RequestSpec{}, fmt.Errorf("火山方舟全模态参考不支持纯音频或文本+音频，请同时添加参考图片或参考视频")
 		}
