@@ -53,7 +53,7 @@
         "leafer-ui": "^2.2.7",
         "localforage": "^1.10.0",
         "lucide-react": "^1.25.0",
-        "mammoth": "^1.12.0",
+        "mammoth": "^1.12.1",
         "motion": "^12.42.2",
         "nanoid": "^6.0.0",
         "react": "19.2.7",
