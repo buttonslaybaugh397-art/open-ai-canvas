@@ -3,7 +3,7 @@ import { readImageMeta } from "@/lib/image-utils";
 import { parseBackendGenerationResult, type BackendGenerationResult } from "@/services/api/generation-task";
 import { linkProjectAsset, moveProjectAsset, updateProjectAssetCategory } from "@/services/api/projects";
 import type { GenerationTask, GenerationTaskOutput } from "@/services/api/task-center";
-import { getMediaBlob, resolveMediaUrl, setMediaBlob } from "@/services/file-storage";
+import { getMediaBlob, resolveMediaUrl, setMediaBlob, uploadMediaFile } from "@/services/file-storage";
 import { createGenerationTaskMaterializer, createIdempotentMaterializeOutput, type MaterializeGenerationTaskOutput } from "@/services/generation-task-materializer";
 import { withGenerationArtifactCommitLock } from "@/services/generation-asset-repository";
 import { uploadGeneratedAssetToConfiguredSources } from "@/services/external-asset-sources";
@@ -192,29 +192,30 @@ async function storedGenerationImage(result: NonNullable<BackendGenerationResult
     };
 }
 
-async function storedGenerationMedia(dataUrl: string, effectKey: string, mediaType: "video" | "audio", metadata: { width?: number; height?: number; durationMs?: number; bytes?: number; mimeType: string }, scope: string, signal?: AbortSignal) {
+async function storedGenerationMedia(backupSource: string, effectKey: string, mediaType: "video" | "audio", metadata: { width?: number; height?: number; durationMs?: number; bytes?: number; mimeType: string }, scope: string, signal?: AbortSignal, preferredUrl = "") {
     throwIfAborted(signal);
     const storageKey = generationArtifactStorageKey(effectKey, mediaType, scope);
     const blob = await loadOrStoreGenerationArtifact({
         effectKey: storageKey,
         read: (key) => getMediaBlob(key),
-        materialize: async () => (await fetch(dataUrl, { signal })).blob(),
+        materialize: async () => (await fetch(backupSource, { signal })).blob(),
         write: async (key, artifact) => {
             await setMediaBlob(key, artifact);
         },
     });
     throwIfAborted(signal);
-    const url = await resolveMediaUrl(storageKey);
+    const uploaded = await uploadMediaFile(blob, mediaType, { allowLocalFallback: mediaType !== "video" });
+    const url = preferredUrl || uploaded.url;
     throwIfAborted(signal);
     if (!url) throw new Error(`${mediaType === "video" ? "视频" : "音频"}结果资源不可用`);
     return {
         url,
-        storageKey,
+        storageKey: uploaded.storageKey,
         width: metadata.width,
         height: metadata.height,
         durationMs: metadata.durationMs,
-        bytes: metadata.bytes || blob.size,
-        mimeType: metadata.mimeType || blob.type,
+        bytes: metadata.bytes || uploaded.bytes || blob.size,
+        mimeType: metadata.mimeType || uploaded.mimeType || blob.type,
     };
 }
 
@@ -259,7 +260,7 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
         if (!video) throw new Error("生成任务缺少视频输出");
         const stored = video.storageKey
             ? {
-                  url: await resolveMediaUrl(video.storageKey, video.dataUrl),
+                  url: video.url || (await resolveMediaUrl(video.storageKey, video.dataUrl)),
                   storageKey: video.storageKey,
                   width: video.width || 0,
                   height: video.height || 0,
@@ -268,7 +269,7 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
                   mimeType: video.mimeType || "video/mp4",
               }
             : await storedGenerationMedia(
-                  video.dataUrl,
+                  video.dataUrl || video.url || "",
                   input.effectKey,
                   "video",
                   {
@@ -280,6 +281,7 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
                   },
                   scope,
                   input.signal,
+                  video.url,
               );
         if (!stored.url) throw new Error("视频结果资源不可用");
         return {
@@ -525,7 +527,7 @@ export function generationTaskMediaSources(task: GenerationTask): TaskMediaSourc
     if (result.images?.length) {
         result.images.forEach((image, outputIndex) => mediaResults.push({ url: image.dataUrl, storageKey: image.storageKey, kind: "image", outputIndex }));
     } else if (result.video) {
-        mediaResults.push({ url: result.video.dataUrl, storageKey: result.video.storageKey, kind: "video", outputIndex: 0 });
+        mediaResults.push({ url: result.video.url || result.video.dataUrl || "", storageKey: result.video.storageKey, kind: "video", outputIndex: 0 });
     } else if (result.audio) {
         mediaResults.push({ url: result.audio.dataUrl, storageKey: result.audio.storageKey, kind: "audio", outputIndex: 0 });
     }

@@ -41,6 +41,23 @@ func TestTaskMediaPreviewUsesSafeMediaURLs(t *testing.T) {
 	}
 }
 
+func TestTaskMediaPreviewKeepsProviderVideoURLAndStorageKey(t *testing.T) {
+	raw := "{\"video\":{\"url\":\"https://provider.example.com/output.mp4\",\"dataUrl\":\"/api/resources/resource-1/file\",\"storageKey\":\"resource:resource-1\"}}"
+	previewURL, previewKind := taskMediaPreview(raw, "video")
+	if previewURL != "https://provider.example.com/output.mp4" || previewKind != "video" {
+		t.Fatalf("unexpected video preview: url=%q kind=%q", previewURL, previewKind)
+	}
+	if storageKey := taskMediaPreviewStorageKey(raw, previewURL); storageKey != "resource:resource-1" {
+		t.Fatalf("storage key = %q", storageKey)
+	}
+
+	task := model.Task{Type: "canvas_video", ResultJSON: raw}
+	summary := taskSummaryForOutput(task)
+	if summary.PreviewURL != previewURL || summary.PreviewStorageKey != "resource:resource-1" {
+		t.Fatalf("summary preview = %#v", summary)
+	}
+}
+
 func TestTaskClientContextRequiresCreatePageMetadata(t *testing.T) {
 	valid := taskClientContext(`{"metadata":{"source":"create-page","conversationId":"conversation-1","messageId":"message-1","batchIndex":2,"batchCount":4}}`)
 	if valid == nil || valid.ConversationID != "conversation-1" || valid.BatchIndex != 2 {

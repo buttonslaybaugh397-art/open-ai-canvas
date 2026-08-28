@@ -137,7 +137,7 @@ func runVolcengineJiMengVideoTask(ctx context.Context, input canvasGenerationInp
 				return nil, fmt.Errorf("即梦视频任务 %s 下载失败：%w", taskID, err)
 			}
 			mimeType = normalizedMediaMimeType(mimeType, data)
-			return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
+			return videoResult(videoURL, mimeType, data), nil
 		case "not_found", "expired":
 			return nil, fmt.Errorf("即梦视频任务 %s 已失效，请重新生成", taskID)
 		}

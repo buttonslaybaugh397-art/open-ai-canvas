@@ -356,9 +356,6 @@ func (s *Service) OpenPublicResourceRange(id string, expires string, signature s
 	if err != nil {
 		return nil, Forbidden("匿名下载链接无效")
 	}
-	if resource.Provider != "local" && resource.Provider != s3Provider {
-		return nil, Forbidden("匿名下载链接无效")
-	}
 	if err := s.verifyPublicResourceSignature(resource.ID, expires, signature); err != nil {
 		return nil, err
 	}
@@ -715,6 +712,7 @@ func (s *Service) persistGeneratedMediaValueMode(userID string, value interface{
 		return item, nil
 	case map[string]interface{}:
 		if raw := inlineMediaValue(item); raw != "" {
+			preferredURL, _ := item["url"].(string)
 			mimeType, data, err := s.decodeDataURL(raw)
 			if err != nil && !skipInvalidDataURL {
 				return nil, err
@@ -751,7 +749,11 @@ func (s *Service) persistGeneratedMediaValueMode(userID string, value interface{
 				if _, ok := item["dataUrl"]; ok {
 					item["dataUrl"] = resourceURL
 				}
-				item["url"] = resourceURL
+				if strings.HasPrefix(preferredURL, "http://") || strings.HasPrefix(preferredURL, "https://") {
+					item["url"] = preferredURL
+				} else {
+					item["url"] = resourceURL
+				}
 				item["storageKey"] = "resource:" + resource.ID
 				item["resourceId"] = resource.ID
 				item["bytes"] = resource.Size

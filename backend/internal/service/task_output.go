@@ -31,6 +31,7 @@ type TaskSummary struct {
 	ErrorCode                 string                     `json:"errorCode,omitempty"`
 	PreviewURL                string                     `json:"previewUrl,omitempty"`
 	PreviewKind               string                     `json:"previewKind,omitempty"`
+	PreviewStorageKey         string                     `json:"previewStorageKey,omitempty"`
 	Attempts                  int                        `json:"attempts"`
 	StartedAt                 *time.Time                 `json:"startedAt"`
 	CompletedAt               *time.Time                 `json:"completedAt"`
@@ -93,6 +94,7 @@ func taskSummaryForOutput(task model.Task) TaskSummary {
 		errorCode = contentModerationErrorCode
 	}
 	previewURL, previewKind := taskMediaPreview(task.ResultJSON, task.Type)
+	previewStorageKey := taskMediaPreviewStorageKey(task.ResultJSON, previewURL)
 	return TaskSummary{
 		ID:                        task.ID,
 		SessionID:                 task.SessionID,
@@ -114,6 +116,7 @@ func taskSummaryForOutput(task model.Task) TaskSummary {
 		ErrorCode:                 errorCode,
 		PreviewURL:                previewURL,
 		PreviewKind:               previewKind,
+		PreviewStorageKey:         previewStorageKey,
 		Attempts:                  task.Attempts,
 		StartedAt:                 task.StartedAt,
 		CompletedAt:               task.CompletedAt,
@@ -121,6 +124,41 @@ func taskSummaryForOutput(task model.Task) TaskSummary {
 		UpdatedAt:                 task.UpdatedAt,
 		ClientContext:             taskClientContext(task.InputJSON),
 	}
+}
+
+func taskMediaPreviewStorageKey(raw string, previewURL string) string {
+	if strings.TrimSpace(raw) == "" || strings.TrimSpace(previewURL) == "" {
+		return ""
+	}
+	var payload any
+	if json.Unmarshal([]byte(raw), &payload) != nil {
+		return ""
+	}
+	return findTaskMediaStorageKey(payload, previewURL)
+}
+
+func findTaskMediaStorageKey(value any, previewURL string) string {
+	switch item := value.(type) {
+	case []any:
+		for _, child := range item {
+			if storageKey := findTaskMediaStorageKey(child, previewURL); storageKey != "" {
+				return storageKey
+			}
+		}
+	case map[string]any:
+		storageKey, _ := item["storageKey"].(string)
+		for _, key := range []string{"url", "videoUrl", "imageUrl", "outputUrl", "mediaUrl", "dataUrl", "content", "coverUrl", "resultUrl"} {
+			if candidate, _ := item[key].(string); candidate == previewURL && storageKey != "" {
+				return storageKey
+			}
+		}
+		for _, child := range item {
+			if found := findTaskMediaStorageKey(child, previewURL); found != "" {
+				return found
+			}
+		}
+	}
+	return ""
 }
 
 // 列表只暴露创作页恢复所需的关联 ID，不下发完整任务输入或其他 metadata。
@@ -183,7 +221,7 @@ func findTaskMediaPreview(value any, hint string) (string, string) {
 			}
 		}
 	case map[string]any:
-		for _, key := range []string{"images", "image", "video", "dataUrl", "url", "resultUrl", "outputUrl"} {
+		for _, key := range []string{"images", "image", "video", "url", "dataUrl", "resultUrl", "outputUrl"} {
 			child, exists := item[key]
 			if !exists {
 				continue

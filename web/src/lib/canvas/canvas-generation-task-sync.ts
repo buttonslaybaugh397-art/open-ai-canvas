@@ -140,18 +140,21 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
     }
 
     if (mode === "video") {
-        if (!result.video?.dataUrl) throw new Error("后端任务没有返回视频");
-        const video = result.video.storageKey
+        const videoResult = result.video;
+        if (!videoResult) throw new Error("后端任务没有返回视频");
+        const videoSource = videoResult?.url || videoResult?.dataUrl || "";
+        if (!videoSource) throw new Error("后端任务没有返回视频");
+        const video = videoResult.storageKey
             ? {
-                  url: await resolveMediaUrl(result.video.storageKey, result.video.dataUrl),
-                  storageKey: result.video.storageKey,
-                  width: result.video.width,
-                  height: result.video.height,
-                  durationMs: result.video.durationMs,
-                  bytes: result.video.bytes || 0,
-                  mimeType: result.video.mimeType || "video/mp4",
+                  url: videoResult.url || (await resolveMediaUrl(videoResult.storageKey, videoSource)),
+                  storageKey: videoResult.storageKey,
+                  width: videoResult.width,
+                  height: videoResult.height,
+                  durationMs: videoResult.durationMs,
+                  bytes: videoResult.bytes || 0,
+                  mimeType: videoResult.mimeType || "video/mp4",
               }
-            : await storeGeneratedVideo({ url: result.video.dataUrl, mimeType: result.video.mimeType || "video/mp4" });
+            : await storeGeneratedVideo({ url: videoSource, dataUrl: videoResult.dataUrl, mimeType: videoResult.mimeType || "video/mp4" });
         const videoSize = fitNodeSize(video.width || node.width || VIDEO_NODE_MAX_SIZE.width, video.height || node.height || VIDEO_NODE_MAX_SIZE.height, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
         const geometry = node.metadata?.locked
             ? {}

@@ -277,6 +277,10 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 			video.Resolutions = []string{"480p", "720p", "1080p"}
 		}
 	case model.ChannelInterfaceNewAPIVideo, model.ChannelInterfaceXAIVideo:
+		video.Operations = append(video.Operations, "reference_to_video", "audio_to_video")
+		video.References.MaxVideos, video.References.MaxAudios = 3, 3
+		video.References.MaxVideoBytes, video.References.MaxAudioBytes = 200*1024*1024, 30*1024*1024
+		video.References.MaxVideoDuration, video.References.MaxAudioDuration = 30, 30
 		video.GenerateAudio = VideoBooleanConfig{Supported: false, Default: false}
 	case model.ChannelInterfaceNovitaVideo:
 		video.References.MaxImages, video.References.MaxImageBytes = 1, 10*1024*1024

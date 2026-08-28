@@ -323,6 +323,15 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.references.maxAudioDurationSeconds = 30;
         video.operations.push("reference_to_video", "audio_to_video");
     }
+    if (protocol === "newapi" || protocol === "xai-video") {
+        video.references.maxVideos = 3;
+        video.references.maxAudios = 3;
+        video.references.maxVideoBytes = 200 * 1024 * 1024;
+        video.references.maxAudioBytes = 30 * 1024 * 1024;
+        video.references.maxVideoDurationSeconds = 30;
+        video.references.maxAudioDurationSeconds = 30;
+        video.operations.push("reference_to_video", "audio_to_video");
+    }
     if (protocol === "globalaiopc-video") {
         video.generateAudio = { supported: true, default: true };
         video.watermark = { supported: true, default: false };

@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { getResolvedVideoFallbackUrl, setResolvedVideoFallbackUrl, useResolvedVideoFallbackUrl } from "@/lib/task-media";
 import { cn } from "@/lib/utils";
 import { getResourceOSSUrl, resourceIdFromStorageKey, resourceProxyFileUrl } from "@/services/api/resources";
+import { getCachedResourceObjectUrl } from "@/services/resource-blob-cache";
+import { resolveMediaUrl } from "@/services/file-storage";
 
 const DEFAULT_UNAVAILABLE_LABEL = "预览不可用，素材可能已删除";
 
@@ -43,6 +45,7 @@ export function MediaPreview({
     const [activeSrc, setActiveSrc] = useState(src);
     const [unavailable, setUnavailable] = useState(false);
     const fallbackAttemptedRef = useRef(false);
+    const localFallbackAttemptedRef = useRef(false);
     const resourceId = resourceIdFromStorageKey(fallbackStorageKey);
     const proxyFallbackUrl = resourceId ? resourceProxyFileUrl(resourceId) : "";
     const sourceVersionRef = useRef(0);
@@ -50,6 +53,7 @@ export function MediaPreview({
     useEffect(() => {
         sourceVersionRef.current += 1;
         fallbackAttemptedRef.current = false;
+        localFallbackAttemptedRef.current = false;
         setActiveSrc(src);
         setUnavailable(false);
     }, [fallbackStorageKey, knownFallbackUrl, src]);
@@ -78,6 +82,29 @@ export function MediaPreview({
         }
         if (activeSrc !== proxyFallbackUrl && proxyFallbackUrl) {
             setActiveSrc(proxyFallbackUrl);
+            return;
+        }
+        if (!localFallbackAttemptedRef.current && fallbackStorageKey) {
+            localFallbackAttemptedRef.current = true;
+            const version = sourceVersionRef.current;
+            void (resourceId
+                ? getCachedResourceObjectUrl(fallbackStorageKey)
+                : resolveMediaUrl(fallbackStorageKey))
+                .then((localUrl) => {
+                    if (version !== sourceVersionRef.current) return;
+                    if (localUrl && localUrl !== activeSrc) {
+                        setActiveSrc(localUrl);
+                        return;
+                    }
+                    setUnavailable(true);
+                    onUnavailable?.();
+                })
+                .catch(() => {
+                    if (version === sourceVersionRef.current) {
+                        setUnavailable(true);
+                        onUnavailable?.();
+                    }
+                });
             return;
         }
         setUnavailable(true);

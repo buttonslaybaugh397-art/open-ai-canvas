@@ -10,17 +10,22 @@ export type UploadedFile = { url: string; storageKey: string; bytes: number; mim
 const store = localforage.createInstance({ name: "infinite-canvas", storeName: "media_files" });
 const objectUrls = new Map<string, string>();
 
-export async function uploadMediaFile(input: string | Blob, prefix = "file"): Promise<UploadedFile> {
+export async function uploadMediaFile(input: string | Blob, prefix = "file", options?: { allowLocalFallback?: boolean }): Promise<UploadedFile> {
     const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
     const previewUrl = URL.createObjectURL(blob);
     const meta: { width?: number; height?: number; durationMs?: number } = blob.type.startsWith("video/") ? await readVideoMeta(previewUrl) : blob.type.startsWith("audio/") ? await readAudioMeta(previewUrl) : {};
+    const allowLocalFallback = options?.allowLocalFallback ?? !blob.type.startsWith("video/");
     try {
         const kind = blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : "file";
         const resource = await uploadResourceFile(blob, kind, { ...meta, fileName: input instanceof File ? input.name : undefined });
         await primeResourceBlobCache(resourceStorageKey(resource.id), blob).catch(() => "");
         URL.revokeObjectURL(previewUrl);
         return { url: resource.publicUrl || resourceFileUrl(resource.id), storageKey: resourceStorageKey(resource.id), bytes: resource.size || blob.size, mimeType: resource.mimeType || blob.type || "application/octet-stream", width: resource.width || meta.width, height: resource.height || meta.height, durationMs: resource.durationMs || meta.durationMs };
-    } catch {
+    } catch (error) {
+        if (!allowLocalFallback) {
+            URL.revokeObjectURL(previewUrl);
+            throw error instanceof Error ? error : new Error("媒体同步到服务器资源存储失败");
+        }
         // OSS is optional during local/self-hosted setup. Keep the existing local fallback.
     }
     const storageKey = `${prefix}:${getActiveUserScope()}:${nanoid()}`;
@@ -34,6 +39,8 @@ export async function resolveMediaUrl(storageKey?: string, fallback = "") {
     if (!storageKey) return fallback;
     const resourceId = resourceIdFromStorageKey(storageKey);
     if (resourceId) {
+        // Keep the provider URL primary; the resource is the durable fallback.
+        if (fallback) return fallback;
         const cached = await getCachedResourceObjectUrl(storageKey).catch(() => "");
         return cached || resourceFileUrl(resourceId);
     }

@@ -14,7 +14,7 @@ type TaskMediaSourceTask = {
     outputs?: Array<{ providerArtifactRef?: string }>;
 };
 
-const mediaUrlFields = ["dataUrl", "url", "videoUrl", "imageUrl", "outputUrl", "mediaUrl"] as const;
+const mediaUrlFields = ["url", "videoUrl", "imageUrl", "outputUrl", "mediaUrl", "dataUrl"] as const;
 const resolvedVideoFallbacks = new Map<string, string>();
 const fallbackListeners = new Set<() => void>();
 
@@ -75,7 +75,12 @@ export function parseTaskMediaSources(value?: string): TaskMediaSource[] {
                 break;
             }
         }
-        Object.entries(record).forEach(([field, child]) => visit(child, field));
+        Object.entries(record).forEach(([field, child]) => {
+            // A media record can expose its provider URL and durable resource URL together.
+            // The selected URL above is the single display source; do not add its backup again.
+            if (typeof child === "string" && mediaUrlFields.includes(field as (typeof mediaUrlFields)[number])) return;
+            visit(child, field);
+        });
     };
 
     visit(parsed);

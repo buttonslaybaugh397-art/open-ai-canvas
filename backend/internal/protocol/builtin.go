@@ -292,7 +292,14 @@ func openAIVideosAdapter() Adapter {
 			body["size"] = r.AspectRatio
 		}
 		if len(r.Images) > 0 {
-			body["input_reference"] = mediaValues(r.Images)
+			references := append([]MediaReference{}, r.Images...)
+			references = append(references, r.Videos...)
+			references = append(references, r.Audios...)
+			body["input_reference"] = mediaValues(references)
+		} else if len(r.Videos) > 0 || len(r.Audios) > 0 {
+			references := append([]MediaReference{}, r.Videos...)
+			references = append(references, r.Audios...)
+			body["input_reference"] = mediaValues(references)
 		}
 		return RequestSpec{Method: http.MethodPost, Path: "/v1/videos", ContentType: "multipart/form-data", Body: body}, nil
 	})
@@ -305,8 +312,8 @@ func openAIVideoParams() []Parameter {
 		{Name: "images", Type: "media[]", Mapping: "input_reference", Description: "可选参考图，作为 multipart 文件上传到 input_reference。"},
 		{Name: "duration", Type: "integer", Mapping: "seconds", Description: "视频时长，单位为秒。"},
 		{Name: "aspectRatio", Type: "string", Mapping: "size", Description: "视频尺寸，例如 1280x720；该协议使用 size 而不是独立的 aspect_ratio。"},
-		{Name: "videos", Type: "media[]", Mapping: "unsupported", Description: "OpenAI Videos 当前适配器不发送参考视频。"},
-		{Name: "audios", Type: "media[]", Mapping: "unsupported", Description: "OpenAI Videos 当前适配器不发送参考音频。"},
+		{Name: "videos", Type: "media[]", Mapping: "input_reference", Description: "可选参考视频，作为 multipart 文件上传到 input_reference。"},
+		{Name: "audios", Type: "media[]", Mapping: "input_reference", Description: "可选参考音频，作为 multipart 文件上传到 input_reference。"},
 		{Name: "resolution", Type: "string", Mapping: "unsupported", Description: "分辨率通过 size 表达。"},
 		{Name: "generateAudio", Type: "boolean", Mapping: "unsupported", Description: "当前适配器不额外发送该字段。"},
 		{Name: "watermark", Type: "boolean", Mapping: "unsupported", Description: "当前适配器不额外发送该字段。"},

@@ -27,16 +27,16 @@ type newAPIVideoRequest struct {
 }
 
 type seedanceVideosRequest struct {
-	Model               string   `json:"model"`
-	Prompt              string   `json:"prompt"`
-	AspectRatio         string   `json:"aspect_ratio"`
-	Duration            int      `json:"duration"`
-	GenerateAudio       *bool    `json:"generate_audio,omitempty"`
-	ImageURL            string   `json:"image_url,omitempty"`
-	ImageURLs           []string `json:"image_urls,omitempty"`
-	ReferenceImageURLs  []string `json:"reference_image_urls,omitempty"`
-	ReferenceVideos     []string `json:"reference_videos,omitempty"`
-	ReferenceAudios     []string `json:"reference_audios,omitempty"`
+	Model              string   `json:"model"`
+	Prompt             string   `json:"prompt"`
+	AspectRatio        string   `json:"aspect_ratio"`
+	Duration           int      `json:"duration"`
+	GenerateAudio      *bool    `json:"generate_audio,omitempty"`
+	ImageURL           string   `json:"image_url,omitempty"`
+	ImageURLs          []string `json:"image_urls,omitempty"`
+	ReferenceImageURLs []string `json:"reference_image_urls,omitempty"`
+	ReferenceVideos    []string `json:"reference_videos,omitempty"`
+	ReferenceAudios    []string `json:"reference_audios,omitempty"`
 }
 
 type xaiVideoRequest struct {
@@ -47,6 +47,8 @@ type xaiVideoRequest struct {
 	Resolution      string          `json:"resolution"`
 	Image           *xaiVideoImage  `json:"image,omitempty"`
 	ReferenceImages []xaiVideoImage `json:"reference_images,omitempty"`
+	ReferenceVideos []xaiVideoImage `json:"reference_videos,omitempty"`
+	ReferenceAudios []xaiVideoImage `json:"reference_audios,omitempty"`
 }
 
 type xaiVideoImage struct {

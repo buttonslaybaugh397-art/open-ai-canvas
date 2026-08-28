@@ -3,6 +3,7 @@ import { Eye, FileText, FolderKanban, Image as ImageIcon, Play, RotateCcw, Video
 import { useState } from "react";
 
 import { MediaPreview } from "@/components/media-preview";
+import { taskPreviewSource } from "@/lib/task-media";
 import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError } from "@/lib/generation-error";
 import { formatTaskKind, statusLabel } from "@/lib/generation-task-display";
 import type { GenerationTask } from "@/services/api/task-center";
@@ -102,6 +103,7 @@ function TaskPreviewThumbnail({ task, onOpen }: { task: GenerationTask; onOpen: 
     const fallbackVideo = task.type.includes("video");
     const [unavailableUrl, setUnavailableUrl] = useState("");
     const previewUnavailable = Boolean(task.previewUrl && unavailableUrl === task.previewUrl);
+    const mediaSource = taskPreviewSource(task);
     if (!task.previewUrl) {
         const Icon = fallbackVideo ? Video : task.type.includes("image") ? ImageIcon : FileText;
         return (
@@ -119,7 +121,7 @@ function TaskPreviewThumbnail({ task, onOpen }: { task: GenerationTask; onOpen: 
             aria-label={previewUnavailable ? "预览不可用，素材可能已删除" : isVideo ? "放大预览生成视频" : "放大预览生成图片"}
             title={previewUnavailable ? "预览不可用，素材可能已删除" : undefined}
         >
-            <MediaPreview src={task.previewUrl} kind={isVideo ? "video" : "image"} width={68} height={48} loading="lazy" className="h-full w-full object-cover" fallbackLabel="预览不可用" onUnavailable={() => setUnavailableUrl(task.previewUrl || "")} />
+            <MediaPreview src={task.previewUrl} kind={isVideo ? "video" : "image"} width={68} height={48} loading="lazy" className="h-full w-full object-cover" fallbackLabel="预览不可用" fallbackStorageKey={mediaSource?.storageKey} onUnavailable={() => setUnavailableUrl(task.previewUrl || "")} />
             {!previewUnavailable ? (
                 <span className="absolute inset-0 grid place-items-center bg-black/0 text-white opacity-0 transition-[background-color,opacity] duration-150 group-hover:bg-black/30 group-hover:opacity-100 group-focus-visible:bg-black/30 group-focus-visible:opacity-100">
                     {isVideo ? <Play className="size-4 fill-current" /> : <Eye className="size-4" />}

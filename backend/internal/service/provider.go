@@ -2223,6 +2223,24 @@ func openAIVideoInputURL(media providerMedia) (string, error) {
 	return "", errors.New("文本多模态参考视频需要公网 URL 或 base64 data URL")
 }
 
+func openAIAudioInputURL(media providerMedia) (string, error) {
+	value := strings.TrimSpace(media.DataURL)
+	if strings.HasPrefix(value, "data:audio/") {
+		return value, nil
+	}
+	if strings.HasPrefix(value, "data:") {
+		return "", errors.New("参考音频 MIME 类型无效，请重新读取或上传音频")
+	}
+	value = strings.TrimSpace(media.URL)
+	if strings.HasPrefix(value, "data:audio/") || isPublicMediaURL(value) {
+		return value, nil
+	}
+	if strings.HasPrefix(value, "data:") {
+		return "", errors.New("参考音频 MIME 类型无效，请重新读取或上传音频")
+	}
+	return "", errors.New("文本多模态参考音频需要公网 URL 或 base64 data URL")
+}
+
 func shouldFallbackTextToChat(err error) bool {
 	var httpErr providerHTTPError
 	if !errors.As(err, &httpErr) {
@@ -2752,9 +2770,6 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 	if isSeedanceVideoConfig(input.Config) {
 		return runSeedanceVideosTask(ctx, input)
 	}
-	if len(input.ReferenceVideos) > 0 || len(input.ReferenceAudios) > 0 {
-		return nil, errors.New("OpenAI 风格视频接口不支持参考视频或参考音频，请切换到 Seedance / Agent Plan 渠道")
-	}
 	id := resumedProviderRequestID(ctx)
 	var created map[string]interface{}
 	if id == "" && (input.Config.InterfaceType == "xai-video" || isGrokVideoConfig(input.Config)) {
@@ -2795,6 +2810,16 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 				}
 			}
 		}
+		for _, video := range input.ReferenceVideos {
+			if err := writeMediaPart(writer, "input_reference[]", video); err != nil {
+				return nil, err
+			}
+		}
+		for _, audio := range input.ReferenceAudios {
+			if err := writeMediaPart(writer, "input_reference[]", audio); err != nil {
+				return nil, err
+			}
+		}
 		if err := writer.Close(); err != nil {
 			return nil, err
 		}
@@ -2831,7 +2856,7 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 							return nil, err
 						}
 						mimeType = normalizedMediaMimeType(mimeType, data)
-						return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
+						return videoResult("", mimeType, data), nil
 					}
 				}
 				data, mimeType, err := getProviderExternalBinary(withProviderRequestKind(ctx, "download"), input.Config, videoURL)
@@ -2839,13 +2864,13 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 					return nil, fmt.Errorf("视频结果下载失败（任务 %s）：%w", id, err)
 				}
 				mimeType = normalizedMediaMimeType(mimeType, data)
-				return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
+				return videoResult(videoURL, mimeType, data), nil
 			}
 			data, mimeType, err := getBinary(ctx, input.Config, "/videos/"+id+"/content")
 			if err != nil {
 				return nil, err
 			}
-			return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
+			return videoResult("", mimeType, data), nil
 		}
 		if status == "failed" || status == "cancelled" {
 			return nil, errors.New("视频生成失败")
@@ -2939,7 +2964,7 @@ func runMiniMaxVideoTask(ctx context.Context, input canvasGenerationInput) (map[
 				return nil, fmt.Errorf("MiniMax 视频结果下载失败（任务 %s）：%w", id, err)
 			}
 			mimeType = normalizedMediaMimeType(mimeType, data)
-			return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
+			return videoResult(videoURL, mimeType, data), nil
 		}
 		if status == "failed" || status == "cancelled" {
 			return nil, fmt.Errorf("MiniMax 视频生成失败（任务 %s）：%s", id, miniMaxTaskError(task))
@@ -3061,7 +3086,7 @@ func runGeminiVeoVideoTask(ctx context.Context, input canvasGenerationInput) (ma
 				return nil, fmt.Errorf("Gemini Veo 视频下载失败（任务 %s）：%w", id, err)
 			}
 			mimeType = normalizedMediaMimeType(mimeType, data)
-			return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
+			return videoResult(videoURL, mimeType, data), nil
 		}
 		if err := sleepContext(ctx, 5*time.Second); err != nil {
 			return nil, err
@@ -3367,7 +3392,7 @@ func queryNewAPIChannel2VideoTask(ctx context.Context, input canvasGenerationInp
 			return nil, status, fmt.Errorf("NewAPI Video Generations 视频结果下载失败（任务 %s）：%w", id, err)
 		}
 		mimeType = normalizedMediaMimeType(mimeType, data)
-		return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, status, nil
+		return videoResult(videoURL, mimeType, data), status, nil
 	case "FAILURE":
 		reason := strings.TrimSpace(stringField(state, "fail_reason"))
 		return nil, status, fmt.Errorf("NewAPI Video Generations 视频生成失败（任务 %s）：%s", id, defaultString(reason, "上游返回失败"))
@@ -3606,7 +3631,7 @@ func runNewAPIChannel1VideoTask(ctx context.Context, input canvasGenerationInput
 			if err != nil {
 				return nil, fmt.Errorf("NewAPI 媒体任务视频结果下载失败（任务 %s）：%w", id, err)
 			}
-			return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
+			return videoResult(videoURL, mimeType, data), nil
 		case strings.HasPrefix(status, "FAILED"):
 			message := strings.TrimSpace(strings.TrimPrefix(status, "FAILED:"))
 			return nil, fmt.Errorf("NewAPI 媒体任务视频生成失败（任务 %s）：%s", id, defaultString(message, "上游返回失败"))
@@ -3785,6 +3810,20 @@ func xaiVideoRequestBody(input canvasGenerationInput) (xaiVideoRequest, error) {
 		Resolution:  normalizeXAIVideoResolution(input.Config.VQuality),
 	}
 	if !shouldSendNewAPIVideoImages(input) || len(input.ReferenceImages) == 0 {
+		for _, video := range input.ReferenceVideos {
+			value, err := openAIVideoInputURL(video)
+			if err != nil {
+				return xaiVideoRequest{}, err
+			}
+			body.ReferenceVideos = append(body.ReferenceVideos, xaiVideoImage{URL: value})
+		}
+		for _, audio := range input.ReferenceAudios {
+			value, err := openAIAudioInputURL(audio)
+			if err != nil {
+				return xaiVideoRequest{}, err
+			}
+			body.ReferenceAudios = append(body.ReferenceAudios, xaiVideoImage{URL: value})
+		}
 		return body, nil
 	}
 	startFrameID := metadataString(input.Metadata, "videoStartFrameNodeId")
@@ -3811,6 +3850,20 @@ func xaiVideoRequestBody(input canvasGenerationInput) (xaiVideoRequest, error) {
 		return xaiVideoRequest{}, err
 	}
 	body.Image = &xaiVideoImage{URL: imageURL}
+	for _, video := range input.ReferenceVideos {
+		value, err := openAIVideoInputURL(video)
+		if err != nil {
+			return xaiVideoRequest{}, err
+		}
+		body.ReferenceVideos = append(body.ReferenceVideos, xaiVideoImage{URL: value})
+	}
+	for _, audio := range input.ReferenceAudios {
+		value, err := openAIAudioInputURL(audio)
+		if err != nil {
+			return xaiVideoRequest{}, err
+		}
+		body.ReferenceAudios = append(body.ReferenceAudios, xaiVideoImage{URL: value})
+	}
 	return body, nil
 }
 
@@ -3858,13 +3911,13 @@ func runSeedanceVideosTask(ctx context.Context, input canvasGenerationInput) (ma
 				if err != nil {
 					return nil, fmt.Errorf("视频结果下载失败：%w", err)
 				}
-				return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
+				return videoResult(videoURL, mimeType, data), nil
 			}
 			data, mimeType, err := getBinary(ctx, input.Config, "/videos/"+id+"/content")
 			if err != nil {
 				return nil, errors.New("Seedance 任务成功但没有返回视频 URL")
 			}
-			return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
+			return videoResult(videoURL, mimeType, data), nil
 		}
 		if status == "failed" || status == "cancelled" || status == "expired" {
 			return nil, errors.New(defaultString(seedanceErrorMessage(state), "Seedance 视频生成失败"))
@@ -3940,7 +3993,7 @@ func runSeedanceAgentPlanVideoTask(ctx context.Context, input canvasGenerationIn
 			if err != nil {
 				return nil, fmt.Errorf("视频结果下载失败：%w", err)
 			}
-			return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
+			return videoResult(videoURL, mimeType, data), nil
 		}
 		if status == "failed" || status == "cancelled" || status == "expired" {
 			return nil, fmt.Errorf("%s视频生成失败", providerName)
@@ -4790,6 +4843,14 @@ func dataURL(mimeType string, data []byte) string {
 		mimeType = "application/octet-stream"
 	}
 	return "data:" + strings.Split(mimeType, ";")[0] + ";base64," + base64.StdEncoding.EncodeToString(data)
+}
+
+func videoResult(videoURL string, mimeType string, data []byte) map[string]interface{} {
+	video := map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}
+	if strings.HasPrefix(videoURL, "http://") || strings.HasPrefix(videoURL, "https://") {
+		video["url"] = videoURL
+	}
+	return map[string]interface{}{"mode": "video", "video": video}
 }
 
 func stringField(payload map[string]interface{}, key string) string {

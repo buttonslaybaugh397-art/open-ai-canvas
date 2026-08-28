@@ -170,7 +170,10 @@ export default function TasksPage() {
             actingId={actingId}
             onOpen={() => void openTaskDetail(task)}
             onRetry={() => void runAction(task.id)}
-            onPreview={() => task.previewUrl && setMediaPreview({ url: task.previewUrl, kind: task.previewKind === "video" ? "video" : "image", title: task.prompt || formatTaskKind(task) })}
+            onPreview={() => {
+                const source = task.previewUrl ? { url: task.previewUrl, kind: task.previewKind === "video" ? "video" as const : "image" as const, storageKey: task.previewStorageKey } : null;
+                if (source) setMediaPreview({ ...source, title: task.prompt || formatTaskKind(task) });
+            }}
         />
     );
 
@@ -571,6 +574,7 @@ export default function TasksPage() {
                         kind={mediaPreview.kind === "video" ? "video" : "image"}
                         alt={mediaPreview.title}
                         controls={mediaPreview.kind === "video"}
+                        fallbackStorageKey={mediaPreview.storageKey}
                         className="max-h-[76vh] w-full bg-black object-contain"
                         fallbackClassName="task-media-preview-unavailable"
                     />

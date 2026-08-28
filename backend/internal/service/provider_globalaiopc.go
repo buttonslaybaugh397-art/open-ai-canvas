@@ -59,7 +59,7 @@ func runGlobalAiOpcTask(ctx context.Context, input canvasGenerationInput, mode s
 				return nil, fmt.Errorf("GlobalAiOpc 结果下载失败（任务 %s）：%w", id, err)
 			}
 			mimeType = normalizedMediaMimeType(mimeType, data)
-			media := map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}
+			media := map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType, "url": resultURL}
 			if mode == "image" {
 				return map[string]interface{}{"mode": "image", "images": []map[string]interface{}{media}}, nil
 			}

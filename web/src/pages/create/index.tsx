@@ -715,7 +715,7 @@ export default function CreatePage() {
                     onTaskUpdate: bindTask,
                     ...retryContext,
                 }));
-                if (!result.video?.dataUrl) throw new Error("后端任务没有返回视频");
+                if (!result.video?.url && !result.video?.dataUrl) throw new Error("后端任务没有返回视频");
                 const taskId = Array.from(boundTaskIds)[0];
                 if (!taskId) throw new Error("生成任务缺少稳定任务标识");
                 const task = completedCreationGenerationTask({ taskId, task: boundTasks.get(taskId), mode: "video", prompt: expandedPrompt, result, conversationId: activeConversation.id, messageId: assistantMessage.id });

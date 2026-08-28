@@ -6,7 +6,7 @@ import { parseAssetStorageDocument, rebaseAssetSnapshot, serializeAssetStorageDo
 import { parseCanvasStorageDocument } from "@/lib/canvas/canvas-storage-revision";
 import { localForageStorageForScope } from "@/lib/localforage-storage";
 import { getActiveUserScope } from "@/lib/user-scope";
-import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
+import { isResourceUrl, resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 import { cleanupUnusedImages, collectImageStorageKeys, resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { cleanupUnusedMedia, collectMediaStorageKeys, resolveMediaUrl } from "@/services/file-storage";
 import { flushGenerationAssetStorageLocks, insertOrReturnGenerationAsset, withGenerationArtifactCommitLock, withGenerationAssetStorageLock } from "@/services/generation-asset-repository";
@@ -234,7 +234,12 @@ async function normalizePersistedAsset(asset: Asset): Promise<Asset> {
     const resourceId = resourceIdFromStorageKey(storageKey);
     if (resourceId) {
         const url = resourceFileUrl(resourceId);
-        if (asset.kind === "video" || asset.kind === "audio" || asset.kind === "model") return { ...asset, data: { ...asset.data, url } } as Asset;
+        if (asset.kind === "video" || asset.kind === "audio") {
+            const currentUrl = asset.data.url || "";
+            const keepDirectUrl = /^https?:\/\//i.test(currentUrl) && !isResourceUrl(currentUrl);
+            return keepDirectUrl ? asset : ({ ...asset, data: { ...asset.data, url } } as Asset);
+        }
+        if (asset.kind === "model") return { ...asset, data: { ...asset.data, url } } as Asset;
         if (asset.kind === "image") return { ...asset, coverUrl: asset.coverUrl.startsWith("blob:") ? url : asset.coverUrl, data: { ...asset.data, dataUrl: url } };
     }
 

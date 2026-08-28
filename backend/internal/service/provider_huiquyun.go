@@ -255,14 +255,14 @@ func runHuiQuYunVideoTask(ctx context.Context, input canvasGenerationInput) (map
 					return nil, fmt.Errorf("汇取云视频结果下载失败（任务 %s）：%w", id, err)
 				}
 				mimeType = normalizedMediaMimeType(mimeType, data)
-				return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
+				return videoResult(videoURL, mimeType, data), nil
 			}
 			data, mimeType, err := getBinary(withProviderRequestKind(ctx, "download"), input.Config, "/videos/"+url.PathEscape(id)+"/content")
 			if err != nil {
 				return nil, err
 			}
 			mimeType = normalizedMediaMimeType(mimeType, data)
-			return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
+			return videoResult("", mimeType, data), nil
 		case "failed", "cancelled", "canceled":
 			return nil, fmt.Errorf("汇取云视频生成失败（任务 %s）：%s", id, huiQuYunVideoError(state))
 		case "queued", "in_progress", "processing", "":
