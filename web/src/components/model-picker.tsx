@@ -4,14 +4,15 @@ import { Popover } from "antd";
 
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { modelCapabilityConfigFor, videoDurationOptions } from "@/lib/model-capabilities";
-import { compatibleModelInGroup, configuredModelDisplayName, groupModelsByDisplayName, modelCompatibilityError, modelRequestOptions, resolveCompatibleModel, type ModelRequirements } from "@/lib/model-selection";
+import { compatibleModelInGroup, configuredModelDisplayName, groupModelsByDisplayName, modelCompatibilityError, resolveCompatibleModel, type ModelRequirements } from "@/lib/model-selection";
 import { normalizeVideoResolution } from "@/lib/video-generation-options";
 import { cn } from "@/lib/utils";
 import { modelDisplayName, modelIcon, modelOptionName, PUBLIC_MODEL_CATALOG_ID, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { ModelLogo } from "@/components/model-logo";
-import { quoteLogicalModel, type LogicalModelQuote, type ModelRequestIntent } from "@/services/api/logical-models";
+import { type LogicalModelQuote } from "@/services/api/logical-models";
+import { useLogicalModelQuote } from "@/lib/model-quote";
 
 type ModelPickerProps = {
     config: AiConfig;
@@ -63,8 +64,7 @@ export function ModelPicker({ config, value, onChange, capability, className, po
     // 旧画布可能保存过已下架或前端历史内置模型；它们不能重新进入当前可选目录。
     const current = options.includes(resolvedCurrent) ? resolvedCurrent : "";
 	const currentPrice = modelMenuPrice(config, current, capability, false, requirements);
-    const quoteRequest = useMemo(() => modelQuoteRequest(config, current, capability, requirements), [capability, config, current, requirements]);
-    const [routeQuote, setRouteQuote] = useState<LogicalModelQuote | undefined>();
+    const routeQuote = useLogicalModelQuote(config, current, capability, requirements, showSelectedPrice && creditsEnabled);
     const creationVariant = variant === "creation";
 
     useLayoutEffect(() => {
@@ -76,21 +76,6 @@ export function ModelPicker({ config, value, onChange, capability, className, po
         observer.observe(trigger);
         return () => observer.disconnect();
     }, [className, fullWidth, showSelectedPrice, variant, value]);
-
-    useEffect(() => {
-        if (!showSelectedPrice || !creditsEnabled || !quoteRequest) {
-            setRouteQuote(undefined);
-            return;
-        }
-        const controller = new AbortController();
-        setRouteQuote(undefined);
-        quoteLogicalModel(quoteRequest.logicalModelID, quoteRequest.intent, controller.signal)
-            .then((payload) => setRouteQuote(payload.quote))
-            .catch(() => {
-                if (!controller.signal.aborted) setRouteQuote(undefined);
-            });
-        return () => controller.abort();
-    }, [creditsEnabled, quoteRequest, showSelectedPrice]);
 
     useEffect(() => {
         const closeOtherPicker = (event: Event) => {
@@ -531,31 +516,6 @@ function ModelPrice({ price, quote, compact = false }: { price: ModelMenuPrice |
             {price.value.toLocaleString("zh-CN", { maximumFractionDigits: compact ? 3 : 6 })}/{price.unit}
         </span>
     );
-}
-
-function modelQuoteRequest(config: AiConfig, value: string, capability?: ModelCapability, requirements?: ModelRequirements): { logicalModelID: string; intent: ModelRequestIntent } | undefined {
-    if (!capability || !value) return undefined;
-    const channel = resolveModelChannel(config, value);
-    if (channel.scope !== "system") return undefined;
-    const cost = channel.modelCosts?.find((item) => item.model === modelOptionName(value));
-    if (!cost?.logicalModelId) return undefined;
-    const input = requirements?.input;
-    const intent: ModelRequestIntent = {
-        capability,
-        operation: requirements?.videoOperation,
-        inputs: {
-            image: (input?.imageCount || 0) + (input?.characterCount || 0),
-            video: input?.videoCount || 0,
-            audio: input?.audioCount || 0,
-        },
-        options: {
-            ...modelRequestOptions(config, capability),
-            ...(requirements?.options || {}),
-            ...(requirements?.videoSeconds ? { videoSeconds: Number(requirements.videoSeconds) } : {}),
-            ...(requirements?.imageSize ? { size: requirements.imageSize } : {}),
-        },
-    };
-    return { logicalModelID: cost.logicalModelId, intent };
 }
 
 function modelMenuMeta(model: string, capability?: ModelCapability): { description: string; time?: string } {

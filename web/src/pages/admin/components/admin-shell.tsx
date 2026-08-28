@@ -5,6 +5,7 @@ import {
     BellRing,
     CloudUpload,
     Coins,
+    ChartSpline,
     FileClock,
     HardDrive,
     Home,
@@ -61,6 +62,7 @@ const adminNavigation: Array<{ label: string; items: AdminNavigationItem[] }> = 
         label: "运营",
         items: [
             { path: "/admin/announcements", label: "系统公告", description: "发布、关闭与历史公告", icon: <BellRing className="size-4" /> },
+            { path: "/admin/credit-consumption", label: "消耗统计", description: "总量、用户与模型消耗", icon: <ChartSpline className="size-4" /> },
             { path: "/admin/credit-operations", label: "积分运营", description: "人工调账与异常计费", icon: <Coins className="size-4" /> },
             { path: "/admin/redemption-codes", label: "兑换码", description: "生成与查看兑换码批次", icon: <TicketCheck className="size-4" /> },
             { path: "/admin/logs", label: "请求明细", description: "上游调用与费用", icon: <FileClock className="size-4" /> },

@@ -66,6 +66,27 @@ func RegisterFinanceRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"account": account, "granted": true})
 	})
+	r.GET("/admin/credit-consumption", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		userPage, _ := strconv.Atoi(c.DefaultQuery("userPage", "1"))
+		userLimit, _ := strconv.Atoi(c.DefaultQuery("userLimit", "20"))
+		modelPage, _ := strconv.Atoi(c.DefaultQuery("modelPage", "1"))
+		modelLimit, _ := strconv.Atoi(c.DefaultQuery("modelLimit", "20"))
+		result, err := svc.AdminCreditConsumption(user, service.AdminCreditConsumptionQuery{
+			From: c.Query("from"), To: c.Query("to"), UserID: c.Query("userId"), Model: c.Query("model"), Capability: c.Query("capability"),
+			UserPage: userPage, UserLimit: userLimit, ModelPage: modelPage, ModelLimit: modelLimit,
+		})
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		ok(c, result)
+	})
 
 	r.GET("/admin/settings/linuxdo", func(c *gin.Context) {
 		user, err := currentUser(c, svc)

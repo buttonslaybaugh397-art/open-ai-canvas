@@ -53,6 +53,7 @@ func TestNormalizeCustomRelayFormat(t *testing.T) {
 		{input: "globalaiopc", want: "openai"},
 		{input: "aistarslab", want: "openai"},
 		{input: "gemini", want: "gemini"},
+		{input: "claude", want: "claude"},
 	} {
 		got, ok := NormalizeCustomRelayFormat(test.input)
 		if !ok || got != test.want {

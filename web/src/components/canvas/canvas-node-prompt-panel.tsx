@@ -6,6 +6,7 @@ import { ModelPicker } from "@/components/model-picker";
 import { defaultConfig, modelOptionName, resolveModelChannel, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { resolveCanvasGenerationModel } from "@/lib/canvas/canvas-project-generation";
 import { CreditSymbol, requestCreditCost } from "@/constant/credits";
+import { fallbackLogicalModelCredits, useLogicalModelQuote } from "@/lib/model-quote";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { normalizeVideoDuration, normalizeVideoResolution } from "@/lib/video-generation-options";
 import { modelRequestOptions, resolveCompatibleModel, resolveModelGenerationDefaults, defaultImageParamsForModel, type ModelRequirements } from "@/lib/model-selection";
@@ -107,13 +108,18 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     }, [globalConfig, promptOptimizerInstallation]);
     const generationCount = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const priceChannel = resolveModelChannel(config, config.model);
-    const credits = requestCreditCost({
+    const quoteRequirements: ModelRequirements = requirements;
+    const routeQuote = useLogicalModelQuote(config, config.model, mode, quoteRequirements, creditsEnabled);
+    const logicalFallbackCredits = fallbackLogicalModelCredits(config, config.model, mode, quoteRequirements);
+    const legacyCredits = requestCreditCost({
         channelMode: priceChannel.scope === "system" ? "remote" : "local",
         modelCosts: priceChannel.modelCosts,
         model: modelOptionName(config.model),
         count: mode === "image" ? generationCount : 1,
         seconds: mode === "video" ? config.videoSeconds : 1,
+        resolution: mode === "video" ? config.vquality : config.quality,
     });
+    const credits = routeQuote ? routeQuote.amountMicrocredits / 1_000_000 : logicalFallbackCredits ?? legacyCredits;
     const activeReferenceCount = activeReferences.length;
     const videoFrameOptions = mentionReferences.filter((item) => item.active && item.kind === "image").map((item) => ({ nodeId: item.nodeId, label: item.label, title: item.title, previewUrl: item.previewUrl }));
     const hasVideoPromptTools = mode === "video" && !simpleMode && videoFrameOptions.length > 0;
@@ -264,8 +270,8 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     );
 
     const renderSubmitButton = (expanded: boolean) => {
-        const showCost = creditsEnabled && credits !== null;
-        const formattedCredits = credits?.toLocaleString();
+        const showCost = creditsEnabled && credits !== null && credits !== undefined;
+        const formattedCredits = credits?.toLocaleString("zh-CN", { maximumFractionDigits: 6 });
         const actionLabel = isRunning ? "生成中" : showCost ? `预计消耗 ${formattedCredits} 积分，生成` : "生成";
         return (
             <Button

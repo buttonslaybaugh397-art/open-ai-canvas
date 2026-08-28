@@ -16,6 +16,7 @@ export type ModelRequirements = {
     videoSeconds?: string;
     imageSize?: string;
     options?: Record<string, unknown>;
+    quoteQuantity?: number;
 };
 
 export type DisplayModelGroup = {

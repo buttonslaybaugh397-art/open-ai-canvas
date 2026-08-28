@@ -43,6 +43,7 @@ type ModelRequestIntent struct {
 	Operation  string         `json:"operation,omitempty"`
 	Inputs     map[string]int `json:"inputs,omitempty"`
 	Options    map[string]any `json:"options,omitempty"`
+	Quantity   int            `json:"quantity,omitempty"`
 }
 
 // ModelRequestIntentFromTaskInput 从统一任务输入推导路由意图；它只统计实际输入和显式参数，不假设任何固定图片数或视频时长。

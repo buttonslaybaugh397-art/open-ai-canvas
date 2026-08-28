@@ -63,6 +63,8 @@ func NormalizeCustomRelayFormat(value string) (string, bool) {
 		return "openai", true
 	case "gemini":
 		return "gemini", true
+	case "claude":
+		return "claude", true
 	default:
 		return "", false
 	}

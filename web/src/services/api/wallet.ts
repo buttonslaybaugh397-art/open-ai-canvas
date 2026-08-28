@@ -226,8 +226,70 @@ export type BillingOrder = {
     updatedAt: string;
 };
 
+export type AdminCreditConsumptionOverview = {
+    from: string;
+    to: string;
+    summary: {
+        allTimeMicrocredits: number;
+        periodMicrocredits: number;
+        settledOrders: number;
+        consumingUsers: number;
+        usedModels: number;
+    };
+    trend: Array<{
+        day: string;
+        totalMicrocredits: number;
+        orderCount: number;
+        uniqueUsers: number;
+    }>;
+    users: {
+        items: Array<{
+            userId: string;
+            username: string;
+            displayName: string;
+            email?: string;
+            totalMicrocredits: number;
+            orderCount: number;
+            modelCount: number;
+            lastConsumedAt: string;
+        }>;
+        total: number;
+        page: number;
+        limit: number;
+    };
+    models: {
+        items: Array<{
+            model: string;
+            capability: string;
+            totalMicrocredits: number;
+            orderCount: number;
+            uniqueUsers: number;
+            lastConsumedAt: string;
+        }>;
+        total: number;
+        page: number;
+        limit: number;
+    };
+};
+
+export type AdminCreditConsumptionParams = {
+    from?: string;
+    to?: string;
+    userId?: string;
+    model?: string;
+    capability?: string;
+    userPage?: number;
+    userLimit?: number;
+    modelPage?: number;
+    modelLimit?: number;
+};
+
 export function getWallet(page = 1, limit = 30, type = "all") {
     return request<WalletSummary>(api.get("/wallet", { params: { type, page, limit } }));
+}
+
+export function getAdminCreditConsumption(params: AdminCreditConsumptionParams = {}) {
+    return request<AdminCreditConsumptionOverview>(api.get("/admin/credit-consumption", { params }));
 }
 
 export function redeemCredits(code: string) {

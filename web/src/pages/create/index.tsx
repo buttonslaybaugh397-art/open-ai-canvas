@@ -23,6 +23,7 @@ import { buildImageResolutionOptions, formatImageResolutionSize, imageRatioForSi
 import { VIDEO_RESOLUTION_OPTIONS } from "@/lib/video-generation-options";
 import { modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, videoDurationAllowed, videoDurationOptions, type ImageCapabilityConfig, type VideoCapabilityConfig } from "@/lib/model-capabilities";
 import { inferVideoOperation, resolveCompatibleModel, mergedImageCapabilityConfig, type ModelRequirements } from "@/lib/model-selection";
+import { fallbackLogicalModelCredits, useLogicalModelQuote } from "@/lib/model-quote";
 import { backendModelRuntimeRequired, isGenerationTaskCancelled, runBackendGenerationTask, runBackendGenerationTaskBatch, type BackendGenerationResult } from "@/services/api/generation-task";
 import { requestImageQuestion, type AiTextContentPart } from "@/services/api/image";
 import { listAddedSkills, type Skill } from "@/services/api/skills";
@@ -1138,14 +1139,22 @@ function CreationComposer(props: ComposerProps) {
     const priceChannel = resolveModelChannel(props.config, props.model);
     const canOptimizePrompt = Boolean(props.promptOptimizerProvider) && (props.mode === "image" || props.mode === "video");
     const optimizerReferences = props.references.filter((reference) => reference.active && reference.kind !== "skill");
-    const credits = requestCreditCost({
+    const quoteRequirements: ModelRequirements = {
+        ...props.modelRequirements,
+        quoteQuantity: props.mode === "image" ? Math.max(1, Math.floor(Number(props.count) || 1)) : undefined,
+    };
+    const routeQuote = useLogicalModelQuote(props.config, props.model, props.mode, quoteRequirements, creditsEnabled);
+    const logicalFallbackCredits = fallbackLogicalModelCredits(props.config, props.model, props.mode, quoteRequirements);
+    const legacyCredits = requestCreditCost({
         channelMode: priceChannel.scope === "system" ? "remote" : "local",
         modelCosts: priceChannel.modelCosts,
         model: modelOptionName(props.model),
         count: props.mode === "image" ? props.count : 1,
         seconds: props.mode === "video" ? props.seconds : 1,
+        resolution: props.mode === "video" ? props.videoQuality : props.quality,
     });
-    const showCost = creditsEnabled && credits !== null;
+    const credits = routeQuote ? routeQuote.amountMicrocredits / 1_000_000 : logicalFallbackCredits ?? legacyCredits;
+    const showCost = creditsEnabled && credits !== null && credits !== undefined;
     const formattedCredits = credits?.toLocaleString("zh-CN", { maximumFractionDigits: 6 });
     const actionLabel = props.busy ? "生成中" : showCost ? `预计消耗 ${formattedCredits} 积分，发送` : "发送";
     const placeholder = props.mode === "text"

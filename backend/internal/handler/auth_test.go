@@ -18,7 +18,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestAuthSessionReturnsEnabledSystemChannels(t *testing.T) {
+func TestChannelsSystemReturnsEnabledSystemChannels(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -29,13 +29,16 @@ func TestAuthSessionReturnsEnabledSystemChannels(t *testing.T) {
 		&model.UserIdentity{},
 		&model.ModelChannel{},
 		&model.ChannelModel{},
+		&model.LogicalModel{},
+		&model.LogicalModelRevision{},
+		&model.LogicalModelRoute{},
 		&model.SystemSetting{},
 	); err != nil {
 		t.Fatal(err)
 	}
 
 	now := time.Now()
-	user := model.User{ID: "user-1", Username: "test-user", DisplayName: "Test User", Role: model.UserRoleUser, Status: model.UserStatusActive, CreatedAt: now, UpdatedAt: now}
+	user := model.User{ID: "user-1", Username: "test-user", DisplayName: "Test User", Role: model.UserRoleAdmin, Status: model.UserStatusActive, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -59,25 +62,24 @@ func TestAuthSessionReturnsEnabledSystemChannels(t *testing.T) {
 	api := router.Group("/api")
 	RegisterAuthRoutes(api, svc)
 
-	request := httptest.NewRequest(http.MethodGet, "/api/auth/session", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/channels/system", nil)
 	request.AddCookie(&http.Cookie{Name: service.SessionCookieName, Value: session.ID + "." + token})
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
-		t.Fatalf("GET /auth/session status = %d, body = %s", response.Code, response.Body.String())
+		t.Fatalf("GET /channels/system status = %d, body = %s", response.Code, response.Body.String())
 	}
 
 	var envelope struct {
 		Code int `json:"code"`
 		Data struct {
-			SystemChannels []struct {
+			Channels []struct {
 				ID         string   `json:"id"`
 				Models     []string `json:"models"`
 				ModelCosts []struct {
 					Model string `json:"model"`
 				} `json:"modelCosts"`
-			} `json:"systemChannels"`
-			LogicalModels json.RawMessage `json:"logicalModels"`
+			} `json:"channels"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
@@ -86,16 +88,13 @@ func TestAuthSessionReturnsEnabledSystemChannels(t *testing.T) {
 	if envelope.Code != 0 {
 		t.Fatalf("response code = %d, body = %s", envelope.Code, response.Body.String())
 	}
-	if len(envelope.Data.SystemChannels) != 1 || envelope.Data.SystemChannels[0].ID != channel.ID {
-		t.Fatalf("systemChannels = %#v", envelope.Data.SystemChannels)
+	if len(envelope.Data.Channels) != 1 || envelope.Data.Channels[0].ID != channel.ID {
+		t.Fatalf("channels = %#v", envelope.Data.Channels)
 	}
-	if len(envelope.Data.SystemChannels[0].Models) != 1 || envelope.Data.SystemChannels[0].Models[0] != channelModel.ModelKey {
-		t.Fatalf("system channel models = %#v", envelope.Data.SystemChannels[0].Models)
+	if len(envelope.Data.Channels[0].Models) != 1 || envelope.Data.Channels[0].Models[0] != channelModel.ModelKey {
+		t.Fatalf("system channel models = %#v", envelope.Data.Channels[0].Models)
 	}
-	if len(envelope.Data.SystemChannels[0].ModelCosts) != 1 || envelope.Data.SystemChannels[0].ModelCosts[0].Model != channelModel.ModelKey {
-		t.Fatalf("system channel model costs = %#v", envelope.Data.SystemChannels[0].ModelCosts)
-	}
-	if len(envelope.Data.LogicalModels) != 0 {
-		t.Fatalf("auth/session unexpectedly returned logicalModels: %s", envelope.Data.LogicalModels)
+	if len(envelope.Data.Channels[0].ModelCosts) != 1 || envelope.Data.Channels[0].ModelCosts[0].Model != channelModel.ModelKey {
+		t.Fatalf("system channel model costs = %#v", envelope.Data.Channels[0].ModelCosts)
 	}
 }
