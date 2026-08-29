@@ -132,7 +132,7 @@ function CanvasNodeSearchThumbnail({ node }: { node: CanvasNodeData }) {
     const commonStyle = { borderColor: "color-mix(in srgb, var(--foreground) 9%, transparent)", background: "color-mix(in srgb, var(--foreground) 5%, transparent)" };
 
     if (mediaSource && !failed && node.type === CanvasNodeType.Video) {
-        return <video src={mediaSource} muted playsInline preload="metadata" aria-label={`${node.title} 视频缩略图`} className={commonClass} style={commonStyle} onError={() => setFailed(true)} />;
+        return <video src={mediaSource} muted playsInline preload="none" aria-label={`${node.title} 视频缩略图`} className={commonClass} style={commonStyle} onError={() => setFailed(true)} />;
     }
     if (mediaSource && !failed) {
         return <img src={mediaSource} alt="" width={64} height={44} loading="lazy" decoding="async" className={commonClass} style={commonStyle} onError={() => setFailed(true)} />;

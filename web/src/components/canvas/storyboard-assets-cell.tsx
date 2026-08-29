@@ -61,7 +61,7 @@ function AssetThumbnail({ node }: { node: CanvasNodeData }) {
     if (node.type === CanvasNodeType.Video) {
         return source ? (
             <>
-                <video src={source} muted playsInline preload="metadata" className="size-full object-cover" aria-hidden />
+                <video src={source} muted playsInline preload="none" className="size-full object-cover" aria-hidden />
                 <span className="absolute inset-0 grid place-items-center bg-black/15"><Play className="size-3.5 fill-white text-white" /></span>
             </>
         ) : <Play className="size-4" />;

@@ -13,11 +13,12 @@ const DOWNLOAD_ATTEMPTS = 3;
 
 export async function downloadMediaFile({ url, storageKey, fileName }: DownloadMediaFileOptions) {
     const resourceId = resourceIdFromStorageKey(storageKey);
+    const resourceURL = Boolean(resourceId && url && isResourceUrl(url));
     let lastError: unknown = null;
 
     // Try the URL already returned by the API first. This keeps successful
     // downloads off the application proxy and preserves provider-side delivery.
-    if (url) {
+    if (url && !resourceURL) {
         try {
             saveAs(await fetchBlobWithRetry(url), safeDownloadFileName(fileName));
             return;

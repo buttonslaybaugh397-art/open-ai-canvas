@@ -190,7 +190,7 @@ function FolderNodeMedia({ node }: { node?: CanvasNodeData }) {
         return <img src={node.metadata.content} alt="" loading="lazy" decoding="async" draggable={false} />;
     }
     if (node?.type === CanvasNodeType.Video && node.metadata?.content) {
-        return <video src={node.metadata.content} muted playsInline preload="metadata" />;
+        return <video src={node.metadata.content} muted playsInline preload="none" />;
     }
     if (node?.type === CanvasNodeType.Drawing && (node.metadata?.drawingPreviewUrl || node.metadata?.content)) {
         return <img src={node.metadata.drawingPreviewUrl || node.metadata.content} alt="" loading="lazy" decoding="async" draggable={false} />;

@@ -144,7 +144,7 @@ function CanvasUploadFilePreview({ file }: { file: UploadFile }) {
         return <img src={previewUrl} alt={`预览：${file.name}`} className="size-full object-cover" />;
     }
     if (source?.type.startsWith("video/") && previewUrl) {
-        return <video src={previewUrl} aria-label={`预览：${file.name}`} muted playsInline preload="metadata" className="size-full object-cover" />;
+        return <video src={previewUrl} aria-label={`预览：${file.name}`} muted playsInline preload="none" className="size-full object-cover" />;
     }
     return (
         <div className="grid size-full place-items-center text-foreground/45">

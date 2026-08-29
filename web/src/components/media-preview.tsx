@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { getResolvedVideoFallbackUrl, setResolvedVideoFallbackUrl, useResolvedVideoFallbackUrl } from "@/lib/task-media";
 import { cn } from "@/lib/utils";
-import { getResourceOSSUrl, resourceIdFromStorageKey, resourceProxyFileUrl } from "@/services/api/resources";
+import { getResourceOSSUrl, isResourceUrl, resourceIdFromStorageKey, resourceProxyFileUrl } from "@/services/api/resources";
 import { getCachedResourceObjectUrl } from "@/services/resource-blob-cache";
 import { resolveMediaUrl } from "@/services/file-storage";
 
@@ -20,6 +20,7 @@ export function MediaPreview({
     loading,
     width,
     height,
+    preload,
     fallbackStorageKey,
     resolvedFallbackUrl,
     onFallbackResolved,
@@ -35,6 +36,7 @@ export function MediaPreview({
     loading?: "eager" | "lazy";
     width?: number;
     height?: number;
+    preload?: "none" | "metadata" | "auto";
     fallbackStorageKey?: string;
     resolvedFallbackUrl?: string;
     onFallbackResolved?: (url: string) => void;
@@ -42,11 +44,14 @@ export function MediaPreview({
 }) {
     const cachedFallbackUrl = useResolvedVideoFallbackUrl(kind === "video" ? src : "");
     const knownFallbackUrl = resolvedFallbackUrl || cachedFallbackUrl || getResolvedVideoFallbackUrl(src);
-    const [activeSrc, setActiveSrc] = useState(src);
+    const resourceId = resourceIdFromStorageKey(fallbackStorageKey);
+    const resourceSource = kind === "video" && resourceId && isResourceUrl(src);
+    const resolveDirectResource = resourceSource && controls;
+    const [activeSrc, setActiveSrc] = useState(resolveDirectResource ? knownFallbackUrl : src);
     const [unavailable, setUnavailable] = useState(false);
     const fallbackAttemptedRef = useRef(false);
     const localFallbackAttemptedRef = useRef(false);
-    const resourceId = resourceIdFromStorageKey(fallbackStorageKey);
+    const directResourceAttemptedRef = useRef(false);
     const proxyFallbackUrl = resourceId ? resourceProxyFileUrl(resourceId) : "";
     const sourceVersionRef = useRef(0);
 
@@ -54,9 +59,33 @@ export function MediaPreview({
         sourceVersionRef.current += 1;
         fallbackAttemptedRef.current = false;
         localFallbackAttemptedRef.current = false;
-        setActiveSrc(src);
+        directResourceAttemptedRef.current = false;
+        setActiveSrc(resolveDirectResource ? knownFallbackUrl : src);
         setUnavailable(false);
-    }, [fallbackStorageKey, knownFallbackUrl, src]);
+    }, [fallbackStorageKey, knownFallbackUrl, resolveDirectResource, src]);
+
+    useEffect(() => {
+        if (!resolveDirectResource || directResourceAttemptedRef.current) return;
+        directResourceAttemptedRef.current = true;
+        fallbackAttemptedRef.current = true;
+        const version = sourceVersionRef.current;
+        if (knownFallbackUrl && knownFallbackUrl !== src) {
+            setActiveSrc(knownFallbackUrl);
+            return;
+        }
+        void getResourceOSSUrl(fallbackStorageKey).then((directUrl) => {
+            if (version !== sourceVersionRef.current) return;
+            if (directUrl && directUrl !== src) {
+                setResolvedVideoFallbackUrl(src, directUrl);
+                setActiveSrc(directUrl);
+                onFallbackResolved?.(directUrl);
+                return;
+            }
+            setActiveSrc(src);
+        }).catch(() => {
+            if (version === sourceVersionRef.current) setActiveSrc(src);
+        });
+    }, [fallbackStorageKey, knownFallbackUrl, onFallbackResolved, resolveDirectResource, src]);
 
     const handleUnavailable = () => {
         if (activeSrc !== proxyFallbackUrl && resourceId && !fallbackAttemptedRef.current) {
@@ -121,7 +150,7 @@ export function MediaPreview({
     }
 
     if (kind === "video") {
-        return <video src={activeSrc} width={width} height={height} muted={!controls} playsInline controls={controls} preload="metadata" className={className} onError={handleUnavailable} />;
+        return <video src={activeSrc || undefined} width={width} height={height} muted={!controls} playsInline controls={controls} preload={preload || (controls ? "metadata" : "none")} className={className} onError={handleUnavailable} />;
     }
 
     return <img src={activeSrc} alt={alt} width={width} height={height} loading={loading} className={className} onError={handleUnavailable} />;

@@ -85,6 +85,9 @@ const api = apiClient;
 const resourceCache = new Map<string, RemoteResource>();
 const resourceRequests = new Map<string, Promise<RemoteResource>>();
 const missingResourceIds = new Set<string>();
+const directResourceURLCache = new Map<string, { url: string; expiresAt: number }>();
+const directResourceURLRequests = new Map<string, Promise<string>>();
+const DIRECT_RESOURCE_URL_CACHE_MS = 4 * 60 * 1000;
 
 export function resourceStorageKey(id: string) {
     return `resource:${id}`;
@@ -165,6 +168,22 @@ export function getResource(id: string): Promise<RemoteResource> {
 export async function getResourceOSSUrl(storageKey?: string) {
     const id = resourceIdFromStorageKey(storageKey);
     if (!id) throw new Error("当前媒体尚未上传到后端资源存储");
+    const cacheKey = resourceCacheKey(id);
+    const cached = directResourceURLCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.url;
+    const pending = directResourceURLRequests.get(cacheKey);
+    if (pending) return pending;
+    const requestTask = getResourceOSSUrlUncached(id)
+        .then((url) => {
+            directResourceURLCache.set(cacheKey, { url, expiresAt: Date.now() + DIRECT_RESOURCE_URL_CACHE_MS });
+            return url;
+        })
+        .finally(() => directResourceURLRequests.delete(cacheKey));
+    directResourceURLRequests.set(cacheKey, requestTask);
+    return requestTask;
+}
+
+async function getResourceOSSUrlUncached(id: string) {
     try {
         const data = await request<{ url: string }>(api.get(`/resources/${encodeURIComponent(id)}/oss-url`));
         if (!data.url) throw new Error("后端未返回对象存储地址");

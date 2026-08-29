@@ -670,7 +670,7 @@ function MentionReferenceList({ references, activeReferenceId, theme, onSelect }
 
 function ReferencePreview({ reference }: { reference: CanvasResourceReference }) {
     if (reference.kind === "image" && reference.previewUrl) return <img src={reference.previewUrl} alt="" className="size-7 rounded-sm object-cover" />;
-    if (reference.kind === "video" && reference.previewUrl) return <video src={reference.previewUrl} className="size-7 rounded-sm bg-black object-cover" muted preload="metadata" />;
+    if (reference.kind === "video" && reference.previewUrl) return <video src={reference.previewUrl} className="size-7 rounded-sm bg-black object-cover" muted preload="none" />;
     if (reference.kind === "character" && reference.previewUrl) return <img src={reference.previewUrl} alt="" className="size-7 rounded-sm bg-black/5 object-contain" />;
     if (reference.kind === "skill") {
         return (
