@@ -3,12 +3,14 @@ package service
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"hash/crc64"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -960,6 +962,89 @@ func TestCloudUploadFailureKeepsResourceReadyWithLocalBackup(t *testing.T) {
 	}
 }
 
+func TestVideoCloudUploadSuccessDoesNotKeepLocalBackup(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	var uploaded []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("method = %s, want PUT", r.Method)
+		}
+		uploaded, _ = io.ReadAll(r.Body)
+		w.Header().Set("ETag", `"video-etag"`)
+		w.Header().Set("x-cos-hash-crc64ecma", strconv.FormatUint(crc64.Checksum(uploaded, crc64.MakeTable(crc64.ECMA)), 10))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	svc := newResourceTestService(t)
+	settingJSON, _ := json.Marshal(ossSettingValue{
+		Enabled: true, Provider: tencentCOSProvider, Endpoint: server.URL, Region: "ap-shanghai",
+		Bucket: "private-bucket-1250000000", AccessKeyID: "secret-id", AccessKeySecret: "secret-key",
+	})
+	if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(settingJSON)}); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("cloud first video")
+	resource, err := svc.storeResource("user-1", "video", "sample.mp4", "video/mp4", int64(len(payload)), 1280, 720, 0, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("storeResource() error = %v", err)
+	}
+	if !bytes.Equal(uploaded, payload) {
+		t.Fatalf("uploaded payload = %q, want %q", uploaded, payload)
+	}
+	if resource.Status != model.ResourceStatusReady || resource.CloudSyncStatus != model.ResourceCloudSyncStatusSynced || resource.LocalBackupKey != "" {
+		t.Fatalf("video resource = %#v, want ready/synced without backup", resource)
+	}
+	if _, err := os.Stat(filepath.Join(svc.dataDir, "resources")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("local resources directory exists after cloud-first success: %v", err)
+	}
+}
+
+func TestVideoCloudUploadFailureKeepsLocalBackup(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("method = %s, want PUT", r.Method)
+		}
+		requests++
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("storage unavailable"))
+	}))
+	defer server.Close()
+
+	svc := newResourceTestService(t)
+	settingJSON, _ := json.Marshal(ossSettingValue{
+		Enabled: true, Provider: tencentCOSProvider, Endpoint: server.URL, Region: "ap-shanghai",
+		Bucket: "private-bucket-1250000000", AccessKeyID: "secret-id", AccessKeySecret: "secret-key",
+	})
+	if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(settingJSON)}); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("video local fallback")
+	resource, err := svc.storeResource("user-1", "video", "fallback.mp4", "video/mp4", int64(len(payload)), 1280, 720, 0, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("storeResource() error = %v", err)
+	}
+	if requests != resourceStorageRetryAttempts {
+		t.Fatalf("cloud upload attempts = %d, want %d", requests, resourceStorageRetryAttempts)
+	}
+	if resource.Status != model.ResourceStatusReady || resource.CloudSyncStatus != model.ResourceCloudSyncStatusPending || resource.LocalBackupKey == "" {
+		t.Fatalf("video resource = %#v, want ready/pending with backup", resource)
+	}
+	backupPath, err := svc.resourceLocalPath(resource.LocalBackupKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stored, payload) {
+		t.Fatalf("local backup = %q, want %q", stored, payload)
+	}
+}
+
 func TestResourceStorageRecoveryUploadsLocalBackup(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
 	requests := 0
@@ -986,10 +1071,10 @@ func TestResourceStorageRecoveryUploadsLocalBackup(t *testing.T) {
 	}
 	payload := []byte("recovery payload")
 	resource := &model.Resource{
-		ID: "resource-recovery", UserID: "user-1", Kind: "image", Status: model.ResourceStatusReady,
+		ID: "resource-recovery", UserID: "user-1", Kind: "video", Status: model.ResourceStatusReady,
 		Provider: tencentCOSProvider, Endpoint: server.URL, Bucket: "private-bucket-1250000000",
-		ObjectKey: "users/user-1/image/recovery.png", LocalBackupKey: "users/user-1/backup/recovery.png",
-		CloudSyncStatus: model.ResourceCloudSyncStatusPending, MimeType: "image/png", Size: int64(len(payload)),
+		ObjectKey: "users/user-1/video/recovery.mp4", LocalBackupKey: "users/user-1/backup/recovery.mp4",
+		CloudSyncStatus: model.ResourceCloudSyncStatusPending, MimeType: "video/mp4", Size: int64(len(payload)),
 		CloudSyncNextAttemptAt: timePtr(time.Now().Add(-time.Second)),
 	}
 	if err := svc.repo.CreateResource(resource); err != nil {
@@ -1009,6 +1094,16 @@ func TestResourceStorageRecoveryUploadsLocalBackup(t *testing.T) {
 	}
 	if stored.CloudSyncStatus != model.ResourceCloudSyncStatusSynced || stored.CloudSyncError != "" || stored.ETag != "recovered-etag" {
 		t.Fatalf("recovered resource = %#v", stored)
+	}
+	backupPath, err := svc.resourceLocalPath(resource.LocalBackupKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(backupPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("local backup still exists after recovery: %v", err)
+	}
+	if stored.LocalBackupKey != "" {
+		t.Fatalf("recovered resource still references local backup: %#v", stored)
 	}
 }
 

@@ -424,7 +424,9 @@ func (s *Service) storeResource(userID string, kind string, fileName string, mim
 		resource.Bucket = setting.Bucket
 		resource.StorageSettingID = storageSettingID
 		resource.ObjectKey = objectKey
-		resource.LocalBackupKey = localObjectKey(userID, "backup", fileName, mimeType, now)
+		if kind != "video" {
+			resource.LocalBackupKey = localObjectKey(userID, "backup", fileName, mimeType, now)
+		}
 		resource.CloudSyncStatus = model.ResourceCloudSyncStatusPending
 	}
 	if err := s.repo.CreateResource(&resource); err != nil {
@@ -433,6 +435,30 @@ func (s *Service) storeResource(userID string, kind string, fileName string, mim
 	var etag string
 	if provider == "local" {
 		err = s.writeLocalResourceObject(objectKey, body)
+	} else if kind == "video" {
+		// Videos are cloud-first: stage the request body only long enough to retry
+		// the cloud upload, and keep a durable local copy only after cloud failure.
+		var stagedPath string
+		stagedPath, err = stageResourceBody(s.dataDir, body)
+		if err == nil {
+			defer func() {
+				_ = os.Remove(stagedPath)
+				_ = os.Remove(filepath.Dir(stagedPath))
+			}()
+			etag, err = s.putOSSObjectFromFileWithRetry(setting, objectKey, mimeType, size, stagedPath)
+			if err == nil {
+				resource.CloudSyncStatus = model.ResourceCloudSyncStatusSynced
+				resource.LocalBackupKey = ""
+			} else {
+				cloudErr := err
+				resource.LocalBackupKey = localObjectKey(userID, "backup", fileName, mimeType, now)
+				err = copyResourceFileToLocal(s, stagedPath, resource.LocalBackupKey)
+				if err == nil {
+					resource.CloudSyncError = storageErrorText(cloudErr)
+					resource.CloudSyncNextAttemptAt = timePtr(time.Now().Add(resourceRecoveryInitialDelay))
+				}
+			}
+		}
 	} else {
 		err = s.writeLocalResourceObject(resource.LocalBackupKey, body)
 		if err == nil {
@@ -476,6 +502,40 @@ func (s *Service) storeResource(userID string, kind string, fileName string, mim
 	}
 	s.recordActivity(userID, "resource", 1)
 	return &resource, nil
+}
+
+func stageResourceBody(dataDir string, body io.Reader) (string, error) {
+	stagingDir := filepath.Join(dataDir, "resource-staging")
+	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
+		return "", fmt.Errorf("创建资源临时目录失败：%w", err)
+	}
+	file, err := os.CreateTemp(stagingDir, "infinite-canvas-resource-*")
+	if err != nil {
+		return "", fmt.Errorf("创建资源临时文件失败：%w", err)
+	}
+	path := file.Name()
+	cleanup := func(cause error) (string, error) {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", cause
+	}
+	if _, err := io.Copy(file, body); err != nil {
+		return cleanup(fmt.Errorf("写入资源临时文件失败：%w", err))
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("关闭资源临时文件失败：%w", err)
+	}
+	return path, nil
+}
+
+func copyResourceFileToLocal(s *Service, sourcePath string, objectKey string) error {
+	file, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("打开资源临时文件失败：%w", err)
+	}
+	defer file.Close()
+	return s.writeLocalResourceObject(objectKey, file)
 }
 
 func localObjectKey(userID string, kind string, fileName string, mimeType string, now time.Time) string {
@@ -1122,6 +1182,26 @@ func (s *Service) putOSSObjectWithRetry(setting ossSettingValue, objectKey strin
 		}
 		etag, putErr := putOSSObject(setting, objectKey, mimeType, size, body)
 		_ = body.Close()
+		if putErr == nil {
+			return etag, nil
+		}
+		lastErr = putErr
+		if attempt+1 < resourceStorageRetryAttempts {
+			time.Sleep(resourceStorageRetryDelay * time.Duration(attempt+1))
+		}
+	}
+	return "", lastErr
+}
+
+func (s *Service) putOSSObjectFromFileWithRetry(setting ossSettingValue, objectKey string, mimeType string, size int64, filePath string) (string, error) {
+	var lastErr error
+	for attempt := 0; attempt < resourceStorageRetryAttempts; attempt++ {
+		file, err := os.Open(filePath)
+		if err != nil {
+			return "", fmt.Errorf("打开资源临时文件失败：%w", err)
+		}
+		etag, putErr := putOSSObject(setting, objectKey, mimeType, size, file)
+		_ = file.Close()
 		if putErr == nil {
 			return etag, nil
 		}
