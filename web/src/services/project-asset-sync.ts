@@ -2,6 +2,7 @@ import { canvasNodeToAsset, declaredCanvasNodeAssetCategory, findCanvasNodeAsset
 import { readImageMeta } from "@/lib/image-utils";
 import { parseBackendGenerationResult, type BackendGenerationResult } from "@/services/api/generation-task";
 import { linkProjectAsset, moveProjectAsset, updateProjectAssetCategory } from "@/services/api/projects";
+import { importResourceFromUrl, resourceStorageKey } from "@/services/api/resources";
 import type { GenerationTask, GenerationTaskOutput } from "@/services/api/task-center";
 import { getMediaBlob, resolveMediaUrl, setMediaBlob, uploadMediaFile } from "@/services/file-storage";
 import { createGenerationTaskMaterializer, createIdempotentMaterializeOutput, type MaterializeGenerationTaskOutput } from "@/services/generation-task-materializer";
@@ -167,6 +168,19 @@ async function storedGenerationImage(result: NonNullable<BackendGenerationResult
             mimeType: result.mimeType || "image/png",
         };
     }
+    if (isExternalMediaUrl(result.dataUrl)) {
+        // Generated URLs are often short-lived signed object URLs without CORS.
+        // Let the backend import and persist them instead of reading them in the browser.
+        const resource = await importResourceFromUrl(result.dataUrl, "image", { width: result.width, height: result.height });
+        return {
+            url: result.dataUrl,
+            storageKey: resourceStorageKey(resource.id),
+            width: result.width || resource.width || 1024,
+            height: result.height || resource.height || 1024,
+            bytes: result.bytes || resource.size || 0,
+            mimeType: result.mimeType || resource.mimeType || "image/png",
+        };
+    }
     const storageKey = generationArtifactStorageKey(effectKey, "image", scope);
     const blob = await loadOrStoreGenerationArtifact({
         effectKey: storageKey,
@@ -192,8 +206,30 @@ async function storedGenerationImage(result: NonNullable<BackendGenerationResult
     };
 }
 
-async function storedGenerationMedia(backupSource: string, effectKey: string, mediaType: "video" | "audio", metadata: { width?: number; height?: number; durationMs?: number; bytes?: number; mimeType: string }, scope: string, signal?: AbortSignal, preferredUrl = "") {
+async function storedGenerationMedia(
+    backupSource: string,
+    effectKey: string,
+    mediaType: "video" | "audio",
+    metadata: { width?: number; height?: number; durationMs?: number; bytes?: number; mimeType: string },
+    scope: string,
+    signal?: AbortSignal,
+    preferredUrl = "",
+) {
     throwIfAborted(signal);
+    if (isExternalMediaUrl(backupSource)) {
+        // Videos must be synchronized before they are kept in the canvas. The
+        // import runs server-side, so signed OSS/provider URLs do not need CORS.
+        const resource = await importResourceFromUrl(backupSource, mediaType, metadata);
+        return {
+            url: preferredUrl || backupSource,
+            storageKey: resourceStorageKey(resource.id),
+            width: metadata.width || resource.width,
+            height: metadata.height || resource.height,
+            durationMs: metadata.durationMs || resource.durationMs,
+            bytes: metadata.bytes || resource.size || 0,
+            mimeType: metadata.mimeType || resource.mimeType,
+        };
+    }
     const storageKey = generationArtifactStorageKey(effectKey, mediaType, scope);
     const blob = await loadOrStoreGenerationArtifact({
         effectKey: storageKey,
@@ -519,6 +555,10 @@ export function generationTaskMaterializedUrls(task: GenerationTask): string[] {
         if (asset.kind === "video" || asset.kind === "audio") return [asset.data.url];
         return [];
     });
+}
+
+function isExternalMediaUrl(value: string) {
+    return /^https?:\/\//i.test(value);
 }
 
 export function generationTaskMediaSources(task: GenerationTask): TaskMediaSource[] {

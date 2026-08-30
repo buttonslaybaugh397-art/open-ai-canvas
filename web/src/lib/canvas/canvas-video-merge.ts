@@ -2,7 +2,7 @@ import { FFmpeg } from "@ffmpeg/ffmpeg";
 import ffmpegCoreURL from "@ffmpeg/core?url";
 import ffmpegWasmURL from "@ffmpeg/core/wasm?url";
 import { fetchFile } from "@ffmpeg/util";
-import { getMediaBlob } from "@/services/file-storage";
+import { getMediaBlobFromSource } from "@/services/file-storage";
 
 export type MergeVideoInput = { id: string; url?: string; storageKey?: string };
 export type MergeVideoProgress = { phase: "loading" | "reading" | "encoding"; progress: number };
@@ -40,12 +40,7 @@ export async function mergeVideos(inputs: MergeVideoInput[], onProgress?: (progr
     try {
         for (let index = 0; index < inputs.length; index += 1) {
             const input = inputs[index];
-            const storedBlob = input.storageKey ? await getMediaBlob(input.storageKey) : null;
-            const remoteBlob = !storedBlob && input.url ? await fetch(input.url).then((response) => {
-                if (!response.ok) throw new Error(`视频资源请求失败（${response.status}）`);
-                return response.blob();
-            }) : null;
-            const blob = storedBlob || remoteBlob;
+            const blob = await getMediaBlobFromSource(input.url, input.storageKey);
             if (!blob) throw new Error(`无法读取第 ${index + 1} 个视频`);
             const name = `input-${index}.mp4`;
             await ffmpeg.writeFile(name, await fetchFile(blob));

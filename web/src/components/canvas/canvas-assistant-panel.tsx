@@ -91,7 +91,20 @@ const CANVAS_OP_SCHEMA = {
     required: ["type"],
     additionalProperties: false,
 };
-const ONLINE_READ_TOOLS = new Set(["canvas_list_skills", "canvas_get_skill", "canvas_get_state", "canvas_get_context", "canvas_find_nodes", "canvas_get_node", "canvas_get_connection", "canvas_get_generation_tasks", "canvas_get_resources", "canvas_validate_ops", "canvas_get_selection", "canvas_export_snapshot"]);
+const ONLINE_READ_TOOLS = new Set([
+    "canvas_list_skills",
+    "canvas_get_skill",
+    "canvas_get_state",
+    "canvas_get_context",
+    "canvas_find_nodes",
+    "canvas_get_node",
+    "canvas_get_connection",
+    "canvas_get_generation_tasks",
+    "canvas_get_resources",
+    "canvas_validate_ops",
+    "canvas_get_selection",
+    "canvas_export_snapshot",
+]);
 
 function toolDefinition(name: string, description: string, properties: Record<string, unknown>, required: string[] = [], strict = false): ResponseFunctionTool {
     return { type: "function", function: { name, description, parameters: { type: "object", properties, required, additionalProperties: false }, strict } };
@@ -120,7 +133,14 @@ const ONLINE_AGENT_TOOLS: ResponseFunctionTool[] = [
     toolDefinition("canvas_get_skill", "按 skillId 或技能名称按需加载一个画布技能的完整契约。技能正文通过工具结果提供，不会自动注入每条用户消息。", { skillId: { type: "string" }, name: { type: "string" } }),
     toolDefinition("canvas_get_state", "读取当前网页画布的节点、连线、选区和视口。", {}),
     toolDefinition("canvas_get_context", "读取语义化画布上下文、真实节点 id、连接关系、资源就绪状态和状态哈希。", {}),
-    toolDefinition("canvas_find_nodes", "按标题、内容、提示词、类型、状态或资产检索真实节点。", { query: { type: "string" }, ids: { type: "array", items: { type: "string" } }, types: { type: "array", items: { type: "string" } }, statuses: { type: "array", items: { type: "string" } }, resourceOnly: { type: "boolean" }, limit: { type: "number" } }),
+    toolDefinition("canvas_find_nodes", "按标题、内容、提示词、类型、状态或资产检索真实节点。", {
+        query: { type: "string" },
+        ids: { type: "array", items: { type: "string" } },
+        types: { type: "array", items: { type: "string" } },
+        statuses: { type: "array", items: { type: "string" } },
+        resourceOnly: { type: "boolean" },
+        limit: { type: "number" },
+    }),
     toolDefinition("canvas_get_node", "按真实节点 id 精确读取单个节点、资源状态和关联连线。", { id: { type: "string" } }, ["id"]),
     toolDefinition("canvas_get_connection", "按真实连线 id 精确读取端点节点和 handle 信息。", { id: { type: "string" } }, ["id"]),
     toolDefinition("canvas_get_generation_tasks", "读取当前画布绑定的生成任务观察状态，不主动轮询上游。", { status: { type: "string" }, nodeIds: { type: "array", items: { type: "string" } }, limit: { type: "number" } }),
@@ -672,10 +692,17 @@ export function CanvasAssistantPanel({
             const messages = await buildToolAgentMessages(snapshotRef.current, history, userMessage, composerSkills);
             addOnlineLog(`Agent Tool Loop ${loop.step} 开始`, { toolChoice: "required" });
             let streamed = "";
-            const result = await requestOnlineAgentModel({ ...requestConfig, systemPrompt: "" }, messages, "required", userMessage.text, (text) => {
-                streamed = text;
-                if (text.trim()) upsertMessage(sessionId, { id: assistantId, role: "assistant", text });
-            }, canvasAgentPromptCacheKey(sessionId));
+            const result = await requestOnlineAgentModel(
+                { ...requestConfig, systemPrompt: "" },
+                messages,
+                "required",
+                userMessage.text,
+                (text) => {
+                    streamed = text;
+                    if (text.trim()) upsertMessage(sessionId, { id: assistantId, role: "assistant", text });
+                },
+                canvasAgentPromptCacheKey(sessionId),
+            );
             addOnlineLog("模型工具回复", result);
             if (result.toolCalls.length) {
                 const writableCalls = result.toolCalls.filter(isWritableToolCall);
@@ -731,10 +758,17 @@ export function CanvasAssistantPanel({
         }
         const requestConfig = { ...effectiveConfig, model: effectiveConfig.textModel || effectiveConfig.model };
         let streamed = "";
-        const next = await requestOnlineAgentModel({ ...requestConfig, systemPrompt: "" }, nextMessages, "auto", "继续处理画布工具结果", (text) => {
-            streamed = text;
-            if (text.trim()) upsertMessage(sessionId, { id: assistantId, role: "assistant", text });
-        }, canvasAgentPromptCacheKey(sessionId));
+        const next = await requestOnlineAgentModel(
+            { ...requestConfig, systemPrompt: "" },
+            nextMessages,
+            "auto",
+            "继续处理画布工具结果",
+            (text) => {
+                streamed = text;
+                if (text.trim()) upsertMessage(sessionId, { id: assistantId, role: "assistant", text });
+            },
+            canvasAgentPromptCacheKey(sessionId),
+        );
         addOnlineLog(`Agent Tool Loop ${step + 1} 回复`, next);
         if (next.toolCalls.length) {
             const writableCalls = next.toolCalls.filter(isWritableToolCall);
@@ -762,7 +796,12 @@ export function CanvasAssistantPanel({
         const beforeSnapshot = snapshotRef.current;
         const validation = validateCanvasAgentOps(beforeSnapshot, ops);
         if (!validation.ok) {
-            throw new Error(`画布操作校验失败：${validation.issues.filter((item) => item.severity === "error").map((item) => item.message).join("；")}`);
+            throw new Error(
+                `画布操作校验失败：${validation.issues
+                    .filter((item) => item.severity === "error")
+                    .map((item) => item.message)
+                    .join("；")}`,
+            );
         }
         const before = snapshotSignature(beforeSnapshot);
         const next = await onApplyOps(ops, context);
@@ -773,8 +812,8 @@ export function CanvasAssistantPanel({
     };
 
     const executeOnlineTool = async (sessionId: string, name: string, args: Record<string, unknown>, messageId?: string): Promise<OnlineToolResult> => {
-            const current = snapshotRef.current;
-            try {
+        const current = snapshotRef.current;
+        try {
             const expectedRevision = typeof args.expectedRevision === "number" ? args.expectedRevision : undefined;
             if (expectedRevision !== undefined && expectedRevision !== (current.revision ?? 0)) return { ok: false, message: "画布 revision 已变化，请重新读取 canvas_get_context 后再执行写操作。" };
             const expectedStateHash = typeof args.expectedStateHash === "string" ? args.expectedStateHash : "";
@@ -1073,9 +1112,20 @@ export function CanvasAssistantPanel({
             {view === "history" ? (
                 <div className="thin-scrollbar min-h-0 flex-1 overflow-y-auto px-4 py-3">
                     <div className="mb-2 flex items-center justify-between gap-2 px-1">
-                        <div className="text-xs font-medium" style={{ color: theme.node.muted }}>历史会话</div>
+                        <div className="text-xs font-medium" style={{ color: theme.node.muted }}>
+                            历史会话
+                        </div>
                         <Tooltip title="清空历史">
-                            <Button type="text" shape="circle" className="!h-7 !w-7 !min-w-7" style={iconButtonStyle} icon={<X className="size-3.5" />} disabled={!historySessions.length} onClick={() => setDeleteChatIds(historySessions.map((session) => session.id))} aria-label="清空历史会话" />
+                            <Button
+                                type="text"
+                                shape="circle"
+                                className="!h-7 !w-7 !min-w-7"
+                                style={iconButtonStyle}
+                                icon={<X className="size-3.5" />}
+                                disabled={!historySessions.length}
+                                onClick={() => setDeleteChatIds(historySessions.map((session) => session.id))}
+                                aria-label="清空历史会话"
+                            />
                         </Tooltip>
                     </div>
                     <AssistantHistory
@@ -1094,7 +1144,15 @@ export function CanvasAssistantPanel({
                         <>
                             {messages.map((message) => (
                                 <div key={message.id} className="space-y-2">
-                                    <AgentChatMessage item={assistantMessageToChatMessage(message)} theme={theme} user={user} isStreaming={agentBusy && message.id === messages.at(-1)?.id && message.role === "assistant"} onRejectTool={rejectOnlineTool} onApproveTool={approveOnlineTool} onQuickAction={submitQuickAction} />
+                                    <AgentChatMessage
+                                        item={assistantMessageToChatMessage(message)}
+                                        theme={theme}
+                                        user={user}
+                                        isStreaming={agentBusy && message.id === messages.at(-1)?.id && message.role === "assistant"}
+                                        onRejectTool={rejectOnlineTool}
+                                        onApproveTool={approveOnlineTool}
+                                        onQuickAction={submitQuickAction}
+                                    />
                                     {message.references?.length ? <MessageReferences message={message} /> : null}
                                 </div>
                             ))}
@@ -1208,8 +1266,15 @@ export function CanvasAssistantPanel({
                 onCollapse={collapse}
                 historyCount={agentMode === "online" ? historySessions.length : 0}
                 historyActive={agentMode === "online" && view === "history"}
-                onOpenHistory={agentMode === "online" ? () => setView((current) => current === "history" ? "chat" : "history") : undefined}
-                onNewChat={agentMode === "online" ? () => { startChatSession(); setView("chat"); } : undefined}
+                onOpenHistory={agentMode === "online" ? () => setView((current) => (current === "history" ? "chat" : "history")) : undefined}
+                onNewChat={
+                    agentMode === "online"
+                        ? () => {
+                              startChatSession();
+                              setView("chat");
+                          }
+                        : undefined
+                }
                 newChatDisabled={false}
             />
             {agentMode === "local" ? <CanvasLocalAgentPanel embedded snapshot={snapshot} canUndoOps={canUndoOps} undoOpsCount={undoOpsCount} onApplyOps={onApplyOps} onUndoOps={onUndoOps} autoConnect={autoConnectLocal} /> : onlineContent}
@@ -1267,7 +1332,13 @@ function agentModelLabel(config: AiConfig, model: string) {
 
 function AgentModelIcon({ config, model }: { config: AiConfig; model: string }) {
     const icon = modelIcon(config, model);
-    return icon ? <span className="inline-flex size-4 shrink-0 items-center justify-center"><ModelLogo icon={icon} size={16} /></span> : <Cpu className="size-4 shrink-0 opacity-70" />;
+    return icon ? (
+        <span className="inline-flex size-4 shrink-0 items-center justify-center">
+            <ModelLogo icon={icon} size={16} />
+        </span>
+    ) : (
+        <Cpu className="size-4 shrink-0 opacity-70" />
+    );
 }
 
 function AssistantHistory({ sessions, activeSession, onOpen, onDelete }: { sessions: CanvasAssistantSession[]; activeSession: CanvasAssistantSession | null; onOpen: (id: string) => void; onDelete: (id: string) => void }) {
@@ -1380,6 +1451,7 @@ function OnlineAgentLogView({ logs, theme, context, onClear }: { logs: OnlineAge
             </div>
             <textarea
                 ref={textareaRef}
+                name="canvas-assistant-log"
                 readOnly
                 value={content}
                 className="thin-scrollbar min-h-[360px] flex-1 resize-none rounded-md border-0 p-3 font-mono text-xs leading-5 outline-none"
@@ -1506,7 +1578,7 @@ export function onlineToolToOps(name: string, input: Record<string, unknown>, sn
     if (name === "canvas_create_text_nodes") {
         const items = requireRecordArray(input.items, "items");
         const textBatch = items.map((item) => `${String(item.title || "")} ${String(item.text || "")}`).join(" ");
-        if (looksLikeWorkflowRequest(textBatch)) throw new Error("检测到流水线/工作流意图，请使用 canvas_create_workflow 创建真实类型节点和连线。" );
+        if (looksLikeWorkflowRequest(textBatch)) throw new Error("检测到流水线/工作流意图，请使用 canvas_create_workflow 创建真实类型节点和连线。");
         const x = numberOr(input.x, nextCanvasX(snapshot));
         const y = numberOr(input.y, 0);
         const gap = numberOr(input.gap, 40);

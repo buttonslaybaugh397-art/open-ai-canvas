@@ -45,6 +45,40 @@ func TestSignedOSSObjectURLUsesExpiringQuerySignature(t *testing.T) {
 	}
 }
 
+func TestSignedOSSObjectDownloadURLUsesSingleEncodedDisposition(t *testing.T) {
+	fileName := "镜头一.mp4"
+	value, err := signedOSSObjectDownloadURL(ossSettingValue{
+		Endpoint: "https://oss-cn-test.aliyuncs.com", Bucket: "private-bucket",
+		AccessKeyID: "access-id", AccessKeySecret: "secret-value",
+	}, "users/u-1/video/test.mp4", time.Unix(1800000000, 0), fileName)
+	if err != nil {
+		t.Fatalf("signedOSSObjectDownloadURL() error = %v", err)
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedDisposition := resourceDownloadContentDisposition(fileName)
+	if got := parsed.Query().Get("response-content-disposition"); got != expectedDisposition {
+		t.Fatalf("response-content-disposition = %q, want %q", got, expectedDisposition)
+	}
+	if strings.Contains(parsed.RawQuery, "%253B") || !strings.Contains(parsed.RawQuery, "response-content-disposition=attachment%3B%20") {
+		t.Fatalf("response-content-disposition was not single encoded: %q", parsed.RawQuery)
+	}
+}
+
+func TestSafeResourceDownloadFileName(t *testing.T) {
+	if got := SafeResourceDownloadFileName("  镜头\r\n/:*?\"<>|.mp4  "); got != "镜头.mp4" {
+		t.Fatalf("SafeResourceDownloadFileName() = %q", got)
+	}
+	if got := SafeResourceDownloadFileName(" .. "); got != "download" {
+		t.Fatalf("SafeResourceDownloadFileName() fallback = %q", got)
+	}
+	if got := SafeResourceDownloadFileName(strings.Repeat("a", 181)); len([]rune(got)) != 180 {
+		t.Fatalf("SafeResourceDownloadFileName() length = %d", len([]rune(got)))
+	}
+}
+
 func TestSignedOSSObjectURLSupportsTencentCOS(t *testing.T) {
 	value, err := signedOSSObjectURL(ossSettingValue{
 		Provider: tencentCOSProvider, Region: "ap-guangzhou", Bucket: "private-bucket-1250000000",

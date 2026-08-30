@@ -80,7 +80,12 @@ export function CanvasZoomControls({ scale, onScaleChange, onFitContent, onAutoA
             label: "精确缩放",
             wide: true,
             quiet: true,
-            icon: <span className="inline-flex h-full items-center justify-center whitespace-nowrap text-[var(--fs-caption)] font-semibold leading-none tabular-nums"><span ref={dockLabelRef}>{Math.round(scale * 100)}</span><span className="ml-px text-[var(--fs-micro)] font-medium leading-none opacity-50">%</span></span>,
+            icon: (
+                <span className="inline-flex h-full items-center justify-center whitespace-nowrap text-[var(--fs-caption)] font-semibold leading-none tabular-nums">
+                    <span ref={dockLabelRef}>{Math.round(scale * 100)}</span>
+                    <span className="ml-px text-[var(--fs-micro)] font-medium leading-none opacity-50">%</span>
+                </span>
+            ),
             active: precisionOpen,
             onClick: () => setPrecisionOpen((value) => !value),
         },
@@ -105,14 +110,21 @@ export function CanvasZoomControls({ scale, onScaleChange, onFitContent, onAutoA
                         <div className="flex items-center justify-between gap-3">
                             <span>
                                 <span className="block text-[var(--fs-tiny)] font-semibold">画布尺度</span>
-                                <span className="mt-0.5 block text-[var(--fs-micro)]" style={{ color: theme.node.muted }}>精确控制视野密度</span>
+                                <span className="mt-0.5 block text-[var(--fs-micro)]" style={{ color: theme.node.muted }}>
+                                    精确控制视野密度
+                                </span>
                             </span>
-                            <span ref={panelLabelRef} className="rounded-full border px-2 py-0.5 text-[var(--fs-tiny)] font-semibold tabular-nums" style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border, color: theme.accent.primary }}>
+                            <span
+                                ref={panelLabelRef}
+                                className="rounded-full border px-2 py-0.5 text-[var(--fs-tiny)] font-semibold tabular-nums"
+                                style={{ background: theme.spatial.surface, borderColor: theme.toolbar.border, color: theme.accent.primary }}
+                            >
                                 {Math.round(scale * 100)}%
                             </span>
                         </div>
                         <input
                             ref={rangeRef}
+                            name="canvas-zoom"
                             type="range"
                             min="5"
                             max="200"

@@ -292,7 +292,9 @@ export function CanvasScriptNodeContent({
                 <HeaderCell borderColor={theme.node.stroke} align="center">
                     序号
                 </HeaderCell>
-                <HeaderCell borderColor={theme.node.stroke} align="center">时长</HeaderCell>
+                <HeaderCell borderColor={theme.node.stroke} align="center">
+                    时长
+                </HeaderCell>
                 <HeaderCell borderColor={theme.node.stroke}>视频提示词</HeaderCell>
                 <HeaderCell borderColor={theme.node.stroke}>台词/旁白</HeaderCell>
                 <span className="px-3">关联资产</span>
@@ -317,10 +319,7 @@ export function CanvasScriptNodeContent({
                             <div className="flex flex-col items-center justify-center gap-0.5 border-r tabular-nums" style={{ color: theme.node.muted, borderColor: theme.node.stroke }}>
                                 <div className="flex items-center gap-0.5">
                                     <span className="text-sm">{row.shotNumber}</span>
-                                    <Dropdown
-                                        trigger={["click"]}
-                                        menu={{ items: [{ key: "delete", label: "删除镜头", icon: <Trash2 className="size-3.5" />, danger: true, disabled: rows.length <= 1, onClick: () => onRemoveRow(row.id) }] }}
-                                    >
+                                    <Dropdown trigger={["click"]} menu={{ items: [{ key: "delete", label: "删除镜头", icon: <Trash2 className="size-3.5" />, danger: true, disabled: rows.length <= 1, onClick: () => onRemoveRow(row.id) }] }}>
                                         <button
                                             type="button"
                                             className="grid size-5 place-items-center rounded outline-none opacity-45 transition hover:bg-black/5 hover:opacity-100 focus-visible:ring-2 dark:hover:bg-white/10"
@@ -627,7 +626,17 @@ export function CanvasScriptEditor({
         const keyword = query.trim().toLowerCase();
         return keyword
             ? rows.filter((row) =>
-                  [row.plotDescription, row.dialogue, row.camera, row.motion, row.timeBeats, row.imageGenerationPrompt, row.videoMotionPrompt, row.negativePrompt, ...(row.assetBindings || []).map((binding) => nodeById.get(binding.nodeId)?.title || "")].some((value) =>
+                  [
+                      row.plotDescription,
+                      row.dialogue,
+                      row.camera,
+                      row.motion,
+                      row.timeBeats,
+                      row.imageGenerationPrompt,
+                      row.videoMotionPrompt,
+                      row.negativePrompt,
+                      ...(row.assetBindings || []).map((binding) => nodeById.get(binding.nodeId)?.title || ""),
+                  ].some((value) =>
                       String(value || "")
                           .toLowerCase()
                           .includes(keyword),
@@ -664,7 +673,16 @@ export function CanvasScriptEditor({
             title: option.label,
             dataIndex: option.value,
             key: option.value,
-            width: option.value === "shotNumber" ? 72 : option.value === "durationSeconds" ? 100 : option.value === "assets" ? 220 : option.value === "plotDescription" || option.value === "dialogue" || option.value === "timeBeats" || option.value.endsWith("Prompt") ? 260 : 170,
+            width:
+                option.value === "shotNumber"
+                    ? 72
+                    : option.value === "durationSeconds"
+                      ? 100
+                      : option.value === "assets"
+                        ? 220
+                        : option.value === "plotDescription" || option.value === "dialogue" || option.value === "timeBeats" || option.value.endsWith("Prompt")
+                          ? 260
+                          : 170,
             fixed: option.value === "shotNumber" ? ("left" as const) : undefined,
             render: (_: unknown, row: StoryboardRow) =>
                 option.value === "shotNumber" ? (
@@ -756,6 +774,7 @@ export function CanvasScriptEditor({
 function CompactInput({ value, placeholder, borderColor, onChange }: { value: string; placeholder: string; borderColor: string; onChange: (value: string) => void }) {
     return (
         <textarea
+            name="canvas-storyboard-cell"
             className="thin-scrollbar h-full w-full resize-none overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words border-r bg-transparent px-4 py-2.5 text-xs leading-5 outline-none transition placeholder:opacity-35 focus:bg-black/[0.02] dark:focus:bg-white/[0.025]"
             style={{ borderColor }}
             value={value}
@@ -771,6 +790,7 @@ function CompactDurationInput({ value, borderColor, onChange }: { value: number;
     return (
         <label className="flex h-full items-center justify-center gap-1 border-r text-xs tabular-nums text-foreground/60" style={{ borderColor }}>
             <input
+                name="canvas-storyboard-duration"
                 type="number"
                 min={1}
                 max={60}

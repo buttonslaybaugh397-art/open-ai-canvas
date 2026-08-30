@@ -63,10 +63,17 @@ export async function pollVideoGenerationTask(config: AiConfig, task: VideoGener
 }
 
 export async function storeGeneratedVideo(result: VideoGenerationResult): Promise<UploadedFile> {
-    const backupBlob = result.blob || (result.dataUrl ? await fetch(result.dataUrl).then((response) => {
-        if (!response.ok) throw new Error(`视频备份读取失败（${response.status}）`);
-        return response.blob();
-    }) : undefined);
+    if (!result.blob && result.dataUrl && /^https?:\/\//i.test(result.dataUrl)) {
+        return importGeneratedVideo(result.dataUrl, result.url || result.dataUrl, result.mimeType);
+    }
+    const backupBlob =
+        result.blob ||
+        (result.dataUrl
+            ? await fetch(result.dataUrl).then((response) => {
+                  if (!response.ok) throw new Error(`视频备份读取失败（${response.status}）`);
+                  return response.blob();
+              })
+            : undefined);
     if (backupBlob) {
         // Generated videos must have a server resource record. The backend can
         // still keep a local disaster-recovery copy when OSS is unavailable.
@@ -77,16 +84,7 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
         let lastError: unknown = null;
         for (let attempt = 0; attempt < 3; attempt += 1) {
             try {
-                const resource = await importResourceFromUrl(result.url, "video");
-                return {
-                    url: result.url,
-                    storageKey: `resource:${resource.id}`,
-                    bytes: resource.size || 0,
-                    mimeType: resource.mimeType || result.mimeType || "video/mp4",
-                    width: resource.width,
-                    height: resource.height,
-                    durationMs: resource.durationMs,
-                };
+                return await importGeneratedVideo(result.url, result.url, result.mimeType);
             } catch (error) {
                 lastError = error;
             }
@@ -95,6 +93,19 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
         throw lastError instanceof Error ? lastError : new Error("视频同步到服务器资源存储失败");
     }
     throw new Error("视频接口没有返回可播放的视频");
+}
+
+async function importGeneratedVideo(sourceUrl: string, previewUrl: string, mimeType?: string): Promise<UploadedFile> {
+    const resource = await importResourceFromUrl(sourceUrl, "video");
+    return {
+        url: previewUrl,
+        storageKey: `resource:${resource.id}`,
+        bytes: resource.size || 0,
+        mimeType: resource.mimeType || mimeType || "video/mp4",
+        width: resource.width,
+        height: resource.height,
+        durationMs: resource.durationMs,
+    };
 }
 
 export type { VideoProviderDeps } from "./video-provider-deps";

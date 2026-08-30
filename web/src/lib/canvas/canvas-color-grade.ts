@@ -1,4 +1,4 @@
-import { resourceFileUrl, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
+import { resourceFileUrl, resourceIdFromStorageKey, resourceIdFromUrl, resourceProxyFileUrl, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
 import type { ReferenceImage } from "@/types/image";
 
 /** 调色参数，单位与 CSS filter 一致（百分比 / 度） */
@@ -31,13 +31,20 @@ function cacheKey(url: string, grade: CanvasColorGrade) {
     return `${url}|${grade.brightness}|${grade.contrast}|${grade.saturate}|${grade.hueRotate}`;
 }
 
-async function renderGradedBlob(url: string, grade: CanvasColorGrade) {
+function readableImageSource(url: string, storageKey?: string) {
+    const resourceId = resourceIdFromStorageKey(storageKey) || resourceIdFromUrl(url);
+    // Canvas readback needs readable bytes. A direct resource URL can redirect
+    // to a signed OSS object without CORS, so retain the same-origin proxy here.
+    return resourceId ? resourceProxyFileUrl(resourceId) : url;
+}
+
+async function renderGradedBlob(url: string, grade: CanvasColorGrade, storageKey?: string) {
     const image = new Image();
     image.crossOrigin = "anonymous";
     await new Promise<void>((resolve, reject) => {
         image.onload = () => resolve();
         image.onerror = () => reject(new Error("源图无法读取（可能不允许跨域）"));
-        image.src = url;
+        image.src = readableImageSource(url, storageKey);
     });
 
     const canvas = document.createElement("canvas");
@@ -70,7 +77,7 @@ export async function resolveCanvasColorGradeReference(image: ReferenceImage): P
     if (cached) return { ...image, dataUrl: "", url: cached.url, storageKey: cached.storageKey, type: cached.type };
 
     try {
-        const render = await renderGradedBlob(source.url, source.grade);
+        const render = await renderGradedBlob(source.url, source.grade, image.storageKey);
         const resource = await uploadResourceFile(render.blob, "image", {
             width: render.width,
             height: render.height,

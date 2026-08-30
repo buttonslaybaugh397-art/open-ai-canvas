@@ -474,6 +474,8 @@ export default function AssetsPage() {
                     </div>
                 </div>
                 <input
+                    id="asset-cover-upload"
+                    name="asset-cover-upload"
                     ref={coverInputRef}
                     type="file"
                     accept="image/*"
@@ -484,6 +486,8 @@ export default function AssetsPage() {
                     }}
                 />
                 <input
+                    id="asset-image-upload"
+                    name="asset-image-upload"
                     ref={imageInputRef}
                     type="file"
                     accept="image/*"
@@ -497,8 +501,8 @@ export default function AssetsPage() {
 
             <AssetDrawer asset={previewAsset} onClose={() => setPreviewAsset(null)} onCopy={copyAssetText} onDownload={downloadImage} />
 
-            <input ref={assetInputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importAssetZip(event.target.files?.[0])} />
-            <input ref={modelInputRef} type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" className="hidden" onChange={(event) => { void readModelFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+            <input id="asset-archive-upload" name="asset-archive-upload" ref={assetInputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importAssetZip(event.target.files?.[0])} />
+            <input id="asset-model-upload" name="asset-model-upload" ref={modelInputRef} type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" className="hidden" onChange={(event) => { void readModelFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
 
             <Modal className="library-modal library-confirm-modal" title="删除素材" open={Boolean(deletingAsset)} onCancel={() => setDeletingAsset(null)} onOk={() => void confirmDelete()} okText="删除" okButtonProps={{ danger: true }} cancelText="取消">
                 确定删除「{deletingAsset?.title}」吗？未被其他内容引用的服务器本地或对象存储文件也会同步删除；若仍被画布、任务或其他素材占用，本次删除将被阻止。
@@ -563,7 +567,7 @@ function AssetCover({ asset, selected, onSelect, onOpen, menuItems }: { asset: L
                 <span className="assets-cover-badge is-category">{assetCategoryLabel(asset.category)}</span>
             </span>
             {clock ? <span className="assets-cover-clock">{clock}</span> : null}
-            <input type="checkbox" checked={selected} onClick={(event) => event.stopPropagation()} onChange={(event) => onSelect(event.target.checked)} className="assets-select-check" aria-label={`选择 ${asset.title}`} />
+            <input id={`asset-select-${asset.id}`} name={`asset-select-${asset.id}`} type="checkbox" checked={selected} onClick={(event) => event.stopPropagation()} onChange={(event) => onSelect(event.target.checked)} className="assets-select-check" aria-label={`选择 ${asset.title}`} />
             <Dropdown
                 trigger={["click"]}
                 menu={{ items: menuItems }}

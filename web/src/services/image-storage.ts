@@ -3,7 +3,7 @@ import localforage from "localforage";
 import { nanoid } from "nanoid";
 import { readImageMeta } from "@/lib/image-utils";
 import { getActiveUserScope } from "@/lib/user-scope";
-import { importResourceFromUrl, isResourceUrl, resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
+import { getResourceBlob, importResourceFromUrl, isResourceUrl, resourceFileUrl, resourceIdFromStorageKey, resourceIdFromUrl, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
 import { cacheResourceObjectUrl, getCachedResourceBlob, getCachedResourceObjectUrl, primeResourceBlobCache } from "@/services/resource-blob-cache";
 
 export type UploadedImage = {
@@ -98,6 +98,14 @@ export async function setImageBlob(storageKey: string, blob: Blob) {
 }
 
 export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string; name?: string; type?: string; mimeType?: string }) {
+    const resourceId = resourceIdFromStorageKey(image.storageKey) || resourceIdFromUrl(image.url) || resourceIdFromUrl(image.dataUrl);
+    if (resourceId) {
+        // Resource file URLs can redirect to an OSS signed URL. Reading it as a
+        // Blob must stay on the authenticated proxy or the browser enforces OSS CORS.
+        const blob = await getResourceBlob(resourceStorageKey(resourceId));
+        if (blob) return blobToDataUrl(await normalizeImageBlob(blob, image.name || image.url));
+        throw new Error("无法通过资源代理读取图片");
+    }
     if (image.storageKey) {
         const blob = await getImageBlob(image.storageKey);
         if (blob) return blobToDataUrl(await normalizeImageBlob(blob, image.name || image.url));

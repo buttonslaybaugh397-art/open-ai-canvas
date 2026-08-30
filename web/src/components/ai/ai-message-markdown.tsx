@@ -26,7 +26,7 @@ const components: Components = {
     table: ({ children, ...props }) => <div className="ai-message-markdown-table-wrap"><table {...props} className="ai-message-markdown-table">{children}</table></div>,
     th: ({ children, ...props }) => <th {...props} className="ai-message-markdown-table-cell ai-message-markdown-table-header">{children}</th>,
     td: ({ children, ...props }) => <td {...props} className="ai-message-markdown-table-cell">{children}</td>,
-    input: ({ ...props }) => <input {...props} className="ai-message-markdown-task" disabled />,
+    input: ({ ...props }) => <input {...props} name={props.name || "ai-message-task"} className="ai-message-markdown-task" disabled />,
 };
 
 export function AIMessageMarkdown({ children, isStreaming = false, className = "" }: AIMessageMarkdownProps) {

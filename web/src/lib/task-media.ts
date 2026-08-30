@@ -1,5 +1,3 @@
-import { useSyncExternalStore } from "react";
-
 export type TaskMediaSource = {
     url: string;
     storageKey?: string;
@@ -15,32 +13,6 @@ type TaskMediaSourceTask = {
 };
 
 const mediaUrlFields = ["url", "videoUrl", "imageUrl", "outputUrl", "mediaUrl", "dataUrl"] as const;
-const resolvedVideoFallbacks = new Map<string, string>();
-const fallbackListeners = new Set<() => void>();
-
-export function getResolvedVideoFallbackUrl(url: string) {
-    return resolvedVideoFallbacks.get(url) || "";
-}
-
-export function setResolvedVideoFallbackUrl(sourceUrl: string, fallbackUrl: string) {
-    if (!sourceUrl || !fallbackUrl || sourceUrl === fallbackUrl || resolvedVideoFallbacks.get(sourceUrl) === fallbackUrl) return;
-    resolvedVideoFallbacks.set(sourceUrl, fallbackUrl);
-    fallbackListeners.forEach((listener) => listener());
-}
-
-export function subscribeResolvedVideoFallbacks(listener: () => void) {
-    fallbackListeners.add(listener);
-    return () => fallbackListeners.delete(listener);
-}
-
-export function useResolvedVideoFallbackUrl(sourceUrl: string) {
-    return useSyncExternalStore(
-        subscribeResolvedVideoFallbacks,
-        () => getResolvedVideoFallbackUrl(sourceUrl),
-        () => "",
-    );
-}
-
 export function parseTaskMediaSources(value?: string): TaskMediaSource[] {
     if (!value) return [];
     let parsed: unknown;

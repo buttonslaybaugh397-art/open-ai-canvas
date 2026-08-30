@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -237,7 +238,13 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			fail(c, http.StatusNotFound, err)
 			return
 		}
-		ossURL, err := svc.DirectResourceURL(user.ID, resource.ID)
+		downloadName := strings.TrimSpace(c.Query("downloadName"))
+		var ossURL string
+		if downloadName != "" {
+			ossURL, err = svc.DirectResourceDownloadURL(user.ID, resource.ID, downloadName)
+		} else {
+			ossURL, err = svc.DirectResourceURL(user.ID, resource.ID)
+		}
 		if err != nil {
 			failService(c, err)
 			return
@@ -279,6 +286,9 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		if resource.Kind == "file" {
 			c.Header("Content-Disposition", "attachment")
 			c.Header("Content-Security-Policy", "sandbox")
+		}
+		if downloadName := strings.TrimSpace(c.Query("downloadName")); downloadName != "" {
+			c.Header("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": service.SafeResourceDownloadFileName(downloadName)}))
 		}
 		if ifNoneMatch(c.GetHeader("If-None-Match"), etag) {
 			c.Status(http.StatusNotModified)

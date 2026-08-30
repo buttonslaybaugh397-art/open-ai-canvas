@@ -53,6 +53,7 @@ export function AudioSettingsPanel({ config, onConfigChange, theme, showTitle = 
                         ))}
                     </div>
                     <input
+                        name="audio-speed"
                         type="number"
                         min={0.25}
                         max={4}
@@ -67,6 +68,7 @@ export function AudioSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 </SettingGroup>
                 <SettingGroup title="声音指令" color={theme.node.muted}>
                     <textarea
+                        name="audio-instructions"
                         value={config.audioInstructions || ""}
                         placeholder="例如：自然、温暖、适合旁白。"
                         className="thin-scrollbar h-20 w-full resize-none rounded-xl border bg-transparent px-3 py-2 text-sm leading-5 outline-none"

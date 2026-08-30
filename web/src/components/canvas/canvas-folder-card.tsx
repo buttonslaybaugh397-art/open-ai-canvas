@@ -68,23 +68,26 @@ export function CanvasFolderCard({ project, projectName, onClick }: CanvasFolder
                     </div>
                     <div className="canvas-folder-meta">
                         <span className="canvas-folder-meta-item">{projectName ? `所属项目：${projectName}` : "自由画布"}</span>
-                        <span className="canvas-folder-meta-separator" aria-hidden="true">·</span>
+                        <span className="canvas-folder-meta-separator" aria-hidden="true">
+                            ·
+                        </span>
                         <span className="canvas-folder-meta-item">{project.nodes.length} 节点</span>
                     </div>
                     <div className="canvas-folder-dates">
-                        <span><small>创建时间</small><time dateTime={project.createdAt}>{formatCanvasDate(project.createdAt)}</time></span>
-                        <span><small>最后更新</small><time dateTime={project.updatedAt}>{formatCanvasDate(project.updatedAt)}</time></span>
+                        <span>
+                            <small>创建时间</small>
+                            <time dateTime={project.createdAt}>{formatCanvasDate(project.createdAt)}</time>
+                        </span>
+                        <span>
+                            <small>最后更新</small>
+                            <time dateTime={project.updatedAt}>{formatCanvasDate(project.updatedAt)}</time>
+                        </span>
                     </div>
                 </div>
             </div>
 
             <span className={cn("canvas-folder-select", selected && "is-visible")} onClick={(event) => event.stopPropagation()}>
-                <input
-                    type="checkbox"
-                    checked={selected}
-                    onChange={(event) => toggleSelected(project.id, event.target.checked)}
-                    aria-label={`选择 ${project.title}`}
-                />
+                <input name={`canvas-folder-select-${project.id}`} type="checkbox" checked={selected} onChange={(event) => toggleSelected(project.id, event.target.checked)} aria-label={`选择 ${project.title}`} />
             </span>
 
             <div className="canvas-folder-actions" onClick={(event) => event.stopPropagation()}>

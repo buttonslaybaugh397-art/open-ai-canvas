@@ -2,7 +2,7 @@ import localforage from "localforage";
 import { nanoid } from "nanoid";
 
 import { getActiveUserScope } from "@/lib/user-scope";
-import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
+import { getResourceBlob, resourceFileUrl, resourceIdFromStorageKey, resourceIdFromUrl, resourceProxyFileUrl, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
 import { getCachedResourceBlob, getCachedResourceObjectUrl, primeResourceBlobCache } from "@/services/resource-blob-cache";
 
 export type UploadedFile = { url: string; storageKey: string; bytes: number; mimeType: string; width?: number; height?: number; durationMs?: number };
@@ -20,7 +20,15 @@ export async function uploadMediaFile(input: string | Blob, prefix = "file", opt
         const resource = await uploadResourceFile(blob, kind, { ...meta, fileName: input instanceof File ? input.name : undefined });
         await primeResourceBlobCache(resourceStorageKey(resource.id), blob).catch(() => "");
         URL.revokeObjectURL(previewUrl);
-        return { url: resource.publicUrl || resourceFileUrl(resource.id), storageKey: resourceStorageKey(resource.id), bytes: resource.size || blob.size, mimeType: resource.mimeType || blob.type || "application/octet-stream", width: resource.width || meta.width, height: resource.height || meta.height, durationMs: resource.durationMs || meta.durationMs };
+        return {
+            url: resource.publicUrl || resourceFileUrl(resource.id),
+            storageKey: resourceStorageKey(resource.id),
+            bytes: resource.size || blob.size,
+            mimeType: resource.mimeType || blob.type || "application/octet-stream",
+            width: resource.width || meta.width,
+            height: resource.height || meta.height,
+            durationMs: resource.durationMs || meta.durationMs,
+        };
     } catch (error) {
         if (!allowLocalFallback) {
             URL.revokeObjectURL(previewUrl);
@@ -53,9 +61,30 @@ export async function resolveMediaUrl(storageKey?: string, fallback = "") {
     return url;
 }
 
+/** Resolve a resource to a browser-readable same-origin URL for media tools. */
+export function resolveReadableMediaUrl(storageKey?: string) {
+    const resourceId = resourceIdFromStorageKey(storageKey);
+    return resourceId ? resourceProxyFileUrl(resourceId) : "";
+}
+
 export async function getMediaBlob(storageKey: string) {
     if (resourceIdFromStorageKey(storageKey)) return getCachedResourceBlob(storageKey);
     return store.getItem<Blob>(storageKey);
+}
+
+/** Read media for operations that need response bytes, using the same-origin resource proxy. */
+export async function getMediaBlobFromSource(source?: string, storageKey?: string) {
+    if (storageKey) {
+        const stored = await getMediaBlob(storageKey);
+        if (stored) return stored;
+        if (resourceIdFromStorageKey(storageKey)) return null;
+    }
+    const resourceId = resourceIdFromUrl(source);
+    if (resourceId) return getResourceBlob(resourceStorageKey(resourceId));
+    if (!source) return null;
+    const response = await fetch(source, { credentials: "same-origin" });
+    if (!response.ok) throw new Error(`媒体资源请求失败（${response.status}）`);
+    return response.blob();
 }
 
 export async function setMediaBlob(storageKey: string, blob: Blob) {

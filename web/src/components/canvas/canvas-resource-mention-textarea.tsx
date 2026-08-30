@@ -48,7 +48,24 @@ type Props = Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "onChange" | "val
 };
 
 export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Props>(function CanvasResourceMentionTextarea(
-    { value, references, onChange, onSubmit, onKeyDown, className, containerClassName, style, highlightLabels = true, mentionMenuWidth = 320, sendOnEnter = true, onContentSizeChange, includeAssetLibrary = false, activeDropReferenceId, onReferenceFilesDrop, ...props },
+    {
+        value,
+        references,
+        onChange,
+        onSubmit,
+        onKeyDown,
+        className,
+        containerClassName,
+        style,
+        highlightLabels = true,
+        mentionMenuWidth = 320,
+        sendOnEnter = true,
+        onContentSizeChange,
+        includeAssetLibrary = false,
+        activeDropReferenceId,
+        onReferenceFilesDrop,
+        ...props
+    },
     forwardedRef,
 ) {
     const rawTheme = useThemeStore((state) => state.theme);
@@ -64,7 +81,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
     const [activeIndex, setActiveIndex] = useState(-1);
     const [nativeDropReferenceId, setNativeDropReferenceId] = useState<string | null>(null);
     const canvasReferences = useResolvedCanvasResourceReferences(references);
-    const rawAssetReferences = useMemo(() => includeAssetLibrary ? buildAssetMentionReferences(assets) : [], [assets, includeAssetLibrary]);
+    const rawAssetReferences = useMemo(() => (includeAssetLibrary ? buildAssetMentionReferences(assets) : []), [assets, includeAssetLibrary]);
     const assetReferences = useResolvedCanvasResourceReferences(rawAssetReferences);
     const activeCanvasReferences = useMemo(() => canvasReferences.filter((item) => item.active), [canvasReferences]);
     const availableReferences = useMemo(() => [...activeCanvasReferences, ...assetReferences], [activeCanvasReferences, assetReferences]);
@@ -79,20 +96,23 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
         return [...activeCanvasReferences, ...assetReferences.filter((item) => value.includes(canvasResourceMentionToken(item)))];
     }, [activeCanvasReferences, assetReferences, highlightLabels, value]);
     const useRichEditor = Boolean(activeReferences.length);
-    const reportContentSize = useCallback((element: HTMLElement | null) => {
-        if (!element || !onContentSizeChange) return;
-        const previous = { height: element.style.height, minHeight: element.style.minHeight, maxHeight: element.style.maxHeight, overflow: element.style.overflow };
-        element.style.height = "1px";
-        element.style.minHeight = "0";
-        element.style.maxHeight = "none";
-        element.style.overflow = "hidden";
-        const height = Math.ceil(element.scrollHeight);
-        element.style.height = previous.height;
-        element.style.minHeight = previous.minHeight;
-        element.style.maxHeight = previous.maxHeight;
-        element.style.overflow = previous.overflow;
-        onContentSizeChange(height);
-    }, [onContentSizeChange]);
+    const reportContentSize = useCallback(
+        (element: HTMLElement | null) => {
+            if (!element || !onContentSizeChange) return;
+            const previous = { height: element.style.height, minHeight: element.style.minHeight, maxHeight: element.style.maxHeight, overflow: element.style.overflow };
+            element.style.height = "1px";
+            element.style.minHeight = "0";
+            element.style.maxHeight = "none";
+            element.style.overflow = "hidden";
+            const height = Math.ceil(element.scrollHeight);
+            element.style.height = previous.height;
+            element.style.minHeight = previous.minHeight;
+            element.style.maxHeight = previous.maxHeight;
+            element.style.overflow = previous.overflow;
+            onContentSizeChange(height);
+        },
+        [onContentSizeChange],
+    );
 
     useLayoutEffect(() => {
         if (!useRichEditor) return;
@@ -104,7 +124,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
             pendingSelectionRef.current = null;
             return;
         }
-        const selection = pendingSelectionRef.current ?? (isFocused ? getEditableSelection(editor)?.start ?? null : null);
+        const selection = pendingSelectionRef.current ?? (isFocused ? (getEditableSelection(editor)?.start ?? null) : null);
         renderEditableContent(editor, value, activeReferences);
         lastRenderedValueRef.current = value;
         if (isFocused && selection !== null) setEditableSelection(editor, selection);
@@ -227,21 +247,22 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
         caretColor: style?.color || theme.node.text,
     } as CSSProperties;
     const menuAnchor = useRichEditor ? editorRef.current : textareaRef.current;
-    const menu = mention && availableReferences.length && menuAnchor ? (
-        <MentionMenu
-            anchor={menuAnchor}
-            connectedReferences={activeCanvasReferences}
-            assetReferences={assetReferences}
-            filteredReferences={candidates}
-            query={mention.query}
-            activeReferenceId={activeIndex >= 0 ? candidates[Math.min(activeIndex, candidates.length - 1)]?.id : undefined}
-            theme={theme}
-            preferredWidth={mentionMenuWidth}
-            onQueryChange={(query) => setMention((current) => current ? { ...current, query } : current)}
-            onClose={closeMention}
-            onSelect={insertReference}
-        />
-    ) : null;
+    const menu =
+        mention && availableReferences.length && menuAnchor ? (
+            <MentionMenu
+                anchor={menuAnchor}
+                connectedReferences={activeCanvasReferences}
+                assetReferences={assetReferences}
+                filteredReferences={candidates}
+                query={mention.query}
+                activeReferenceId={activeIndex >= 0 ? candidates[Math.min(activeIndex, candidates.length - 1)]?.id : undefined}
+                theme={theme}
+                preferredWidth={mentionMenuWidth}
+                onQueryChange={(query) => setMention((current) => (current ? { ...current, query } : current))}
+                onClose={closeMention}
+                onSelect={insertReference}
+            />
+        ) : null;
 
     if (useRichEditor) {
         return (
@@ -279,8 +300,8 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
                     }}
                     onDragOver={(event: DragEvent<HTMLDivElement>) => {
                         const reference = referenceForDropTarget(event.target);
-                        const hasImageFile = Array.from(event.dataTransfer.items).some((item) => item.kind === "file" && (!item.type || item.type.startsWith("image/")))
-                            || Array.from(event.dataTransfer.files).some((file) => file.type.startsWith("image/"));
+                        const hasImageFile =
+                            Array.from(event.dataTransfer.items).some((item) => item.kind === "file" && (!item.type || item.type.startsWith("image/"))) || Array.from(event.dataTransfer.files).some((file) => file.type.startsWith("image/"));
                         if (!onReferenceFilesDrop || reference?.kind !== "image" || !hasImageFile) {
                             setNativeDropReferenceId(null);
                             props.onDragOver?.(event as unknown as React.DragEvent<HTMLTextAreaElement>);
@@ -311,12 +332,12 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
                         if (mention && candidates.length) {
                             if (event.key === "ArrowDown") {
                                 event.preventDefault();
-                                setActiveIndex((index) => index < 0 ? 0 : (index + 1) % candidates.length);
+                                setActiveIndex((index) => (index < 0 ? 0 : (index + 1) % candidates.length));
                                 return;
                             }
                             if (event.key === "ArrowUp") {
                                 event.preventDefault();
-                                setActiveIndex((index) => index < 0 ? candidates.length - 1 : (index - 1 + candidates.length) % candidates.length);
+                                setActiveIndex((index) => (index < 0 ? candidates.length - 1 : (index - 1 + candidates.length) % candidates.length));
                                 return;
                             }
                             if (event.key === "Enter" || event.key === "Tab") {
@@ -367,8 +388,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
                         }, 120);
                         props.onBlur?.(event as unknown as React.FocusEvent<HTMLTextAreaElement>);
                     }}
-                >
-                </div>
+                ></div>
                 {menu}
             </div>
         );
@@ -378,6 +398,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
         <div ref={containerRef} data-canvas-no-zoom className={`relative w-full min-h-0 overflow-hidden ${containerClassName || "h-full"}`}>
             <textarea
                 {...props}
+                name={props.name || "canvas-resource-mention"}
                 ref={(node) => {
                     textareaRef.current = node;
                     if (typeof forwardedRef === "function") forwardedRef(node);
@@ -405,12 +426,12 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
                     if (mention && candidates.length) {
                         if (event.key === "ArrowDown") {
                             event.preventDefault();
-                            setActiveIndex((index) => index < 0 ? 0 : (index + 1) % candidates.length);
+                            setActiveIndex((index) => (index < 0 ? 0 : (index + 1) % candidates.length));
                             return;
                         }
                         if (event.key === "ArrowUp") {
                             event.preventDefault();
-                            setActiveIndex((index) => index < 0 ? candidates.length - 1 : (index - 1 + candidates.length) % candidates.length);
+                            setActiveIndex((index) => (index < 0 ? candidates.length - 1 : (index - 1 + candidates.length) % candidates.length));
                             return;
                         }
                         if (event.key === "Enter") {
@@ -507,7 +528,19 @@ const ASSET_CATEGORY_LABELS: Record<AssetCategory, string> = {
     other: "其他",
 };
 
-function MentionMenu({ anchor, connectedReferences, assetReferences, filteredReferences, query, activeReferenceId, theme, preferredWidth, onQueryChange, onClose, onSelect }: {
+function MentionMenu({
+    anchor,
+    connectedReferences,
+    assetReferences,
+    filteredReferences,
+    query,
+    activeReferenceId,
+    theme,
+    preferredWidth,
+    onQueryChange,
+    onClose,
+    onSelect,
+}: {
     anchor: HTMLElement;
     connectedReferences: CanvasResourceReference[];
     assetReferences: CanvasResourceReference[];
@@ -545,11 +578,7 @@ function MentionMenu({ anchor, connectedReferences, assetReferences, filteredRef
         .filter((item) => item.count > 0);
     const connectedNodes = connectedReferences.filter((item) => item.kind !== "skill");
     const skillReferences = connectedReferences.filter((item) => item.kind === "skill");
-    const visibleReferences = query
-        ? filteredReferences
-        : category
-          ? assetReferences.filter((item) => item.category === category)
-          : [];
+    const visibleReferences = query ? filteredReferences : category ? assetReferences.filter((item) => item.category === category) : [];
 
     useLayoutEffect(() => {
         const closeOnOutsidePointer = (event: globalThis.PointerEvent) => {
@@ -574,6 +603,7 @@ function MentionMenu({ anchor, connectedReferences, assetReferences, filteredRef
             <div className="canvas-resource-mention-search">
                 <Search aria-hidden />
                 <input
+                    name="canvas-resource-mention-search"
                     value={query}
                     placeholder="搜索素材..."
                     aria-label="搜索引用素材"
@@ -640,7 +670,17 @@ function MentionMenu({ anchor, connectedReferences, assetReferences, filteredRef
     );
 }
 
-function MentionReferenceList({ references, activeReferenceId, theme, onSelect }: { references: CanvasResourceReference[]; activeReferenceId?: string; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onSelect: (reference: CanvasResourceReference) => void }) {
+function MentionReferenceList({
+    references,
+    activeReferenceId,
+    theme,
+    onSelect,
+}: {
+    references: CanvasResourceReference[];
+    activeReferenceId?: string;
+    theme: (typeof canvasThemes)[keyof typeof canvasThemes];
+    onSelect: (reference: CanvasResourceReference) => void;
+}) {
     if (!references.length) return <div className="canvas-resource-mention-empty">没有匹配的素材</div>;
     return references.map((reference) => (
         <button
@@ -661,7 +701,9 @@ function MentionReferenceList({ references, activeReferenceId, theme, onSelect }
         >
             <ReferencePreview reference={reference} />
             <span className="min-w-0 flex-1">
-                <span className="block truncate font-medium" title={reference.label}>{reference.label}</span>
+                <span className="block truncate font-medium" title={reference.label}>
+                    {reference.label}
+                </span>
                 {reference.kind !== "skill" && reference.text && reference.text !== reference.title ? <span className="block truncate opacity-55">{reference.text}</span> : null}
             </span>
         </button>

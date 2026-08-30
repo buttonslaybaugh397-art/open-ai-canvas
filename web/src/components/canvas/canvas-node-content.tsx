@@ -457,7 +457,7 @@ function VideoNodeContent({ node, theme, reduceMediaEffects }: CanvasNodeContent
     return (
         <div ref={playerBoxRef} className="relative flex h-full w-full items-center justify-center overflow-hidden rounded-[var(--node-radius)] bg-black">
             <div className="relative" style={{ width: fitWidth, height: Math.round(fitHeight) }}>
-                <VideoPlayer src={url} mimeType={node.metadata?.mimeType} title={node.title || "视频"} preload={reduceMediaEffects ? "none" : "metadata"} autoPlay={playWhenReadyRef.current} onCanPlay={() => { playWhenReadyRef.current = false; }} brandColor={theme.accent.primary} className="h-full w-full rounded-[var(--node-radius)] bg-black" dataCanvasNoZoom compactControls />
+                <VideoPlayer src={url} mimeType={node.metadata?.mimeType} title={node.title || "视频"} preload={reduceMediaEffects ? "none" : "metadata"} autoPlay={playWhenReadyRef.current} fallbackStorageKey={node.metadata?.storageKey} onCanPlay={() => { playWhenReadyRef.current = false; }} brandColor={theme.accent.primary} className="h-full w-full rounded-[var(--node-radius)] bg-black" dataCanvasNoZoom compactControls />
                 {activeEntry && activeEntry.text.trim() ? <CanvasSubtitleOverlay text={activeEntry.text} highlight={activeHighlight} style={subtitleStyle} /> : null}
             </div>
         </div>
@@ -547,6 +547,14 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
             setLoading(false);
             return;
         }
+        if (node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) {
+            // Passive media playback keeps the task/API URL first so it can use
+            // the provider or object-storage bandwidth directly. VideoPlayer
+            // falls back to the same-origin proxy only after a real load error.
+            setUrl(fallback || resourceFileUrl(resourceIdFromStorageKey(storageKey)));
+            setLoading(false);
+            return;
+        }
         setUrl("");
         setLoading(eager);
         const resolve = eager ? cacheResourceObjectUrl(storageKey) : getCachedResourceObjectUrl(storageKey);
@@ -558,11 +566,16 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
             if (!cancelled) setLoading(false);
         });
         return () => { cancelled = true; };
-    }, [eager, fallback, isRemoteResource, storageKey]);
+    }, [eager, fallback, isRemoteResource, node.type, storageKey]);
 
     const load = useCallback(async () => {
         if (url) return url;
         if (!isRemoteResource) return fallback;
+        if (node.type === CanvasNodeType.Video || node.type === CanvasNodeType.Audio) {
+            const source = fallback || resourceFileUrl(resourceIdFromStorageKey(storageKey));
+            setUrl(source);
+            return source;
+        }
         setLoading(true);
         try {
             const next = (await cacheResourceObjectUrl(storageKey)) || fallback;
@@ -574,7 +587,7 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
         } finally {
             setLoading(false);
         }
-    }, [fallback, isRemoteResource, storageKey, url]);
+    }, [fallback, isRemoteResource, node.type, storageKey, url]);
     return { url, loading, load };
 }
 

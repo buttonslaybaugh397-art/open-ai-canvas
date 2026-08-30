@@ -220,7 +220,7 @@ export function WorkflowTestWorkbench({ provider, workflowId, workflowKind = "wo
                     </svg>
 
                     <WorkflowNode id="prompt" title="提示词" icon={<WandSparkles />} position={positions.prompt} onMove={(point) => setPositions((current) => ({ ...current, prompt: point }))}>
-                        <Input.TextArea value={prompt} autoSize={{ minRows: 4, maxRows: 7 }} placeholder="输入本次测试提示词" onChange={(event) => setPrompt(event.target.value)} />
+                        <Input.TextArea id="workflow-test-prompt" name="workflow-test-prompt" value={prompt} autoSize={{ minRows: 4, maxRows: 7 }} placeholder="输入本次测试提示词" onChange={(event) => setPrompt(event.target.value)} />
                     </WorkflowNode>
 
                     {visibleMediaKinds.map((kind) => (
@@ -316,6 +316,8 @@ function MediaPicker({ kind, limit, files, maskIndex, onChange }: { kind: MediaK
     return (
         <label className="workflow-test-upload">
             <input
+                id={`workflow-test-upload-${kind}`}
+                name={`workflow-test-upload-${kind}`}
                 type="file"
                 hidden
                 multiple={limit > 1}
@@ -357,7 +359,7 @@ function WorkflowParameter({ field, value, onChange }: { field: WorkflowFieldMap
                         {field.nodeId}.{field.fieldName}
                     </small>
                 </span>
-                <Input value="每次运行随机生成" disabled />
+                <Input id={`workflow-test-${testFieldKey(field)}`} name={`workflow-test-${testFieldKey(field)}`} value="每次运行随机生成" disabled />
             </label>
         );
     return (
@@ -369,13 +371,13 @@ function WorkflowParameter({ field, value, onChange }: { field: WorkflowFieldMap
                 </small>
             </span>
             {Array.isArray(field.options) && field.options.length ? (
-                <Select showSearch value={value} options={field.options.map((option) => ({ label: String(option), value: option }))} onChange={onChange} />
+                <Select id={`workflow-test-${testFieldKey(field)}`} value={value} options={field.options.map((option) => ({ label: String(option), value: option }))} onChange={onChange} />
             ) : type === "BOOLEAN" || typeof value === "boolean" ? (
                 <Switch checked={value === true || value === "true"} onChange={onChange} />
             ) : type === "NUMBER" || typeof value === "number" ? (
-                <InputNumber className="w-full" value={numberValue(value)} min={numberValue(field.min)} max={numberValue(field.max)} step={numberValue(field.step)} onChange={onChange} />
+                <InputNumber id={`workflow-test-${testFieldKey(field)}`} name={`workflow-test-${testFieldKey(field)}`} className="w-full" value={numberValue(value)} min={numberValue(field.min)} max={numberValue(field.max)} step={numberValue(field.step)} onChange={onChange} />
             ) : (
-                <Input value={displayValue(value)} onChange={(event) => onChange(event.target.value)} />
+                <Input id={`workflow-test-${testFieldKey(field)}`} name={`workflow-test-${testFieldKey(field)}`} value={displayValue(value)} onChange={(event) => onChange(event.target.value)} />
             )}
         </label>
     );

@@ -173,6 +173,7 @@ export function CanvasProjectSidebar({ projectId, detail, onAddChapter, onLocate
                     <label className="flex h-8 items-center gap-1.5 rounded-md border border-border/75 bg-foreground/[.025] px-2 focus-within:border-[var(--workspace-accent)] focus-within:ring-2 focus-within:ring-[var(--workspace-accent-soft)]">
                         <Search className="size-3.5 shrink-0 text-foreground/32" />
                         <input
+                            name="canvas-project-chapter-search"
                             value={query}
                             onChange={(event) => setQuery(event.target.value)}
                             onKeyDown={(event) => {

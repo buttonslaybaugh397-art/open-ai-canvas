@@ -236,7 +236,7 @@ export default function EagleLibraryPage() {
                     </div>
                 </div>
 
-                <input ref={fileInputRef} type="file" accept="image/*,video/*,audio/*" multiple className="hidden" onChange={(event) => void handleUpload(event)} />
+                <input id="eagle-asset-upload" name="eagle-asset-upload" ref={fileInputRef} type="file" accept="image/*,video/*,audio/*" multiple className="hidden" onChange={(event) => void handleUpload(event)} />
             </WorkspacePage>
             <EagleAssetDrawer item={previewItem} onClose={() => setPreviewItem(null)} totalBytes={totalBytes} />
         </>

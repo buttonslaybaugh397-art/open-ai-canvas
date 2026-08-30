@@ -6,8 +6,7 @@ import { saveAs } from "file-saver";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useConfigStore, type AiConfig } from "@/stores/use-config-store";
-import { resolveMediaUrl } from "@/services/file-storage";
-import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
+import { resolveReadableMediaUrl, resolveMediaUrl } from "@/services/file-storage";
 import { resourceIdFromStorageKey } from "@/services/api/resources";
 import { parseSrt, serializeSrtEntries } from "@/lib/timeline/srt-parser";
 import { DEFAULT_MAX_CHARS_PER_ENTRY, MAX_CHARS_PER_ENTRY_LIMIT, MIN_CHARS_PER_ENTRY, resegmentSrtEntries, splitLongEntry } from "@/lib/timeline/srt-resegment";
@@ -74,18 +73,7 @@ export function CanvasSubtitleDialog({ node, open, projectId, config, onClose, o
             if (!cancelled) setVideoUrl(url);
         };
         if (resourceIdFromStorageKey(storageKey)) {
-            void cacheResourceObjectUrl(storageKey)
-                .then((cached) => {
-                    if (cancelled) return;
-                    if (cached) {
-                        setVideoUrl(cached);
-                    } else {
-                        void resolveMediaUrl(storageKey, fallback).then(applyUrl);
-                    }
-                })
-                .catch(() => {
-                    if (!cancelled) void resolveMediaUrl(storageKey, fallback).then(applyUrl);
-                });
+            setVideoUrl(resolveReadableMediaUrl(storageKey));
         } else {
             void resolveMediaUrl(storageKey, fallback).then(applyUrl);
         }
@@ -505,6 +493,7 @@ export function CanvasSubtitleDialog({ node, open, projectId, config, onClose, o
                 <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3" style={{ borderColor: theme.toolbar.border, background: theme.toolbar.panel }}>
                     <input
                         ref={fileInputRef}
+                        name="canvas-subtitle-srt-upload"
                         type="file"
                         accept=".srt"
                         className="hidden"
@@ -516,6 +505,7 @@ export function CanvasSubtitleDialog({ node, open, projectId, config, onClose, o
                     />
                     <input
                         ref={textInputRef}
+                        name="canvas-subtitle-text-upload"
                         type="file"
                         accept=".txt,text/plain"
                         className="hidden"

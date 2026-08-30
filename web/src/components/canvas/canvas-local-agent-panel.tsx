@@ -149,7 +149,7 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({
         (clientId: string, nextSnapshot: CanvasAgentSnapshot) => {
             const stateHash = hashCanvasAgentSnapshot(nextSnapshot);
             if (runtimeStateHashRef.current !== stateHash) {
-                runtimeRevisionRef.current = runtimeStateHashRef.current ? runtimeRevisionRef.current + 1 : nextSnapshot.revision ?? 0;
+                runtimeRevisionRef.current = runtimeStateHashRef.current ? runtimeRevisionRef.current + 1 : (nextSnapshot.revision ?? 0);
                 runtimeStateHashRef.current = stateHash;
             }
             // Canvas Agent 的 canonical hash 是服务端 SHA-256；浏览器本地校验使用轻量 FNV hash。
@@ -393,14 +393,17 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({
             addMessage({ role: "error", title: "图片过大", text: "图片附件超过 30MB，请删减后再发送。" });
             return;
         }
-        await submitTurn({
-            text,
-            prompt: requestPrompt,
-            canvasId: snapshotRef.current.projectId,
-            threadId: useCanvasAgentStore.getState().activeThreadId || undefined,
-            attachments: files.map(({ name, type, dataUrl }) => ({ name, type, dataUrl })),
-            skills: mentionedSkills.map((skill) => ({ skillId: skill.skill_id, name: skill.skill_name, description: skill.description, instruction: skill.instruction || skill.description })),
-        }, true);
+        await submitTurn(
+            {
+                text,
+                prompt: requestPrompt,
+                canvasId: snapshotRef.current.projectId,
+                threadId: useCanvasAgentStore.getState().activeThreadId || undefined,
+                attachments: files.map(({ name, type, dataUrl }) => ({ name, type, dataUrl })),
+                skills: mentionedSkills.map((skill) => ({ skillId: skill.skill_id, name: skill.skill_name, description: skill.description, instruction: skill.instruction || skill.description })),
+            },
+            true,
+        );
     };
 
     const addAttachments = async (files: FileList | File[] | null) => {
@@ -463,7 +466,8 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({
             addEventLog(toolName(payload.name), payload, payload);
             if (payload.name === "canvas_apply_ops") {
                 const currentSnapshot = snapshotRef.current;
-                if (typeof input.expectedRevision === "number" && input.expectedRevision !== runtimeRevisionRef.current) throw new Error(`画布 revision 已从 ${input.expectedRevision} 变为 ${runtimeRevisionRef.current}，请重新读取 canvas_get_context 后再执行写操作`);
+                if (typeof input.expectedRevision === "number" && input.expectedRevision !== runtimeRevisionRef.current)
+                    throw new Error(`画布 revision 已从 ${input.expectedRevision} 变为 ${runtimeRevisionRef.current}，请重新读取 canvas_get_context 后再执行写操作`);
                 // expectedStateHash is the Canvas Agent Runtime's canonical
                 // SHA-256 hash. The browser intentionally uses a different,
                 // synchronous fingerprint for local bookkeeping, so the
@@ -471,7 +475,13 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({
                 // emitting this tool call. Comparing the two algorithms here
                 // would reject every valid local write.
                 const validation = validateCanvasAgentOps(currentSnapshot, (input.ops || []) as CanvasAgentOp[]);
-                if (!validation.ok) throw new Error(`画布操作校验失败：${validation.issues.filter((item) => item.severity === "error").map((item) => item.message).join("；")}`);
+                if (!validation.ok)
+                    throw new Error(
+                        `画布操作校验失败：${validation.issues
+                            .filter((item) => item.severity === "error")
+                            .map((item) => item.message)
+                            .join("；")}`,
+                    );
             }
             const result =
                 payload.name === "canvas_apply_ops"
@@ -488,28 +498,28 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({
                       })()
                     : payload.name === "canvas_get_state" || payload.name === "canvas_export_snapshot"
                       ? snapshotRef.current
-                    : payload.name === "canvas_get_context"
-                      ? await readLocalCanvasContext()
-                      : payload.name === "canvas_find_nodes"
-                        ? findCanvasAgentNodes(snapshotRef.current, input as Parameters<typeof findCanvasAgentNodes>[1])
-                        : payload.name === "canvas_get_node"
-                          ? getCanvasAgentNode(snapshotRef.current, { id: requireString(input.id, "id") })
-                        : payload.name === "canvas_get_connection"
-                            ? getCanvasAgentConnection(snapshotRef.current, { id: requireString(input.id, "id") })
-                        : payload.name === "canvas_get_generation_tasks"
-                          ? getCanvasAgentGenerationTasks(snapshotRef.current, input as Parameters<typeof getCanvasAgentGenerationTasks>[1])
-                        : payload.name === "canvas_get_resources"
-                          ? getCanvasAgentResources(snapshotRef.current, input as Parameters<typeof getCanvasAgentResources>[1])
-                        : payload.name === "canvas_validate_ops"
-                            ? validateCanvasAgentOps(snapshotRef.current, (input.ops || []) as CanvasAgentOp[])
-                            : payload.name === "canvas_get_selection"
-                              ? (() => {
-                                    const ids = new Set(snapshotRef.current.selectedNodeIds || []);
-                                    return { nodes: snapshotRef.current.nodes.filter((node) => ids.has(node.id)) };
-                                })()
-                            : projectToolName
-                              ? await runProjectAgentTool(projectToolName, input, snapshotRef.current.domainProjectId)
-                              : snapshotRef.current;
+                      : payload.name === "canvas_get_context"
+                        ? await readLocalCanvasContext()
+                        : payload.name === "canvas_find_nodes"
+                          ? findCanvasAgentNodes(snapshotRef.current, input as Parameters<typeof findCanvasAgentNodes>[1])
+                          : payload.name === "canvas_get_node"
+                            ? getCanvasAgentNode(snapshotRef.current, { id: requireString(input.id, "id") })
+                            : payload.name === "canvas_get_connection"
+                              ? getCanvasAgentConnection(snapshotRef.current, { id: requireString(input.id, "id") })
+                              : payload.name === "canvas_get_generation_tasks"
+                                ? getCanvasAgentGenerationTasks(snapshotRef.current, input as Parameters<typeof getCanvasAgentGenerationTasks>[1])
+                                : payload.name === "canvas_get_resources"
+                                  ? getCanvasAgentResources(snapshotRef.current, input as Parameters<typeof getCanvasAgentResources>[1])
+                                  : payload.name === "canvas_validate_ops"
+                                    ? validateCanvasAgentOps(snapshotRef.current, (input.ops || []) as CanvasAgentOp[])
+                                    : payload.name === "canvas_get_selection"
+                                      ? (() => {
+                                            const ids = new Set(snapshotRef.current.selectedNodeIds || []);
+                                            return { nodes: snapshotRef.current.nodes.filter((node) => ids.has(node.id)) };
+                                        })()
+                                      : projectToolName
+                                        ? await runProjectAgentTool(projectToolName, input, snapshotRef.current.domainProjectId)
+                                        : snapshotRef.current;
             await postToolResult(clientIdRef.current, { requestId: payload.requestId, result });
             if (payload.name === "canvas_apply_ops") syncState(clientIdRef.current, (result as { snapshot?: CanvasAgentSnapshot }).snapshot || snapshotRef.current);
             setAgentState({ activity: "工具完成", waiting: true });
@@ -741,23 +751,33 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({
                     </Button>
                 ) : null}
                 <Tooltip title={threads.length ? `历史会话 · ${threads.length}` : "历史会话"}>
-                    <Button type="text" className={`!h-7 !min-w-7 !px-1.5 ${activeTab === "history" ? "font-medium" : ""}`} style={{ color: activeTab === "history" ? theme.node.text : theme.node.muted, background: activeTab === "history" ? theme.spatial.surface : "transparent" }} icon={<History className="size-3.5" />} onClick={() => setAgentState({ activeTab: activeTab === "history" ? "chat" : "history" })} aria-label="打开历史会话">
+                    <Button
+                        type="text"
+                        className={`!h-7 !min-w-7 !px-1.5 ${activeTab === "history" ? "font-medium" : ""}`}
+                        style={{ color: activeTab === "history" ? theme.node.text : theme.node.muted, background: activeTab === "history" ? theme.spatial.surface : "transparent" }}
+                        icon={<History className="size-3.5" />}
+                        onClick={() => setAgentState({ activeTab: activeTab === "history" ? "chat" : "history" })}
+                        aria-label="打开历史会话"
+                    >
                         {threads.length ? <span className="text-[var(--fs-tiny)] tabular-nums">{threads.length}</span> : null}
                     </Button>
                 </Tooltip>
                 <Tooltip title="新对话">
-                    <Button type="text" shape="circle" className="!h-7 !w-7 !min-w-7" disabled={!connected || loadingThreads} style={{ color: theme.node.muted }} icon={<Plus className="size-3.5" />} onClick={() => void startNewThread()} aria-label="新建对话" />
+                    <Button
+                        type="text"
+                        shape="circle"
+                        className="!h-7 !w-7 !min-w-7"
+                        disabled={!connected || loadingThreads}
+                        style={{ color: theme.node.muted }}
+                        icon={<Plus className="size-3.5" />}
+                        onClick={() => void startNewThread()}
+                        aria-label="新建对话"
+                    />
                 </Tooltip>
             </div>
 
             {!connected ? (
-                <AgentConnectView
-                    theme={theme}
-                    enabled={enabled}
-                    activity={activity}
-                    connectError={connectError}
-                    onToggleEnabled={toggleAgentConnection}
-                />
+                <AgentConnectView theme={theme} enabled={enabled} activity={activity} connectError={connectError} onToggleEnabled={toggleAgentConnection} />
             ) : activeTab === "history" ? (
                 <AgentHistoryView
                     theme={theme}
@@ -785,7 +805,16 @@ export const CanvasLocalAgentPanel = memo(function CanvasLocalAgentPanel({
                             />
                         ) : null}
                         {messages.map((item) => (
-                            <AgentChatMessage key={item.id} item={agentMessageToChatMessage(item)} theme={theme} user={user} isStreaming={(sending || waiting) && item.id === messages.at(-1)?.id && item.role === "assistant"} retrying={sending && item.id === retryMessageId} onRetry={item.id === retryMessageId && retryTurn ? () => void submitTurn(retryTurn, false) : undefined} onQuickAction={(text) => void sendPrompt(text)} />
+                            <AgentChatMessage
+                                key={item.id}
+                                item={agentMessageToChatMessage(item)}
+                                theme={theme}
+                                user={user}
+                                isStreaming={(sending || waiting) && item.id === messages.at(-1)?.id && item.role === "assistant"}
+                                retrying={sending && item.id === retryMessageId}
+                                onRetry={item.id === retryMessageId && retryTurn ? () => void submitTurn(retryTurn, false) : undefined}
+                                onQuickAction={(text) => void sendPrompt(text)}
+                            />
                         ))}
                         {pendingTool ? (
                             <AgentPendingToolCard
@@ -914,6 +943,7 @@ function AgentLogView({
                 </div>
                 <textarea
                     ref={textareaRef}
+                    name="canvas-local-agent-log"
                     readOnly
                     value={content}
                     className="thin-scrollbar min-h-[360px] flex-1 resize-none rounded-md border-0 p-3 font-mono text-xs leading-5 outline-none"
@@ -925,19 +955,7 @@ function AgentLogView({
     );
 }
 
-function AgentConnectView({
-    theme,
-    enabled,
-    activity,
-    connectError,
-    onToggleEnabled,
-}: {
-    theme: (typeof canvasThemes)[keyof typeof canvasThemes];
-    enabled: boolean;
-    activity: string;
-    connectError: string;
-    onToggleEnabled: () => void;
-}) {
+function AgentConnectView({ theme, enabled, activity, connectError, onToggleEnabled }: { theme: (typeof canvasThemes)[keyof typeof canvasThemes]; enabled: boolean; activity: string; connectError: string; onToggleEnabled: () => void }) {
     const { message } = App.useApp();
     const [platform, setPlatform] = useState<LocalAgentSetupPlatform>(() => detectLocalAgentSetupPlatform());
     const origin = typeof window === "undefined" ? "http://localhost:3000" : window.location.origin;
@@ -990,12 +1008,16 @@ function AgentConnectView({
                 <div>
                     <section className="border-b pb-4" style={{ borderColor: theme.node.stroke }}>
                         <div className="flex items-start gap-3">
-                            <span className="grid size-6 shrink-0 place-items-center rounded-full text-xs font-semibold" style={{ background: theme.node.fill, color: theme.node.text }}>1</span>
+                            <span className="grid size-6 shrink-0 place-items-center rounded-full text-xs font-semibold" style={{ background: theme.node.fill, color: theme.node.text }}>
+                                1
+                            </span>
                             <div className="min-w-0 flex-1">
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                     <div>
                                         <div className="text-sm font-medium leading-5">安装本机 Runtime</div>
-                                        <div className="mt-1 text-xs leading-5" style={{ color: theme.node.muted }}>需要 Git、Node.js 18+。当前版本从 GitHub 源码安装。</div>
+                                        <div className="mt-1 text-xs leading-5" style={{ color: theme.node.muted }}>
+                                            需要 Git、Node.js 18+。当前版本从 GitHub 源码安装。
+                                        </div>
                                     </div>
                                     <Segmented
                                         size="small"
@@ -1014,7 +1036,9 @@ function AgentConnectView({
 
                     <section className="border-b py-4" style={{ borderColor: theme.node.stroke }}>
                         <div className="flex items-start gap-3">
-                            <span className="grid size-6 shrink-0 place-items-center rounded-full text-xs font-semibold" style={{ background: theme.node.fill, color: theme.node.text }}>2</span>
+                            <span className="grid size-6 shrink-0 place-items-center rounded-full text-xs font-semibold" style={{ background: theme.node.fill, color: theme.node.text }}>
+                                2
+                            </span>
                             <div className="min-w-0 flex-1">
                                 <div className="text-sm font-medium leading-5">启动并授权当前站点</div>
                                 <div className="mt-1 text-xs leading-5" style={{ color: theme.node.muted }}>
@@ -1027,9 +1051,13 @@ function AgentConnectView({
 
                     <section className="pt-4">
                         <div className="flex items-start gap-3">
-                            <span className="grid size-6 shrink-0 place-items-center rounded-full" style={{ background: theme.node.fill, color: theme.node.text }}><CheckCircle2 className="size-3.5" /></span>
+                            <span className="grid size-6 shrink-0 place-items-center rounded-full" style={{ background: theme.node.fill, color: theme.node.text }}>
+                                <CheckCircle2 className="size-3.5" />
+                            </span>
                             <div className="min-w-0 flex-1 text-xs leading-5" style={{ color: theme.node.muted }}>
-                                <div className="text-sm font-medium" style={{ color: theme.node.text }}>当前支持范围</div>
+                                <div className="text-sm font-medium" style={{ color: theme.node.text }}>
+                                    当前支持范围
+                                </div>
                                 <div className="mt-1">网页侧边栏使用 Codex；外部 MCP 已提供 Codex 与 Claude Code 接入。Hermes、WorkBuddy 尚未验证。Codex 需要已登录或配置可用凭据。</div>
                                 <Button type="link" size="small" className="mt-1 !h-7 !px-0" href="https://github.com/ddcat-ai/open-ai-canvas/tree/main/canvas-agent" target="_blank" rel="noreferrer" icon={<ExternalLink className="size-3.5" />}>
                                     查看完整说明
@@ -1043,15 +1071,7 @@ function AgentConnectView({
     );
 }
 
-function CommandBlock({
-    value,
-    theme,
-    onCopy,
-}: {
-    value: string;
-    theme: (typeof canvasThemes)[keyof typeof canvasThemes];
-    onCopy: () => void | Promise<void>;
-}) {
+function CommandBlock({ value, theme, onCopy }: { value: string; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; onCopy: () => void | Promise<void> }) {
     return (
         <div className="mt-3 overflow-hidden rounded-md" style={{ background: "rgba(0,0,0,.22)" }}>
             <div className="flex items-center justify-between gap-2 border-b px-3 py-1.5" style={{ borderColor: theme.node.stroke }}>
@@ -1063,7 +1083,9 @@ function CommandBlock({
                     复制
                 </Button>
             </div>
-            <pre className="thin-scrollbar overflow-x-auto whitespace-pre p-3 font-mono text-[11px] leading-5" style={{ color: theme.node.text }}>{value}</pre>
+            <pre className="thin-scrollbar overflow-x-auto whitespace-pre p-3 font-mono text-[11px] leading-5" style={{ color: theme.node.text }}>
+                {value}
+            </pre>
         </div>
     );
 }
@@ -1303,7 +1325,19 @@ function toolName(name: string) {
 }
 
 function isReadTool(name: string) {
-    return name === "canvas_get_state" || name === "canvas_get_context" || name === "canvas_find_nodes" || name === "canvas_get_node" || name === "canvas_get_connection" || name === "canvas_get_generation_tasks" || name === "canvas_get_resources" || name === "canvas_validate_ops" || name === "canvas_get_selection" || name === "canvas_export_snapshot" || isProjectAgentReadTool(name);
+    return (
+        name === "canvas_get_state" ||
+        name === "canvas_get_context" ||
+        name === "canvas_find_nodes" ||
+        name === "canvas_get_node" ||
+        name === "canvas_get_connection" ||
+        name === "canvas_get_generation_tasks" ||
+        name === "canvas_get_resources" ||
+        name === "canvas_validate_ops" ||
+        name === "canvas_get_selection" ||
+        name === "canvas_export_snapshot" ||
+        isProjectAgentReadTool(name)
+    );
 }
 
 function isMcpToolItem(item?: AgentEventItem) {

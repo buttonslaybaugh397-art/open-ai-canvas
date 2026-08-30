@@ -107,10 +107,7 @@ export function AssetLibraryPickerModal({
     itemsRef.current = allItems;
     const localItems = useMemo(() => allItems.filter((item) => !item.external), [allItems]);
     const pluginItems = useMemo(() => allItems.filter((item) => Boolean(item.external)), [allItems]);
-    const hasPluginSource = useMemo(
-        () => Object.keys(categoryLabels).some((value) => value.startsWith("external:")) || pluginItems.some((item) => item.category.startsWith("external:")),
-        [categoryLabels, pluginItems],
-    );
+    const hasPluginSource = useMemo(() => Object.keys(categoryLabels).some((value) => value.startsWith("external:")) || pluginItems.some((item) => item.category.startsWith("external:")), [categoryLabels, pluginItems]);
     const sourceItems = source === "plugin" ? pluginItems : localItems;
     const sourceFolders = source === "plugin" ? folders : [];
     const showCategories = source === "local" || !sourceFolders.length;
@@ -123,10 +120,7 @@ export function AssetLibraryPickerModal({
             return !query || [item.title, item.searchText || "", item.description || ""].join(" ").toLowerCase().includes(query);
         });
     }, [category, folderId, keyword, sourceItems]);
-    const selectedIds = useMemo(
-        () => allItems.filter((item) => !item.disabledReason && selected.has(item.id)).map((item) => item.id),
-        [allItems, selected],
-    );
+    const selectedIds = useMemo(() => allItems.filter((item) => !item.disabledReason && selected.has(item.id)).map((item) => item.id), [allItems, selected]);
 
     useEffect(() => {
         if (!open) return;
@@ -223,11 +217,33 @@ export function AssetLibraryPickerModal({
         }
     };
 
-    const countFor = (value: string) => value === "all" ? sourceItems.length : sourceItems.filter((item) => item.category === value).length;
+    const countFor = (value: string) => (value === "all" ? sourceItems.length : sourceItems.filter((item) => item.category === value).length);
     const sourceLabel = source === "plugin" ? "插件来源" : "本地素材";
     const sourceMenuItems: MenuProps["items"] = [
-        { key: "local", icon: <HardDrive aria-hidden="true" />, label: <span className="asset-picker-source-menu-label"><span>本地素材</span><em>{localItems.length}</em></span> },
-        ...(hasPluginSource ? [{ key: "plugin", icon: <Puzzle aria-hidden="true" />, label: <span className="asset-picker-source-menu-label"><span>插件来源</span><em>{pluginItems.length}</em></span> }] : []),
+        {
+            key: "local",
+            icon: <HardDrive aria-hidden="true" />,
+            label: (
+                <span className="asset-picker-source-menu-label">
+                    <span>本地素材</span>
+                    <em>{localItems.length}</em>
+                </span>
+            ),
+        },
+        ...(hasPluginSource
+            ? [
+                  {
+                      key: "plugin",
+                      icon: <Puzzle aria-hidden="true" />,
+                      label: (
+                          <span className="asset-picker-source-menu-label">
+                              <span>插件来源</span>
+                              <em>{pluginItems.length}</em>
+                          </span>
+                      ),
+                  },
+              ]
+            : []),
     ];
     const activeUpload = source === "plugin" ? upload?.external : upload;
     const uploading = uploadingCount > 0;
@@ -266,29 +282,54 @@ export function AssetLibraryPickerModal({
                                 }}
                             >
                                 <button type="button" className="asset-picker-title-trigger" aria-haspopup="menu" aria-expanded={sourceMenuOpen} aria-label={"素材库来源：" + sourceLabel}>
-                                    <strong>{title}</strong><ChevronDown aria-hidden="true" />
+                                    <strong>{title}</strong>
+                                    <ChevronDown aria-hidden="true" />
                                 </button>
                             </Dropdown>
                         </div>
                     </div>
-                    <label className="asset-picker-search"><Search aria-hidden /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索素材名称或标签" aria-label="搜索素材" /></label>
-                    <span className="asset-picker-count">已选 {selectedIds.length} · {visibleItems.length} 个素材</span>
+                    <label className="asset-picker-search">
+                        <Search aria-hidden />
+                        <input name="asset-library-search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索素材名称或标签" aria-label="搜索素材" />
+                    </label>
+                    <span className="asset-picker-count">
+                        已选 {selectedIds.length} · {visibleItems.length} 个素材
+                    </span>
                 </header>
                 <div className="asset-picker-body">
                     <nav className="asset-picker-categories" aria-label="素材分类">
-                        {sourceFolders.length ? <><span className="asset-picker-nav-label">文件夹</span><button type="button" className={cn("assets-filter-item", folderId === "all" && "is-active")} aria-pressed={folderId === "all"} onClick={() => setFolderId("all")}><span className="assets-filter-item-label">全部文件夹</span><span className="assets-filter-count">{sourceItems.length}</span></button>{renderPickerFolders(sourceFolders, sourceItems, folderId, setFolderId)}</> : null}
-                        {showCategories ? <><span className="asset-picker-nav-label">分类</span>{categories.map((value) => (
-                            <button key={value} type="button" className={cn("assets-filter-item", category === value && "is-active")} aria-pressed={category === value} onClick={() => setCategory(value)}>
-                                <span className="assets-filter-item-label">{categoryLabels[value] || "其他"}</span><span className="assets-filter-count">{countFor(value)}</span>
-                            </button>
-                        ))}</> : null}
+                        {sourceFolders.length ? (
+                            <>
+                                <span className="asset-picker-nav-label">文件夹</span>
+                                <button type="button" className={cn("assets-filter-item", folderId === "all" && "is-active")} aria-pressed={folderId === "all"} onClick={() => setFolderId("all")}>
+                                    <span className="assets-filter-item-label">全部文件夹</span>
+                                    <span className="assets-filter-count">{sourceItems.length}</span>
+                                </button>
+                                {renderPickerFolders(sourceFolders, sourceItems, folderId, setFolderId)}
+                            </>
+                        ) : null}
+                        {showCategories ? (
+                            <>
+                                <span className="asset-picker-nav-label">分类</span>
+                                {categories.map((value) => (
+                                    <button key={value} type="button" className={cn("assets-filter-item", category === value && "is-active")} aria-pressed={category === value} onClick={() => setCategory(value)}>
+                                        <span className="assets-filter-item-label">{categoryLabels[value] || "其他"}</span>
+                                        <span className="assets-filter-count">{countFor(value)}</span>
+                                    </button>
+                                ))}
+                            </>
+                        ) : null}
                     </nav>
                     <div className="asset-picker-grid-wrap">
                         <div className="asset-picker-grid">
-                            {visibleItems.length ? visibleItems.map((item) => (
-                                <PickerCard key={item.id} item={item} selected={selected.has(item.id)} onToggle={() => toggle(item)} />
-                            )) : (
-                                <div className="asset-picker-empty"><FolderOpen /><strong>{emptyTitle}</strong><span>{activeUpload ? "换个分类，或从底部上传一份新素材。" : emptyDescription}</span></div>
+                            {visibleItems.length ? (
+                                visibleItems.map((item) => <PickerCard key={item.id} item={item} selected={selected.has(item.id)} onToggle={() => toggle(item)} />)
+                            ) : (
+                                <div className="asset-picker-empty">
+                                    <FolderOpen />
+                                    <strong>{emptyTitle}</strong>
+                                    <span>{activeUpload ? "换个分类，或从底部上传一份新素材。" : emptyDescription}</span>
+                                </div>
                             )}
                         </div>
                     </div>
@@ -296,17 +337,34 @@ export function AssetLibraryPickerModal({
                 <footer className={cn("asset-picker-footer", !activeUpload && "is-compact")}>
                     {activeUpload ? (
                         <>
-                            <input ref={uploadInputRef} type="file" hidden accept={activeUpload.accept} multiple={multiple} onChange={(event) => void handleUpload(event.target.files)} />
+                            <input ref={uploadInputRef} name="asset-library-upload" type="file" hidden accept={activeUpload.accept} multiple={multiple} onChange={(event) => void handleUpload(event.target.files)} />
                             <button type="button" className="asset-picker-upload" onClick={() => uploadInputRef.current?.click()} disabled={working} aria-busy={uploading}>
                                 {uploading ? <LoaderCircle className="animate-spin" /> : <Upload />}
-                                <span><strong>{uploading ? `正在上传 ${uploadingCount} 个素材` : "上传新素材"}</strong><small>{uploading ? "保存完成后会自动选中" : activeUpload.description}</small></span>
+                                <span>
+                                    <strong>{uploading ? `正在上传 ${uploadingCount} 个素材` : "上传新素材"}</strong>
+                                    <small>{uploading ? "保存完成后会自动选中" : activeUpload.description}</small>
+                                </span>
                             </button>
                         </>
-                    ) : footerNote ? <span className="asset-picker-footer-note">{footerNote}</span> : <span />}
-                    {error ? <span className="asset-picker-footer-error" role="alert">{error}</span> : null}
+                    ) : footerNote ? (
+                        <span className="asset-picker-footer-note">{footerNote}</span>
+                    ) : (
+                        <span />
+                    )}
+                    {error ? (
+                        <span className="asset-picker-footer-error" role="alert">
+                            {error}
+                        </span>
+                    ) : null}
                     <div className="asset-picker-actions">
-                        {onFolderAction && folderId !== "all" && (folderActionSource !== "local" || source === "local") ? <Button type="text" icon={<FolderOpen />} disabled={working} onClick={() => void runFolderAction()}>{folderActionLabel}</Button> : null}
-                        <Button type="text" onClick={onClose} disabled={working}>取消</Button>
+                        {onFolderAction && folderId !== "all" && (folderActionSource !== "local" || source === "local") ? (
+                            <Button type="text" icon={<FolderOpen />} disabled={working} onClick={() => void runFolderAction()}>
+                                {folderActionLabel}
+                            </Button>
+                        ) : null}
+                        <Button type="text" onClick={onClose} disabled={working}>
+                            取消
+                        </Button>
                         <Button type="primary" icon={<Check />} disabled={working || !selectedIds.length} loading={working && !uploading} onClick={() => void confirm()}>
                             {confirmLabel(selectedIds.length)}
                         </Button>
@@ -323,14 +381,32 @@ function PickerCard({ item, selected, onToggle }: { item: AssetLibraryPickerItem
         <AssetLibraryCard selected={selected} className={cn("asset-picker-card", disabled && "is-disabled")}>
             <button type="button" className="asset-picker-card-action" onClick={onToggle} disabled={disabled} aria-pressed={selected} title={item.disabledReason || item.title}>
                 <div className="assets-cover asset-picker-card-media">
-                    {item.imageUrl || item.imageStorageKey ? <CachedResourceImage storageKey={item.imageStorageKey} src={item.imageUrl} alt={item.title} loading="lazy" decoding="async" className={item.imageFit === "contain" ? "is-contain" : undefined} fallback={<div className="assets-cover-fallback">{kindIcon(item.kindLabel)}</div>} /> : <AssetMediaPreview asset={item.asset} alt={item.title} fallback={<div className="assets-cover-fallback">{kindIcon(item.kindLabel)}</div>} />}
+                    {item.imageUrl || item.imageStorageKey ? (
+                        <CachedResourceImage
+                            storageKey={item.imageStorageKey}
+                            src={item.imageUrl}
+                            alt={item.title}
+                            loading="lazy"
+                            decoding="async"
+                            className={item.imageFit === "contain" ? "is-contain" : undefined}
+                            fallback={<div className="assets-cover-fallback">{kindIcon(item.kindLabel)}</div>}
+                        />
+                    ) : (
+                        <AssetMediaPreview asset={item.asset} alt={item.title} fallback={<div className="assets-cover-fallback">{kindIcon(item.kindLabel)}</div>} />
+                    )}
                     <span className="assets-cover-vignette" aria-hidden="true" />
                     <span className="assets-cover-badges" aria-hidden="true">
-                        <span className="assets-cover-badge is-kind">{item.kindLabel}</span></span>
-                    <span className="asset-picker-card-check" aria-hidden="true"><Check /></span>
+                        <span className="assets-cover-badge is-kind">{item.kindLabel}</span>
+                    </span>
+                    <span className="asset-picker-card-check" aria-hidden="true">
+                        <Check />
+                    </span>
                     {item.disabledReason ? <span className="asset-picker-card-lock">{item.disabledReason}</span> : null}
                 </div>
-                <div className="asset-picker-card-copy"><strong>{item.title || "未命名素材"}</strong>{item.description ? <span>{item.description}</span> : null}</div>
+                <div className="asset-picker-card-copy">
+                    <strong>{item.title || "未命名素材"}</strong>
+                    {item.description ? <span>{item.description}</span> : null}
+                </div>
             </button>
         </AssetLibraryCard>
     );
@@ -338,17 +414,28 @@ function PickerCard({ item, selected, onToggle }: { item: AssetLibraryPickerItem
 
 function renderPickerFolders(folders: AssetLibraryPickerFolder[], items: AssetLibraryPickerItem[], selectedId: string, onSelect: (folderId: string) => void, parentId = "", depth = 0, visited: ReadonlySet<string> = new Set()): ReactNode {
     if (depth >= 8) return null;
-    return folders.filter((folder) => (folder.parentId || "") === parentId && !visited.has(folder.id)).map((folder) => {
-        const nextVisited = new Set(visited).add(folder.id);
-        return (
-            <span key={folder.id} className="contents">
-                <button type="button" className={cn("assets-filter-item", selectedId === folder.id && "is-active")} aria-pressed={selectedId === folder.id} onClick={() => onSelect(folder.id)} style={{ paddingLeft: `calc(var(--space-3) + ${depth} * var(--space-3))` }}>
-                    <span className="assets-filter-item-label" title={folder.name}>{folder.name}</span><span className="assets-filter-count">{items.filter((item) => item.folderId === folder.id).length}</span>
-                </button>
-                {renderPickerFolders(folders, items, selectedId, onSelect, folder.id, depth + 1, nextVisited)}
-            </span>
-        );
-    });
+    return folders
+        .filter((folder) => (folder.parentId || "") === parentId && !visited.has(folder.id))
+        .map((folder) => {
+            const nextVisited = new Set(visited).add(folder.id);
+            return (
+                <span key={folder.id} className="contents">
+                    <button
+                        type="button"
+                        className={cn("assets-filter-item", selectedId === folder.id && "is-active")}
+                        aria-pressed={selectedId === folder.id}
+                        onClick={() => onSelect(folder.id)}
+                        style={{ paddingLeft: `calc(var(--space-3) + ${depth} * var(--space-3))` }}
+                    >
+                        <span className="assets-filter-item-label" title={folder.name}>
+                            {folder.name}
+                        </span>
+                        <span className="assets-filter-count">{items.filter((item) => item.folderId === folder.id).length}</span>
+                    </button>
+                    {renderPickerFolders(folders, items, selectedId, onSelect, folder.id, depth + 1, nextVisited)}
+                </span>
+            );
+        });
 }
 
 function kindIcon(label: string): ReactNode {

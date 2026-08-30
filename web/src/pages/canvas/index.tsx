@@ -223,6 +223,7 @@ export default function CanvasPage() {
                     <div className="canvas-library-search">
                         <Search aria-hidden="true" />
                         <input
+                            name="canvas-library-search"
                             value={keyword}
                             placeholder="搜索画布"
                             aria-label="搜索画布"
@@ -337,23 +338,20 @@ export default function CanvasPage() {
                     <CollectionGrid className="canvas-library-grid">
                         {showCreateCard ? <CanvasCreateCard disabled={!hydrated} onClick={createAndEnter} /> : null}
                         {visibleProjects.map((project) => (
-                            <CanvasFolderCard
-                                key={project.id}
-                                project={project}
-                                projectName={project.projectId ? projectNames.get(project.projectId) || "未同步项目" : undefined}
-                                onClick={() => enterProject(project.id)}
-                            />
+                            <CanvasFolderCard key={project.id} project={project} projectName={project.projectId ? projectNames.get(project.projectId) || "未同步项目" : undefined} onClick={() => enterProject(project.id)} />
                         ))}
                     </CollectionGrid>
                 ) : (
                     <WorkspaceState icon="canvas" title="没有匹配的画布" description="换一个画布名称或重置筛选条件。" />
                 )}
-                {hydrated && visibleProjects.length ? <div ref={loadMoreRef} className="library-load-more" aria-live="polite">
-                    {visibleProjects.length < filteredProjects.length ? `继续下滑加载更多（每页 50 条）` : `已加载全部 ${filteredProjects.length} 个画布`}
-                </div> : null}
+                {hydrated && visibleProjects.length ? (
+                    <div ref={loadMoreRef} className="library-load-more" aria-live="polite">
+                        {visibleProjects.length < filteredProjects.length ? `继续下滑加载更多（每页 50 条）` : `已加载全部 ${filteredProjects.length} 个画布`}
+                    </div>
+                ) : null}
             </div>
 
-            <input ref={inputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importCanvas(event.target.files?.[0])} />
+            <input ref={inputRef} name="canvas-archive-upload" type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importCanvas(event.target.files?.[0])} />
             <Modal
                 title="加入项目"
                 open={associationOpen}

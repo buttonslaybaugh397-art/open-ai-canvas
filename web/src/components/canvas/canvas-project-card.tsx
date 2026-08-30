@@ -13,11 +13,15 @@ import { CachedResourceImage } from "@/components/cached-resource-image";
 import { cn } from "@/lib/utils";
 
 export function CanvasCreateCard({ disabled, onClick }: { disabled?: boolean; onClick: () => void }) {
-    return <button type="button" className="app-canvas-create-card" disabled={disabled} onClick={onClick}>
-        <span className="app-canvas-create-preview"><Plus className="app-canvas-create-icon" /></span>
-        <span className="app-canvas-create-title">新建画布</span>
-        <span className="app-canvas-create-meta">从空白开始</span>
-    </button>;
+    return (
+        <button type="button" className="app-canvas-create-card" disabled={disabled} onClick={onClick}>
+            <span className="app-canvas-create-preview">
+                <Plus className="app-canvas-create-icon" />
+            </span>
+            <span className="app-canvas-create-title">新建画布</span>
+            <span className="app-canvas-create-meta">从空白开始</span>
+        </button>
+    );
 }
 
 export function CanvasProjectCard({ project, projectName, variant = "library", readOnly = false, footer }: { project: CanvasProject; projectName?: string; variant?: "library" | "recent"; readOnly?: boolean; footer?: ReactNode }) {
@@ -54,14 +58,34 @@ export function CanvasProjectCard({ project, projectName, variant = "library", r
                 >
                     <ProjectPreview project={project} />
                 </button>
-                {!compact && !readOnly ? <span className={`canvas-project-select ${selected ? "is-visible" : ""}`} onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={selected} onChange={(event) => toggleSelected(project.id, event.target.checked)} className="app-canvas-project-checkbox" aria-label={`选择 ${project.title}`} /></span> : null}
-                <div className="canvas-project-cover-meta" aria-hidden="true"><span className="canvas-project-node-count">{project.nodes.length} 节点</span></div>
+                {!compact && !readOnly ? (
+                    <span className={`canvas-project-select ${selected ? "is-visible" : ""}`} onClick={(event) => event.stopPropagation()}>
+                        <input
+                            name={`canvas-project-select-${project.id}`}
+                            type="checkbox"
+                            checked={selected}
+                            onChange={(event) => toggleSelected(project.id, event.target.checked)}
+                            className="app-canvas-project-checkbox"
+                            aria-label={`选择 ${project.title}`}
+                        />
+                    </span>
+                ) : null}
+                <div className="canvas-project-cover-meta" aria-hidden="true">
+                    <span className="canvas-project-node-count">{project.nodes.length} 节点</span>
+                </div>
             </div>
 
             <div className={cn("app-canvas-project-body", compact ? "is-compact" : "")}>
                 <div className="canvas-project-heading-row">
                     {editing && !readOnly ? (
-                        <Input className="canvas-project-title-input" value={editingTitle} onClick={(event) => event.stopPropagation()} onChange={(event) => setEditingTitle(event.target.value)} onKeyDown={(event) => event.key === "Enter" && saveTitle()} autoFocus />
+                        <Input
+                            className="canvas-project-title-input"
+                            value={editingTitle}
+                            onClick={(event) => event.stopPropagation()}
+                            onChange={(event) => setEditingTitle(event.target.value)}
+                            onKeyDown={(event) => event.key === "Enter" && saveTitle()}
+                            autoFocus
+                        />
                     ) : (
                         <button
                             type="button"
@@ -76,12 +100,18 @@ export function CanvasProjectCard({ project, projectName, variant = "library", r
                     )}
                     {editing && !readOnly ? (
                         <div className="canvas-project-actions" onClick={(event) => event.stopPropagation()}>
-                            <button type="button" onClick={saveTitle} aria-label="保存名称"><Check className="size-3.5" /></button>
-                            <button type="button" onClick={stopEditing} aria-label="取消重命名"><X className="size-3.5" /></button>
+                            <button type="button" onClick={saveTitle} aria-label="保存名称">
+                                <Check className="size-3.5" />
+                            </button>
+                            <button type="button" onClick={stopEditing} aria-label="取消重命名">
+                                <X className="size-3.5" />
+                            </button>
                         </div>
                     ) : !readOnly ? (
                         <div className="canvas-project-actions" onClick={(event) => event.stopPropagation()}>
-                            <button type="button" onClick={() => startEditing(project.id, project.title)} aria-label={`重命名 ${project.title}`} title="重命名"><Pencil className="size-3.5" /></button>
+                            <button type="button" onClick={() => startEditing(project.id, project.title)} aria-label={`重命名 ${project.title}`} title="重命名">
+                                <Pencil className="size-3.5" />
+                            </button>
                             <Dropdown
                                 trigger={["click"]}
                                 menu={{
@@ -93,41 +123,59 @@ export function CanvasProjectCard({ project, projectName, variant = "library", r
                                     ],
                                 }}
                             >
-                                <button type="button" aria-label={`${project.title} 画布操作`} title="更多操作"><MoreHorizontal className="size-4" /></button>
+                                <button type="button" aria-label={`${project.title} 画布操作`} title="更多操作">
+                                    <MoreHorizontal className="size-4" />
+                                </button>
                             </Dropdown>
                         </div>
                     ) : null}
                 </div>
-                <div className="canvas-project-stats"><span>{projectName || "自由画布"}</span><span aria-hidden="true">·</span><time dateTime={project.updatedAt}>{formatProjectTime(project.updatedAt)}</time></div>
-                {footer ? <div className="canvas-project-card-footer" onClick={(event) => event.stopPropagation()}>{footer}</div> : null}
+                <div className="canvas-project-stats">
+                    <span>{projectName || "自由画布"}</span>
+                    <span aria-hidden="true">·</span>
+                    <time dateTime={project.updatedAt}>{formatProjectTime(project.updatedAt)}</time>
+                </div>
+                {footer ? (
+                    <div className="canvas-project-card-footer" onClick={(event) => event.stopPropagation()}>
+                        {footer}
+                    </div>
+                ) : null}
             </div>
         </article>
     );
 }
 
 export function ProjectPreview({ project, preferLatestImage = false }: { project: CanvasProject; preferLatestImage?: boolean }) {
-    const mediaNodes = project.nodes
-        .flatMap((node) => {
-            if (node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video) return [];
-            const url = getNodeMediaUrl(node);
-            return isPreviewUrl(url) ? [{ node, url, storageKey: node.metadata?.storageKey }] : [];
-        });
+    const mediaNodes = project.nodes.flatMap((node) => {
+        if (node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video) return [];
+        const url = getNodeMediaUrl(node);
+        return isPreviewUrl(url) ? [{ node, url, storageKey: node.metadata?.storageKey }] : [];
+    });
     const imageNodes = mediaNodes.filter(({ node }) => node.type === CanvasNodeType.Image);
-    const media = preferLatestImage
-        ? imageNodes[imageNodes.length - 1] || mediaNodes[mediaNodes.length - 1]
-        : imageNodes[0] || mediaNodes[0];
+    const media = preferLatestImage ? imageNodes[imageNodes.length - 1] || mediaNodes[mediaNodes.length - 1] : imageNodes[0] || mediaNodes[0];
     if (media) {
         const { node, url, storageKey } = media;
         return (
             <div className="canvas-project-media size-full">
-                {node.type === CanvasNodeType.Video
-                    ? <div className="canvas-project-video size-full"><Video className="size-8" aria-label={node.title || "项目视频"} /></div>
-                    : <CachedResourceImage storageKey={storageKey} src={url} alt={node.title || "项目图片"} loading="lazy" decoding="async" className="size-full min-h-0 object-cover" />}
+                {node.type === CanvasNodeType.Video ? (
+                    <div className="canvas-project-video size-full">
+                        <Video className="size-8" aria-label={node.title || "项目视频"} />
+                    </div>
+                ) : (
+                    <CachedResourceImage storageKey={storageKey} src={url} alt={node.title || "项目图片"} loading="lazy" decoding="async" className="size-full min-h-0 object-cover" />
+                )}
             </div>
         );
     }
     const nodes = project.nodes.slice(0, 8);
-    if (!nodes.length) return <div className="canvas-project-empty size-full"><Plus className="canvas-project-empty-icon" /><span>空白画布</span><small>等待第一幕</small></div>;
+    if (!nodes.length)
+        return (
+            <div className="canvas-project-empty size-full">
+                <Plus className="canvas-project-empty-icon" />
+                <span>空白画布</span>
+                <small>等待第一幕</small>
+            </div>
+        );
     const previewNodes = buildNodePreviewLayout(nodes);
 
     return (
@@ -191,7 +239,7 @@ function getNodePresentation(node: CanvasNodeData) {
 }
 
 function isPreviewUrl(value?: string) {
-    return Boolean(value && (/^(https?:|blob:|data:image\/|data:video\/|\/api\/)/.test(value)));
+    return Boolean(value && /^(https?:|blob:|data:image\/|data:video\/|\/api\/)/.test(value));
 }
 
 export function formatProjectTime(value: string) {

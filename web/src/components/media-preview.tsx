@@ -1,9 +1,8 @@
 import { ImageOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { getResolvedVideoFallbackUrl, setResolvedVideoFallbackUrl, useResolvedVideoFallbackUrl } from "@/lib/task-media";
 import { cn } from "@/lib/utils";
-import { getResourceOSSUrl, isResourceUrl, resourceIdFromStorageKey, resourceProxyFileUrl } from "@/services/api/resources";
+import { resourceIdFromStorageKey, resourceIdFromUrl, resourceProxyFileUrl, resourceStorageKey } from "@/services/api/resources";
 import { getCachedResourceObjectUrl } from "@/services/resource-blob-cache";
 import { resolveMediaUrl } from "@/services/file-storage";
 
@@ -22,8 +21,6 @@ export function MediaPreview({
     height,
     preload,
     fallbackStorageKey,
-    resolvedFallbackUrl,
-    onFallbackResolved,
     onUnavailable,
 }: {
     src: string;
@@ -38,20 +35,17 @@ export function MediaPreview({
     height?: number;
     preload?: "none" | "metadata" | "auto";
     fallbackStorageKey?: string;
-    resolvedFallbackUrl?: string;
-    onFallbackResolved?: (url: string) => void;
     onUnavailable?: () => void;
 }) {
-    const cachedFallbackUrl = useResolvedVideoFallbackUrl(kind === "video" ? src : "");
-    const knownFallbackUrl = resolvedFallbackUrl || cachedFallbackUrl || getResolvedVideoFallbackUrl(src);
-    const resourceId = resourceIdFromStorageKey(fallbackStorageKey);
-    const resourceSource = kind === "video" && resourceId && isResourceUrl(src);
-    const resolveDirectResource = resourceSource && controls;
-    const [activeSrc, setActiveSrc] = useState(resolveDirectResource ? knownFallbackUrl : src);
+    const resourceId = resourceIdFromStorageKey(fallbackStorageKey) || resourceIdFromUrl(src);
+    // The URL returned with the task is the primary preview source. Do not
+    // eagerly replace it with a signed object-storage URL: that URL may not
+    // expose CORS headers, and the API URL can also be a CDN/provider URL.
+    const [activeSrc, setActiveSrc] = useState(src);
     const [unavailable, setUnavailable] = useState(false);
     const fallbackAttemptedRef = useRef(false);
     const localFallbackAttemptedRef = useRef(false);
-    const directResourceAttemptedRef = useRef(false);
+    const mediaStorageKey = fallbackStorageKey || (resourceId ? resourceStorageKey(resourceId) : "");
     const proxyFallbackUrl = resourceId ? resourceProxyFileUrl(resourceId) : "";
     const sourceVersionRef = useRef(0);
 
@@ -59,66 +53,29 @@ export function MediaPreview({
         sourceVersionRef.current += 1;
         fallbackAttemptedRef.current = false;
         localFallbackAttemptedRef.current = false;
-        directResourceAttemptedRef.current = false;
-        setActiveSrc(resolveDirectResource ? knownFallbackUrl : src);
+        setActiveSrc(src);
         setUnavailable(false);
-    }, [fallbackStorageKey, knownFallbackUrl, resolveDirectResource, src]);
-
-    useEffect(() => {
-        if (!resolveDirectResource || directResourceAttemptedRef.current) return;
-        directResourceAttemptedRef.current = true;
-        fallbackAttemptedRef.current = true;
-        const version = sourceVersionRef.current;
-        if (knownFallbackUrl && knownFallbackUrl !== src) {
-            setActiveSrc(knownFallbackUrl);
-            return;
-        }
-        void getResourceOSSUrl(fallbackStorageKey).then((directUrl) => {
-            if (version !== sourceVersionRef.current) return;
-            if (directUrl && directUrl !== src) {
-                setResolvedVideoFallbackUrl(src, directUrl);
-                setActiveSrc(directUrl);
-                onFallbackResolved?.(directUrl);
-                return;
-            }
-            setActiveSrc(src);
-        }).catch(() => {
-            if (version === sourceVersionRef.current) setActiveSrc(src);
-        });
-    }, [fallbackStorageKey, knownFallbackUrl, onFallbackResolved, resolveDirectResource, src]);
+    }, [fallbackStorageKey, src]);
 
     const handleUnavailable = () => {
         if (activeSrc !== proxyFallbackUrl && resourceId && !fallbackAttemptedRef.current) {
             fallbackAttemptedRef.current = true;
             const version = sourceVersionRef.current;
-            if (knownFallbackUrl && knownFallbackUrl !== src && knownFallbackUrl !== activeSrc) {
-                setActiveSrc(knownFallbackUrl);
-                return;
-            }
-            void getResourceOSSUrl(fallbackStorageKey).then((fallbackUrl) => {
-                if (version !== sourceVersionRef.current) return;
-                if (fallbackUrl && fallbackUrl !== src && fallbackUrl !== activeSrc) {
-                    if (kind === "video") setResolvedVideoFallbackUrl(src, fallbackUrl);
-                    setActiveSrc(fallbackUrl);
-                    onFallbackResolved?.(fallbackUrl);
-                    return;
-                }
-                setActiveSrc(proxyFallbackUrl);
-            }).catch(() => {
-                if (version === sourceVersionRef.current) setActiveSrc(proxyFallbackUrl);
-            });
+            // A signed OSS URL is not a safe browser-readable fallback when the
+            // bucket omits Access-Control-Allow-Origin. Use the authenticated
+            // same-origin proxy instead; it can read OSS server-side and return
+            // a valid response to the application.
+            if (version === sourceVersionRef.current) setActiveSrc(proxyFallbackUrl);
             return;
         }
         if (activeSrc !== proxyFallbackUrl && proxyFallbackUrl) {
             setActiveSrc(proxyFallbackUrl);
             return;
         }
-        if (!localFallbackAttemptedRef.current && fallbackStorageKey) {
+        if (!localFallbackAttemptedRef.current && mediaStorageKey) {
             localFallbackAttemptedRef.current = true;
             const version = sourceVersionRef.current;
-            void (resourceId
-                ? getCachedResourceObjectUrl(fallbackStorageKey)
-                : resolveMediaUrl(fallbackStorageKey))
+            void (resourceId ? getCachedResourceObjectUrl(mediaStorageKey) : resolveMediaUrl(mediaStorageKey))
                 .then((localUrl) => {
                     if (version !== sourceVersionRef.current) return;
                     if (localUrl && localUrl !== activeSrc) {

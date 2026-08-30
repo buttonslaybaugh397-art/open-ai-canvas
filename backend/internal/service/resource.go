@@ -90,6 +90,33 @@ func (s *Service) DirectResourceURL(userID string, id string) (string, error) {
 	return s.directResourceURL(resource, time.Now().Add(directResourceURLTTL))
 }
 
+// DirectResourceDownloadURL signs a cloud-native attachment response. Browsers
+// can download this URL without reading it through fetch, so bucket CORS is not
+// required just to save a file with the canvas card name.
+func (s *Service) DirectResourceDownloadURL(userID string, id string, fileName string) (string, error) {
+	resource, err := s.repo.ResourceForUser(userID, id)
+	if err != nil {
+		return "", err
+	}
+	if resource.Status != model.ResourceStatusReady {
+		return "", BadAuthRequest("资源尚未上传完成")
+	}
+	if resource.Provider == "local" || (s.resourceCloudBackupAvailable(resource) && resourceNeedsCloudRecovery(resource)) {
+		return "", errors.New("云端直连暂不可用")
+	}
+	setting, err := s.ossSettingForResource(resource.UserID, resource)
+	if err != nil {
+		return "", err
+	}
+	setting.Provider = firstNonEmpty(resource.Provider, setting.Provider)
+	setting.Endpoint = firstNonEmpty(resource.Endpoint, setting.Endpoint)
+	setting.Bucket = firstNonEmpty(resource.Bucket, setting.Bucket)
+	if setting.Provider == s3Provider && !publicHTTPSStorageEndpoint(setting.Endpoint) {
+		return "", errors.New("当前 S3 存储不能提供浏览器直连下载")
+	}
+	return signedOSSObjectDownloadURL(setting, resource.ObjectKey, time.Now().Add(directResourceURLTTL), SafeResourceDownloadFileName(fileName))
+}
+
 func (s *Service) directResourceURL(resource *model.Resource, expiresAt time.Time) (string, error) {
 	if resource == nil {
 		return "", errors.New("资源不存在")
@@ -1335,7 +1362,31 @@ func signedOSSObjectURL(setting ossSettingValue, objectKey string, expiresAt tim
 	return signedAliyunOSSObjectURL(setting, objectKey, expiresAt)
 }
 
+func signedOSSObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
+	setting = normalizeOSSSetting(setting)
+	if setting.Provider == s3Provider {
+		return signedS3ObjectDownloadURL(setting, objectKey, expiresAt, fileName)
+	}
+	if setting.Provider == qiniuKodoProvider {
+		return signedQiniuObjectDownloadURL(setting, objectKey, expiresAt, fileName)
+	}
+	if setting.Provider == tencentCOSProvider {
+		return signedCOSObjectDownloadURL(setting, objectKey, expiresAt, fileName)
+	}
+	// CDN download rules are provider-specific. Use the signed origin URL so the
+	// standard Content-Disposition response override is guaranteed to be honored.
+	return signedAliyunOSSObjectDownloadURL(setting, objectKey, expiresAt, fileName)
+}
+
 func signedAliyunOSSObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time) (string, error) {
+	return signedAliyunOSSObjectURLWithDisposition(setting, objectKey, expiresAt, "")
+}
+
+func signedAliyunOSSObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
+	return signedAliyunOSSObjectURLWithDisposition(setting, objectKey, expiresAt, resourceDownloadContentDisposition(fileName))
+}
+
+func signedAliyunOSSObjectURLWithDisposition(setting ossSettingValue, objectKey string, expiresAt time.Time, contentDisposition string) (string, error) {
 	baseURL, err := ossBucketBaseURL(setting)
 	if err != nil {
 		return "", err
@@ -1349,15 +1400,55 @@ func signedAliyunOSSObjectURL(setting ossSettingValue, objectKey string, expires
 	}
 	baseURL.Path = strings.TrimRight(baseURL.Path, "/") + "/" + escapeObjectKey(objectKey)
 	expires := strconv.FormatInt(expiresAt.UTC().Unix(), 10)
-	stringToSign := strings.Join([]string{http.MethodGet, "", "", expires, "/" + setting.Bucket + "/" + objectKey}, "\n")
+	canonicalResource := "/" + setting.Bucket + "/" + objectKey
+	encodedDisposition := ossResponseHeaderQueryValue(contentDisposition)
+	if encodedDisposition != "" {
+		canonicalResource += "?response-content-disposition=" + encodedDisposition
+	}
+	stringToSign := strings.Join([]string{http.MethodGet, "", "", expires, canonicalResource}, "\n")
 	mac := hmac.New(sha1.New, []byte(setting.AccessKeySecret))
 	_, _ = mac.Write([]byte(stringToSign))
 	query := baseURL.Query()
+	if contentDisposition != "" {
+		query.Set("response-content-disposition", contentDisposition)
+	}
 	query.Set("OSSAccessKeyId", setting.AccessKeyID)
 	query.Set("Expires", expires)
 	query.Set("Signature", base64.StdEncoding.EncodeToString(mac.Sum(nil)))
-	baseURL.RawQuery = query.Encode()
+	// url.Values escapes the response-header value once. Normalize spaces to
+	// RFC 3986 encoding so this exactly matches the OSS canonical resource.
+	baseURL.RawQuery = strings.ReplaceAll(query.Encode(), "+", "%20")
 	return baseURL.String(), nil
+}
+
+func ossResponseHeaderQueryValue(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
+}
+
+func SafeResourceDownloadFileName(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Map(func(char rune) rune {
+		if char < 0x20 || char == 0x7f || strings.ContainsRune(`\/:*?"<>|`, char) {
+			return -1
+		}
+		return char
+	}, value)
+	value = strings.Trim(value, ". ")
+	if value == "" {
+		return "download"
+	}
+	const maxRunes = 180
+	if len([]rune(value)) > maxRunes {
+		value = string([]rune(value)[:maxRunes])
+	}
+	return value
+}
+
+func resourceDownloadContentDisposition(fileName string) string {
+	return mime.FormatMediaType("attachment", map[string]string{"filename": SafeResourceDownloadFileName(fileName)})
 }
 
 func putCOSObject(setting ossSettingValue, objectKey string, mimeType string, size int64, body io.Reader) (string, error) {
@@ -1467,6 +1558,14 @@ func getOSSObjectRangeViaCDN(setting ossSettingValue, objectKey string, rangeHea
 }
 
 func signedCOSObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time) (string, error) {
+	return signedCOSObjectURLWithDisposition(setting, objectKey, expiresAt, "")
+}
+
+func signedCOSObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
+	return signedCOSObjectURLWithDisposition(setting, objectKey, expiresAt, resourceDownloadContentDisposition(fileName))
+}
+
+func signedCOSObjectURLWithDisposition(setting ossSettingValue, objectKey string, expiresAt time.Time, contentDisposition string) (string, error) {
 	if strings.TrimSpace(setting.AccessKeyID) == "" || strings.TrimSpace(setting.AccessKeySecret) == "" {
 		return "", errors.New("COS 访问密钥不可用")
 	}
@@ -1482,7 +1581,8 @@ func signedCOSObjectURL(setting ossSettingValue, objectKey string, expiresAt tim
 	if err != nil {
 		return "", err
 	}
-	signedURL, err := client.Object.GetPresignedURL(context.Background(), http.MethodGet, objectKey, setting.AccessKeyID, setting.AccessKeySecret, expires, nil)
+	options := &cos.ObjectGetOptions{ResponseContentDisposition: contentDisposition}
+	signedURL, err := client.Object.GetPresignedURL(context.Background(), http.MethodGet, objectKey, setting.AccessKeyID, setting.AccessKeySecret, expires, options)
 	if err != nil {
 		return "", err
 	}
@@ -1508,9 +1608,37 @@ func signedQiniuObjectURL(setting ossSettingValue, objectKey string, expiresAt t
 	return qiniuStorage.MakePrivateURLv2(mac, strings.TrimRight(setting.CDNBaseURL, "/"), objectKey, deadline), nil
 }
 
+func signedQiniuObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
+	if setting.AccessKeyID == "" || setting.AccessKeySecret == "" {
+		return "", errors.New("七牛云 Kodo 访问密钥不可用")
+	}
+	objectKey = strings.TrimLeft(strings.TrimSpace(objectKey), "/")
+	if objectKey == "" {
+		return "", errors.New("七牛云 Kodo 对象路径为空")
+	}
+	if expiresAt.Unix() <= time.Now().Unix() {
+		return "", errors.New("七牛云 Kodo 签名有效期必须晚于当前时间")
+	}
+	if setting.CDNBaseURL == "" {
+		return signedQiniuS3ObjectDownloadURL(setting, objectKey, expiresAt, fileName)
+	}
+	mac := qiniuAuth.New(setting.AccessKeyID, setting.AccessKeySecret)
+	query := url.Values{}
+	query.Set("attname", SafeResourceDownloadFileName(fileName))
+	return qiniuStorage.MakePrivateURLv2WithQuery(mac, strings.TrimRight(setting.CDNBaseURL, "/"), objectKey, query, expiresAt.Unix()), nil
+}
+
 // signedQiniuS3ObjectURL 用七牛兼容 S3 的 AWS Signature V4 访问私有空间。
 // 没有绑定域名时，浏览器不直接访问该地址，而是由后端代理读取并返回文件。
 func signedQiniuS3ObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time) (string, error) {
+	return signedQiniuS3ObjectURLWithDisposition(setting, objectKey, expiresAt, "")
+}
+
+func signedQiniuS3ObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
+	return signedQiniuS3ObjectURLWithDisposition(setting, objectKey, expiresAt, resourceDownloadContentDisposition(fileName))
+}
+
+func signedQiniuS3ObjectURLWithDisposition(setting ossSettingValue, objectKey string, expiresAt time.Time, contentDisposition string) (string, error) {
 	region := qiniuS3Region(setting)
 	if region == "" {
 		return "", errors.New("七牛云 Kodo S3 Region 不可用")
@@ -1521,6 +1649,11 @@ func signedQiniuS3ObjectURL(setting ossSettingValue, objectKey string, expiresAt
 	req, err := http.NewRequest(http.MethodGet, baseURL.String(), nil)
 	if err != nil {
 		return "", err
+	}
+	if contentDisposition != "" {
+		query := req.URL.Query()
+		query.Set("response-content-disposition", contentDisposition)
+		req.URL.RawQuery = query.Encode()
 	}
 	credentialsValue := credentials.NewStaticCredentials(setting.AccessKeyID, setting.AccessKeySecret, "")
 	signer := awsv4.NewSigner(credentialsValue)

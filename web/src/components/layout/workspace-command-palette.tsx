@@ -95,6 +95,8 @@ export function WorkspaceCommandPalette({ open, onClose }: { open: boolean; onCl
                     <div className="flex h-10 items-center gap-2 rounded-[var(--r-md)] border border-[var(--workspace-border)] bg-foreground/5 px-3 transition-colors hover:border-[var(--workspace-border-strong)] focus-within:border-[var(--workspace-border-strong)] focus-within:bg-foreground/[.06]">
                         <Search className="size-4 shrink-0 text-foreground/45" strokeWidth={1.6} />
                         <input
+                            id="workspace-command-search"
+                            name="workspace-command-search"
                             ref={inputRef}
                             value={query}
                             onChange={(event) => setQuery(event.target.value)}

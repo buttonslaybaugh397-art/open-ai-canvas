@@ -97,6 +97,7 @@ export const CanvasFolderPreview = React.memo(function CanvasFolderPreview({
                 <div className="canvas-folder-copy">
                     {editing ? (
                         <input
+                            name="canvas-folder-title"
                             autoFocus
                             className="canvas-folder-title-input"
                             value={title}

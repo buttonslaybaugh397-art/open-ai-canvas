@@ -750,6 +750,7 @@ export function CanvasTimelineDialog({
                     </div>
                     <input
                         ref={uploadInputRef}
+                        name="canvas-timeline-media-upload"
                         type="file"
                         accept="video/*,audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav"
                         multiple
@@ -841,12 +842,14 @@ export function CanvasTimelineDialog({
                             ) : null}
                         </div>
                         <div className="flex items-start gap-3">
-                            <Input.TextArea autoSize={{ minRows: 1, maxRows: 3 }} value={selectedSubtitleClip.text || ""} placeholder="字幕文本" className="flex-1" onChange={(event) => updateClip(selectedSubtitleClip.id, { text: event.target.value })} />
+                            <Input.TextArea id={`timeline-subtitle-${selectedSubtitleClip.id}-text`} name={`timeline-subtitle-${selectedSubtitleClip.id}-text`} autoSize={{ minRows: 1, maxRows: 3 }} value={selectedSubtitleClip.text || ""} placeholder="字幕文本" className="flex-1" onChange={(event) => updateClip(selectedSubtitleClip.id, { text: event.target.value })} />
                             <div className="flex shrink-0 items-center gap-1.5 text-xs">
-                                <InputNumber size="small" min={0} step={100} value={selectedSubtitleClip.startMs} onChange={(startMs) => updateClip(selectedSubtitleClip.id, { startMs: startMs ?? 0 })} className="w-28" />
+                                <InputNumber id={`timeline-subtitle-${selectedSubtitleClip.id}-start`} name={`timeline-subtitle-${selectedSubtitleClip.id}-start`} size="small" min={0} step={100} value={selectedSubtitleClip.startMs} onChange={(startMs) => updateClip(selectedSubtitleClip.id, { startMs: startMs ?? 0 })} className="w-28" />
                                 <span className="opacity-40">→</span>
                                 <InputNumber
                                     size="small"
+                                    id={`timeline-subtitle-${selectedSubtitleClip.id}-end`}
+                                    name={`timeline-subtitle-${selectedSubtitleClip.id}-end`}
                                     min={0}
                                     step={100}
                                     value={selectedSubtitleClip.startMs + selectedSubtitleClip.durationMs}
@@ -874,6 +877,8 @@ export function CanvasTimelineDialog({
                             <span className="opacity-50">起点</span>
                             <InputNumber
                                 size="small"
+                                id={`timeline-media-${selectedMediaClip.id}-start`}
+                                name={`timeline-media-${selectedMediaClip.id}-start`}
                                 min={selectedMediaMinStartMs}
                                 max={selectedMediaMaxStartMs}
                                 step={100}
@@ -884,6 +889,8 @@ export function CanvasTimelineDialog({
                             <span className="opacity-50">时长</span>
                             <InputNumber
                                 size="small"
+                                id={`timeline-media-${selectedMediaClip.id}-duration`}
+                                name={`timeline-media-${selectedMediaClip.id}-duration`}
                                 min={MIN_CLIP_DURATION_MS}
                                 max={selectedMediaMaxDurationMs}
                                 step={100}
@@ -894,6 +901,8 @@ export function CanvasTimelineDialog({
                             <span className="opacity-50">源内起点</span>
                             <InputNumber
                                 size="small"
+                                id={`timeline-media-${selectedMediaClip.id}-source-start`}
+                                name={`timeline-media-${selectedMediaClip.id}-source-start`}
                                 min={0}
                                 max={selectedMediaMaxSourceStartMs}
                                 step={100}

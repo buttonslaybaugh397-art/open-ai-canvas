@@ -3,7 +3,7 @@
 import { fetchFile } from "@ffmpeg/util";
 
 import { loadFFmpeg } from "@/lib/canvas/canvas-video-merge";
-import { getMediaBlob } from "@/services/file-storage";
+import { getMediaBlobFromSource } from "@/services/file-storage";
 import type { TimelineProject } from "@/types/timeline";
 import { SUBTITLE_FILE, buildSubtitleSrt, buildTimelineRenderPlan, getOrderedSubtitleClips, type TimelineRenderContext, type TimelineRenderSource } from "./timeline-to-ffmpeg";
 
@@ -19,15 +19,10 @@ export type TimelineExportOptions = {
 };
 
 async function fetchSourceBlob(source: TimelineRenderSource): Promise<Blob> {
-    if (source.storageKey) {
-        const stored = await getMediaBlob(source.storageKey);
-        if (stored) return stored;
-    }
-    if (source.url) {
-        const response = await fetch(source.url);
-        if (!response.ok) throw new Error("视频资源请求失败（" + response.status + "）");
-        return response.blob();
-    }
+    // Resource-backed clips must stay on the same-origin proxy for FFmpeg.
+    // Retrying their provider/OSS preview URL would reintroduce CORS failures.
+    const blob = await getMediaBlobFromSource(source.url, source.storageKey);
+    if (blob) return blob;
     throw new Error("找不到素材 " + source.nodeId + " 的媒体文件");
 }
 

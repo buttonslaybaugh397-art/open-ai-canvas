@@ -15,13 +15,7 @@ import { audioMetadata, imageMetadata, videoMetadata } from "@/lib/canvas/canvas
 import { buildAngleLabel, buildAnglePrompt, createCanvasNode } from "@/lib/canvas/canvas-project-domain";
 import { validateVideoSegmentBatch } from "@/lib/canvas/canvas-video-regeneration";
 import { resolveCanvasStyleExecution } from "@/lib/canvas/canvas-style-execution";
-import {
-    buildGenerationConfig,
-    buildImageGenerationMetadata,
-    nodeReferenceImage,
-    isGenerationCanceled,
-    runBackendCanvasGenerationTask,
-} from "@/lib/canvas/canvas-project-generation";
+import { buildGenerationConfig, buildImageGenerationMetadata, nodeReferenceImage, isGenerationCanceled, runBackendCanvasGenerationTask } from "@/lib/canvas/canvas-project-generation";
 import { fitNodeSize, VIDEO_NODE_MAX_SIZE } from "@/lib/canvas/canvas-node-size";
 import { compositeEmotionImage, emotionGenerationSize, emotionProviderMask, normalizeEmotionPromptForProvider, resolveEmotionEditPlan } from "@/lib/canvas/canvas-emotion";
 import { DEFAULT_PORTRAIT_TEXTURE_SETTINGS } from "@/lib/canvas/canvas-portrait-texture";
@@ -113,156 +107,200 @@ export function useCanvasMediaTools({
     const [segmentRunningMode, setSegmentRunningMode] = useState<"audio" | "video" | null>(null);
     const segmentRunningRef = useRef(false);
 
-    const resolveImageEditStyle = useCallback((node: CanvasNodeData, prompt: string, config: AiConfig) => {
-        try {
-            const runtime = resolveCanvasStyleExecution(nodesRef.current, node, prompt, config, "image");
-            return {
-                prompt: runtime?.prompt || prompt,
-                metadata: runtime ? { styleProfileJson: runtime.profileJson, styleExecutionPlan: runtime.plan } : {},
+    const resolveImageEditStyle = useCallback(
+        (node: CanvasNodeData, prompt: string, config: AiConfig) => {
+            try {
+                const runtime = resolveCanvasStyleExecution(nodesRef.current, node, prompt, config, "image");
+                return {
+                    prompt: runtime?.prompt || prompt,
+                    metadata: runtime ? { styleProfileJson: runtime.profileJson, styleExecutionPlan: runtime.plan } : {},
+                };
+            } catch (error) {
+                message.error(generationErrorMessage(error));
+                return null;
+            }
+        },
+        [message, nodesRef],
+    );
+
+    const createImageReversePromptNodes = useCallback(
+        (node: CanvasNodeData) => {
+            if (node.type !== CanvasNodeType.Image || !node.metadata?.content) {
+                message.warning("图片节点为空，无法反推提示词");
+                return;
+            }
+            const gap = 96;
+            const textSpec = NODE_DEFAULT_SIZE[CanvasNodeType.Text];
+            const resultSpec = NODE_DEFAULT_SIZE[CanvasNodeType.Text];
+            const centerY = node.position.y + node.height / 2;
+            const textNode = {
+                ...createCanvasNode(CanvasNodeType.Text, { x: node.position.x + node.width + gap + textSpec.width / 2, y: centerY }, { content: IMAGE_PROMPT_REVERSE_PRESET, prompt: IMAGE_PROMPT_REVERSE_PRESET, status: NODE_STATUS_SUCCESS, fontSize: 14 }),
+                title: "反推提示词",
             };
-        } catch (error) {
-            message.error(generationErrorMessage(error));
-            return null;
-        }
-    }, [message, nodesRef]);
+            const resultNode = {
+                ...createCanvasNode(
+                    CanvasNodeType.Text,
+                    { x: textNode.position.x + textNode.width + gap + resultSpec.width / 2, y: centerY },
+                    {
+                        content: "",
+                        generationMode: "text",
+                        model: effectiveConfig.textModel || effectiveConfig.model || defaultConfig.textModel,
+                        count: 1,
+                        composerContent: "参考图片：@图片1\n任务说明：@文本1",
+                    },
+                ),
+                title: "反推提示词结果",
+            };
+            setNodes((current) => [...current, textNode, resultNode]);
+            setConnections((current) => [...current, { id: nanoid(), fromNodeId: node.id, toNodeId: resultNode.id }, { id: nanoid(), fromNodeId: textNode.id, toNodeId: resultNode.id }]);
+            setSelectedNodeIds(new Set([resultNode.id]));
+            setSelectedConnectionId(null);
+            setDialogNodeId(resultNode.id);
+            setContextMenu(null);
+        },
+        [effectiveConfig.model, effectiveConfig.textModel, message, setConnections, setContextMenu, setDialogNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds],
+    );
 
-    const createImageReversePromptNodes = useCallback((node: CanvasNodeData) => {
-        if (node.type !== CanvasNodeType.Image || !node.metadata?.content) {
-            message.warning("图片节点为空，无法反推提示词");
-            return;
-        }
-        const gap = 96;
-        const textSpec = NODE_DEFAULT_SIZE[CanvasNodeType.Text];
-        const resultSpec = NODE_DEFAULT_SIZE[CanvasNodeType.Text];
-        const centerY = node.position.y + node.height / 2;
-        const textNode = {
-            ...createCanvasNode(CanvasNodeType.Text, { x: node.position.x + node.width + gap + textSpec.width / 2, y: centerY }, { content: IMAGE_PROMPT_REVERSE_PRESET, prompt: IMAGE_PROMPT_REVERSE_PRESET, status: NODE_STATUS_SUCCESS, fontSize: 14 }),
-            title: "反推提示词",
-        };
-        const resultNode = {
-            ...createCanvasNode(CanvasNodeType.Text, { x: textNode.position.x + textNode.width + gap + resultSpec.width / 2, y: centerY }, {
-                content: "",
-                generationMode: "text",
-                model: effectiveConfig.textModel || effectiveConfig.model || defaultConfig.textModel,
-                count: 1,
-                composerContent: "参考图片：@图片1\n任务说明：@文本1",
-            }),
-            title: "反推提示词结果",
-        };
-        setNodes((current) => [...current, textNode, resultNode]);
-        setConnections((current) => [...current, { id: nanoid(), fromNodeId: node.id, toNodeId: resultNode.id }, { id: nanoid(), fromNodeId: textNode.id, toNodeId: resultNode.id }]);
-        setSelectedNodeIds(new Set([resultNode.id]));
-        setSelectedConnectionId(null);
-        setDialogNodeId(resultNode.id);
-        setContextMenu(null);
-    }, [effectiveConfig.model, effectiveConfig.textModel, message, setConnections, setContextMenu, setDialogNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds]);
+    const openPortraitTextureEditor = useCallback(
+        (node: CanvasNodeData) => {
+            if (node.type !== CanvasNodeType.Image || !node.metadata?.content) {
+                message.warning("图片节点为空，无法调节人物质感");
+                return;
+            }
+            const portraitTextureSettings = { ...DEFAULT_PORTRAIT_TEXTURE_SETTINGS, ...node.metadata?.portraitTexture };
+            const composerContent = node.metadata?.composerContent?.trim() || node.metadata?.prompt?.trim() || "@图片1";
+            setHoveredNodeId(null);
+            setToolbarNodeId(null);
+            setNodes((current) => current.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, prompt: composerContent, composerContent, portraitTexture: portraitTextureSettings } } : item)));
+            setSelectedNodeIds(new Set([node.id]));
+            setSelectedConnectionId(null);
+            setDialogNodeId(node.id);
+        },
+        [message, setDialogNodeId, setHoveredNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds, setToolbarNodeId],
+    );
 
-    const openPortraitTextureEditor = useCallback((node: CanvasNodeData) => {
-        if (node.type !== CanvasNodeType.Image || !node.metadata?.content) {
-            message.warning("图片节点为空，无法调节人物质感");
-            return;
-        }
-        const portraitTextureSettings = { ...DEFAULT_PORTRAIT_TEXTURE_SETTINGS, ...node.metadata?.portraitTexture };
-        const composerContent = node.metadata?.composerContent?.trim() || node.metadata?.prompt?.trim() || "@图片1";
-        setHoveredNodeId(null);
-        setToolbarNodeId(null);
-        setNodes((current) => current.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, prompt: composerContent, composerContent, portraitTexture: portraitTextureSettings } } : item));
-        setSelectedNodeIds(new Set([node.id]));
-        setSelectedConnectionId(null);
-        setDialogNodeId(node.id);
-    }, [message, setDialogNodeId, setHoveredNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds, setToolbarNodeId]);
-
-    const cropImageNode = useCallback(async (node: CanvasNodeData, crop: CanvasImageCropRect) => {
-        if (!node.metadata?.content) return;
-        const cropped = await cropDataUrl(node.metadata.content, crop);
-        const image = await uploadImage(cropped);
-        const size = fitNodeSize(image.width, image.height, node.width, node.height);
-        const childId = nanoid();
-        const child: CanvasNodeData = { id: childId, type: CanvasNodeType.Image, title: "Cropped Image", position: { x: node.position.x + node.width + 96, y: node.position.y }, width: size.width, height: size.height, metadata: { ...imageMetadata(image), prompt: node.metadata?.prompt } };
-        setNodes((current) => [...current, child]);
-        setConnections((current) => [...current, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
-        setSelectedNodeIds(new Set([childId]));
-        setDialogNodeId(childId);
-        setCropNodeId(null);
-    }, [setConnections, setDialogNodeId, setNodes, setSelectedNodeIds]);
-
-    const saveAnnotatedImageNode = useCallback(async (node: CanvasNodeData, dataUrl: string) => {
-        const image = await uploadImage(dataUrl);
-        const size = fitNodeSize(image.width, image.height, node.width, node.height);
-        const childId = nanoid();
-        const child: CanvasNodeData = { id: childId, type: CanvasNodeType.Image, title: `标注 · ${node.title || "图片"}`, position: { x: node.position.x + node.width + 96, y: node.position.y }, width: size.width, height: size.height, metadata: { ...imageMetadata(image), prompt: node.metadata?.prompt } };
-        setNodes((current) => [...current, child]);
-        setConnections((current) => [...current, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
-        setSelectedNodeIds(new Set([childId]));
-        setSelectedConnectionId(null);
-        setDialogNodeId(null);
-        setAnnotationNodeId(null);
-        message.success("标注图片已保存为新节点");
-    }, [message, setConnections, setDialogNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds]);
-
-    const extractVideoLastFrame = useCallback(async (node: CanvasNodeData) => {
-        const content = node.metadata?.content;
-        if (!content || extractingVideoFrameNodeIdRef.current) return;
-        const progress = startUploadStatus("截取视频尾帧", "读取视频资源");
-        extractingVideoFrameNodeIdRef.current = node.id;
-        setExtractingVideoFrameNodeId(node.id);
-        try {
-            const storedBlob = node.metadata?.storageKey ? await getMediaBlob(node.metadata.storageKey).catch(() => null) : null;
-            progress.update("定位并绘制最后一帧", 2);
-            const frameBlob = await captureVideoLastFrame(storedBlob || content);
-            progress.update("保存尾帧图片并创建节点", 3);
-            const image = await uploadImage(frameBlob);
+    const cropImageNode = useCallback(
+        async (node: CanvasNodeData, crop: CanvasImageCropRect) => {
+            if (!node.metadata?.content) return;
+            const cropped = await cropDataUrl(node.metadata.content, crop);
+            const image = await uploadImage(cropped);
             const size = fitNodeSize(image.width, image.height, node.width, node.height);
             const childId = nanoid();
             const child: CanvasNodeData = {
                 id: childId,
                 type: CanvasNodeType.Image,
-                title: `尾帧 · ${node.title || "视频"}`,
+                title: "Cropped Image",
                 position: { x: node.position.x + node.width + 96, y: node.position.y },
                 width: size.width,
                 height: size.height,
-                metadata: { ...imageMetadata(image), prompt: node.metadata?.prompt, workflowKind: node.metadata?.workflowKind, workflowTitle: node.metadata?.workflowTitle, shotIndex: node.metadata?.shotIndex },
+                metadata: { ...imageMetadata(image), prompt: node.metadata?.prompt },
+            };
+            setNodes((current) => [...current, child]);
+            setConnections((current) => [...current, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
+            setSelectedNodeIds(new Set([childId]));
+            setDialogNodeId(childId);
+            setCropNodeId(null);
+        },
+        [setConnections, setDialogNodeId, setNodes, setSelectedNodeIds],
+    );
+
+    const saveAnnotatedImageNode = useCallback(
+        async (node: CanvasNodeData, dataUrl: string) => {
+            const image = await uploadImage(dataUrl);
+            const size = fitNodeSize(image.width, image.height, node.width, node.height);
+            const childId = nanoid();
+            const child: CanvasNodeData = {
+                id: childId,
+                type: CanvasNodeType.Image,
+                title: `标注 · ${node.title || "图片"}`,
+                position: { x: node.position.x + node.width + 96, y: node.position.y },
+                width: size.width,
+                height: size.height,
+                metadata: { ...imageMetadata(image), prompt: node.metadata?.prompt },
             };
             setNodes((current) => [...current, child]);
             setConnections((current) => [...current, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
             setSelectedNodeIds(new Set([childId]));
             setSelectedConnectionId(null);
+            setDialogNodeId(null);
+            setAnnotationNodeId(null);
+            message.success("标注图片已保存为新节点");
+        },
+        [message, setConnections, setDialogNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds],
+    );
+
+    const extractVideoLastFrame = useCallback(
+        async (node: CanvasNodeData) => {
+            const content = node.metadata?.content;
+            if (!content || extractingVideoFrameNodeIdRef.current) return;
+            const progress = startUploadStatus("截取视频尾帧", "读取视频资源");
+            extractingVideoFrameNodeIdRef.current = node.id;
+            setExtractingVideoFrameNodeId(node.id);
+            try {
+                const storedBlob = node.metadata?.storageKey ? await getMediaBlob(node.metadata.storageKey).catch(() => null) : null;
+                progress.update("定位并绘制最后一帧", 2);
+                const frameBlob = await captureVideoLastFrame(storedBlob || content, node.metadata?.storageKey);
+                progress.update("保存尾帧图片并创建节点", 3);
+                const image = await uploadImage(frameBlob);
+                const size = fitNodeSize(image.width, image.height, node.width, node.height);
+                const childId = nanoid();
+                const child: CanvasNodeData = {
+                    id: childId,
+                    type: CanvasNodeType.Image,
+                    title: `尾帧 · ${node.title || "视频"}`,
+                    position: { x: node.position.x + node.width + 96, y: node.position.y },
+                    width: size.width,
+                    height: size.height,
+                    metadata: { ...imageMetadata(image), prompt: node.metadata?.prompt, workflowKind: node.metadata?.workflowKind, workflowTitle: node.metadata?.workflowTitle, shotIndex: node.metadata?.shotIndex },
+                };
+                setNodes((current) => [...current, child]);
+                setConnections((current) => [...current, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
+                setSelectedNodeIds(new Set([childId]));
+                setSelectedConnectionId(null);
+                setHoveredNodeId(null);
+                setToolbarNodeId(null);
+                progress.done("尾帧图片已创建");
+            } catch (error) {
+                const details = error instanceof Error ? error.message : "尾帧截取失败";
+                progress.fail(details);
+                message.error(details);
+            } finally {
+                extractingVideoFrameNodeIdRef.current = null;
+                setExtractingVideoFrameNodeId(null);
+            }
+        },
+        [message, setConnections, setHoveredNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds, setToolbarNodeId, startUploadStatus],
+    );
+
+    const extractAudioFromVideo = useCallback(
+        (node: CanvasNodeData) => {
+            if (!node.metadata?.content) {
+                message.warning("视频节点为空，无法提取声音");
+                return;
+            }
+            if (segmentRunningRef.current) return;
             setHoveredNodeId(null);
             setToolbarNodeId(null);
-            progress.done("尾帧图片已创建");
-        } catch (error) {
-            const details = error instanceof Error ? error.message : "尾帧截取失败";
-            progress.fail(details);
-            message.error(details);
-        } finally {
-            extractingVideoFrameNodeIdRef.current = null;
-            setExtractingVideoFrameNodeId(null);
-        }
-    }, [message, setConnections, setHoveredNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds, setToolbarNodeId, startUploadStatus]);
+            setSegmentDialogNodeId(node.id);
+            setSegmentDialogMode("audio");
+        },
+        [message, setHoveredNodeId, setToolbarNodeId],
+    );
 
-    const extractAudioFromVideo = useCallback((node: CanvasNodeData) => {
-        if (!node.metadata?.content) {
-            message.warning("视频节点为空，无法提取声音");
-            return;
-        }
-        if (segmentRunningRef.current) return;
-        setHoveredNodeId(null);
-        setToolbarNodeId(null);
-        setSegmentDialogNodeId(node.id);
-        setSegmentDialogMode("audio");
-    }, [message, setHoveredNodeId, setToolbarNodeId]);
-
-    const trimVideoAndRegenerate = useCallback((node: CanvasNodeData) => {
-        if (!node.metadata?.content) {
-            message.warning("视频节点为空，无法截取片段");
-            return;
-        }
-        if (segmentRunningRef.current) return;
-        setHoveredNodeId(null);
-        setToolbarNodeId(null);
-        setSegmentDialogNodeId(node.id);
-        setSegmentDialogMode("video");
-    }, [message, setHoveredNodeId, setToolbarNodeId]);
+    const trimVideoAndRegenerate = useCallback(
+        (node: CanvasNodeData) => {
+            if (!node.metadata?.content) {
+                message.warning("视频节点为空，无法截取片段");
+                return;
+            }
+            if (segmentRunningRef.current) return;
+            setHoveredNodeId(null);
+            setToolbarNodeId(null);
+            setSegmentDialogNodeId(node.id);
+            setSegmentDialogMode("video");
+        },
+        [message, setHoveredNodeId, setToolbarNodeId],
+    );
 
     const closeSegmentDialog = useCallback(() => {
         if (segmentRunningRef.current) return;
@@ -271,409 +309,572 @@ export function useCanvasMediaTools({
     }, []);
 
     // 从视频片段提取声音：FFmpeg 提取 MP3 → 上传为音频资源 → 创建音频节点 → 写入素材库/项目资产。
-    const runExtractVideoAudio = useCallback(async (node: CanvasNodeData, params: CanvasVideoSegmentParams) => {
-        const progress = startUploadStatus("提取音频", "加载 FFmpeg", 4);
-        try {
-            const mp3 = await extractVideoAudio({ url: node.metadata?.content, storageKey: node.metadata?.storageKey }, { startMs: params.startMs, endMs: params.endMs }, node.metadata?.durationMs, (status) => {
-                progress.update(status.phase === "loading" ? "加载 FFmpeg" : status.phase === "reading" ? "读取视频资源" : "正在提取音频", status.phase === "encoding" ? 3 : 2);
-            });
-            progress.update("上传音频到服务器", 4);
-            const uploaded = await uploadMediaFile(mp3, "audio");
-            const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Audio];
-            const audioNode = createCanvasNode(
-                CanvasNodeType.Audio,
-                { x: node.position.x + node.width + 96 + spec.width / 2, y: node.position.y + node.height / 2 },
-                { ...audioMetadata(uploaded), prompt: `从「${node.title || "视频"}」提取的声音`, status: NODE_STATUS_SUCCESS },
-            );
-            audioNode.title = `声音 · ${node.title || "视频"}`;
-            const audioNodeId = audioNode.id;
-            setNodes((current) => [...current, audioNode]);
-            setConnections((current) => [...current, { id: nanoid(), fromNodeId: node.id, toNodeId: audioNodeId }]);
-            setSelectedNodeIds(new Set([audioNodeId]));
-            setSelectedConnectionId(null);
+    const runExtractVideoAudio = useCallback(
+        async (node: CanvasNodeData, params: CanvasVideoSegmentParams) => {
+            const progress = startUploadStatus("提取音频", "加载 FFmpeg", 4);
             try {
-                const result = await ensureCanvasNodeAsset({ canvasId: projectId, domainProjectId, node: audioNode, source: "canvas-manual" });
-                setNodes((current) => current.map((item) => (item.id === audioNodeId ? { ...item, metadata: { ...item.metadata, assetId: result.assetId } } : item)));
-                progress.done(result.linkedToProject ? "声音已提取并加入素材库与项目资产" : "声音已提取并加入素材库");
-            } catch (assetError) {
-                progress.done(`声音已提取并生成音频节点，素材库写入失败：${assetError instanceof Error ? assetError.message : "未知错误"}`);
+                const mp3 = await extractVideoAudio({ url: node.metadata?.content, storageKey: node.metadata?.storageKey }, { startMs: params.startMs, endMs: params.endMs }, node.metadata?.durationMs, (status) => {
+                    progress.update(status.phase === "loading" ? "加载 FFmpeg" : status.phase === "reading" ? "读取视频资源" : "正在提取音频", status.phase === "encoding" ? 3 : 2);
+                });
+                progress.update("上传音频到服务器", 4);
+                const uploaded = await uploadMediaFile(mp3, "audio");
+                const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Audio];
+                const audioNode = createCanvasNode(
+                    CanvasNodeType.Audio,
+                    { x: node.position.x + node.width + 96 + spec.width / 2, y: node.position.y + node.height / 2 },
+                    { ...audioMetadata(uploaded), prompt: `从「${node.title || "视频"}」提取的声音`, status: NODE_STATUS_SUCCESS },
+                );
+                audioNode.title = `声音 · ${node.title || "视频"}`;
+                const audioNodeId = audioNode.id;
+                setNodes((current) => [...current, audioNode]);
+                setConnections((current) => [...current, { id: nanoid(), fromNodeId: node.id, toNodeId: audioNodeId }]);
+                setSelectedNodeIds(new Set([audioNodeId]));
+                setSelectedConnectionId(null);
+                try {
+                    const result = await ensureCanvasNodeAsset({ canvasId: projectId, domainProjectId, node: audioNode, source: "canvas-manual" });
+                    setNodes((current) => current.map((item) => (item.id === audioNodeId ? { ...item, metadata: { ...item.metadata, assetId: result.assetId } } : item)));
+                    progress.done(result.linkedToProject ? "声音已提取并加入素材库与项目资产" : "声音已提取并加入素材库");
+                } catch (assetError) {
+                    progress.done(`声音已提取并生成音频节点，素材库写入失败：${assetError instanceof Error ? assetError.message : "未知错误"}`);
+                }
+            } catch (error) {
+                const details = error instanceof Error ? error.message : "音频提取失败";
+                progress.fail(details);
+                message.error(details);
             }
-        } catch (error) {
-            const details = error instanceof Error ? error.message : "音频提取失败";
-            progress.fail(details);
-            message.error(details);
-        }
-    }, [domainProjectId, message, projectId, setConnections, setSelectedConnectionId, setSelectedNodeIds, setNodes, startUploadStatus]);
+        },
+        [domainProjectId, message, projectId, setConnections, setSelectedConnectionId, setSelectedNodeIds, setNodes, startUploadStatus],
+    );
 
     // 按段截取视频：FFmpeg 批量截取 → 每段创建片段节点与空结果节点 → 调用视频模型逐段重生成。
-    const runTrimVideoAndRegenerate = useCallback(async (node: CanvasNodeData, params: CanvasVideoSegmentParams) => {
-        const segments = params.segments || [];
-        if (!segments.length) {
-            message.warning("请至少添加一个截取片段");
-            return;
-        }
-        const generationConfig = buildGenerationConfig(effectiveConfig, node, "video");
-        const selectedConfig = { ...generationConfig, model: params.model || generationConfig.model };
-        const batchError = validateVideoSegmentBatch(selectedConfig, segments, params.operation);
-        if (batchError) {
-            message.warning(batchError);
-            return;
-        }
-        const progress = startUploadStatus("截取视频片段", "加载 FFmpeg", segments.length * 4);
-        try {
-            const prepared: Array<{ segmentNode: CanvasNodeData; targetNode: CanvasNodeData }> = [];
-            const failedSegments: string[] = [];
-            const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Video];
-            const baseX = node.position.x + node.width + 96;
-            const baseY = node.position.y;
-            const effectivePrompt = (params.prompt || "保持画面主体与镜头，重新生成这一段视频").trim();
-            for (let index = 0; index < segments.length; index += 1) {
-                const segment = segments[index];
-                try {
-                    const sourceNode = segment.sourceNodeId ? nodesRef.current.find((item) => item.id === segment.sourceNodeId) : undefined;
-                    const trimSource = sourceNode
-                        ? { url: sourceNode.metadata?.content, storageKey: sourceNode.metadata?.storageKey }
-                        : segment.sourceStorageKey || segment.sourceUrl
-                            ? { url: segment.sourceUrl, storageKey: segment.sourceStorageKey }
-                            : { url: node.metadata?.content, storageKey: node.metadata?.storageKey };
-                    const trimDurationMs = sourceNode?.metadata?.durationMs || node.metadata?.durationMs;
-                    progress.update(`加载 FFmpeg（${index + 1}/${segments.length}）`, index * 4 + 1);
-                    const mp4 = await trimVideoSegment(trimSource, { startMs: segment.startMs, endMs: segment.endMs }, trimDurationMs, (status) => {
-                        progress.update(status.phase === "loading" ? `加载 FFmpeg（${index + 1}/${segments.length}）` : status.phase === "reading" ? `读取视频资源（${index + 1}/${segments.length}）` : `正在截取片段（${index + 1}/${segments.length}）`, status.phase === "encoding" ? index * 4 + 3 : index * 4 + 2);
-                    });
-                    progress.update(`上传片段到服务器（${index + 1}/${segments.length}）`, index * 4 + 3);
-                    const uploaded = await uploadMediaFile(mp4, "video");
-                    const size = fitNodeSize(uploaded.width || 1280, uploaded.height || 720, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
-                    const segmentId = nanoid();
-                    const segmentNode: CanvasNodeData = {
-                        id: segmentId,
-                        type: CanvasNodeType.Video,
-                        title: `片段 ${index + 1} · ${sourceNode?.title || node.title || "视频"}`,
-                        position: { x: baseX, y: baseY + index * (Math.max(size.height, spec.height) + 24) },
-                        width: size.width,
-                        height: size.height,
-                        metadata: { ...videoMetadata(uploaded), prompt: `从「${sourceNode?.title || node.title || "视频"}」截取的片段 ${index + 1}`, status: NODE_STATUS_SUCCESS },
-                    };
-                    const targetId = nanoid();
-                    const targetNode: CanvasNodeData = {
-                        id: targetId,
-                        type: CanvasNodeType.Video,
-                        title: `重生成 ${index + 1} · ${sourceNode?.title || node.title || "视频"}`,
-                        position: { x: segmentNode.position.x + size.width + 96, y: segmentNode.position.y + (size.height - spec.height) / 2 },
-                        width: spec.width,
-                        height: spec.height,
-                        metadata: { prompt: effectivePrompt, status: "idle", generationMode: "video", model: selectedConfig.model, videoEditOperation: params.operation, seconds: generationConfig.videoSeconds, size: generationConfig.size },
-                    };
-                    prepared.push({ segmentNode, targetNode });
-                } catch (segmentError) {
-                    failedSegments.push(segmentError instanceof Error ? segmentError.message : "视频截取失败");
-                }
+    const runTrimVideoAndRegenerate = useCallback(
+        async (node: CanvasNodeData, params: CanvasVideoSegmentParams) => {
+            const segments = params.segments || [];
+            if (!segments.length) {
+                message.warning("请至少添加一个截取片段");
+                return;
             }
-            if (!prepared.length) throw new Error(failedSegments[0] || "视频截取失败");
-            const segmentNodes = prepared.map((item) => item.segmentNode);
-            const targetNodes = prepared.map((item) => item.targetNode);
-            // 先同步 ref 再 setState，保证生成执行器能立即读到新节点与连接。
-            const nextNodes = [...nodesRef.current, ...segmentNodes, ...targetNodes];
-            const nextConnections = [
-                ...connectionsRef.current,
-                ...prepared.flatMap((item) => [
-                    { id: nanoid(), fromNodeId: node.id, toNodeId: item.segmentNode.id },
-                    { id: nanoid(), fromNodeId: item.segmentNode.id, toNodeId: item.targetNode.id },
-                ]),
-            ];
-            nodesRef.current = nextNodes;
-            connectionsRef.current = nextConnections;
-            setNodes(nextNodes);
-            setConnections(nextConnections);
-            setSelectedNodeIds(new Set(targetNodes.map((item) => item.id)));
-            setSelectedConnectionId(null);
-            progress.update("创建生成任务", segments.length * 4);
-            progress.done(`已截取 ${prepared.length}/${segments.length} 段，正在调用视频模型重新生成`);
-            segmentNodes.forEach((segmentNode) => {
-                void ensureCanvasNodeAsset({ canvasId: projectId, domainProjectId, node: segmentNode, source: "canvas-manual" })
-                    .then((result) => setNodes((current) => current.map((item) => (item.id === segmentNode.id ? { ...item, metadata: { ...item.metadata, assetId: result.assetId } } : item))))
-                    .catch((assetError) => message.warning(`片段已截取并开始重生成，但素材库写入失败：${assetError instanceof Error ? assetError.message : "未知错误"}`));
-            });
-            // 任务提交瞬时打满后端会触发限流；先错峰提交，后续可替换为批次调度的容量控制。
-            for (let index = 0; index < targetNodes.length; index += 1) {
-                const targetNode = targetNodes[index];
-                void onGenerateVideoNode?.(targetNode.id, "video", effectivePrompt);
-                if (index + 1 < targetNodes.length) await new Promise((resolve) => setTimeout(resolve, 300));
-            }
-            if (failedSegments.length) message.warning(`${failedSegments.length} 段截取失败，已为其余 ${prepared.length} 段创建生成任务`);
-        } catch (error) {
-            const details = error instanceof Error ? error.message : "视频截取失败";
-            progress.fail(details);
-            message.error(details);
-        }
-    }, [connectionsRef, domainProjectId, effectiveConfig, message, nodesRef, onGenerateVideoNode, projectId, setConnections, setSelectedConnectionId, setSelectedNodeIds, setNodes, startUploadStatus]);
-
-    const handleSegmentConfirm = useCallback(async (node: CanvasNodeData, params: CanvasVideoSegmentParams) => {
-        if (segmentRunningRef.current || !node.metadata?.content) return;
-        if (params.mode === "video") {
             const generationConfig = buildGenerationConfig(effectiveConfig, node, "video");
             const selectedConfig = { ...generationConfig, model: params.model || generationConfig.model };
-            const batchError = validateVideoSegmentBatch(selectedConfig, params.segments || [], params.operation);
+            const batchError = validateVideoSegmentBatch(selectedConfig, segments, params.operation);
             if (batchError) {
                 message.warning(batchError);
                 return;
             }
-        }
-        segmentRunningRef.current = true;
-        setSegmentRunningMode(params.mode);
-        setSegmentDialogNodeId(null);
-        setSegmentDialogMode(null);
-        try {
-            if (params.mode === "video") await runTrimVideoAndRegenerate(node, params);
-            else await runExtractVideoAudio(node, params);
-        } finally {
-            segmentRunningRef.current = false;
-            setSegmentRunningMode(null);
-        }
-    }, [effectiveConfig, message, runExtractVideoAudio, runTrimVideoAndRegenerate]);
+            const progress = startUploadStatus("截取视频片段", "加载 FFmpeg", segments.length * 4);
+            try {
+                const prepared: Array<{ segmentNode: CanvasNodeData; targetNode: CanvasNodeData }> = [];
+                const failedSegments: string[] = [];
+                const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Video];
+                const baseX = node.position.x + node.width + 96;
+                const baseY = node.position.y;
+                const effectivePrompt = (params.prompt || "保持画面主体与镜头，重新生成这一段视频").trim();
+                for (let index = 0; index < segments.length; index += 1) {
+                    const segment = segments[index];
+                    try {
+                        const sourceNode = segment.sourceNodeId ? nodesRef.current.find((item) => item.id === segment.sourceNodeId) : undefined;
+                        const trimSource = sourceNode
+                            ? { url: sourceNode.metadata?.content, storageKey: sourceNode.metadata?.storageKey }
+                            : segment.sourceStorageKey || segment.sourceUrl
+                              ? { url: segment.sourceUrl, storageKey: segment.sourceStorageKey }
+                              : { url: node.metadata?.content, storageKey: node.metadata?.storageKey };
+                        const trimDurationMs = sourceNode?.metadata?.durationMs || node.metadata?.durationMs;
+                        progress.update(`加载 FFmpeg（${index + 1}/${segments.length}）`, index * 4 + 1);
+                        const mp4 = await trimVideoSegment(trimSource, { startMs: segment.startMs, endMs: segment.endMs }, trimDurationMs, (status) => {
+                            progress.update(
+                                status.phase === "loading" ? `加载 FFmpeg（${index + 1}/${segments.length}）` : status.phase === "reading" ? `读取视频资源（${index + 1}/${segments.length}）` : `正在截取片段（${index + 1}/${segments.length}）`,
+                                status.phase === "encoding" ? index * 4 + 3 : index * 4 + 2,
+                            );
+                        });
+                        progress.update(`上传片段到服务器（${index + 1}/${segments.length}）`, index * 4 + 3);
+                        const uploaded = await uploadMediaFile(mp4, "video");
+                        const size = fitNodeSize(uploaded.width || 1280, uploaded.height || 720, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
+                        const segmentId = nanoid();
+                        const segmentNode: CanvasNodeData = {
+                            id: segmentId,
+                            type: CanvasNodeType.Video,
+                            title: `片段 ${index + 1} · ${sourceNode?.title || node.title || "视频"}`,
+                            position: { x: baseX, y: baseY + index * (Math.max(size.height, spec.height) + 24) },
+                            width: size.width,
+                            height: size.height,
+                            metadata: { ...videoMetadata(uploaded), prompt: `从「${sourceNode?.title || node.title || "视频"}」截取的片段 ${index + 1}`, status: NODE_STATUS_SUCCESS },
+                        };
+                        const targetId = nanoid();
+                        const targetNode: CanvasNodeData = {
+                            id: targetId,
+                            type: CanvasNodeType.Video,
+                            title: `重生成 ${index + 1} · ${sourceNode?.title || node.title || "视频"}`,
+                            position: { x: segmentNode.position.x + size.width + 96, y: segmentNode.position.y + (size.height - spec.height) / 2 },
+                            width: spec.width,
+                            height: spec.height,
+                            metadata: { prompt: effectivePrompt, status: "idle", generationMode: "video", model: selectedConfig.model, videoEditOperation: params.operation, seconds: generationConfig.videoSeconds, size: generationConfig.size },
+                        };
+                        prepared.push({ segmentNode, targetNode });
+                    } catch (segmentError) {
+                        failedSegments.push(segmentError instanceof Error ? segmentError.message : "视频截取失败");
+                    }
+                }
+                if (!prepared.length) throw new Error(failedSegments[0] || "视频截取失败");
+                const segmentNodes = prepared.map((item) => item.segmentNode);
+                const targetNodes = prepared.map((item) => item.targetNode);
+                // 先同步 ref 再 setState，保证生成执行器能立即读到新节点与连接。
+                const nextNodes = [...nodesRef.current, ...segmentNodes, ...targetNodes];
+                const nextConnections = [
+                    ...connectionsRef.current,
+                    ...prepared.flatMap((item) => [
+                        { id: nanoid(), fromNodeId: node.id, toNodeId: item.segmentNode.id },
+                        { id: nanoid(), fromNodeId: item.segmentNode.id, toNodeId: item.targetNode.id },
+                    ]),
+                ];
+                nodesRef.current = nextNodes;
+                connectionsRef.current = nextConnections;
+                setNodes(nextNodes);
+                setConnections(nextConnections);
+                setSelectedNodeIds(new Set(targetNodes.map((item) => item.id)));
+                setSelectedConnectionId(null);
+                progress.update("创建生成任务", segments.length * 4);
+                progress.done(`已截取 ${prepared.length}/${segments.length} 段，正在调用视频模型重新生成`);
+                segmentNodes.forEach((segmentNode) => {
+                    void ensureCanvasNodeAsset({ canvasId: projectId, domainProjectId, node: segmentNode, source: "canvas-manual" })
+                        .then((result) => setNodes((current) => current.map((item) => (item.id === segmentNode.id ? { ...item, metadata: { ...item.metadata, assetId: result.assetId } } : item))))
+                        .catch((assetError) => message.warning(`片段已截取并开始重生成，但素材库写入失败：${assetError instanceof Error ? assetError.message : "未知错误"}`));
+                });
+                // 任务提交瞬时打满后端会触发限流；先错峰提交，后续可替换为批次调度的容量控制。
+                for (let index = 0; index < targetNodes.length; index += 1) {
+                    const targetNode = targetNodes[index];
+                    void onGenerateVideoNode?.(targetNode.id, "video", effectivePrompt);
+                    if (index + 1 < targetNodes.length) await new Promise((resolve) => setTimeout(resolve, 300));
+                }
+                if (failedSegments.length) message.warning(`${failedSegments.length} 段截取失败，已为其余 ${prepared.length} 段创建生成任务`);
+            } catch (error) {
+                const details = error instanceof Error ? error.message : "视频截取失败";
+                progress.fail(details);
+                message.error(details);
+            }
+        },
+        [connectionsRef, domainProjectId, effectiveConfig, message, nodesRef, onGenerateVideoNode, projectId, setConnections, setSelectedConnectionId, setSelectedNodeIds, setNodes, startUploadStatus],
+    );
 
-    const mergeVideosByIds = useCallback(async (videoNodeIds: string[]) => {
-        if (mergeVideoRunningRef.current) return;
-        const requestedIds = new Set(videoNodeIds);
-        const videos = nodesRef.current
-            .filter((node) => requestedIds.has(node.id) && node.type === CanvasNodeType.Video && Boolean(node.metadata?.content))
-            .sort((left, right) => {
-                const leftShot = left.metadata?.shotIndex ?? Number.MAX_SAFE_INTEGER;
-                const rightShot = right.metadata?.shotIndex ?? Number.MAX_SAFE_INTEGER;
-                return leftShot - rightShot || left.position.y - right.position.y || left.position.x - right.position.x;
-            });
-        if (videos.length < 2) {
-            message.warning("请至少选择两个已有视频");
-            return;
-        }
-        mergeVideoRunningRef.current = true;
-        setMergeVideoProgress({ phase: "reading", progress: 0 });
-        try {
-            const blob = await mergeVideos(videos.map((node) => ({ id: node.id, url: node.metadata?.content, storageKey: node.metadata?.storageKey })), setMergeVideoProgress);
-            setMergeVideoProgress({ phase: "encoding", progress: 98 });
-            const uploaded = await storeGeneratedVideo({ blob });
-            const size = fitNodeSize(uploaded.width || 1280, uploaded.height || 720, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
-            const left = Math.max(...videos.map((node) => node.position.x + node.width)) + 120;
-            const top = Math.min(...videos.map((node) => node.position.y));
-            const mergedNode = createCanvasNode(CanvasNodeType.Video, { x: left + size.width / 2, y: top + size.height / 2 }, {
-                ...videoMetadata(uploaded),
-                prompt: `按选中顺序合并 ${videos.length} 段视频`,
-                workflowKind: "final",
-                workflowTitle: "合并成片",
-                videoEditOperation: "concat",
-                status: NODE_STATUS_SUCCESS,
-            });
-            mergedNode.title = `合并成片 · ${videos.length} 段`;
-            mergedNode.width = size.width;
-            mergedNode.height = size.height;
-            mergedNode.position = { x: left, y: top };
-            const links = videos.map((node) => ({ id: nanoid(), fromNodeId: node.id, toNodeId: mergedNode.id }));
-            const nextNodes = [...nodesRef.current, mergedNode];
-            const nextConnections = [...connectionsRef.current, ...links];
-            nodesRef.current = nextNodes;
-            connectionsRef.current = nextConnections;
-            setNodes(nextNodes);
-            setConnections(nextConnections);
-            const selection = new Set([mergedNode.id]);
-            selectedNodeIdsRef.current = selection;
-            setSelectedNodeIds(selection);
-            setSelectedConnectionId(null);
-            setDialogNodeId(null);
-            setMergeVideoProgress({ phase: "encoding", progress: 100 });
-            message.success(`已合并 ${videos.length} 段视频，成片节点已添加`);
-        } catch (error) {
-            message.error(error instanceof Error ? error.message : "视频合并失败");
-        } finally {
-            mergeVideoRunningRef.current = false;
-            window.setTimeout(() => setMergeVideoProgress(null), 700);
-        }
-    }, [connectionsRef, message, nodesRef, selectedNodeIdsRef, setConnections, setDialogNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds]);
+    const handleSegmentConfirm = useCallback(
+        async (node: CanvasNodeData, params: CanvasVideoSegmentParams) => {
+            if (segmentRunningRef.current || !node.metadata?.content) return;
+            if (params.mode === "video") {
+                const generationConfig = buildGenerationConfig(effectiveConfig, node, "video");
+                const selectedConfig = { ...generationConfig, model: params.model || generationConfig.model };
+                const batchError = validateVideoSegmentBatch(selectedConfig, params.segments || [], params.operation);
+                if (batchError) {
+                    message.warning(batchError);
+                    return;
+                }
+            }
+            segmentRunningRef.current = true;
+            setSegmentRunningMode(params.mode);
+            setSegmentDialogNodeId(null);
+            setSegmentDialogMode(null);
+            try {
+                if (params.mode === "video") await runTrimVideoAndRegenerate(node, params);
+                else await runExtractVideoAudio(node, params);
+            } finally {
+                segmentRunningRef.current = false;
+                setSegmentRunningMode(null);
+            }
+        },
+        [effectiveConfig, message, runExtractVideoAudio, runTrimVideoAndRegenerate],
+    );
+
+    const mergeVideosByIds = useCallback(
+        async (videoNodeIds: string[]) => {
+            if (mergeVideoRunningRef.current) return;
+            const requestedIds = new Set(videoNodeIds);
+            const videos = nodesRef.current
+                .filter((node) => requestedIds.has(node.id) && node.type === CanvasNodeType.Video && Boolean(node.metadata?.content))
+                .sort((left, right) => {
+                    const leftShot = left.metadata?.shotIndex ?? Number.MAX_SAFE_INTEGER;
+                    const rightShot = right.metadata?.shotIndex ?? Number.MAX_SAFE_INTEGER;
+                    return leftShot - rightShot || left.position.y - right.position.y || left.position.x - right.position.x;
+                });
+            if (videos.length < 2) {
+                message.warning("请至少选择两个已有视频");
+                return;
+            }
+            mergeVideoRunningRef.current = true;
+            setMergeVideoProgress({ phase: "reading", progress: 0 });
+            try {
+                const blob = await mergeVideos(
+                    videos.map((node) => ({ id: node.id, url: node.metadata?.content, storageKey: node.metadata?.storageKey })),
+                    setMergeVideoProgress,
+                );
+                setMergeVideoProgress({ phase: "encoding", progress: 98 });
+                const uploaded = await storeGeneratedVideo({ blob });
+                const size = fitNodeSize(uploaded.width || 1280, uploaded.height || 720, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
+                const left = Math.max(...videos.map((node) => node.position.x + node.width)) + 120;
+                const top = Math.min(...videos.map((node) => node.position.y));
+                const mergedNode = createCanvasNode(
+                    CanvasNodeType.Video,
+                    { x: left + size.width / 2, y: top + size.height / 2 },
+                    {
+                        ...videoMetadata(uploaded),
+                        prompt: `按选中顺序合并 ${videos.length} 段视频`,
+                        workflowKind: "final",
+                        workflowTitle: "合并成片",
+                        videoEditOperation: "concat",
+                        status: NODE_STATUS_SUCCESS,
+                    },
+                );
+                mergedNode.title = `合并成片 · ${videos.length} 段`;
+                mergedNode.width = size.width;
+                mergedNode.height = size.height;
+                mergedNode.position = { x: left, y: top };
+                const links = videos.map((node) => ({ id: nanoid(), fromNodeId: node.id, toNodeId: mergedNode.id }));
+                const nextNodes = [...nodesRef.current, mergedNode];
+                const nextConnections = [...connectionsRef.current, ...links];
+                nodesRef.current = nextNodes;
+                connectionsRef.current = nextConnections;
+                setNodes(nextNodes);
+                setConnections(nextConnections);
+                const selection = new Set([mergedNode.id]);
+                selectedNodeIdsRef.current = selection;
+                setSelectedNodeIds(selection);
+                setSelectedConnectionId(null);
+                setDialogNodeId(null);
+                setMergeVideoProgress({ phase: "encoding", progress: 100 });
+                message.success(`已合并 ${videos.length} 段视频，成片节点已添加`);
+            } catch (error) {
+                message.error(error instanceof Error ? error.message : "视频合并失败");
+            } finally {
+                mergeVideoRunningRef.current = false;
+                window.setTimeout(() => setMergeVideoProgress(null), 700);
+            }
+        },
+        [connectionsRef, message, nodesRef, selectedNodeIdsRef, setConnections, setDialogNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds],
+    );
 
     const mergeSelectedVideos = useCallback(() => mergeVideosByIds(Array.from(selectedNodeIdsRef.current)), [mergeVideosByIds, selectedNodeIdsRef]);
 
-    const splitImageNode = useCallback(async (node: CanvasNodeData, params: CanvasImageSplitParams) => {
-        if (!node.metadata?.content) return;
-        setSplitNodeId(null);
-        const pieces = await splitDataUrl(node.metadata.content, params);
-        const gap = 16;
-        const cellWidth = node.width / params.columns;
-        const cellHeight = node.height / params.rows;
-        const startX = node.position.x + node.width + 96;
-        const childNodes = await Promise.all(pieces.map(async (piece) => {
-            const image = await uploadImage(piece.dataUrl);
-            return {
-                id: nanoid(),
+    const splitImageNode = useCallback(
+        async (node: CanvasNodeData, params: CanvasImageSplitParams) => {
+            if (!node.metadata?.content) return;
+            setSplitNodeId(null);
+            const pieces = await splitDataUrl(node.metadata.content, params);
+            const gap = 16;
+            const cellWidth = node.width / params.columns;
+            const cellHeight = node.height / params.rows;
+            const startX = node.position.x + node.width + 96;
+            const childNodes = await Promise.all(
+                pieces.map(async (piece) => {
+                    const image = await uploadImage(piece.dataUrl);
+                    return {
+                        id: nanoid(),
+                        type: CanvasNodeType.Image,
+                        title: `${node.title || "图片"} ${piece.row + 1}-${piece.column + 1}`,
+                        position: { x: startX + piece.column * (cellWidth + gap), y: node.position.y + piece.row * (cellHeight + gap) },
+                        width: cellWidth,
+                        height: cellHeight,
+                        metadata: { ...imageMetadata(image), prompt: node.metadata?.prompt },
+                    } satisfies CanvasNodeData;
+                }),
+            );
+            setNodes((current) => [...current, ...childNodes]);
+            setConnections((current) => [...current, ...childNodes.map((child) => ({ id: nanoid(), fromNodeId: node.id, toNodeId: child.id }))]);
+            setSelectedNodeIds(new Set(childNodes.map((child) => child.id)));
+            setSelectedConnectionId(null);
+            setDialogNodeId(null);
+            message.success(`已切分为 ${childNodes.length} 个子节点`);
+        },
+        [message, setConnections, setDialogNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds],
+    );
+
+    const maskEditImageNode = useCallback(
+        async (node: CanvasNodeData, payload: CanvasImageMaskEditPayload) => {
+            if (!node.metadata?.content) return;
+            const generationConfig = { ...buildGenerationConfig(effectiveConfig, node, "image"), count: "1", size: node.metadata?.size || "auto" };
+            if (!isAiConfigReady(generationConfig, generationConfig.model)) {
+                navigateToSettings({ continueCreation: true });
+                return;
+            }
+            const userPrompt = payload.prompt.trim();
+            const prompt = `只修改蒙版透明区域，其他区域保持不变。${userPrompt}`;
+            const childId = nanoid();
+            const source = nodeReferenceImage(node);
+            if (!source) return;
+            const styleExecution = resolveImageEditStyle(node, prompt, generationConfig);
+            if (!styleExecution) return;
+            const { prompt: effectivePrompt, metadata: styleMetadata } = styleExecution;
+            const generationMetadata = buildImageGenerationMetadata("edit", generationConfig, 1, [source]);
+            setMaskEditNodeId(null);
+            setRunningNodeId(childId);
+            setNodes((current) => [
+                ...current,
+                {
+                    id: childId,
+                    type: CanvasNodeType.Image,
+                    title: userPrompt.slice(0, 32) || "局部编辑结果",
+                    position: { x: node.position.x + node.width + 96, y: node.position.y },
+                    width: node.width,
+                    height: node.height,
+                    metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, ...generationMetadata, ...styleMetadata },
+                },
+            ]);
+            setConnections((current) => [...current, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
+            setSelectedNodeIds(new Set([childId]));
+            setSelectedConnectionId(null);
+            setDialogNodeId(childId);
+            const controller = startGenerationRequest(childId, node.id, childId);
+            try {
+                const result = await runBackendCanvasGenerationTask({
+                    projectId,
+                    nodeId: childId,
+                    mode: "image",
+                    prompt: effectivePrompt,
+                    config: generationConfig,
+                    referenceImages: [source],
+                    mask: { id: `${node.id}-mask`, name: "mask.png", type: "image/png", dataUrl: payload.maskDataUrl },
+                    signal: controller.signal,
+                    metadata: { sourceNodeId: node.id, edit: "mask", ...styleMetadata },
+                    onTaskCreated: (task) => bindGenerationTask(childId, task),
+                });
+                const image = result.images?.[0];
+                if (!image?.dataUrl) throw new Error("后端任务没有返回图片");
+                const uploaded = await uploadImage(image.dataUrl);
+                const size = fitNodeSize(uploaded.width, uploaded.height, node.width, node.height);
+                setNodes((current) => current.map((item) => (item.id === childId ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...imageMetadata(uploaded), prompt: effectivePrompt, ...generationMetadata } } : item)));
+            } catch (error) {
+                if (isGenerationCanceled(error)) return;
+                const details = generationErrorMessage(error);
+                message.error(details);
+                setNodes((current) => current.map((item) => (item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: details } } : item)));
+            } finally {
+                finishGenerationRequest(childId, controller);
+                setRunningNodeId(null);
+            }
+        },
+        [
+            bindGenerationTask,
+            effectiveConfig,
+            finishGenerationRequest,
+            isAiConfigReady,
+            message,
+            projectId,
+            resolveImageEditStyle,
+            setConnections,
+            setDialogNodeId,
+            setNodes,
+            setRunningNodeId,
+            setSelectedConnectionId,
+            setSelectedNodeIds,
+            startGenerationRequest,
+        ],
+    );
+
+    const upscaleImageNode = useCallback(
+        async (node: CanvasNodeData, params: CanvasImageUpscaleParams) => {
+            if (!node.metadata?.content) return;
+            setUpscaleNodeId(null);
+            const upscaled = await upscaleDataUrl(node.metadata.content, params);
+            const image = await uploadImage(upscaled);
+            const size = fitNodeSize(image.width, image.height);
+            const childId = nanoid();
+            const child: CanvasNodeData = {
+                id: childId,
                 type: CanvasNodeType.Image,
-                title: `${node.title || "图片"} ${piece.row + 1}-${piece.column + 1}`,
-                position: { x: startX + piece.column * (cellWidth + gap), y: node.position.y + piece.row * (cellHeight + gap) },
-                width: cellWidth,
-                height: cellHeight,
+                title: "Upscaled Image",
+                position: { x: node.position.x + node.width + 96, y: node.position.y },
+                width: size.width,
+                height: size.height,
                 metadata: { ...imageMetadata(image), prompt: node.metadata?.prompt },
-            } satisfies CanvasNodeData;
-        }));
-        setNodes((current) => [...current, ...childNodes]);
-        setConnections((current) => [...current, ...childNodes.map((child) => ({ id: nanoid(), fromNodeId: node.id, toNodeId: child.id }))]);
-        setSelectedNodeIds(new Set(childNodes.map((child) => child.id)));
-        setSelectedConnectionId(null);
-        setDialogNodeId(null);
-        message.success(`已切分为 ${childNodes.length} 个子节点`);
-    }, [message, setConnections, setDialogNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds]);
+            };
+            setNodes((current) => [...current, child]);
+            setConnections((current) => [...current, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
+            setSelectedNodeIds(new Set([childId]));
+            setDialogNodeId(childId);
+        },
+        [setConnections, setDialogNodeId, setNodes, setSelectedNodeIds],
+    );
 
-    const maskEditImageNode = useCallback(async (node: CanvasNodeData, payload: CanvasImageMaskEditPayload) => {
-        if (!node.metadata?.content) return;
-        const generationConfig = { ...buildGenerationConfig(effectiveConfig, node, "image"), count: "1", size: node.metadata?.size || "auto" };
-        if (!isAiConfigReady(generationConfig, generationConfig.model)) {
-            navigateToSettings({ continueCreation: true });
-            return;
-        }
-        const userPrompt = payload.prompt.trim();
-        const prompt = `只修改蒙版透明区域，其他区域保持不变。${userPrompt}`;
-        const childId = nanoid();
-        const source = nodeReferenceImage(node);
-        if (!source) return;
-        const styleExecution = resolveImageEditStyle(node, prompt, generationConfig);
-        if (!styleExecution) return;
-        const { prompt: effectivePrompt, metadata: styleMetadata } = styleExecution;
-        const generationMetadata = buildImageGenerationMetadata("edit", generationConfig, 1, [source]);
-        setMaskEditNodeId(null);
-        setRunningNodeId(childId);
-        setNodes((current) => [...current, { id: childId, type: CanvasNodeType.Image, title: userPrompt.slice(0, 32) || "局部编辑结果", position: { x: node.position.x + node.width + 96, y: node.position.y }, width: node.width, height: node.height, metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, ...generationMetadata, ...styleMetadata } }]);
-        setConnections((current) => [...current, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
-        setSelectedNodeIds(new Set([childId]));
-        setSelectedConnectionId(null);
-        setDialogNodeId(childId);
-        const controller = startGenerationRequest(childId, node.id, childId);
-        try {
-            const result = await runBackendCanvasGenerationTask({ projectId, nodeId: childId, mode: "image", prompt: effectivePrompt, config: generationConfig, referenceImages: [source], mask: { id: `${node.id}-mask`, name: "mask.png", type: "image/png", dataUrl: payload.maskDataUrl }, signal: controller.signal, metadata: { sourceNodeId: node.id, edit: "mask", ...styleMetadata }, onTaskCreated: (task) => bindGenerationTask(childId, task) });
-            const image = result.images?.[0];
-            if (!image?.dataUrl) throw new Error("后端任务没有返回图片");
-            const uploaded = await uploadImage(image.dataUrl);
-            const size = fitNodeSize(uploaded.width, uploaded.height, node.width, node.height);
-            setNodes((current) => current.map((item) => item.id === childId ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...imageMetadata(uploaded), prompt: effectivePrompt, ...generationMetadata } } : item));
-        } catch (error) {
-            if (isGenerationCanceled(error)) return;
-            const details = generationErrorMessage(error);
-            message.error(details);
-            setNodes((current) => current.map((item) => item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: details } } : item));
-        } finally {
-            finishGenerationRequest(childId, controller);
-            setRunningNodeId(null);
-        }
-    }, [bindGenerationTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, projectId, resolveImageEditStyle, setConnections, setDialogNodeId, setNodes, setRunningNodeId, setSelectedConnectionId, setSelectedNodeIds, startGenerationRequest]);
+    const generateAngleNode = useCallback(
+        async (node: CanvasNodeData, params: CanvasImageAngleParams) => {
+            if (!node.metadata?.content) return;
+            const generationConfig = { ...buildGenerationConfig(effectiveConfig, node, "image"), count: "1" };
+            if (!isAiConfigReady(generationConfig, generationConfig.model)) {
+                navigateToSettings({ continueCreation: true });
+                return;
+            }
+            const childId = nanoid();
+            const imageSpec = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
+            const title = buildAngleLabel(params);
+            const prompt = buildAnglePrompt(params);
+            const source = nodeReferenceImage(node);
+            if (!source) return;
+            const styleExecution = resolveImageEditStyle(node, prompt, generationConfig);
+            if (!styleExecution) return;
+            const { prompt: effectivePrompt, metadata: styleMetadata } = styleExecution;
+            const generationMetadata = buildImageGenerationMetadata("edit", generationConfig, 1, [source]);
+            setAngleNodeId(null);
+            setRunningNodeId(childId);
+            setNodes((current) => [
+                ...current,
+                {
+                    id: childId,
+                    type: CanvasNodeType.Image,
+                    title,
+                    position: { x: node.position.x + node.width + 96, y: node.position.y },
+                    width: imageSpec.width,
+                    height: imageSpec.height,
+                    metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, ...generationMetadata, ...styleMetadata },
+                },
+            ]);
+            setConnections((current) => [...current, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
+            setSelectedNodeIds(new Set([childId]));
+            setDialogNodeId(childId);
+            const controller = startGenerationRequest(childId, node.id, childId);
+            try {
+                const result = await runBackendCanvasGenerationTask({
+                    projectId,
+                    nodeId: childId,
+                    mode: "image",
+                    prompt: effectivePrompt,
+                    config: generationConfig,
+                    referenceImages: [source],
+                    signal: controller.signal,
+                    metadata: { sourceNodeId: node.id, edit: "angle", ...styleMetadata },
+                    onTaskCreated: (task) => bindGenerationTask(childId, task),
+                });
+                const image = result.images?.[0];
+                if (!image?.dataUrl) throw new Error("后端任务没有返回图片");
+                const uploaded = await uploadImage(image.dataUrl);
+                const size = fitNodeSize(uploaded.width, uploaded.height, imageSpec.width, imageSpec.height);
+                setNodes((current) => current.map((item) => (item.id === childId ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...imageMetadata(uploaded), prompt: effectivePrompt, ...generationMetadata } } : item)));
+            } catch (error) {
+                if (isGenerationCanceled(error)) return;
+                const details = generationErrorMessage(error);
+                setNodes((current) => current.map((item) => (item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: details } } : item)));
+            } finally {
+                finishGenerationRequest(childId, controller);
+                setRunningNodeId(null);
+            }
+        },
+        [bindGenerationTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, projectId, resolveImageEditStyle, setConnections, setDialogNodeId, setNodes, setRunningNodeId, setSelectedNodeIds, startGenerationRequest],
+    );
 
-    const upscaleImageNode = useCallback(async (node: CanvasNodeData, params: CanvasImageUpscaleParams) => {
-        if (!node.metadata?.content) return;
-        setUpscaleNodeId(null);
-        const upscaled = await upscaleDataUrl(node.metadata.content, params);
-        const image = await uploadImage(upscaled);
-        const size = fitNodeSize(image.width, image.height);
-        const childId = nanoid();
-        const child: CanvasNodeData = { id: childId, type: CanvasNodeType.Image, title: "Upscaled Image", position: { x: node.position.x + node.width + 96, y: node.position.y }, width: size.width, height: size.height, metadata: { ...imageMetadata(image), prompt: node.metadata?.prompt } };
-        setNodes((current) => [...current, child]);
-        setConnections((current) => [...current, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
-        setSelectedNodeIds(new Set([childId]));
-        setDialogNodeId(childId);
-    }, [setConnections, setDialogNodeId, setNodes, setSelectedNodeIds]);
-
-    const generateAngleNode = useCallback(async (node: CanvasNodeData, params: CanvasImageAngleParams) => {
-        if (!node.metadata?.content) return;
-        const generationConfig = { ...buildGenerationConfig(effectiveConfig, node, "image"), count: "1" };
-        if (!isAiConfigReady(generationConfig, generationConfig.model)) {
-            navigateToSettings({ continueCreation: true });
-            return;
-        }
-        const childId = nanoid();
-        const imageSpec = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
-        const title = buildAngleLabel(params);
-        const prompt = buildAnglePrompt(params);
-        const source = nodeReferenceImage(node);
-        if (!source) return;
-        const styleExecution = resolveImageEditStyle(node, prompt, generationConfig);
-        if (!styleExecution) return;
-        const { prompt: effectivePrompt, metadata: styleMetadata } = styleExecution;
-        const generationMetadata = buildImageGenerationMetadata("edit", generationConfig, 1, [source]);
-        setAngleNodeId(null);
-        setRunningNodeId(childId);
-        setNodes((current) => [...current, { id: childId, type: CanvasNodeType.Image, title, position: { x: node.position.x + node.width + 96, y: node.position.y }, width: imageSpec.width, height: imageSpec.height, metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, ...generationMetadata, ...styleMetadata } }]);
-        setConnections((current) => [...current, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
-        setSelectedNodeIds(new Set([childId]));
-        setDialogNodeId(childId);
-        const controller = startGenerationRequest(childId, node.id, childId);
-        try {
-            const result = await runBackendCanvasGenerationTask({ projectId, nodeId: childId, mode: "image", prompt: effectivePrompt, config: generationConfig, referenceImages: [source], signal: controller.signal, metadata: { sourceNodeId: node.id, edit: "angle", ...styleMetadata }, onTaskCreated: (task) => bindGenerationTask(childId, task) });
-            const image = result.images?.[0];
-            if (!image?.dataUrl) throw new Error("后端任务没有返回图片");
-            const uploaded = await uploadImage(image.dataUrl);
-            const size = fitNodeSize(uploaded.width, uploaded.height, imageSpec.width, imageSpec.height);
-            setNodes((current) => current.map((item) => item.id === childId ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...imageMetadata(uploaded), prompt: effectivePrompt, ...generationMetadata } } : item));
-        } catch (error) {
-            if (isGenerationCanceled(error)) return;
-            const details = generationErrorMessage(error);
-            setNodes((current) => current.map((item) => item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: details } } : item));
-        } finally {
-            finishGenerationRequest(childId, controller);
-            setRunningNodeId(null);
-        }
-    }, [bindGenerationTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, projectId, resolveImageEditStyle, setConnections, setDialogNodeId, setNodes, setRunningNodeId, setSelectedNodeIds, startGenerationRequest]);
-
-    const generateEmotionNode = useCallback(async (node: CanvasNodeData, payload: CanvasImageEmotionPayload) => {
-        if (!node.metadata?.content) return;
-        const baseConfig = buildGenerationConfig(effectiveConfig, node, "image");
-        const providerSize = emotionGenerationSize(payload.editRegion);
-        const generationConfig = { ...baseConfig, count: "1", size: providerSize, quality: !baseConfig.quality || baseConfig.quality === "auto" ? "high" : baseConfig.quality };
-        if (!isAiConfigReady(generationConfig, generationConfig.model)) { navigateToSettings({ continueCreation: true }); return; }
-        if (resolveModelRequestConfig(generationConfig, generationConfig.model).interfaceType !== "openai-image") {
-            message.error("表情编辑需要支持多参考图编辑的 OpenAI Images 渠道");
-            return;
-        }
-        const imageProfile = modelCapabilityConfigFor(generationConfig, generationConfig.model).image!;
-        const editPlan = resolveEmotionEditPlan(imageProfile.references.maskSupported);
-        const source = nodeReferenceImage(node);
-        if (!source) return;
-        const editReference = {
-            id: `${node.id}-${payload.presetId}-edit-region`,
-            name: "emotion-edit-region.png",
-            type: "image/png",
-            dataUrl: payload.sourceDataUrl,
-        };
-        const characterReference = {
-            id: `${node.id}-${payload.presetId}-character`,
-            name: `${payload.characterName}-face.jpg`,
-            type: "image/jpeg",
-            dataUrl: payload.characterDataUrl,
-        };
-        const childId = nanoid();
-        const styleExecution = resolveImageEditStyle(node, payload.prompt, generationConfig);
-        if (!styleExecution) return;
-        const { prompt: effectivePrompt, metadata: styleMetadata } = styleExecution;
-        const providerPrompt = normalizeEmotionPromptForProvider(effectivePrompt);
-        const generationMetadata = { ...buildImageGenerationMetadata("edit", generationConfig, 1, [source]), size: `${payload.imageWidth}x${payload.imageHeight}` };
-        const emotionEdit = { sourceNodeId: node.id, characterName: payload.characterName, presetId: payload.presetId, intimacy: payload.intimacy, arousal: payload.arousal, label: payload.label, faceBox: payload.faceBox, editRegion: payload.editRegion, sourceWidth: payload.imageWidth, sourceHeight: payload.imageHeight, providerSize, editMode: editPlan.mode };
-        if (editPlan.notice) message.info(editPlan.notice);
-        setEmotionNodeId(null);
-        setRunningNodeId(childId);
-        setNodes((current) => [...current, { id: childId, type: CanvasNodeType.Image, title: `${payload.characterName} · ${payload.label}`, position: { x: node.position.x + node.width + 96, y: node.position.y }, width: node.width, height: node.height, metadata: { prompt: providerPrompt, status: NODE_STATUS_LOADING, ...generationMetadata, ...styleMetadata, emotionEdit } }]);
-        setConnections((current) => [...current, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
-        setSelectedNodeIds(new Set([childId]));
-        setSelectedConnectionId(null);
-        setDialogNodeId(childId);
-        const controller = startGenerationRequest(childId, node.id, childId);
-        try {
-            const mask = emotionProviderMask(editPlan, { id: `${node.id}-emotion-mask`, name: "emotion-mask.png", type: "image/png", dataUrl: payload.maskDataUrl });
-            const result = await runBackendCanvasGenerationTask({ projectId, nodeId: childId, mode: "image", prompt: providerPrompt, config: generationConfig, referenceImages: [editReference, characterReference], mask, signal: controller.signal, metadata: { sourceNodeId: node.id, edit: "emotion", emotionEditMode: editPlan.mode, emotion: emotionEdit, ...styleMetadata }, onTaskCreated: (task) => bindGenerationTask(childId, task) });
-            const image = result.images?.[0];
-            if (!image?.dataUrl) throw new Error("后端任务没有返回图片");
-            const composited = await compositeEmotionImage(node.metadata.content, image.dataUrl, payload.editRegion, payload.faceBox);
-            const uploaded = await uploadImage(composited);
-            const size = fitNodeSize(uploaded.width, uploaded.height, node.width, node.height);
-            setNodes((current) => current.map((item) => item.id === childId ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...imageMetadata(uploaded), prompt: providerPrompt, ...generationMetadata, emotionEdit } } : item));
-        } catch (error) {
-            if (isGenerationCanceled(error)) return;
-            const details = generationErrorMessage(error);
-            message.error(details);
-            setNodes((current) => current.map((item) => item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: details } } : item));
-        } finally { finishGenerationRequest(childId, controller); setRunningNodeId(null); }
-    }, [bindGenerationTask, effectiveConfig, finishGenerationRequest, isAiConfigReady, message, projectId, resolveImageEditStyle, setConnections, setDialogNodeId, setNodes, setRunningNodeId, setSelectedConnectionId, setSelectedNodeIds, startGenerationRequest]);
+    const generateEmotionNode = useCallback(
+        async (node: CanvasNodeData, payload: CanvasImageEmotionPayload) => {
+            if (!node.metadata?.content) return;
+            const baseConfig = buildGenerationConfig(effectiveConfig, node, "image");
+            const providerSize = emotionGenerationSize(payload.editRegion);
+            const generationConfig = { ...baseConfig, count: "1", size: providerSize, quality: !baseConfig.quality || baseConfig.quality === "auto" ? "high" : baseConfig.quality };
+            if (!isAiConfigReady(generationConfig, generationConfig.model)) {
+                navigateToSettings({ continueCreation: true });
+                return;
+            }
+            if (resolveModelRequestConfig(generationConfig, generationConfig.model).interfaceType !== "openai-image") {
+                message.error("表情编辑需要支持多参考图编辑的 OpenAI Images 渠道");
+                return;
+            }
+            const imageProfile = modelCapabilityConfigFor(generationConfig, generationConfig.model).image!;
+            const editPlan = resolveEmotionEditPlan(imageProfile.references.maskSupported);
+            const source = nodeReferenceImage(node);
+            if (!source) return;
+            const editReference = {
+                id: `${node.id}-${payload.presetId}-edit-region`,
+                name: "emotion-edit-region.png",
+                type: "image/png",
+                dataUrl: payload.sourceDataUrl,
+            };
+            const characterReference = {
+                id: `${node.id}-${payload.presetId}-character`,
+                name: `${payload.characterName}-face.jpg`,
+                type: "image/jpeg",
+                dataUrl: payload.characterDataUrl,
+            };
+            const childId = nanoid();
+            const styleExecution = resolveImageEditStyle(node, payload.prompt, generationConfig);
+            if (!styleExecution) return;
+            const { prompt: effectivePrompt, metadata: styleMetadata } = styleExecution;
+            const providerPrompt = normalizeEmotionPromptForProvider(effectivePrompt);
+            const generationMetadata = { ...buildImageGenerationMetadata("edit", generationConfig, 1, [source]), size: `${payload.imageWidth}x${payload.imageHeight}` };
+            const emotionEdit = {
+                sourceNodeId: node.id,
+                characterName: payload.characterName,
+                presetId: payload.presetId,
+                intimacy: payload.intimacy,
+                arousal: payload.arousal,
+                label: payload.label,
+                faceBox: payload.faceBox,
+                editRegion: payload.editRegion,
+                sourceWidth: payload.imageWidth,
+                sourceHeight: payload.imageHeight,
+                providerSize,
+                editMode: editPlan.mode,
+            };
+            if (editPlan.notice) message.info(editPlan.notice);
+            setEmotionNodeId(null);
+            setRunningNodeId(childId);
+            setNodes((current) => [
+                ...current,
+                {
+                    id: childId,
+                    type: CanvasNodeType.Image,
+                    title: `${payload.characterName} · ${payload.label}`,
+                    position: { x: node.position.x + node.width + 96, y: node.position.y },
+                    width: node.width,
+                    height: node.height,
+                    metadata: { prompt: providerPrompt, status: NODE_STATUS_LOADING, ...generationMetadata, ...styleMetadata, emotionEdit },
+                },
+            ]);
+            setConnections((current) => [...current, { id: nanoid(), fromNodeId: node.id, toNodeId: childId }]);
+            setSelectedNodeIds(new Set([childId]));
+            setSelectedConnectionId(null);
+            setDialogNodeId(childId);
+            const controller = startGenerationRequest(childId, node.id, childId);
+            try {
+                const mask = emotionProviderMask(editPlan, { id: `${node.id}-emotion-mask`, name: "emotion-mask.png", type: "image/png", dataUrl: payload.maskDataUrl });
+                const result = await runBackendCanvasGenerationTask({
+                    projectId,
+                    nodeId: childId,
+                    mode: "image",
+                    prompt: providerPrompt,
+                    config: generationConfig,
+                    referenceImages: [editReference, characterReference],
+                    mask,
+                    signal: controller.signal,
+                    metadata: { sourceNodeId: node.id, edit: "emotion", emotionEditMode: editPlan.mode, emotion: emotionEdit, ...styleMetadata },
+                    onTaskCreated: (task) => bindGenerationTask(childId, task),
+                });
+                const image = result.images?.[0];
+                if (!image?.dataUrl) throw new Error("后端任务没有返回图片");
+                const composited = await compositeEmotionImage(node.metadata.content, image.dataUrl, payload.editRegion, payload.faceBox);
+                const uploaded = await uploadImage(composited);
+                const size = fitNodeSize(uploaded.width, uploaded.height, node.width, node.height);
+                setNodes((current) =>
+                    current.map((item) => (item.id === childId ? { ...item, width: size.width, height: size.height, metadata: { ...item.metadata, ...imageMetadata(uploaded), prompt: providerPrompt, ...generationMetadata, emotionEdit } } : item)),
+                );
+            } catch (error) {
+                if (isGenerationCanceled(error)) return;
+                const details = generationErrorMessage(error);
+                message.error(details);
+                setNodes((current) => current.map((item) => (item.id === childId ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: details } } : item)));
+            } finally {
+                finishGenerationRequest(childId, controller);
+                setRunningNodeId(null);
+            }
+        },
+        [
+            bindGenerationTask,
+            effectiveConfig,
+            finishGenerationRequest,
+            isAiConfigReady,
+            message,
+            projectId,
+            resolveImageEditStyle,
+            setConnections,
+            setDialogNodeId,
+            setNodes,
+            setRunningNodeId,
+            setSelectedConnectionId,
+            setSelectedNodeIds,
+            startGenerationRequest,
+        ],
+    );
 
     return {
         angleNodeId,

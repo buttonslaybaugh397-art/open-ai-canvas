@@ -2,8 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Pause, Play } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
-import { resolveMediaUrl } from "@/services/file-storage";
-import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
+import { resolveReadableMediaUrl, resolveMediaUrl } from "@/services/file-storage";
 import { resourceIdFromStorageKey } from "@/services/api/resources";
 import { formatTimelineTime } from "@/lib/timeline/timeline-view";
 import { createDefaultSubtitleStyle } from "@/types/timeline";
@@ -64,18 +63,9 @@ export function CanvasTimelinePreview({ clips, nodes, playheadMs, playing, theme
             if (!cancelled) setVideoUrl(url);
         };
         if (resourceIdFromStorageKey(storageKey)) {
-            void cacheResourceObjectUrl(storageKey)
-                .then((cached) => {
-                    if (cancelled) return;
-                    if (cached) {
-                        setVideoUrl(cached);
-                    } else {
-                        void resolveMediaUrl(storageKey, fallback).then(applyUrl);
-                    }
-                })
-                .catch(() => {
-                    if (!cancelled) void resolveMediaUrl(storageKey, fallback).then(applyUrl);
-                });
+            // The proxy preserves Range requests, so preview can start without
+            // downloading the entire clip into the browser cache first.
+            setVideoUrl(resolveReadableMediaUrl(storageKey));
         } else {
             void resolveMediaUrl(storageKey, fallback).then(applyUrl);
         }

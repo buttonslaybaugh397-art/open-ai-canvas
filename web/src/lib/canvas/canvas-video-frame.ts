@@ -1,8 +1,10 @@
+import { getMediaBlobFromSource } from "@/services/file-storage";
+
 const VIDEO_FRAME_TIMEOUT_MS = 20_000;
 const LAST_FRAME_EPSILON_SECONDS = 0.001;
 
-export async function captureVideoLastFrame(source: Blob | string) {
-    const blob = await readVideoBlob(source);
+export async function captureVideoLastFrame(source: Blob | string, storageKey?: string) {
+    const blob = await readVideoBlob(source, storageKey);
     const objectUrl = URL.createObjectURL(blob);
     const video = document.createElement("video");
     video.muted = true;
@@ -39,12 +41,12 @@ export async function captureVideoLastFrame(source: Blob | string) {
     }
 }
 
-async function readVideoBlob(source: Blob | string) {
+async function readVideoBlob(source: Blob | string, storageKey?: string) {
     if (source instanceof Blob) return source;
     try {
-        const response = await fetch(source);
-        if (!response.ok) throw new Error(String(response.status));
-        return await response.blob();
+        const blob = await getMediaBlobFromSource(source, storageKey);
+        if (!blob) throw new Error("媒体资源为空");
+        return blob;
     } catch {
         throw new Error("无法读取视频文件，请重新上传视频后再截取尾帧");
     }

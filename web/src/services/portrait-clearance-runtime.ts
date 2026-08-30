@@ -1,4 +1,4 @@
-import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
+import { resourceIdFromStorageKey, resourceProxyFileUrl } from "@/services/api/resources";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { LocalRuntimeClientError } from "@/services/local-runtime-session";
 import type { LocalRuntimeTransport } from "@/services/local-runtime";
@@ -150,8 +150,10 @@ export async function portraitOwnerScopeHash() {
 export async function imageNodeDataUrl(node: CanvasNodeData, signal?: AbortSignal): Promise<{ dataUrl: string; mimeType: "image/jpeg" | "image/png" | "image/webp"; fileName: string }> {
     const source = node.metadata?.content || node.metadata?.previewContent;
     const storageId = node.metadata?.storageKey ? resourceIdFromStorageKey(node.metadata.storageKey) : undefined;
-    const storageUrl = storageId ? resourceFileUrl(storageId) : undefined;
-    const value = source || storageUrl;
+    // This path reads pixels into a data URL, unlike passive <img> preview.
+    // Keep resource-backed inputs same-origin so a signed OSS redirect cannot
+    // turn the request into a browser CORS failure.
+    const value = storageId ? resourceProxyFileUrl(storageId) : source;
     if (!value) throw new Error("portrait_input_invalid");
     const response = await fetchImage(value, signal);
     const mimeType = imageMime(response.headers.get("content-type") || response.type, node.metadata?.mimeType);

@@ -54,6 +54,8 @@ export default function TestVoiceRecording() {
                                 文本输入（语音转写结果会自动填入）
                             </label>
                             <textarea
+                                id="voice-recording-prompt"
+                                name="voice-recording-prompt"
                                 value={prompt}
                                 onChange={(e) => setPrompt(e.target.value)}
                                 placeholder="输入消息，或点击实时对话按钮用语音输入..."

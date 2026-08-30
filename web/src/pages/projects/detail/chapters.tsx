@@ -376,7 +376,7 @@ export default function ProjectChaptersView({ detail, refreshProject, onCreateCa
                 <div className="shrink-0 border-b border-border/60 p-2">
                     <label className="flex h-8 items-center gap-1.5 rounded-md border border-border/75 bg-background/55 px-2 focus-within:border-[var(--workspace-accent)] focus-within:ring-2 focus-within:ring-[var(--workspace-accent-soft)]">
                         <Search className="size-3.5 shrink-0 text-foreground/32" />
-                        <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && visibleUnits[0]) selectChapter(visibleUnits[0].id); }} className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-foreground/28" placeholder="搜索标题或章节序号" aria-label="搜索章节" />
+                        <input id="chapter-search" name="chapter-search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && visibleUnits[0]) selectChapter(visibleUnits[0].id); }} className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-foreground/28" placeholder="搜索标题或章节序号" aria-label="搜索章节" />
                         {searchQuery ? <button type="button" onClick={() => setSearchQuery("")} className="grid size-5 shrink-0 place-items-center rounded text-foreground/32 hover:bg-surface-hover" aria-label="清空章节搜索"><X className="size-3" /></button> : null}
                     </label>
                     {deferredSearchQuery ? <div className="mt-1 px-0.5 text-[var(--fs-micro)] tabular-nums text-foreground/35">找到 {visibleUnits.length.toLocaleString("zh-CN")} 章 · 搜索时使用“移动到”调整顺序</div> : null}
@@ -523,7 +523,7 @@ function ImportNovelModal({ open, loading, onClose, onImport }: { open: boolean;
                 <div className="grid min-h-[430px] flex-1 grid-cols-1 md:grid-cols-[minmax(0,1fr)_240px]">
                 <div className="border-b border-border p-3 md:border-b-0 md:border-r">
                     <div className="mb-2 flex items-center justify-between gap-2"><div><div className="text-sm font-medium">小说正文</div><div className="mt-0.5 text-[var(--fs-label)] text-foreground/45">识别章节标题后追加到现有章节</div></div><Button size="small" icon={<FileUp className="size-3.5" />} onClick={() => fileInputRef.current?.click()}>{fileName || "选择 TXT"}</Button></div>
-                    <input ref={fileInputRef} type="file" accept=".txt,.md,text/plain,text/markdown" className="hidden" onChange={(event) => void readFile(event)} />
+                    <input id="novel-import-file" name="novel-import-file" ref={fileInputRef} type="file" accept=".txt,.md,text/plain,text/markdown" className="hidden" onChange={(event) => void readFile(event)} />
                     <Input.TextArea value={text} onChange={(event) => setText(event.target.value)} rows={16} placeholder={'也可以直接粘贴小说正文，例如：\n\n第一章 雨夜来信\n正文……\n\n第二章 灯塔以北\n正文……'} className="!resize-none" />
                 </div>
                 <div className="flex min-h-0 flex-col">

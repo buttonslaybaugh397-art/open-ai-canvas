@@ -121,8 +121,34 @@ export function resourceIdFromStorageKey(storageKey?: string) {
 
 export function isResourceUrl(url?: string) {
     const base = String(apiBaseURL).replace(/\/+$/, "");
-    const path = url?.split(/[?#]/, 1)[0] || "";
-    return path.startsWith(`${base}/resources/`) && path.endsWith("/file");
+    const value = String(url || "");
+    let path = value.split(/[?#]/, 1)[0];
+    try {
+        path = new URL(value, window.location.origin).pathname;
+    } catch {
+        // Keep the raw path for non-browser callers.
+    }
+    const basePath = base.startsWith("http") ? new URL(base).pathname : base;
+    return path.startsWith(`${basePath}/resources/`) && path.endsWith("/file");
+}
+
+export function resourceIdFromUrl(url?: string) {
+    const value = String(url || "");
+    if (!isResourceUrl(value)) return "";
+    const base = String(apiBaseURL).replace(/\/+$/, "");
+    const prefix = `${base.startsWith("http") ? new URL(base).pathname : base}/resources/`;
+    let path = value.split(/[?#]/, 1)[0];
+    try {
+        path = new URL(value, window.location.origin).pathname;
+    } catch {
+        // Keep the relative path for non-browser callers and tests.
+    }
+    if (!path.startsWith(prefix) || !path.endsWith("/file")) return "";
+    try {
+        return decodeURIComponent(path.slice(prefix.length, -"/file".length));
+    } catch {
+        return "";
+    }
 }
 
 export async function uploadResourceFile(file: Blob, kind: "image" | "video" | "audio" | "file", meta?: { width?: number; height?: number; durationMs?: number; fileName?: string }) {
@@ -183,6 +209,19 @@ export async function getResourceOSSUrl(storageKey?: string) {
     return requestTask;
 }
 
+export async function getResourceDirectDownloadUrl(storageKey: string, fileName: string) {
+    const id = resourceIdFromStorageKey(storageKey);
+    if (!id) throw new Error("当前媒体尚未上传到后端资源存储");
+    try {
+        const data = await request<{ url: string }>(api.get(`/resources/${encodeURIComponent(id)}/oss-url`, { params: { downloadName: fileName } }));
+        if (!data.url) throw new Error("后端未返回对象存储下载地址");
+        return data.url;
+    } catch (error) {
+        if (axios.isAxiosError<BackendEnvelope<unknown>>(error)) throw new Error(error.response?.data.msg || error.message || "获取对象存储下载地址失败");
+        throw error;
+    }
+}
+
 async function getResourceOSSUrlUncached(id: string) {
     try {
         const data = await request<{ url: string }>(api.get(`/resources/${encodeURIComponent(id)}/oss-url`));
@@ -206,6 +245,11 @@ export function resourceFileUrl(id: string) {
 export function resourceProxyFileUrl(id: string) {
     const base = String(apiBaseURL).replace(/\/+$/, "");
     return `${base}/resources/${encodeURIComponent(id)}/file?proxy=1`;
+}
+
+export function resourceProxyDownloadUrl(id: string, fileName: string) {
+    const base = String(apiBaseURL).replace(/\/+$/, "");
+    return `${base}/resources/${encodeURIComponent(id)}/file?proxy=1&downloadName=${encodeURIComponent(fileName)}`;
 }
 
 export function resolveResourceUrl(storageKey?: string, fallback = "") {

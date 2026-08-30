@@ -67,15 +67,18 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
     // 只有一个分辨率层级时，分辨率切换器没有实际选择意义；更重要的是不能因此把比例列表裁剪成当前层级的 3 个像素尺寸。
     // 例如历史 `*` 配置恢复为标准值后，虽然包含 1024x1024/1536x1024/1024x1536，实际仍应展示完整的比例和尺寸选项。
     const usesResolutionPicker = resolutionChoices.length > 1;
-    const availableAspects: AspectOption[] = usesResolutionPicker && activeSize === "auto"
-        ? []
-        : usesResolutionPicker && activeResolution
-        ? resolutionOptions.filter((item) => item.tier === activeResolution.tier).map((item) => ({ value: item.ratio, label: item.ratio, size: item.size, width: item.width, height: item.height, icon: item.width === item.height ? "square" : item.width > item.height ? "landscape" : "portrait" }))
-        : imageAspectOptions(profile);
+    const availableAspects: AspectOption[] =
+        usesResolutionPicker && activeSize === "auto"
+            ? []
+            : usesResolutionPicker && activeResolution
+              ? resolutionOptions
+                    .filter((item) => item.tier === activeResolution.tier)
+                    .map((item) => ({ value: item.ratio, label: item.ratio, size: item.size, width: item.width, height: item.height, icon: item.width === item.height ? "square" : item.width > item.height ? "landscape" : "portrait" }))
+              : imageAspectOptions(profile);
     const selectedAspect = availableAspects.find((item) => imageOptionValue(profile, item) === activeSize || item.value === activeSize) || availableAspects.find((item) => item.label === activeRatio);
     const dimensions = readSizeDimensions(activeSize, selectedAspect || aspectOptions[0]);
-	const activeQualityOptions = profile.quality.values.map((value) => qualityOptions.find((item) => item.value === value) || { value, label: value });
-	const priceTiers = imageModelPriceTiers(config);
+    const activeQualityOptions = profile.quality.values.map((value) => qualityOptions.find((item) => item.value === value) || { value, label: value });
+    const priceTiers = imageModelPriceTiers(config);
     const selectAspect = (value: string) => {
         const option = availableAspects.find((item) => item.value === value);
         onConfigChange("size", option ? imageOptionValue(profile, option) : "auto");
@@ -108,77 +111,83 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 }}
             >
                 {showTitle ? <div className="text-base font-semibold">图像设置</div> : null}
-                {profile.quality.supported ? <div className="space-y-2">
-                    <SettingTitle color={theme.node.muted}>{isGrokResolutionQuality(profile) ? "分辨率" : "质量"}</SettingTitle>
-                    <div className={`grid gap-1.5 ${activeQualityOptions.length <= 2 ? "grid-cols-2" : "grid-cols-4"}`}>
-						{activeQualityOptions.map((item) => (
-							<OptionPill key={item.value} selected={quality === item.value} disabled={!hasPriceTierForImageSelection(priceTiers, item.value, activeSize)} theme={theme} onClick={() => onConfigChange("quality", item.value)}>
-                                {item.label}
-                            </OptionPill>
-                        ))}
-                    </div>
-                </div> : null}
-                {profile.transparentBackground.supported ? <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                        <SettingTitle color={theme.node.muted}>透明背景</SettingTitle>
-                        <div className="mt-1 text-[var(--fs-label)]" style={{ color: theme.node.muted }}>
-                            请求模型输出保留 Alpha 通道的 PNG
+                {profile.quality.supported ? (
+                    <div className="space-y-2">
+                        <SettingTitle color={theme.node.muted}>{isGrokResolutionQuality(profile) ? "分辨率" : "质量"}</SettingTitle>
+                        <div className={`grid gap-1.5 ${activeQualityOptions.length <= 2 ? "grid-cols-2" : "grid-cols-4"}`}>
+                            {activeQualityOptions.map((item) => (
+                                <OptionPill key={item.value} selected={quality === item.value} disabled={!hasPriceTierForImageSelection(priceTiers, item.value, activeSize)} theme={theme} onClick={() => onConfigChange("quality", item.value)}>
+                                    {item.label}
+                                </OptionPill>
+                            ))}
                         </div>
                     </div>
-                    <span title="是否支持透明背景由当前模型接口决定" onMouseDown={(event) => event.stopPropagation()}>
-                        <Switch
-                            size="small"
-                            checked={transparentBackground}
-                            onChange={(checked) => onConfigChange("transparentBackground", checked ? "true" : "false")}
-                        />
-                    </span>
-                </div> : null}
-                {resolutionChoices.length ? <div className="space-y-2">
-                    <SettingTitle color={theme.node.muted}>分辨率</SettingTitle>
-                    <div className={`grid gap-1.5 ${resolutionChoices.length <= 2 ? "grid-cols-2" : resolutionChoices.length === 4 ? "grid-cols-4" : "grid-cols-3"}`}>
-                        {resolutionChoices.map((choice) => (
-                            <OptionPill key={choice} selected={choice === "auto" ? activeSize === "auto" : activeResolution?.tier === choice} theme={theme} onClick={() => selectResolution(choice)}>
-                                {choice === "auto" ? "自动" : choice.toUpperCase()}
-                            </OptionPill>
-                        ))}
-                    </div>
-                </div> : null}
-                {profile.size.allowCustom ? <div className="space-y-2">
+                ) : null}
+                {profile.transparentBackground.supported ? (
                     <div className="flex items-center justify-between gap-3">
-                        <SettingTitle color={theme.node.muted}>尺寸</SettingTitle>
-                        <div className="flex items-center gap-2">
-                            <span className="text-xs font-medium" style={{ color: theme.node.muted }}>
-                                16倍数对齐
-                            </span>
-                            <span title="输入完成后自动向上补成 16 的倍数" onMouseDown={(event) => event.stopPropagation()}>
-                                <Switch size="small" checked={snapDimensionToStep} onChange={setSnapDimensionToStep} />
-                            </span>
+                        <div className="min-w-0">
+                            <SettingTitle color={theme.node.muted}>透明背景</SettingTitle>
+                            <div className="mt-1 text-[var(--fs-label)]" style={{ color: theme.node.muted }}>
+                                请求模型输出保留 Alpha 通道的 PNG
+                            </div>
+                        </div>
+                        <span title="是否支持透明背景由当前模型接口决定" onMouseDown={(event) => event.stopPropagation()}>
+                            <Switch size="small" checked={transparentBackground} onChange={(checked) => onConfigChange("transparentBackground", checked ? "true" : "false")} />
+                        </span>
+                    </div>
+                ) : null}
+                {resolutionChoices.length ? (
+                    <div className="space-y-2">
+                        <SettingTitle color={theme.node.muted}>分辨率</SettingTitle>
+                        <div className={`grid gap-1.5 ${resolutionChoices.length <= 2 ? "grid-cols-2" : resolutionChoices.length === 4 ? "grid-cols-4" : "grid-cols-3"}`}>
+                            {resolutionChoices.map((choice) => (
+                                <OptionPill key={choice} selected={choice === "auto" ? activeSize === "auto" : activeResolution?.tier === choice} theme={theme} onClick={() => selectResolution(choice)}>
+                                    {choice === "auto" ? "自动" : choice.toUpperCase()}
+                                </OptionPill>
+                            ))}
                         </div>
                     </div>
-                    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-1.5">
-                        <DimensionInput prefix="W" value={dimensions.width} disabled={activeSize === "auto"} theme={theme} alignToStep={snapDimensionToStep} onChange={(value) => updateDimension("width", value)} />
-                        <span className="text-sm opacity-45">↔</span>
-                        <DimensionInput prefix="H" value={dimensions.height} disabled={activeSize === "auto"} theme={theme} alignToStep={snapDimensionToStep} onChange={(value) => updateDimension("height", value)} />
+                ) : null}
+                {profile.size.allowCustom ? (
+                    <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-3">
+                            <SettingTitle color={theme.node.muted}>尺寸</SettingTitle>
+                            <div className="flex items-center gap-2">
+                                <span className="text-xs font-medium" style={{ color: theme.node.muted }}>
+                                    16倍数对齐
+                                </span>
+                                <span title="输入完成后自动向上补成 16 的倍数" onMouseDown={(event) => event.stopPropagation()}>
+                                    <Switch size="small" checked={snapDimensionToStep} onChange={setSnapDimensionToStep} />
+                                </span>
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-1.5">
+                            <DimensionInput prefix="W" value={dimensions.width} disabled={activeSize === "auto"} theme={theme} alignToStep={snapDimensionToStep} onChange={(value) => updateDimension("width", value)} />
+                            <span className="text-sm opacity-45">↔</span>
+                            <DimensionInput prefix="H" value={dimensions.height} disabled={activeSize === "auto"} theme={theme} alignToStep={snapDimensionToStep} onChange={(value) => updateDimension("height", value)} />
+                        </div>
                     </div>
-                </div> : null}
-                {availableAspects.length ? <div className="space-y-2">
-                    <SettingTitle color={theme.node.muted}>尺寸或比例</SettingTitle>
-                    <div className="grid grid-cols-4 gap-1.5 min-[380px]:grid-cols-5">
-                        {availableAspects.map((item) => (
-                            <button
-                                key={item.value}
-                                type="button"
-                                className="flex h-[52px] cursor-pointer flex-col items-center justify-center gap-0.5 rounded-lg bg-transparent text-[var(--fs-label)] transition-colors hover:brightness-110 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1"
-                                style={{ background: selectedAspect?.value === item.value ? theme.toolbar.activeBg : "transparent", color: theme.node.text, outlineColor: theme.node.muted }}
-                                onMouseDown={(event) => event.stopPropagation()}
-                                onClick={() => selectAspect(item.value)}
-                            >
-                                <AspectIcon type={item.icon} width={item.width} height={item.height} color={theme.node.text} />
-                                <span className="whitespace-nowrap">{item.label}</span>
-                            </button>
-                        ))}
+                ) : null}
+                {availableAspects.length ? (
+                    <div className="space-y-2">
+                        <SettingTitle color={theme.node.muted}>尺寸或比例</SettingTitle>
+                        <div className="grid grid-cols-4 gap-1.5 min-[380px]:grid-cols-5">
+                            {availableAspects.map((item) => (
+                                <button
+                                    key={item.value}
+                                    type="button"
+                                    className="flex h-[52px] cursor-pointer flex-col items-center justify-center gap-0.5 rounded-lg bg-transparent text-[var(--fs-label)] transition-colors hover:brightness-110 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1"
+                                    style={{ background: selectedAspect?.value === item.value ? theme.toolbar.activeBg : "transparent", color: theme.node.text, outlineColor: theme.node.muted }}
+                                    onMouseDown={(event) => event.stopPropagation()}
+                                    onClick={() => selectAspect(item.value)}
+                                >
+                                    <AspectIcon type={item.icon} width={item.width} height={item.height} color={theme.node.text} />
+                                    <span className="whitespace-nowrap">{item.label}</span>
+                                </button>
+                            ))}
+                        </div>
                     </div>
-                </div> : null}
+                ) : null}
                 {showCount && effectiveMaxCount > 1 ? (
                     <div className="space-y-2">
                         <SettingTitle color={theme.node.muted}>生成张数</SettingTitle>
@@ -264,26 +273,26 @@ export function imageSizeLabel(size: string) {
 }
 
 function imageModelPriceTiers(config: AiConfig) {
-	const channel = resolveModelChannel(config, config.model || config.imageModel);
-	const cost = channel.modelCosts?.find((item) => item.model === modelOptionName(config.model || config.imageModel));
-	return cost?.logicalPriceTiers || [];
+    const channel = resolveModelChannel(config, config.model || config.imageModel);
+    const cost = channel.modelCosts?.find((item) => item.model === modelOptionName(config.model || config.imageModel));
+    return cost?.logicalPriceTiers || [];
 }
 
 function hasPriceTierForImageSelection(tiers: ReturnType<typeof imageModelPriceTiers>, quality: string, size: string) {
-	if (!tiers.length) return true;
-	return tiers.some((tier) => {
-		const selector = tier.selector || {};
-		return (!selector.quality || selector.quality === "*" || selector.quality === quality.toLowerCase()) && (!selector.size || selector.size === "*" || selector.size === size.toLowerCase());
-	});
+    if (!tiers.length) return true;
+    return tiers.some((tier) => {
+        const selector = tier.selector || {};
+        return (!selector.quality || selector.quality === "*" || selector.quality === quality.toLowerCase()) && (!selector.size || selector.size === "*" || selector.size === size.toLowerCase());
+    });
 }
 
 function OptionPill({ selected, disabled = false, theme, onClick, children }: { selected: boolean; disabled?: boolean; theme: CanvasTheme; onClick: () => void; children: ReactNode }) {
     return (
         <button
             type="button"
-			className="h-8 cursor-pointer rounded-full px-2 text-xs transition-colors hover:brightness-110 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 disabled:cursor-not-allowed disabled:opacity-40"
-			style={{ background: selected ? theme.toolbar.activeBg : "transparent", color: theme.node.text, outlineColor: theme.node.muted }}
-			disabled={disabled}
+            className="h-8 cursor-pointer rounded-full px-2 text-xs transition-colors hover:brightness-110 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 disabled:cursor-not-allowed disabled:opacity-40"
+            style={{ background: selected ? theme.toolbar.activeBg : "transparent", color: theme.node.text, outlineColor: theme.node.muted }}
+            disabled={disabled}
             onMouseDown={(event) => event.stopPropagation()}
             onClick={onClick}
         >
@@ -305,6 +314,7 @@ function DimensionInput({ prefix, value, disabled, theme, alignToStep, onChange 
                 {prefix}
             </span>
             <input
+                name={`image-dimension-${prefix.toLowerCase()}`}
                 type="number"
                 min={1}
                 disabled={disabled}
@@ -331,6 +341,7 @@ function CountInput({ value, quickCount, max, theme, onChange }: { value: number
         <label className="flex h-8 overflow-hidden rounded-full text-xs" style={{ background: theme.toolbar.itemHover, color: theme.node.text }}>
             <input
                 key={value > quickCount ? `custom-${value}` : "quick"}
+                name="image-count"
                 type="number"
                 min={1}
                 max={max}
