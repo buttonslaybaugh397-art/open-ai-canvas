@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
 import { resourceIdFromStorageKey, resourceIdFromUrl, resourceProxyFileUrl, resourceStorageKey } from "@/services/api/resources";
-import { getCachedResourceObjectUrl } from "@/services/resource-blob-cache";
+import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
 import { resolveMediaUrl } from "@/services/file-storage";
 
 const DEFAULT_UNAVAILABLE_LABEL = "预览不可用，素材可能已删除";
@@ -75,7 +75,7 @@ export function MediaPreview({
         if (!localFallbackAttemptedRef.current && mediaStorageKey) {
             localFallbackAttemptedRef.current = true;
             const version = sourceVersionRef.current;
-            void (resourceId ? getCachedResourceObjectUrl(mediaStorageKey) : resolveMediaUrl(mediaStorageKey))
+            void (resourceId ? cacheResourceObjectUrl(mediaStorageKey) : resolveMediaUrl(mediaStorageKey))
                 .then((localUrl) => {
                     if (version !== sourceVersionRef.current) return;
                     if (localUrl && localUrl !== activeSrc) {

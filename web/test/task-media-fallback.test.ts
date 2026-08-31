@@ -7,13 +7,22 @@ function source(path: string) {
 }
 
 describe("media fallback", () => {
-    test("replaces failed image and video elements with an unavailable state", () => {
+    test("retries failed media through the authenticated resource cache before showing unavailable", () => {
         const preview = source("../src/components/media-preview.tsx");
 
-        expect(preview).toContain("failedSrc === src");
+        expect(preview).toContain("cacheResourceObjectUrl(mediaStorageKey)");
         expect(preview).toContain("onError={handleUnavailable}");
         expect(preview).toContain("预览不可用，素材可能已删除");
         expect(preview).toContain("<ImageOff");
+    });
+
+    test("video player retries through both proxy and cached resource sources", () => {
+        const player = source("../src/components/video-player.tsx");
+
+        expect(player).toContain("resourceProxyFileUrl");
+        expect(player).toContain("cacheResourceObjectUrl");
+        expect(player).toContain("videoMimeType");
+        expect(player).toContain("video/quicktime");
     });
 
     test("uses the fallback in list, grid, detail and enlarged previews", () => {

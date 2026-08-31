@@ -90,9 +90,6 @@ func (s *Service) DirectResourceURL(userID string, id string) (string, error) {
 	return s.directResourceURL(resource, time.Now().Add(directResourceURLTTL))
 }
 
-// DirectResourceDownloadURL signs a cloud-native attachment response. Browsers
-// can download this URL without reading it through fetch, so bucket CORS is not
-// required just to save a file with the canvas card name.
 func (s *Service) DirectResourceDownloadURL(userID string, id string, fileName string) (string, error) {
 	resource, err := s.repo.ResourceForUser(userID, id)
 	if err != nil {
@@ -125,10 +122,7 @@ func (s *Service) directResourceURL(resource *model.Resource, expiresAt time.Tim
 		return "", BadAuthRequest("资源尚未上传完成")
 	}
 	if resource.Provider == "local" {
-		return s.signedPublicResourceURL(resource.ID, expiresAt)
-	}
-	if s.resourceCloudBackupAvailable(resource) && resourceNeedsCloudRecovery(resource) {
-		return s.signedPublicResourceURL(resource.ID, expiresAt)
+		return s.signedPublicResourceURL(resource, expiresAt)
 	}
 	setting, err := s.ossSettingForResource(resource.UserID, resource)
 	if err != nil {
@@ -138,7 +132,7 @@ func (s *Service) directResourceURL(resource *model.Resource, expiresAt time.Tim
 	setting.Endpoint = firstNonEmpty(resource.Endpoint, setting.Endpoint)
 	setting.Bucket = firstNonEmpty(resource.Bucket, setting.Bucket)
 	if setting.Provider == s3Provider && !publicHTTPSStorageEndpoint(setting.Endpoint) {
-		return s.signedHTTPSPublicResourceURL(resource.ID, expiresAt)
+		return s.signedHTTPSPublicResourceURL(resource, expiresAt)
 	}
 	return signedOSSObjectURL(setting, resource.ObjectKey, expiresAt)
 }
@@ -162,7 +156,7 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 	if resource.Status != model.ResourceStatusReady {
 		return nil, BadAuthRequest("资源尚未上传完成")
 	}
-	if resource.Provider != "local" && !options.ForceProxy && !(s.resourceCloudBackupAvailable(resource) && resourceNeedsCloudRecovery(resource)) {
+	if resource.Provider != "local" && !options.ForceProxy {
 		setting, err := s.ossSettingForResource(userID, resource)
 		if err != nil {
 			return nil, err
@@ -190,7 +184,7 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 		}
 		if options.ForceDirect {
 			if setting.Provider == s3Provider && !publicHTTPSStorageEndpoint(setting.Endpoint) {
-				redirectURL, err := s.signedHTTPSPublicResourceURL(resource.ID, time.Now().Add(directResourceURLTTL))
+				redirectURL, err := s.signedHTTPSPublicResourceURL(resource, time.Now().Add(directResourceURLTTL))
 				if err != nil {
 					return nil, err
 				}
@@ -206,17 +200,28 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 	return &ResourceDelivery{Resource: resource}, nil
 }
 
-func (s *Service) signedPublicResourceURL(resourceID string, expiresAt time.Time) (string, error) {
+func (s *Service) signedPublicResourceURL(resource *model.Resource, expiresAt time.Time) (string, error) {
+	if resource == nil {
+		return "", errors.New("资源不存在")
+	}
 	baseURL, err := s.publicResourceBaseURL()
 	if err != nil {
 		return "", err
 	}
 	expires := strconv.FormatInt(expiresAt.UTC().Unix(), 10)
-	signature, err := s.signPublicResource(resourceID, expires)
+	signature, err := s.signPublicResource(resource.ID, expires)
 	if err != nil {
 		return "", err
 	}
-	baseURL.Path = strings.TrimRight(baseURL.Path, "/") + "/api/public/resources/" + url.PathEscape(resourceID) + "/file"
+	ext := resourceFileExtension(resource.ObjectKey, resource.MimeType, resource.Kind)
+	filename := resource.ID
+	if ext != "" {
+		if !strings.HasPrefix(ext, ".") {
+			ext = "." + ext
+		}
+		filename += ext
+	}
+	baseURL.Path = strings.TrimRight(baseURL.Path, "/") + "/api/public/resources/" + url.PathEscape(resource.ID) + "/file/" + url.PathEscape(filename)
 	query := baseURL.Query()
 	query.Set("expires", expires)
 	query.Set("signature", signature)
@@ -224,7 +229,7 @@ func (s *Service) signedPublicResourceURL(resourceID string, expiresAt time.Time
 	return baseURL.String(), nil
 }
 
-func (s *Service) signedHTTPSPublicResourceURL(resourceID string, expiresAt time.Time) (string, error) {
+func (s *Service) signedHTTPSPublicResourceURL(resource *model.Resource, expiresAt time.Time) (string, error) {
 	baseURL, err := s.publicResourceBaseURL()
 	if err != nil {
 		return "", err
@@ -232,7 +237,7 @@ func (s *Service) signedHTTPSPublicResourceURL(resourceID string, expiresAt time
 	if baseURL.Scheme != "https" {
 		return "", BadAuthRequest("私网或 HTTP S3 用于上游资源时，服务器公开访问地址必须使用 HTTPS")
 	}
-	return s.signedPublicResourceURL(resourceID, expiresAt)
+	return s.signedPublicResourceURL(resource, expiresAt)
 }
 
 func (s *Service) verifyPublicResourceSignature(resourceID string, expires string, signature string) error {
@@ -383,11 +388,11 @@ func (s *Service) OpenPublicResourceRange(id string, expires string, signature s
 	if err != nil {
 		return nil, Forbidden("匿名下载链接无效")
 	}
-	if err := s.verifyPublicResourceSignature(resource.ID, expires, signature); err != nil {
-		return nil, err
-	}
 	if resource.Provider != "local" && !s.resourceCloudBackupAvailable(resource) {
 		return nil, Forbidden("匿名下载链接无效")
+	}
+	if err := s.verifyPublicResourceSignature(resource.ID, expires, signature); err != nil {
+		return nil, err
 	}
 	return s.openResourceRange(resource.UserID, resource, rangeHeader)
 }
@@ -531,6 +536,11 @@ func (s *Service) storeResource(userID string, kind string, fileName string, mim
 	return &resource, nil
 }
 
+func localObjectKey(userID string, kind string, fileName string, mimeType string, now time.Time) string {
+	ext := resourceFileExtension(fileName, mimeType, kind)
+	return path.Join("users", safeObjectSegment(userID), kind, now.Format("2006/01/02"), newID()+ext)
+}
+
 func stageResourceBody(dataDir string, body io.Reader) (string, error) {
 	stagingDir := filepath.Join(dataDir, "resource-staging")
 	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
@@ -540,20 +550,20 @@ func stageResourceBody(dataDir string, body io.Reader) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("创建资源临时文件失败：%w", err)
 	}
-	path := file.Name()
+	filePath := file.Name()
 	cleanup := func(cause error) (string, error) {
 		_ = file.Close()
-		_ = os.Remove(path)
+		_ = os.Remove(filePath)
 		return "", cause
 	}
 	if _, err := io.Copy(file, body); err != nil {
 		return cleanup(fmt.Errorf("写入资源临时文件失败：%w", err))
 	}
 	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
+		_ = os.Remove(filePath)
 		return "", fmt.Errorf("关闭资源临时文件失败：%w", err)
 	}
-	return path, nil
+	return filePath, nil
 }
 
 func copyResourceFileToLocal(s *Service, sourcePath string, objectKey string) error {
@@ -563,11 +573,6 @@ func copyResourceFileToLocal(s *Service, sourcePath string, objectKey string) er
 	}
 	defer file.Close()
 	return s.writeLocalResourceObject(objectKey, file)
-}
-
-func localObjectKey(userID string, kind string, fileName string, mimeType string, now time.Time) string {
-	ext := resourceFileExtension(fileName, mimeType, kind)
-	return path.Join("users", safeObjectSegment(userID), kind, now.Format("2006/01/02"), newID()+ext)
 }
 
 func (s *Service) resourceLocalPath(objectKey string) (string, error) {
@@ -602,29 +607,9 @@ func (s *Service) writeLocalResourceObject(objectKey string, body io.Reader) err
 	if err := os.MkdirAll(filepath.Dir(filePath), 0o750); err != nil {
 		return fmt.Errorf("创建服务器本地资源目录失败：%w", err)
 	}
-	if err := s.verifyLocalResourceParent(filePath); err != nil {
-		return err
-	}
-	if info, statErr := os.Lstat(filePath); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("本地资源文件不允许使用符号链接")
-	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-		return fmt.Errorf("检查本地资源文件失败：%w", statErr)
-	}
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY, 0o640)
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
 	if err != nil {
 		return fmt.Errorf("创建服务器本地资源文件失败：%w", err)
-	}
-	if err := s.verifyOpenedLocalResource(filePath, file); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Truncate(0); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("清空服务器本地资源文件失败：%w", err)
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("定位服务器本地资源文件失败：%w", err)
 	}
 	_, copyErr := io.Copy(file, body)
 	closeErr := file.Close()
@@ -637,98 +622,44 @@ func (s *Service) writeLocalResourceObject(objectKey string, body io.Reader) err
 	return nil
 }
 
-func (s *Service) verifyOpenedLocalResource(filePath string, file *os.File) error {
-	pathInfo, pathErr := os.Lstat(filePath)
-	if pathErr != nil {
-		return fmt.Errorf("检查已打开的本地资源路径失败：%w", pathErr)
-	}
-	if pathInfo.Mode()&os.ModeSymlink != 0 {
-		return errors.New("本地资源文件不允许使用符号链接")
-	}
-	info, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("检查已打开的本地资源文件失败：%w", err)
-	}
-	resolvedRoot, rootErr := filepath.EvalSymlinks(filepath.Join(s.dataDir, "resources"))
-	resolvedTarget, targetErr := filepath.EvalSymlinks(filePath)
-	if rootErr != nil || targetErr != nil || !pathWithinDirectory(resolvedRoot, resolvedTarget) {
-		return errors.New("本地资源真实路径超出允许目录")
-	}
-	resolvedInfo, statErr := os.Stat(resolvedTarget)
-	if statErr != nil || !os.SameFile(info, resolvedInfo) {
-		return errors.New("本地资源文件已发生变化")
-	}
-	if info.IsDir() {
-		return errors.New("本地资源路径指向目录")
-	}
-	return nil
-}
-
 func (s *Service) openLocalResourceStream(resource *model.Resource, objectKey string) (*ResourceStream, error) {
-	body, info, err := s.openVerifiedLocalResource(objectKey)
+	body, err := s.openVerifiedLocalResource(objectKey)
 	if err != nil {
+		return nil, err
+	}
+	info, err := body.Stat()
+	if err != nil {
+		_ = body.Close()
 		return nil, err
 	}
 	return &ResourceStream{Resource: resource, Body: body, Local: true, StatusCode: http.StatusOK, ContentLength: info.Size(), AcceptRanges: "bytes"}, nil
 }
 
-// openVerifiedLocalResource validates the resolved target after opening it.
-// This keeps the descriptor used for serving/uploading inside the resource root
-// even when a stale or tampered database key points at a symlink.
-func (s *Service) openVerifiedLocalResource(objectKey string) (*os.File, os.FileInfo, error) {
+func (s *Service) openVerifiedLocalResource(objectKey string) (*os.File, error) {
 	filePath, err := s.resourceLocalPath(objectKey)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	body, err := os.Open(filePath)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	info, err := body.Stat()
-	if err != nil {
+	if err != nil || info.IsDir() {
 		_ = body.Close()
-		return nil, nil, err
+		if err != nil {
+			return nil, err
+		}
+		return nil, errors.New("本地资源路径指向目录")
 	}
-	resolvedRoot, rootErr := filepath.EvalSymlinks(filepath.Join(s.dataDir, "resources"))
-	resolvedTarget, targetErr := filepath.EvalSymlinks(filePath)
-	if rootErr != nil || targetErr != nil || !pathWithinDirectory(resolvedRoot, resolvedTarget) {
-		_ = body.Close()
-		return nil, nil, errors.New("本地资源真实路径超出允许目录")
-	}
-	resolvedInfo, statErr := os.Stat(resolvedTarget)
-	if statErr != nil || !os.SameFile(info, resolvedInfo) {
-		_ = body.Close()
-		return nil, nil, errors.New("本地资源文件已发生变化")
-	}
-	if info.IsDir() {
-		_ = body.Close()
-		return nil, nil, errors.New("本地资源路径指向目录")
-	}
-	return body, info, nil
-}
-
-func (s *Service) verifyLocalResourceParent(filePath string) error {
-	root, err := filepath.EvalSymlinks(filepath.Join(s.dataDir, "resources"))
-	if err != nil {
-		return fmt.Errorf("检查本地资源目录失败：%w", err)
-	}
-	parent, err := filepath.EvalSymlinks(filepath.Dir(filePath))
-	if err != nil || !pathWithinDirectory(root, parent) {
-		return errors.New("本地资源真实路径超出允许目录")
-	}
-	return nil
-}
-
-func pathWithinDirectory(root string, target string) bool {
-	relative, err := filepath.Rel(root, target)
-	return err == nil && relative != "." && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+	return body, nil
 }
 
 func (s *Service) resourceCloudBackupAvailable(resource *model.Resource) bool {
 	if resource == nil || resource.Provider == "local" || strings.TrimSpace(resource.LocalBackupKey) == "" {
 		return false
 	}
-	body, _, err := s.openVerifiedLocalResource(resource.LocalBackupKey)
+	body, err := s.openVerifiedLocalResource(resource.LocalBackupKey)
 	if err != nil {
 		return false
 	}
@@ -740,9 +671,7 @@ func resourceNeedsCloudRecovery(resource *model.Resource) bool {
 	return resource != nil && resource.CloudSyncStatus != model.ResourceCloudSyncStatusSynced
 }
 
-func timePtr(value time.Time) *time.Time {
-	return &value
-}
+func timePtr(value time.Time) *time.Time { return &value }
 
 func storageErrorText(err error) string {
 	if err == nil {
@@ -799,7 +728,6 @@ func (s *Service) persistGeneratedMediaValueMode(userID string, value interface{
 		return item, nil
 	case map[string]interface{}:
 		if raw := inlineMediaValue(item); raw != "" {
-			preferredURL, _ := item["url"].(string)
 			mimeType, data, err := s.decodeDataURL(raw)
 			if err != nil && !skipInvalidDataURL {
 				return nil, err
@@ -836,11 +764,7 @@ func (s *Service) persistGeneratedMediaValueMode(userID string, value interface{
 				if _, ok := item["dataUrl"]; ok {
 					item["dataUrl"] = resourceURL
 				}
-				if strings.HasPrefix(preferredURL, "http://") || strings.HasPrefix(preferredURL, "https://") {
-					item["url"] = preferredURL
-				} else {
-					item["url"] = resourceURL
-				}
+				item["url"] = resourceURL
 				item["storageKey"] = "resource:" + resource.ID
 				item["resourceId"] = resource.ID
 				item["bytes"] = resource.Size
@@ -1138,13 +1062,17 @@ func ossSettingForProvider(setting ossSettingValue, provider string) (ossSetting
 	if provider == "" || provider == setting.Provider {
 		return setting, nil
 	}
-	archived, ok := archivedOSSProviderSetting(setting, provider)
-	if !ok || archived.AccessKeyID == "" || archived.AccessKeySecret == "" {
+	if archived, ok := archivedOSSProviderSetting(setting, provider); ok {
+		return ossSettingValueFromProviderSetting(provider, archived), nil
+	}
+	credentials, ok := setting.ArchivedCredentials[provider]
+	if !ok || credentials.AccessKeyID == "" || credentials.AccessKeySecret == "" {
 		return ossSettingValue{}, errors.New("历史对象存储访问密钥不可用")
 	}
-	restored := ossSettingValueFromProviderSetting(provider, archived)
-	restored.PublicBaseURL = setting.PublicBaseURL
-	return restored, nil
+	setting.Provider = provider
+	setting.AccessKeyID = credentials.AccessKeyID
+	setting.AccessKeySecret = credentials.AccessKeySecret
+	return setting, nil
 }
 
 func validateActiveOSSSetting(setting ossSettingValue, disabledMessage string, incompleteMessage string) (ossSettingValue, error) {
@@ -1203,7 +1131,7 @@ func putOSSObject(setting ossSettingValue, objectKey string, mimeType string, si
 func (s *Service) putOSSObjectWithRetry(setting ossSettingValue, objectKey string, mimeType string, size int64, localBackupKey string) (string, error) {
 	var lastErr error
 	for attempt := 0; attempt < resourceStorageRetryAttempts; attempt++ {
-		body, _, err := s.openVerifiedLocalResource(localBackupKey)
+		body, err := s.openVerifiedLocalResource(localBackupKey)
 		if err != nil {
 			return "", fmt.Errorf("打开本地灾备副本失败：%w", err)
 		}
@@ -1364,29 +1292,19 @@ func signedOSSObjectURL(setting ossSettingValue, objectKey string, expiresAt tim
 
 func signedOSSObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
 	setting = normalizeOSSSetting(setting)
-	if setting.Provider == s3Provider {
+	switch setting.Provider {
+	case s3Provider:
 		return signedS3ObjectDownloadURL(setting, objectKey, expiresAt, fileName)
-	}
-	if setting.Provider == qiniuKodoProvider {
+	case qiniuKodoProvider:
 		return signedQiniuObjectDownloadURL(setting, objectKey, expiresAt, fileName)
-	}
-	if setting.Provider == tencentCOSProvider {
+	case tencentCOSProvider:
 		return signedCOSObjectDownloadURL(setting, objectKey, expiresAt, fileName)
+	default:
+		return signedAliyunOSSObjectDownloadURL(setting, objectKey, expiresAt, fileName)
 	}
-	// CDN download rules are provider-specific. Use the signed origin URL so the
-	// standard Content-Disposition response override is guaranteed to be honored.
-	return signedAliyunOSSObjectDownloadURL(setting, objectKey, expiresAt, fileName)
 }
 
 func signedAliyunOSSObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time) (string, error) {
-	return signedAliyunOSSObjectURLWithDisposition(setting, objectKey, expiresAt, "")
-}
-
-func signedAliyunOSSObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
-	return signedAliyunOSSObjectURLWithDisposition(setting, objectKey, expiresAt, resourceDownloadContentDisposition(fileName))
-}
-
-func signedAliyunOSSObjectURLWithDisposition(setting ossSettingValue, objectKey string, expiresAt time.Time, contentDisposition string) (string, error) {
 	baseURL, err := ossBucketBaseURL(setting)
 	if err != nil {
 		return "", err
@@ -1400,25 +1318,83 @@ func signedAliyunOSSObjectURLWithDisposition(setting ossSettingValue, objectKey 
 	}
 	baseURL.Path = strings.TrimRight(baseURL.Path, "/") + "/" + escapeObjectKey(objectKey)
 	expires := strconv.FormatInt(expiresAt.UTC().Unix(), 10)
-	canonicalResource := "/" + setting.Bucket + "/" + objectKey
-	encodedDisposition := ossResponseHeaderQueryValue(contentDisposition)
-	if encodedDisposition != "" {
-		canonicalResource += "?response-content-disposition=" + encodedDisposition
+	stringToSign := strings.Join([]string{http.MethodGet, "", "", expires, "/" + setting.Bucket + "/" + objectKey}, "\n")
+	mac := hmac.New(sha1.New, []byte(setting.AccessKeySecret))
+	_, _ = mac.Write([]byte(stringToSign))
+	query := baseURL.Query()
+	query.Set("OSSAccessKeyId", setting.AccessKeyID)
+	query.Set("Expires", expires)
+	query.Set("Signature", base64.StdEncoding.EncodeToString(mac.Sum(nil)))
+	baseURL.RawQuery = query.Encode()
+	return baseURL.String(), nil
+}
+
+func signedAliyunOSSObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
+	baseURL, err := ossBucketBaseURL(setting)
+	if err != nil {
+		return "", err
 	}
+	if strings.TrimSpace(setting.AccessKeyID) == "" || strings.TrimSpace(setting.AccessKeySecret) == "" {
+		return "", errors.New("OSS 访问密钥不可用")
+	}
+	objectKey = strings.TrimLeft(strings.TrimSpace(objectKey), "/")
+	if objectKey == "" {
+		return "", errors.New("OSS 对象路径为空")
+	}
+	baseURL.Path = strings.TrimRight(baseURL.Path, "/") + "/" + escapeObjectKey(objectKey)
+	expires := strconv.FormatInt(expiresAt.UTC().Unix(), 10)
+	contentDisposition := resourceDownloadContentDisposition(fileName)
+	canonicalResource := "/" + setting.Bucket + "/" + objectKey + "?response-content-disposition=" + ossResponseHeaderQueryValue(contentDisposition)
 	stringToSign := strings.Join([]string{http.MethodGet, "", "", expires, canonicalResource}, "\n")
 	mac := hmac.New(sha1.New, []byte(setting.AccessKeySecret))
 	_, _ = mac.Write([]byte(stringToSign))
 	query := baseURL.Query()
-	if contentDisposition != "" {
-		query.Set("response-content-disposition", contentDisposition)
-	}
+	query.Set("response-content-disposition", contentDisposition)
 	query.Set("OSSAccessKeyId", setting.AccessKeyID)
 	query.Set("Expires", expires)
 	query.Set("Signature", base64.StdEncoding.EncodeToString(mac.Sum(nil)))
-	// url.Values escapes the response-header value once. Normalize spaces to
-	// RFC 3986 encoding so this exactly matches the OSS canonical resource.
 	baseURL.RawQuery = strings.ReplaceAll(query.Encode(), "+", "%20")
 	return baseURL.String(), nil
+}
+
+func signedCOSObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
+	if strings.TrimSpace(setting.AccessKeyID) == "" || strings.TrimSpace(setting.AccessKeySecret) == "" {
+		return "", errors.New("COS 访问密钥不可用")
+	}
+	expires := time.Until(expiresAt)
+	if expires <= 0 {
+		return "", errors.New("COS 签名有效期必须晚于当前时间")
+	}
+	client, err := newCOSClient(setting, 2*time.Minute)
+	if err != nil {
+		return "", err
+	}
+	options := &cos.ObjectGetOptions{ResponseContentDisposition: resourceDownloadContentDisposition(fileName)}
+	signedURL, err := client.Object.GetPresignedURL(context.Background(), http.MethodGet, strings.TrimLeft(strings.TrimSpace(objectKey), "/"), setting.AccessKeyID, setting.AccessKeySecret, expires, options)
+	if err != nil {
+		return "", err
+	}
+	return signedURL.String(), nil
+}
+
+func signedQiniuObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
+	if setting.CDNBaseURL == "" {
+		return signedQiniuS3ObjectDownloadURL(setting, objectKey, expiresAt, fileName)
+	}
+	if setting.AccessKeyID == "" || setting.AccessKeySecret == "" {
+		return "", errors.New("七牛云 Kodo 访问密钥不可用")
+	}
+	query := url.Values{}
+	query.Set("attname", SafeResourceDownloadFileName(fileName))
+	return qiniuStorage.MakePrivateURLv2WithQuery(qiniuAuth.New(setting.AccessKeyID, setting.AccessKeySecret), strings.TrimRight(setting.CDNBaseURL, "/"), strings.TrimLeft(strings.TrimSpace(objectKey), "/"), query, expiresAt.Unix()), nil
+}
+
+func signedS3ObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
+	return signedS3ObjectURL(setting, objectKey, expiresAt)
+}
+
+func signedQiniuS3ObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
+	return signedQiniuS3ObjectURL(setting, objectKey, expiresAt)
 }
 
 func ossResponseHeaderQueryValue(value string) string {
@@ -1431,7 +1407,7 @@ func ossResponseHeaderQueryValue(value string) string {
 func SafeResourceDownloadFileName(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.Map(func(char rune) rune {
-		if char < 0x20 || char == 0x7f || strings.ContainsRune(`\/:*?"<>|`, char) {
+		if char < 0x20 || char == 0x7f || strings.ContainsRune("\\/:*?\"<>|", char) {
 			return -1
 		}
 		return char
@@ -1440,9 +1416,8 @@ func SafeResourceDownloadFileName(value string) string {
 	if value == "" {
 		return "download"
 	}
-	const maxRunes = 180
-	if len([]rune(value)) > maxRunes {
-		value = string([]rune(value)[:maxRunes])
+	if runes := []rune(value); len(runes) > 180 {
+		return string(runes[:180])
 	}
 	return value
 }
@@ -1558,14 +1533,6 @@ func getOSSObjectRangeViaCDN(setting ossSettingValue, objectKey string, rangeHea
 }
 
 func signedCOSObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time) (string, error) {
-	return signedCOSObjectURLWithDisposition(setting, objectKey, expiresAt, "")
-}
-
-func signedCOSObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
-	return signedCOSObjectURLWithDisposition(setting, objectKey, expiresAt, resourceDownloadContentDisposition(fileName))
-}
-
-func signedCOSObjectURLWithDisposition(setting ossSettingValue, objectKey string, expiresAt time.Time, contentDisposition string) (string, error) {
 	if strings.TrimSpace(setting.AccessKeyID) == "" || strings.TrimSpace(setting.AccessKeySecret) == "" {
 		return "", errors.New("COS 访问密钥不可用")
 	}
@@ -1581,8 +1548,7 @@ func signedCOSObjectURLWithDisposition(setting ossSettingValue, objectKey string
 	if err != nil {
 		return "", err
 	}
-	options := &cos.ObjectGetOptions{ResponseContentDisposition: contentDisposition}
-	signedURL, err := client.Object.GetPresignedURL(context.Background(), http.MethodGet, objectKey, setting.AccessKeyID, setting.AccessKeySecret, expires, options)
+	signedURL, err := client.Object.GetPresignedURL(context.Background(), http.MethodGet, objectKey, setting.AccessKeyID, setting.AccessKeySecret, expires, nil)
 	if err != nil {
 		return "", err
 	}
@@ -1608,37 +1574,9 @@ func signedQiniuObjectURL(setting ossSettingValue, objectKey string, expiresAt t
 	return qiniuStorage.MakePrivateURLv2(mac, strings.TrimRight(setting.CDNBaseURL, "/"), objectKey, deadline), nil
 }
 
-func signedQiniuObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
-	if setting.AccessKeyID == "" || setting.AccessKeySecret == "" {
-		return "", errors.New("七牛云 Kodo 访问密钥不可用")
-	}
-	objectKey = strings.TrimLeft(strings.TrimSpace(objectKey), "/")
-	if objectKey == "" {
-		return "", errors.New("七牛云 Kodo 对象路径为空")
-	}
-	if expiresAt.Unix() <= time.Now().Unix() {
-		return "", errors.New("七牛云 Kodo 签名有效期必须晚于当前时间")
-	}
-	if setting.CDNBaseURL == "" {
-		return signedQiniuS3ObjectDownloadURL(setting, objectKey, expiresAt, fileName)
-	}
-	mac := qiniuAuth.New(setting.AccessKeyID, setting.AccessKeySecret)
-	query := url.Values{}
-	query.Set("attname", SafeResourceDownloadFileName(fileName))
-	return qiniuStorage.MakePrivateURLv2WithQuery(mac, strings.TrimRight(setting.CDNBaseURL, "/"), objectKey, query, expiresAt.Unix()), nil
-}
-
 // signedQiniuS3ObjectURL 用七牛兼容 S3 的 AWS Signature V4 访问私有空间。
 // 没有绑定域名时，浏览器不直接访问该地址，而是由后端代理读取并返回文件。
 func signedQiniuS3ObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time) (string, error) {
-	return signedQiniuS3ObjectURLWithDisposition(setting, objectKey, expiresAt, "")
-}
-
-func signedQiniuS3ObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
-	return signedQiniuS3ObjectURLWithDisposition(setting, objectKey, expiresAt, resourceDownloadContentDisposition(fileName))
-}
-
-func signedQiniuS3ObjectURLWithDisposition(setting ossSettingValue, objectKey string, expiresAt time.Time, contentDisposition string) (string, error) {
 	region := qiniuS3Region(setting)
 	if region == "" {
 		return "", errors.New("七牛云 Kodo S3 Region 不可用")
@@ -1649,11 +1587,6 @@ func signedQiniuS3ObjectURLWithDisposition(setting ossSettingValue, objectKey st
 	req, err := http.NewRequest(http.MethodGet, baseURL.String(), nil)
 	if err != nil {
 		return "", err
-	}
-	if contentDisposition != "" {
-		query := req.URL.Query()
-		query.Set("response-content-disposition", contentDisposition)
-		req.URL.RawQuery = query.Encode()
 	}
 	credentialsValue := credentials.NewStaticCredentials(setting.AccessKeyID, setting.AccessKeySecret, "")
 	signer := awsv4.NewSigner(credentialsValue)

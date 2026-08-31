@@ -1,4 +1,4 @@
-import type { ModelProtocol } from "@/lib/model-protocols";
+import type { ModelProtocol, ModelProtocolWorkflow } from "@/lib/model-protocols";
 
 export type ModelCapabilityConfig = {
     version: number;
@@ -197,34 +197,7 @@ export function defaultImageCapabilityConfig(protocol?: ModelProtocol, model = "
         outputFormat: { supported: true },
         maxOutputs: 15,
     };
-    if (protocol === "globalaiopc-image") {
-        image.references.maskSupported = false;
-        image.size = {
-            parameter: "aspect_ratio",
-            values: ["1:1", "3:4", "4:3", "16:9", "9:16", "3:2", "2:3", "21:9"],
-            default: "1:1",
-            allowCustom: false,
-        };
-        image.quality = model.trim().toLowerCase() === "seedream_5.0pro"
-            ? { supported: true, values: ["1K", "2K"], default: "1K" }
-            : { supported: true, values: ["2K", "3K", "4K"], default: "2K" };
-        image.transparentBackground = { supported: false, default: false };
-        image.responseFormat = { supported: false };
-        image.outputFormat = { supported: false };
-        image.maxOutputs = 1;
-    } else if (protocol === "aistarslab-image") {
-        image.references.maskSupported = false;
-        image.size = {
-            parameter: "aspect_ratio",
-            values: ["1:1", "3:4", "4:3", "16:9", "9:16"],
-            default: "1:1",
-            allowCustom: false,
-        };
-        image.transparentBackground = { supported: false, default: false };
-        image.responseFormat = { supported: false };
-        image.outputFormat = { supported: false };
-        image.maxOutputs = 1;
-    } else if (protocol === "grok-image") {
+    if (protocol === "grok-image") {
         image.references.maxImages = 1;
         image.references.maskSupported = false;
         // grok2api / xAI Imagine：size→aspect_ratio，quality→resolution(1k/2k)。
@@ -314,33 +287,6 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         operations: ["text_to_video", "image_to_video"],
         defaultOperation: "text_to_video",
     };
-    if (protocol === "globalaiopc-video" || protocol === "huiquyun-video" || protocol === "aistarslab-video") {
-        video.references.maxVideos = 3;
-        video.references.maxAudios = protocol === "huiquyun-video" ? 1 : 3;
-        video.references.maxVideoBytes = 200 * 1024 * 1024;
-        video.references.maxAudioBytes = 30 * 1024 * 1024;
-        video.references.maxVideoDurationSeconds = 30;
-        video.references.maxAudioDurationSeconds = 30;
-        video.operations.push("reference_to_video", "audio_to_video");
-    }
-    if (protocol === "newapi" || protocol === "xai-video") {
-        video.references.maxVideos = 3;
-        video.references.maxAudios = 3;
-        video.references.maxVideoBytes = 200 * 1024 * 1024;
-        video.references.maxAudioBytes = 30 * 1024 * 1024;
-        video.references.maxVideoDurationSeconds = 30;
-        video.references.maxAudioDurationSeconds = 30;
-        video.operations.push("reference_to_video", "audio_to_video");
-    }
-    if (protocol === "globalaiopc-video") {
-        video.generateAudio = { supported: true, default: true };
-        video.watermark = { supported: true, default: false };
-    }
-    if (protocol === "huiquyun-video") {
-        video.generateAudio = { supported: true, default: true };
-        video.resolutions = ["480p", "720p"];
-        video.defaultResolution = "720p";
-    }
     if (protocol === "volcengine-jimeng-video") {
         video.duration = { selection: "enum", values: [5, 10], default: 5 };
         video.resolutions = ["720p"];
@@ -400,6 +346,22 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.operations.push("reference_to_video", "audio_to_video");
     }
     return { version: 1, text, image: defaultImageCapabilityConfig(protocol, model), video };
+}
+
+export function pluginWorkflowCapabilityConfig(protocol: ModelProtocol, workflow: ModelProtocolWorkflow): ModelCapabilityConfig | undefined {
+    if (workflow.capability !== "image" && workflow.capability !== "video") return undefined;
+    const fallback = defaultModelCapabilityConfig(protocol, workflow.id);
+    const fields: WorkflowVideoFieldLike[] = workflow.parameters.map((parameter) => ({
+        fieldName: parameter.name,
+        source: parameter.mapping,
+        fieldType: parameter.type,
+        options: parameter.values,
+        defaultValue: workflow.defaults?.[parameter.name],
+    }));
+    if (workflow.capability === "image") {
+        return { ...fallback, image: workflowImageCapabilityConfig(fields, fallback.image!) };
+    }
+    return { ...fallback, video: workflowVideoCapabilityConfig(fields, fallback.video!) };
 }
 
 export function modelCapabilityConfigFor(config: { channels: Array<{ id: string; models: string[]; modelCosts?: Array<{ model: string; capabilityConfig?: ModelCapabilityConfig; protocol?: ModelProtocol }> }> }, model: string) {
@@ -967,10 +929,14 @@ export function imageSizeRequest(profile: ImageCapabilityConfig, value?: string)
 
 export function normalizeVideoValue(profile: VideoCapabilityConfig, value: { seconds?: string; ratio?: string; resolution?: string }) {
     const duration = profile.duration.selection === "enum" ? ((profile.duration.values || []).includes(Number(value.seconds)) ? Number(value.seconds) : profile.duration.default) : normalizeRangeDuration(profile, Number(value.seconds));
-    const ratio = profile.ratios.includes(value.ratio || "") ? value.ratio! : profile.defaultRatio;
+    const ratio = resolveVideoRatioValue(profile, value.ratio);
     // 前端状态历史上保存过 `720`，而能力配置和供应商通常使用 `720p`；统一按能力中的原始值返回，避免被误判为不支持。
     const resolution = resolveVideoResolutionValue(profile, value.resolution);
     return { seconds: String(duration), ratio, resolution };
+}
+
+export function resolveVideoRatioValue(profile: VideoCapabilityConfig, value: string | undefined) {
+    return profile.ratios.includes(value || "") ? value! : profile.defaultRatio || profile.ratios[0] || "";
 }
 
 export function resolveVideoResolutionValue(profile: VideoCapabilityConfig, value: string | undefined) {

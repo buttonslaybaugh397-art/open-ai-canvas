@@ -2365,7 +2365,7 @@ func protocolRequestFromInput(input canvasGenerationInput) protocol.GenerationRe
 	request := protocol.GenerationRequest{
 		Model:         input.Config.Model,
 		Prompt:        input.Prompt,
-		Images:        protocolMediaReferences(input.ReferenceImages, "image"),
+		Images:        protocolVideoImageReferences(input),
 		Videos:        protocolMediaReferences(input.ReferenceVideos, "video"),
 		Audios:        protocolMediaReferences(input.ReferenceAudios, "audio"),
 		AspectRatio:   input.Config.Size,
@@ -2381,6 +2381,15 @@ func protocolRequestFromInput(input canvasGenerationInput) protocol.GenerationRe
 			"count":        input.Config.Count,
 		},
 	}
+	if route := aiStarsLabRoute(input.Config.CapabilityConfig, input.Config.Model); route != nil {
+		request.Extra["aistarslabChannel"] = strings.TrimSpace(route.Channel)
+		request.Extra["aistarslabModel"] = aiStarsLabRequestModel(route, input.Config.Model)
+		if input.Config.InterfaceType == string(model.ChannelInterfaceAIStarsLabVideo) {
+			if mode, err := aiStarsLabVideoMode(route, len(input.ReferenceImages)); err == nil {
+				request.Extra["aistarslabMode"] = mode
+			}
+		}
+	}
 	if input.MaxOutputTokens > 0 {
 		request.Extra["max_output_tokens"] = input.MaxOutputTokens
 		request.Extra["max_tokens"] = input.MaxOutputTokens
@@ -2394,10 +2403,31 @@ func protocolRequestFromInput(input canvasGenerationInput) protocol.GenerationRe
 	return request
 }
 
+func protocolVideoImageReferences(input canvasGenerationInput) []protocol.MediaReference {
+	result := make([]protocol.MediaReference, 0, len(input.ReferenceImages))
+	fallbackRole := ""
+	if metadataString(input.Metadata, "videoStartFrameNodeId") != "" || metadataString(input.Metadata, "videoEndFrameNodeId") != "" {
+		fallbackRole = "reference_image"
+	}
+	for _, value := range input.ReferenceImages {
+		item := protocol.MediaReference{
+			ID:      strings.TrimSpace(value.ID),
+			URL:     strings.TrimSpace(value.URL),
+			DataURL: strings.TrimSpace(value.DataURL),
+			Kind:    "image",
+			Role:    videoImageRoleOrDefault(input, value, fallbackRole),
+		}
+		if item.URL != "" || item.DataURL != "" {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
 func protocolMediaReferences(values []providerMedia, kind string) []protocol.MediaReference {
 	result := make([]protocol.MediaReference, 0, len(values))
 	for _, value := range values {
-		item := protocol.MediaReference{URL: strings.TrimSpace(value.URL), DataURL: strings.TrimSpace(value.DataURL), Kind: kind}
+		item := protocol.MediaReference{ID: strings.TrimSpace(value.ID), URL: strings.TrimSpace(value.URL), DataURL: strings.TrimSpace(value.DataURL), Kind: kind}
 		if item.URL != "" || item.DataURL != "" {
 			result = append(result, item)
 		}
@@ -2736,6 +2766,9 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 	if _, ok := declarativeProtocolAdapterForContext(ctx, input.Config.InterfaceType); ok {
 		return runDeclarativeProtocolTask(ctx, input)
 	}
+	if input.Config.InterfaceType == string(model.ChannelInterfaceAIStarsLabVideo) {
+		return runAiStarsLabVideoTask(ctx, input)
+	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceAgnesVideo) {
 		adapter, ok := protocolAdapterForContext(ctx, input.Config.InterfaceType)
 		if !ok {
@@ -2889,19 +2922,19 @@ func runMiniMaxVideoTask(ctx context.Context, input canvasGenerationInput) (map[
 	if len(input.ReferenceImages) > 9 || len(input.ReferenceVideos) > 3 || len(input.ReferenceAudios) > 3 {
 		return nil, errors.New("MiniMax 视频最多支持 9 张参考图、3 个参考视频和 3 个参考音频")
 	}
+	operation := metadataString(input.Metadata, "videoEditOperation")
+	startFrameID := metadataString(input.Metadata, "videoStartFrameNodeId")
+	endFrameID := metadataString(input.Metadata, "videoEndFrameNodeId")
+	frameMode := operation != "reference_to_video" && (startFrameID != "" || endFrameID != "")
 	content := []miniMaxVideoContent{{Type: "text", Text: strings.TrimSpace(input.Prompt)}}
-	for index, image := range input.ReferenceImages {
+	for _, image := range input.ReferenceImages {
 		url, err := miniMaxMediaURLValue(image)
 		if err != nil {
 			return nil, fmt.Errorf("MiniMax 参考图无效：%w", err)
 		}
-		role := "reference_image"
-		if len(input.ReferenceVideos) == 0 && len(input.ReferenceAudios) == 0 && len(input.ReferenceImages) <= 2 {
-			if index == 0 {
-				role = "first_frame"
-			} else if index == 1 {
-				role = "last_frame"
-			}
+		role := videoImageRole(input, image)
+		if frameMode && role == "reference_image" {
+			return nil, errors.New("MiniMax 首尾帧模式不能混合未标记的参考图")
 		}
 		content = append(content, miniMaxVideoContent{Type: "image_url", ImageURL: &miniMaxMediaURL{URL: url}, Role: role})
 	}
@@ -2920,7 +2953,6 @@ func runMiniMaxVideoTask(ctx context.Context, input canvasGenerationInput) (map[
 		content = append(content, miniMaxVideoContent{Type: "audio_url", AudioURL: &miniMaxMediaURL{URL: url}, Role: "reference_audio"})
 	}
 	watermark := parseBool(input.Config.VideoWatermark, false)
-	frameMode := len(input.ReferenceImages) > 0 && len(input.ReferenceImages) <= 2 && len(input.ReferenceVideos) == 0 && len(input.ReferenceAudios) == 0
 	body := miniMaxVideoRequest{
 		Model:         input.Config.Model,
 		Content:       content,
@@ -3039,6 +3071,9 @@ func runGeminiVeoVideoTask(ctx context.Context, input canvasGenerationInput) (ma
 	if len(input.ReferenceImages) > 1 || len(input.ReferenceVideos) > 0 || len(input.ReferenceAudios) > 0 {
 		return nil, errors.New("Gemini Veo 当前只支持 1 张起始图，不支持参考视频或音频")
 	}
+	if len(input.ReferenceImages) > 0 && metadataString(input.Metadata, "videoEditOperation") == "reference_to_video" {
+		return nil, errors.New("Gemini Veo 当前不支持角色或风格参考图生视频，请改用支持 reference_to_video 的模型")
+	}
 	id := resumedProviderRequestID(ctx)
 	if id == "" {
 		instance := geminiVeoInstance{Prompt: strings.TrimSpace(input.Prompt)}
@@ -3098,6 +3133,9 @@ func runGeminiVeoVideoTask(ctx context.Context, input canvasGenerationInput) (ma
 func runNovitaVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
 	if len(input.ReferenceImages) > 1 || len(input.ReferenceVideos) > 0 || len(input.ReferenceAudios) > 0 {
 		return nil, errors.New("Novita 视频当前只支持 1 张起始图，不支持参考视频或参考音频")
+	}
+	if len(input.ReferenceImages) > 0 && metadataString(input.Metadata, "videoEditOperation") == "reference_to_video" {
+		return nil, errors.New("Novita 视频当前不支持角色或风格参考图生视频，请改用支持 reference_to_video 的模型")
 	}
 	id := resumedProviderRequestID(ctx)
 	if id == "" {
@@ -3651,7 +3689,7 @@ func newAPIChannel1VideoBody(input canvasGenerationInput) (map[string]interface{
 			if err != nil {
 				return nil, err
 			}
-			media = append(media, map[string]string{"type": seedanceImageRole(input, image), "url": url})
+			media = append(media, map[string]string{"type": videoImageRole(input, image), "url": url})
 		}
 	}
 	for _, video := range input.ReferenceVideos {
@@ -3827,6 +3865,9 @@ func xaiVideoRequestBody(input canvasGenerationInput) (xaiVideoRequest, error) {
 		return body, nil
 	}
 	startFrameID := metadataString(input.Metadata, "videoStartFrameNodeId")
+	if metadataString(input.Metadata, "videoEditOperation") == "reference_to_video" {
+		startFrameID = ""
+	}
 	if startFrameID == "" {
 		// 未设置首帧：所有参考图作为 R2V 参考，不受单张起始图限制。
 		for index := range input.ReferenceImages {
@@ -4593,6 +4634,9 @@ func recordProviderRequest(req *http.Request, startedAt time.Time, statusCode in
 	if metadata.RequestKind != "" {
 		requestKind = metadata.RequestKind
 	}
+	if requestErr == nil && statusCode >= 200 && statusCode < 300 && (requestKind == "create" || requestKind == "poll") && (metadata.Capability == "image" || metadata.Capability == "video") {
+		metadata.Service.syncProviderTaskProgress(metadata.TaskID, responseBody)
+	}
 	apiFormat := "openai"
 	if req.Header.Get("x-goog-api-key") != "" {
 		apiFormat = "gemini"
@@ -4925,7 +4969,7 @@ func seedanceContent(input canvasGenerationInput) ([]map[string]interface{}, err
 		if err != nil {
 			return nil, err
 		}
-		content = append(content, map[string]interface{}{"type": "image_url", "image_url": map[string]interface{}{"url": url}, "role": seedanceImageRole(input, image)})
+		content = append(content, map[string]interface{}{"type": "image_url", "image_url": map[string]interface{}{"url": url}, "role": videoImageRole(input, image)})
 	}
 	for _, video := range input.ReferenceVideos {
 		url, err := mediaReferenceURL(video)
@@ -4994,7 +5038,9 @@ func seedanceVideosRequestBody(input canvasGenerationInput) (seedanceVideosReque
 	if err != nil {
 		return seedanceVideosRequest{}, err
 	}
-	if len(frameImageURLs) > 0 {
+	if metadataString(input.Metadata, "videoEditOperation") == "reference_to_video" {
+		body.ReferenceImageURLs = imageURLs
+	} else if len(frameImageURLs) > 0 {
 		body.ImageURLs = frameImageURLs
 	} else if len(imageURLs) > 0 {
 		body.ImageURL = imageURLs[0]
@@ -5044,17 +5090,27 @@ func seedanceVideosPromptText(input canvasGenerationInput) string {
 	return strings.TrimSpace(input.Prompt)
 }
 
-func seedanceImageRole(input canvasGenerationInput, image providerMedia) string {
+func videoImageRole(input canvasGenerationInput, image providerMedia) string {
+	return videoImageRoleOrDefault(input, image, "reference_image")
+}
+
+func videoImageRoleOrDefault(input canvasGenerationInput, image providerMedia, fallback string) string {
+	if metadataString(input.Metadata, "videoEditOperation") == "reference_to_video" {
+		return "reference_image"
+	}
 	if id := metadataString(input.Metadata, "videoStartFrameNodeId"); id != "" && image.ID == id {
 		return "first_frame"
 	}
 	if id := metadataString(input.Metadata, "videoEndFrameNodeId"); id != "" && image.ID == id {
 		return "last_frame"
 	}
-	return "reference_image"
+	return fallback
 }
 
 func videoFrameImageURLs(input canvasGenerationInput, imageURLs []string) ([]string, error) {
+	if metadataString(input.Metadata, "videoEditOperation") == "reference_to_video" {
+		return nil, nil
+	}
 	startFrameID := metadataString(input.Metadata, "videoStartFrameNodeId")
 	endFrameID := metadataString(input.Metadata, "videoEndFrameNodeId")
 	if startFrameID == "" && endFrameID == "" {

@@ -12,7 +12,29 @@ type TaskMediaSourceTask = {
     outputs?: Array<{ providerArtifactRef?: string }>;
 };
 
-const mediaUrlFields = ["url", "videoUrl", "imageUrl", "outputUrl", "mediaUrl", "dataUrl"] as const;
+const mediaUrlFields = [
+    "url",
+    "videoUrl",
+    "video_url",
+    "videoUri",
+    "video_uri",
+    "imageUrl",
+    "image_url",
+    "outputUrl",
+    "output_url",
+    "resultUrl",
+    "result_url",
+    "downloadUrl",
+    "download_url",
+    "mediaUrl",
+    "media_url",
+    "fileUrl",
+    "file_url",
+    "dataUrl",
+    "data_url",
+    "uri",
+    "src",
+] as const;
 export function parseTaskMediaSources(value?: string): TaskMediaSource[] {
     if (!value) return [];
     let parsed: unknown;
@@ -38,8 +60,8 @@ export function parseTaskMediaSources(value?: string): TaskMediaSource[] {
         if (!item || typeof item !== "object") return;
 
         const record = item as Record<string, unknown>;
-        const kind = mediaKind([context, record.mimeType, record.type, record.mode].filter((part) => typeof part === "string").join(" "));
-        const storageKey = typeof record.storageKey === "string" ? record.storageKey : undefined;
+        const kind = mediaKind([context, record.mimeType, record.mime_type, record.type, record.mediaType, record.media_type, record.mode].filter((part) => typeof part === "string").join(" "));
+        const storageKey = ["storageKey", "storage_key", "resourceKey", "resource_key", "providerArtifactRef", "provider_artifact_ref"].map((key) => record[key]).find((value): value is string => typeof value === "string" && value.trim().length > 0);
         for (const field of mediaUrlFields) {
             const url = record[field];
             if (typeof url === "string" && isMediaUrl(url) && (kind || isMediaContext(field))) {
@@ -63,7 +85,8 @@ export function taskPreviewSource(task: TaskMediaSourceTask): TaskMediaSource | 
     if (!task.previewUrl) return undefined;
     const parsedSources = parseTaskMediaSources(task.resultJson);
     const matching = parsedSources.find((source) => source.url === task.previewUrl);
-    const storageKey = task.previewStorageKey || matching?.storageKey || parsedSources.find((source) => source.kind === "video" && source.storageKey)?.storageKey || task.outputs?.find((output) => output.providerArtifactRef?.startsWith("resource:"))?.providerArtifactRef;
+    const storageKey =
+        task.previewStorageKey || matching?.storageKey || parsedSources.find((source) => source.kind === "video" && source.storageKey)?.storageKey || task.outputs?.find((output) => output.providerArtifactRef?.startsWith("resource:"))?.providerArtifactRef;
     return { url: task.previewUrl, ...(storageKey ? { storageKey } : {}), ...(task.previewKind ? { kind: task.previewKind } : {}) };
 }
 
@@ -86,7 +109,7 @@ function isMediaContext(value: string) {
 }
 
 function mediaKind(value: string): TaskMediaSource["kind"] | undefined {
-    if (/video/i.test(value) || /data:video\//i.test(value) || /\.(mp4|webm|mov)(?:$|[?#])/i.test(value)) return "video";
+    if (/video/i.test(value) || /data:video\//i.test(value) || /\.(mp4|webm|mov|m4v|mkv|avi|mpeg|mpg|ts)(?:$|[?#])/i.test(value)) return "video";
     if (/audio/i.test(value) || /data:audio\//i.test(value) || /\.(mp3|wav|m4a|ogg)(?:$|[?#])/i.test(value)) return "audio";
     if (/image/i.test(value) || /data:image\//i.test(value) || /\.(png|jpe?g|webp|gif|avif)(?:$|[?#])/i.test(value)) return "image";
     return undefined;

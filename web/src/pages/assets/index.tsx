@@ -9,13 +9,13 @@ import { CollectionGrid, ListToolbar, PageHeader, PaginationBar, WorkspacePage }
 import { WorkspaceState } from "@/components/layout/workspace-state";
 import { AssetMediaPreview } from "@/components/asset-media-preview";
 import { AssetLibraryCard, AssetLibraryCardMedia } from "@/components/assets/asset-library-card";
+import { saveAs } from "file-saver";
 
 import { useCopyText } from "@/hooks/use-copy-text";
 import { resourceStorageLabel, resourceStorageLocation, resourceStorageTitle } from "@/lib/canvas/resource-storage-status";
 import { formatBytes, readFileAsDataUrl, readImageMeta } from "@/lib/image-utils";
 import { uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
-import { downloadMediaFile } from "@/services/resource-download";
 import { useAssetStore, type Asset, type AssetCategory, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
 import { exportAssets, readAssetPackage } from "./asset-transfer";
 import { AssetStorageUsage, assetStorageUsageQueryKey } from "./asset-storage-usage";
@@ -83,7 +83,7 @@ export default function AssetsPage() {
     const [kindFilter, setKindFilter] = useState<AssetKind | "all">("all");
     const [categoryFilter, setCategoryFilter] = useState<AssetCategory | "all">("all");
     const [page, setPage] = useState(1);
-    const [pageSize, setPageSize] = useState(20);
+    const [pageSize, setPageSize] = useState(35);
     const [editingAsset, setEditingAsset] = useState<LibraryAsset | null>(null);
     const [isAssetOpen, setIsAssetOpen] = useState(false);
     const [previewAsset, setPreviewAsset] = useState<LibraryAsset | null>(null);
@@ -252,7 +252,7 @@ export default function AssetsPage() {
         if (asset.kind !== "image" && asset.kind !== "video" && asset.kind !== "audio" && asset.kind !== "model") return;
         const url = asset.kind === "image" ? asset.data.dataUrl : asset.data.url;
         const extension = asset.kind === "model" ? asset.data.fileName.split(".").pop() || "glb" : asset.data.mimeType.split("/")[1] || "png";
-        void downloadMediaFile({ url, storageKey: asset.data.storageKey, fileName: `${asset.title || "asset"}.${extension}` }).catch((error) => message.error(error instanceof Error ? error.message : "媒体下载失败，请稍后重试"));
+        saveAs(url, `${asset.title || "asset"}.${extension}`);
     };
 
     const exportAllAssets = async () => {
@@ -366,7 +366,7 @@ export default function AssetsPage() {
                                         ))}
                                     </CollectionGrid>
                                 )}
-                                <PaginationBar current={page} pageSize={pageSize} total={filteredAssets.length} pageSizeOptions={[20, 40, 80]} onChange={(nextPage, nextPageSize) => { setPage(nextPageSize !== pageSize ? 1 : nextPage); setPageSize(nextPageSize); }} />
+                                <PaginationBar current={page} pageSize={pageSize} total={filteredAssets.length} pageSizeOptions={[35, 70, 105]} onChange={(nextPage, nextPageSize) => { setPage(nextPageSize !== pageSize ? 1 : nextPage); setPageSize(nextPageSize); }} />
                             </>
                         )}
                     </section>
@@ -474,8 +474,6 @@ export default function AssetsPage() {
                     </div>
                 </div>
                 <input
-                    id="asset-cover-upload"
-                    name="asset-cover-upload"
                     ref={coverInputRef}
                     type="file"
                     accept="image/*"
@@ -486,8 +484,6 @@ export default function AssetsPage() {
                     }}
                 />
                 <input
-                    id="asset-image-upload"
-                    name="asset-image-upload"
                     ref={imageInputRef}
                     type="file"
                     accept="image/*"
@@ -501,8 +497,8 @@ export default function AssetsPage() {
 
             <AssetDrawer asset={previewAsset} onClose={() => setPreviewAsset(null)} onCopy={copyAssetText} onDownload={downloadImage} />
 
-            <input id="asset-archive-upload" name="asset-archive-upload" ref={assetInputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importAssetZip(event.target.files?.[0])} />
-            <input id="asset-model-upload" name="asset-model-upload" ref={modelInputRef} type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" className="hidden" onChange={(event) => { void readModelFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+            <input ref={assetInputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importAssetZip(event.target.files?.[0])} />
+            <input ref={modelInputRef} type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" className="hidden" onChange={(event) => { void readModelFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
 
             <Modal className="library-modal library-confirm-modal" title="删除素材" open={Boolean(deletingAsset)} onCancel={() => setDeletingAsset(null)} onOk={() => void confirmDelete()} okText="删除" okButtonProps={{ danger: true }} cancelText="取消">
                 确定删除「{deletingAsset?.title}」吗？未被其他内容引用的服务器本地或对象存储文件也会同步删除；若仍被画布、任务或其他素材占用，本次删除将被阻止。
@@ -567,7 +563,7 @@ function AssetCover({ asset, selected, onSelect, onOpen, menuItems }: { asset: L
                 <span className="assets-cover-badge is-category">{assetCategoryLabel(asset.category)}</span>
             </span>
             {clock ? <span className="assets-cover-clock">{clock}</span> : null}
-            <input id={`asset-select-${asset.id}`} name={`asset-select-${asset.id}`} type="checkbox" checked={selected} onClick={(event) => event.stopPropagation()} onChange={(event) => onSelect(event.target.checked)} className="assets-select-check" aria-label={`选择 ${asset.title}`} />
+            <input type="checkbox" checked={selected} onClick={(event) => event.stopPropagation()} onChange={(event) => onSelect(event.target.checked)} className="assets-select-check" aria-label={`选择 ${asset.title}`} />
             <Dropdown
                 trigger={["click"]}
                 menu={{ items: menuItems }}

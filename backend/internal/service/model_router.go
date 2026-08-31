@@ -712,16 +712,74 @@ func skuSelectorForIntent(intent ModelRequestIntent) map[string]string {
 }
 
 func skuSelectorForTier(tier model.ChannelModelPriceTier) map[string]string {
-	selector := model.DecodeSKUSelector(tier.SelectorJSON)
-	if len(selector) == 0 {
+	selector := normalizeSKUSelector(model.DecodeSKUSelector(tier.SelectorJSON))
+	if _, exists := selector["vquality"]; !exists {
 		if resolution := normalizeChannelModelTierResolution(tier.Resolution); resolution != "*" {
 			selector["vquality"] = resolution
 		}
-		if tier.VideoSeconds > 0 {
-			selector["videoSeconds"] = strconv.Itoa(tier.VideoSeconds)
-		}
+	}
+	if _, exists := selector["videoSeconds"]; !exists && tier.VideoSeconds > 0 {
+		selector["videoSeconds"] = strconv.Itoa(tier.VideoSeconds)
 	}
 	return selector
+}
+
+// normalizeSKUSelector keeps price matching compatible with tiers written before
+// selector fields were standardized. Unknown fields are retained so malformed or
+// future selectors still fail closed instead of silently becoming a wildcard.
+func normalizeSKUSelector(raw map[string]string) map[string]string {
+	selector := make(map[string]string, len(raw))
+	canonicalKeys := make(map[string]bool, len(raw))
+	for rawKey := range raw {
+		key := strings.TrimSpace(rawKey)
+		canonical := canonicalSKUSelectorKey(key)
+		if canonical == key {
+			canonicalKeys[canonical] = true
+		}
+	}
+	for rawKey, rawValue := range raw {
+		key := strings.TrimSpace(rawKey)
+		canonical := canonicalSKUSelectorKey(key)
+		if canonicalKeys[canonical] && canonical != key {
+			continue
+		}
+		selector[canonical] = normalizeSKUSelectorValue(canonical, rawValue)
+	}
+	return selector
+}
+
+func canonicalSKUSelectorKey(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "operation":
+		return "operation"
+	case "quality":
+		return "quality"
+	case "size", "aspectratio":
+		return "size"
+	case "vquality", "resolution":
+		return "vquality"
+	case "videoseconds", "duration":
+		return "videoSeconds"
+	case "imagecount":
+		return "imageCount"
+	default:
+		return strings.TrimSpace(raw)
+	}
+}
+
+func normalizeSKUSelectorValue(key string, raw string) string {
+	value := strings.TrimSpace(raw)
+	switch key {
+	case "operation", "quality", "size":
+		return strings.ToLower(value)
+	case "vquality":
+		return normalizeChannelModelTierResolution(value)
+	case "videoSeconds", "imageCount":
+		if number, err := strconv.Atoi(value); err == nil {
+			return strconv.Itoa(number)
+		}
+	}
+	return value
 }
 
 func matchSKUSelector(tier map[string]string, requested map[string]string) (bool, int) {
@@ -1086,7 +1144,8 @@ func (s *Service) switchTaskToNextRoute(task *model.Task, attempts []model.Route
 		if capability == "" {
 			capability = capabilityFromTaskType(task.Type)
 		}
-		replacement, err = s.newBillingOrderWithPriceTier(task.UserID, task.ID, "route-switch:"+task.ID+":"+selected.Route.ID, selected.ChannelModel.ChannelID, selected.ChannelModel.ModelKey, capability, firstNonEmpty(strings.TrimSpace(task.Operation), task.Type), billingQuantity(capability, config["videoSeconds"]), estimateTaskBillingTokens(nextInput, capability), strings.TrimSpace(fmt.Sprint(config["priceTierId"])), billingIntentFromTaskInput(nextInput, task.Type, task.Operation))
+		priceTierID, _ := config["priceTierId"].(string)
+		replacement, err = s.newBillingOrderWithPriceTier(task.UserID, task.ID, "route-switch:"+task.ID+":"+selected.Route.ID, selected.ChannelModel.ChannelID, selected.ChannelModel.ModelKey, capability, firstNonEmpty(strings.TrimSpace(task.Operation), task.Type), billingQuantity(capability, config["videoSeconds"]), estimateTaskBillingTokens(nextInput, capability), strings.TrimSpace(priceTierID), intent)
 		if err != nil {
 			return nil, err
 		}

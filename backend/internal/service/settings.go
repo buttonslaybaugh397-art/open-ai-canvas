@@ -51,44 +51,28 @@ type OSSSettingRequest struct {
 }
 
 type PublicOSSSetting struct {
-	Enabled                 bool                                `json:"enabled"`
-	Provider                string                              `json:"provider"`
-	Region                  string                              `json:"region"`
-	Endpoint                string                              `json:"endpoint"`
-	CDNBaseURL              string                              `json:"cdnBaseUrl"`
-	Bucket                  string                              `json:"bucket"`
-	AccessKeyID             string                              `json:"accessKeyId"`
-	HasAccessKeySecret      bool                                `json:"hasAccessKeySecret"`
-	PublicBaseURL           string                              `json:"publicBaseUrl"`
-	PathPrefix              string                              `json:"pathPrefix"`
-	S3Preset                string                              `json:"s3Preset"`
-	PathStyle               bool                                `json:"pathStyle"`
-	HasSessionToken         bool                                `json:"hasSessionToken"`
-	StorageLocationID       string                              `json:"storageLocationId"`
-	TestedAt                *time.Time                          `json:"testedAt,omitempty"`
-	TestedDigest            string                              `json:"testedDigest,omitempty"`
-	HistoryCount            int64                               `json:"historyCount"`
-	ReferencedResourceCount int64                               `json:"referencedResourceCount"`
-	AllowUserS3             bool                                `json:"allowUserS3"`
-	ProviderSettings        map[string]PublicOSSProviderSetting `json:"providerSettings,omitempty"`
-	UpdatedBy               string                              `json:"updatedBy"`
-	CreatedAt               time.Time                           `json:"createdAt"`
-	UpdatedAt               time.Time                           `json:"updatedAt"`
-}
-
-type PublicOSSProviderSetting struct {
-	Region             string `json:"region"`
-	Endpoint           string `json:"endpoint"`
-	CDNBaseURL         string `json:"cdnBaseUrl"`
-	Bucket             string `json:"bucket"`
-	AccessKeyID        string `json:"accessKeyId"`
-	HasAccessKeySecret bool   `json:"hasAccessKeySecret"`
-	PublicBaseURL      string `json:"publicBaseUrl"`
-	PathPrefix         string `json:"pathPrefix"`
-	S3Preset           string `json:"s3Preset"`
-	PathStyle          bool   `json:"pathStyle"`
-	HasSessionToken    bool   `json:"hasSessionToken"`
-	StorageLocationID  string `json:"storageLocationId"`
+	Enabled                 bool       `json:"enabled"`
+	Provider                string     `json:"provider"`
+	Region                  string     `json:"region"`
+	Endpoint                string     `json:"endpoint"`
+	CDNBaseURL              string     `json:"cdnBaseUrl"`
+	Bucket                  string     `json:"bucket"`
+	AccessKeyID             string     `json:"accessKeyId"`
+	HasAccessKeySecret      bool       `json:"hasAccessKeySecret"`
+	PublicBaseURL           string     `json:"publicBaseUrl"`
+	PathPrefix              string     `json:"pathPrefix"`
+	S3Preset                string     `json:"s3Preset"`
+	PathStyle               bool       `json:"pathStyle"`
+	HasSessionToken         bool       `json:"hasSessionToken"`
+	StorageLocationID       string     `json:"storageLocationId"`
+	TestedAt                *time.Time `json:"testedAt,omitempty"`
+	TestedDigest            string     `json:"testedDigest,omitempty"`
+	HistoryCount            int64      `json:"historyCount"`
+	ReferencedResourceCount int64      `json:"referencedResourceCount"`
+	AllowUserS3             bool       `json:"allowUserS3"`
+	UpdatedBy               string     `json:"updatedBy"`
+	CreatedAt               time.Time  `json:"createdAt"`
+	UpdatedAt               time.Time  `json:"updatedAt"`
 }
 
 type ossSettingValue struct {
@@ -109,8 +93,7 @@ type ossSettingValue struct {
 	AllowUserS3       bool   `json:"allowUserS3"`
 	// 平台切换云厂商后仍需读取历史资源，因此仅归档非当前厂商的访问密钥。
 	ArchivedCredentials map[string]ossProviderCredentials `json:"archivedCredentials,omitempty"`
-	// 平台切换云厂商后保留各供应商的完整配置，避免覆盖其他供应商。
-	ArchivedSettings map[string]ossProviderSetting `json:"archivedSettings,omitempty"`
+	ArchivedSettings    map[string]ossProviderSetting     `json:"archivedSettings,omitempty"`
 }
 
 type ossProviderCredentials struct {
@@ -611,10 +594,9 @@ func isTaskSecretField(key string) bool {
 }
 
 func ossSettingFromRequest(req OSSSettingRequest, current ossSettingValue) (ossSettingValue, error) {
-	requestHasProviderSetting := hasOSSProviderSettingRequest(req)
-	next := ossSettingValue{
+	next := normalizeOSSSetting(ossSettingValue{
 		Enabled:         req.Enabled,
-		Provider:        strings.ToLower(strings.TrimSpace(req.Provider)),
+		Provider:        strings.TrimSpace(req.Provider),
 		Region:          strings.TrimSpace(req.Region),
 		Endpoint:        strings.TrimRight(strings.TrimSpace(req.Endpoint), "/"),
 		CDNBaseURL:      strings.TrimRight(strings.TrimSpace(req.CDNBaseURL), "/"),
@@ -627,15 +609,7 @@ func ossSettingFromRequest(req OSSSettingRequest, current ossSettingValue) (ossS
 		PathStyle:       req.PathStyle,
 		SessionToken:    strings.TrimSpace(req.SessionToken),
 		AllowUserS3:     req.AllowUserS3,
-	}
-	current = normalizeOSSSetting(current)
-	if next.Provider == "" {
-		next.Provider = aliyunOSSProvider
-	}
-	if next.Provider != current.Provider {
-		next = restoreArchivedOSSProviderSetting(next, current)
-	}
-	next = normalizeOSSSetting(next)
+	})
 	if next.Provider != aliyunOSSProvider && next.Provider != tencentCOSProvider && next.Provider != qiniuKodoProvider && next.Provider != s3Provider {
 		return next, BadAuthRequest("仅支持阿里云 OSS、腾讯云 COS、七牛云 Kodo 和通用 S3")
 	}
@@ -646,22 +620,19 @@ func ossSettingFromRequest(req OSSSettingRequest, current ossSettingValue) (ossS
 			return next, BadAuthRequest("S3 预设无效")
 		}
 	}
+	current = normalizeOSSSetting(current)
+	if next.Provider != current.Provider {
+		next = restoreArchivedOSSProviderSetting(next, current)
+		next = normalizeOSSSetting(next)
+	}
 	// 同一云厂商修改存储位置时，留空仍表示保留现有密钥；切换厂商时不能复用。
 	if next.AccessKeySecret == "" && next.Provider == current.Provider {
 		next.AccessKeySecret = current.AccessKeySecret
-		next.PathPrefix = current.PathPrefix
-	}
-	if next.AccessKeySecret == "" {
-		if next.Provider == current.Provider {
-			next.AccessKeySecret = current.AccessKeySecret
-		} else if archived, ok := archivedOSSProviderSetting(current, next.Provider); ok {
-			next.AccessKeySecret = archived.AccessKeySecret
-		}
 	}
 	if next.SessionToken == "" && next.Provider == current.Provider {
 		next.SessionToken = current.SessionToken
 	}
-	if !next.Enabled && next.Provider == current.Provider && !requestHasProviderSetting {
+	if !next.Enabled && next.Provider == current.Provider && !hasOSSProviderSettingRequest(req) {
 		next.Region = current.Region
 		next.Endpoint = current.Endpoint
 		next.CDNBaseURL = current.CDNBaseURL
@@ -721,29 +692,28 @@ func ossSettingFromRequest(req OSSSettingRequest, current ossSettingValue) (ossS
 	return next, nil
 }
 
-func archiveOSSProviderSettings(next ossSettingValue, current ossSettingValue) ossSettingValue {
+func archiveOSSProviderCredentials(next ossSettingValue, current ossSettingValue) ossSettingValue {
 	next = normalizeOSSSetting(next)
 	current = normalizeOSSSetting(current)
-	next.ArchivedSettings = cloneOSSProviderSettings(current.ArchivedSettings)
 	next.ArchivedCredentials = cloneOSSProviderCredentials(current.ArchivedCredentials)
+	next.ArchivedSettings = cloneOSSProviderSettings(current.ArchivedSettings)
 	if current.Provider != next.Provider && hasOSSProviderSetting(current) {
-		if next.ArchivedSettings == nil {
-			next.ArchivedSettings = make(map[string]ossProviderSetting)
-		}
-		next.ArchivedSettings[current.Provider] = ossProviderSettingFromValue(current)
 		if next.ArchivedCredentials == nil {
 			next.ArchivedCredentials = make(map[string]ossProviderCredentials)
 		}
 		next.ArchivedCredentials[current.Provider] = ossProviderCredentials{AccessKeyID: current.AccessKeyID, AccessKeySecret: current.AccessKeySecret}
+		if next.ArchivedSettings == nil {
+			next.ArchivedSettings = make(map[string]ossProviderSetting)
+		}
+		next.ArchivedSettings[current.Provider] = ossProviderSettingFromValue(current)
 	}
-	delete(next.ArchivedSettings, next.Provider)
 	delete(next.ArchivedCredentials, next.Provider)
+	delete(next.ArchivedSettings, next.Provider)
 	return next
 }
 
-// 保留旧函数名，兼容已有测试和历史内部调用。
-func archiveOSSProviderCredentials(next ossSettingValue, current ossSettingValue) ossSettingValue {
-	return archiveOSSProviderSettings(next, current)
+func archiveOSSProviderSettings(next ossSettingValue, current ossSettingValue) ossSettingValue {
+	return archiveOSSProviderCredentials(next, current)
 }
 
 func cloneOSSProviderCredentials(source map[string]ossProviderCredentials) map[string]ossProviderCredentials {
@@ -790,12 +760,7 @@ func normalizeOSSProviderSetting(value ossProviderSetting) ossProviderSetting {
 }
 
 func ossProviderSettingFromValue(value ossSettingValue) ossProviderSetting {
-	return normalizeOSSProviderSetting(ossProviderSetting{
-		Region: value.Region, Endpoint: value.Endpoint, CDNBaseURL: value.CDNBaseURL, Bucket: value.Bucket,
-		AccessKeyID: value.AccessKeyID, AccessKeySecret: value.AccessKeySecret, PublicBaseURL: value.PublicBaseURL,
-		PathPrefix: value.PathPrefix, S3Preset: value.S3Preset, PathStyle: value.PathStyle, SessionToken: value.SessionToken,
-		StorageLocationID: value.StorageLocationID,
-	})
+	return normalizeOSSProviderSetting(ossProviderSetting{Region: value.Region, Endpoint: value.Endpoint, CDNBaseURL: value.CDNBaseURL, Bucket: value.Bucket, AccessKeyID: value.AccessKeyID, AccessKeySecret: value.AccessKeySecret, PublicBaseURL: value.PublicBaseURL, PathPrefix: value.PathPrefix, S3Preset: value.S3Preset, PathStyle: value.PathStyle, SessionToken: value.SessionToken, StorageLocationID: value.StorageLocationID})
 }
 
 func ossSettingValueFromProviderSetting(provider string, value ossProviderSetting) ossSettingValue {
@@ -842,11 +807,15 @@ func restoreArchivedOSSProviderSetting(next ossSettingValue, current ossSettingV
 	next.Endpoint = firstNonEmpty(next.Endpoint, archived.Endpoint)
 	next.CDNBaseURL = firstNonEmpty(next.CDNBaseURL, archived.CDNBaseURL)
 	next.Bucket = firstNonEmpty(next.Bucket, archived.Bucket)
-	next.PathPrefix = firstNonEmpty(next.PathPrefix, archived.PathPrefix)
+	if next.PathPrefix == "" || next.PathPrefix == defaultOSSPathPrefix {
+		next.PathPrefix = archived.PathPrefix
+	}
 	next.AccessKeyID = firstNonEmpty(next.AccessKeyID, archived.AccessKeyID)
 	next.AccessKeySecret = firstNonEmpty(next.AccessKeySecret, archived.AccessKeySecret)
 	next.PublicBaseURL = firstNonEmpty(next.PublicBaseURL, archived.PublicBaseURL)
-	next.S3Preset = firstNonEmpty(next.S3Preset, archived.S3Preset)
+	if next.S3Preset == "" || next.S3Preset == "custom" {
+		next.S3Preset = archived.S3Preset
+	}
 	if !next.PathStyle {
 		next.PathStyle = archived.PathStyle
 	}
@@ -881,7 +850,6 @@ func normalizeOSSSetting(value ossSettingValue) ossSettingValue {
 	value.SessionToken = strings.TrimSpace(value.SessionToken)
 	value.StorageLocationID = strings.TrimSpace(value.StorageLocationID)
 	value.ArchivedCredentials = cloneOSSProviderCredentials(value.ArchivedCredentials)
-	value.ArchivedSettings = cloneOSSProviderSettings(value.ArchivedSettings)
 	return value
 }
 
@@ -906,7 +874,6 @@ func (s *Service) publicOSSSetting(setting *model.SystemSetting, value ossSettin
 		HasSessionToken:    value.SessionToken != "",
 		StorageLocationID:  value.StorageLocationID,
 		AllowUserS3:        value.AllowUserS3,
-		ProviderSettings:   publicOSSProviderSettings(value),
 	}
 	if setting != nil {
 		result.UpdatedBy = setting.UpdatedBy
@@ -936,7 +903,6 @@ func (s *Service) publicUserOSSSetting(setting *model.UserOSSSetting, value ossS
 		HasSessionToken:    value.SessionToken != "",
 		StorageLocationID:  value.StorageLocationID,
 		AllowUserS3:        allowUserS3,
-		ProviderSettings:   publicOSSProviderSettings(value),
 	}
 	if value.Provider == s3Provider && !allowUserS3 {
 		result.Enabled = false
@@ -950,38 +916,6 @@ func (s *Service) publicUserOSSSetting(setting *model.UserOSSSetting, value ossS
 		return PublicOSSSetting{}, err
 	}
 	return result, nil
-}
-
-func publicOSSProviderSettings(value ossSettingValue) map[string]PublicOSSProviderSetting {
-	result := make(map[string]PublicOSSProviderSetting, len(value.ArchivedSettings)+1)
-	for provider, setting := range value.ArchivedSettings {
-		result[provider] = publicOSSProviderSettingFromSetting(setting)
-	}
-	if value.Provider != "" {
-		result[value.Provider] = publicOSSProviderSettingFromValue(value)
-	}
-	if len(result) == 0 {
-		return nil
-	}
-	return result
-}
-
-func publicOSSProviderSettingFromSetting(value ossProviderSetting) PublicOSSProviderSetting {
-	return PublicOSSProviderSetting{
-		Region: value.Region, Endpoint: value.Endpoint, CDNBaseURL: value.CDNBaseURL, Bucket: value.Bucket,
-		AccessKeyID: value.AccessKeyID, HasAccessKeySecret: value.AccessKeySecret != "", PublicBaseURL: value.PublicBaseURL,
-		PathPrefix: value.PathPrefix, S3Preset: value.S3Preset, PathStyle: value.PathStyle,
-		HasSessionToken: value.SessionToken != "", StorageLocationID: value.StorageLocationID,
-	}
-}
-
-func publicOSSProviderSettingFromValue(value ossSettingValue) PublicOSSProviderSetting {
-	return PublicOSSProviderSetting{
-		Region: value.Region, Endpoint: value.Endpoint, CDNBaseURL: value.CDNBaseURL, Bucket: value.Bucket,
-		AccessKeyID: value.AccessKeyID, HasAccessKeySecret: value.AccessKeySecret != "", PublicBaseURL: value.PublicBaseURL,
-		PathPrefix: value.PathPrefix, S3Preset: value.S3Preset, PathStyle: value.PathStyle,
-		HasSessionToken: value.SessionToken != "", StorageLocationID: value.StorageLocationID,
-	}
 }
 
 func storageLocationDigest(value ossSettingValue) string {

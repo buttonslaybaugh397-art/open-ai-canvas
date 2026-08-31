@@ -44,22 +44,11 @@ func creditConsumptionWindow(now time.Time) repository.CreditConsumptionWindow {
 	daysSinceMonday := (int(todayStart.Weekday()) + 6) % 7
 	weekStart := todayStart.AddDate(0, 0, -daysSinceMonday)
 	monthStart := time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, creditConsumptionLocation)
-	return repository.CreditConsumptionWindow{
-		TodayFrom:     todayStart,
-		YesterdayFrom: todayStart.AddDate(0, 0, -1),
-		TodayTo:       localNow,
-		WeekFrom:      weekStart,
-		MonthFrom:     monthStart,
-	}
+	return repository.CreditConsumptionWindow{TodayFrom: todayStart, YesterdayFrom: todayStart.AddDate(0, 0, -1), TodayTo: localNow, WeekFrom: weekStart, MonthFrom: monthStart}
 }
 
 func creditConsumptionStatsFromTotals(totals repository.CreditConsumptionTotals) CreditConsumptionStats {
-	return CreditConsumptionStats{
-		TodayMicrocredits:     totals.Today,
-		YesterdayMicrocredits: totals.Yesterday,
-		WeekMicrocredits:      totals.Week,
-		MonthMicrocredits:     totals.Month,
-	}
+	return CreditConsumptionStats{TodayMicrocredits: totals.Today, YesterdayMicrocredits: totals.Yesterday, WeekMicrocredits: totals.Week, MonthMicrocredits: totals.Month}
 }
 
 func (s *Service) creditConsumptionStatsForUsers(userIDs []string) (map[string]CreditConsumptionStats, error) {
@@ -72,6 +61,40 @@ func (s *Service) creditConsumptionStatsForUsers(userIDs []string) (map[string]C
 		result[userID] = creditConsumptionStatsFromTotals(value)
 	}
 	return result, nil
+}
+
+func decodeResolutionPrices(encoded string) map[string]int64 {
+	prices := make(map[string]int64)
+	if strings.TrimSpace(encoded) == "" {
+		return prices
+	}
+	if err := json.Unmarshal([]byte(encoded), &prices); err != nil {
+		return map[string]int64{}
+	}
+	return prices
+}
+
+func channelModelUnitPrice(item *model.ChannelModel, requestedResolution string) (string, int64) {
+	if item == nil {
+		return "", 0
+	}
+	if item.Capability != "video" {
+		return "", item.UnitPriceMicrocredits
+	}
+	resolution := strings.TrimSpace(requestedResolution)
+	if resolution == "" || strings.EqualFold(resolution, "auto") || strings.EqualFold(resolution, "default") {
+		if profile, err := DecodeModelCapabilityConfig(item.CapabilityConfigJSON); err == nil && profile != nil && profile.Video != nil {
+			resolution = profile.Video.DefaultResolution
+		}
+	}
+	if strings.TrimSpace(resolution) == "" {
+		return "", item.UnitPriceMicrocredits
+	}
+	resolution = normalizeResolution(resolution)
+	if price, ok := decodeResolutionPrices(item.ResolutionPricesJSON)[resolution]; ok {
+		return resolution, price
+	}
+	return resolution, item.UnitPriceMicrocredits
 }
 
 type RedeemBatchPage struct {
@@ -175,15 +198,11 @@ func (s *Service) Wallet(user *model.User, entryType string, page int, limit int
 	if err != nil {
 		return nil, err
 	}
-	consumptionByUserID, err := s.creditConsumptionStatsForUsers([]string{user.ID})
-	if err != nil {
-		return nil, err
-	}
 	policy, err := s.publicCreditPolicy(user.ID)
 	if err != nil {
 		return nil, err
 	}
-	return &WalletSummary{Account: *account, Entries: entries, Total: total, Page: page, Limit: limit, Consumption: consumptionByUserID[user.ID], Policy: policy}, nil
+	return &WalletSummary{Account: *account, Entries: entries, Total: total, Page: page, Limit: limit, Policy: policy}, nil
 }
 
 func (s *Service) RedeemCredits(user *model.User, code string, redeemedIP string) (*model.CreditAccount, error) {
@@ -502,8 +521,9 @@ func (s *Service) taskBillingOrder(userID string, task *model.Task, input map[st
 		capability = capabilityFromTaskType(task.Type)
 	}
 	scene := firstNonEmpty(strings.TrimSpace(task.Operation), task.Type)
-	intent := billingIntentFromTaskInput(input, task.Type, task.Operation)
-	return s.newBillingOrderWithPriceTier(userID, task.ID, "task:"+task.ID+":"+newID(), channelID, modelKey, capability, scene, billingQuantity(capability, config["videoSeconds"]), estimateTaskBillingTokens(input, capability), priceTierIDFromConfig(config), intent)
+	intent := ModelRequestIntentFromTaskInput(input, task.Type, task.Operation)
+	priceTierID, _ := config["priceTierId"].(string)
+	return s.newBillingOrderWithPriceTier(userID, task.ID, "task:"+task.ID+":"+newID(), channelID, modelKey, capability, scene, billingQuantity(capability, config["videoSeconds"]), estimateTaskBillingTokens(input, capability), strings.TrimSpace(priceTierID), intent)
 }
 
 func (s *Service) newLogicalModelBillingOrder(userID string, task *model.Task, input map[string]any) (*model.BillingOrder, error) {
@@ -525,8 +545,9 @@ func (s *Service) newLogicalModelBillingOrder(userID string, task *model.Task, i
 		capability = capabilityFromTaskType(task.Type)
 	}
 	if logicalModel.PricePolicy == "channel" {
-		intent := billingIntentFromTaskInput(input, task.Type, task.Operation)
-		order, priceErr := s.newBillingOrderWithPriceTier(userID, task.ID, "task:"+task.ID+":"+newID(), channelModel.ChannelID, channelModel.ModelKey, capability, firstNonEmpty(strings.TrimSpace(task.Operation), task.Type), billingQuantity(capability, config["videoSeconds"]), estimateTaskBillingTokens(input, capability), priceTierIDFromConfig(config), intent)
+		intent := ModelRequestIntentFromTaskInput(input, task.Type, task.Operation)
+		priceTierID, _ := config["priceTierId"].(string)
+		order, priceErr := s.newBillingOrderWithPriceTier(userID, task.ID, "task:"+task.ID+":"+newID(), channelModel.ChannelID, channelModel.ModelKey, capability, firstNonEmpty(strings.TrimSpace(task.Operation), task.Type), billingQuantity(capability, config["videoSeconds"]), estimateTaskBillingTokens(input, capability), strings.TrimSpace(priceTierID), intent)
 		if priceErr != nil {
 			return nil, priceErr
 		}
@@ -609,10 +630,10 @@ func (s *Service) ReserveProxyBillingWithBody(userID string, channelID string, m
 }
 
 func (s *Service) newBillingOrder(userID string, taskID string, idempotencyKey string, channelID string, modelKey string, capability string, scene string, requestedQuantity int64, tokenEstimate tokenBillingEstimate) (*model.BillingOrder, error) {
-	return s.newBillingOrderWithPriceTier(userID, taskID, idempotencyKey, channelID, modelKey, capability, scene, requestedQuantity, tokenEstimate, "", ModelRequestIntent{Capability: capability, Inputs: map[string]int{}, Options: map[string]any{}})
+	return s.newBillingOrderWithPriceTier(userID, taskID, idempotencyKey, channelID, modelKey, capability, scene, requestedQuantity, tokenEstimate, "")
 }
 
-func (s *Service) newBillingOrderWithPriceTier(userID string, taskID string, idempotencyKey string, channelID string, modelKey string, capability string, scene string, requestedQuantity int64, tokenEstimate tokenBillingEstimate, priceTierID string, intent ModelRequestIntent) (*model.BillingOrder, error) {
+func (s *Service) newBillingOrderWithPriceTier(userID string, taskID string, idempotencyKey string, channelID string, modelKey string, capability string, scene string, requestedQuantity int64, tokenEstimate tokenBillingEstimate, priceTierID string, intents ...ModelRequestIntent) (*model.BillingOrder, error) {
 	item, err := s.repo.ChannelModelByKey(channelID, modelKey)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, BadAuthRequest("当前模型暂时不可用，请重新选择")
@@ -620,10 +641,7 @@ func (s *Service) newBillingOrderWithPriceTier(userID string, taskID string, ide
 	if err != nil {
 		return nil, err
 	}
-	if normalizeCapability(intent.Capability) == "" {
-		intent.Capability = capability
-	}
-	tier := channelModelPriceTierForBilling(*item, priceTierID, intent)
+	tier := channelModelPriceTierForBilling(*item, priceTierID, capability, intents...)
 	if tier == nil {
 		return nil, BadAuthRequest("当前模型尚未配置所选规格的用户积分价格")
 	}
@@ -680,75 +698,24 @@ func (s *Service) newBillingOrderWithPriceTier(userID string, taskID string, ide
 	}, nil
 }
 
-func channelModelPriceTierForBilling(channelModel model.ChannelModel, priceTierID string, intent ModelRequestIntent) *model.ChannelModelPriceTier {
-	matchedTier := channelModelPriceTierForIntent(channelModel, intent)
+func channelModelPriceTierForBilling(channelModel model.ChannelModel, priceTierID string, capability string, intents ...ModelRequestIntent) *model.ChannelModelPriceTier {
 	if priceTierID != "" {
 		for index := range channelModel.PriceTiers {
 			tier := &channelModel.PriceTiers[index]
-			if tier.ID == priceTierID && tier.Enabled && tier.PriceConfigured && matchedTier != nil && matchedTier.ID == tier.ID {
+			if tier.ID == priceTierID && tier.Enabled && tier.PriceConfigured {
 				return tier
 			}
 		}
+		return nil
 	}
-	return matchedTier
-}
-
-func priceTierIDFromConfig(config map[string]any) string {
-	if config == nil {
-		return ""
-	}
-	value, ok := config["priceTierId"].(string)
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(value)
-}
-
-func billingIntentFromTaskInput(input map[string]any, taskType string, operation string) ModelRequestIntent {
-	intent := ModelRequestIntentFromTaskInput(input, taskType, operation)
-	config, _ := input["config"].(map[string]any)
-	for key, value := range config {
-		canonical := canonicalCapabilityOptionName(key)
-		if _, exists := intent.Options[canonical]; exists || !isCapabilityOptionFor(intent.Capability, canonical) || value == nil || strings.TrimSpace(fmt.Sprint(value)) == "" {
-			continue
+	if len(intents) > 0 {
+		intent := intents[0]
+		if normalizeCapability(intent.Capability) == "" {
+			intent.Capability = capability
 		}
-		intent.Options[canonical] = normalizeModelRequestOption(canonical, value)
+		return channelModelPriceTierForIntent(channelModel, intent)
 	}
-	return intent
-}
-
-func decodeResolutionPrices(encoded string) map[string]int64 {
-	prices := make(map[string]int64)
-	if strings.TrimSpace(encoded) == "" {
-		return prices
-	}
-	if err := json.Unmarshal([]byte(encoded), &prices); err != nil {
-		return make(map[string]int64)
-	}
-	return prices
-}
-
-func channelModelUnitPrice(item *model.ChannelModel, requestedResolution string) (string, int64) {
-	if item == nil {
-		return "", 0
-	}
-	if item.Capability != "video" {
-		return "", item.UnitPriceMicrocredits
-	}
-	resolution := strings.TrimSpace(requestedResolution)
-	if resolution == "" || strings.EqualFold(resolution, "auto") || strings.EqualFold(resolution, "default") {
-		if profile, err := DecodeModelCapabilityConfig(item.CapabilityConfigJSON); err == nil && profile != nil && profile.Video != nil {
-			resolution = profile.Video.DefaultResolution
-		}
-	}
-	if strings.TrimSpace(resolution) == "" {
-		return "", item.UnitPriceMicrocredits
-	}
-	resolution = normalizeResolution(resolution)
-	if price, ok := decodeResolutionPrices(item.ResolutionPricesJSON)[resolution]; ok {
-		return resolution, price
-	}
-	return resolution, item.UnitPriceMicrocredits
+	return channelModelPriceTierForIntent(channelModel, ModelRequestIntent{Capability: capability, Options: map[string]any{}})
 }
 
 func estimateTaskTokens(input map[string]any) tokenBillingEstimate {

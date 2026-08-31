@@ -42,10 +42,16 @@ type TaskSummary struct {
 }
 
 type TaskClientContext struct {
-	ConversationID string `json:"conversationId"`
-	MessageID      string `json:"messageId"`
-	BatchIndex     int    `json:"batchIndex,omitempty"`
-	BatchCount     int    `json:"batchCount,omitempty"`
+	ConversationID   string `json:"conversationId,omitempty"`
+	MessageID        string `json:"messageId,omitempty"`
+	BatchIndex       int    `json:"batchIndex,omitempty"`
+	BatchCount       int    `json:"batchCount,omitempty"`
+	DomainProjectID  string `json:"domainProjectId,omitempty"`
+	ChapterID        string `json:"chapterId,omitempty"`
+	ChapterOperation string `json:"chapterOperation,omitempty"`
+	ShotID           string `json:"shotId,omitempty"`
+	WorkflowStepID   string `json:"workflowStepId,omitempty"`
+	ArtifactType     string `json:"artifactType,omitempty"`
 }
 
 type TaskBillingSummary struct {
@@ -146,8 +152,11 @@ func findTaskMediaStorageKey(value any, previewURL string) string {
 			}
 		}
 	case map[string]any:
-		storageKey, _ := item["storageKey"].(string)
-		for _, key := range []string{"url", "videoUrl", "imageUrl", "outputUrl", "mediaUrl", "dataUrl", "content", "coverUrl", "resultUrl"} {
+		storageKey := taskMediaStorageKey(item)
+		if storageKey != "" && previewURL == taskMediaResourcePreviewURL(storageKey) {
+			return storageKey
+		}
+		for _, key := range []string{"url", "videoUrl", "video_url", "imageUrl", "image_url", "outputUrl", "output_url", "mediaUrl", "media_url", "dataUrl", "data_url", "content", "coverUrl", "cover_url", "resultUrl", "result_url", "downloadUrl", "download_url", "fileUrl", "file_url", "uri", "src"} {
 			if candidate, _ := item[key].(string); candidate == previewURL && storageKey != "" {
 				return storageKey
 			}
@@ -161,25 +170,68 @@ func findTaskMediaStorageKey(value any, previewURL string) string {
 	return ""
 }
 
-// 列表只暴露创作页恢复所需的关联 ID，不下发完整任务输入或其他 metadata。
+func taskMediaStorageKey(item map[string]any) string {
+	for _, key := range []string{"storageKey", "storage_key", "resourceKey", "resource_key", "providerArtifactRef", "provider_artifact_ref"} {
+		if value, ok := item[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func taskMediaResourcePreviewURL(storageKey string) string {
+	resourceID := canvasResourceID(storageKey)
+	if resourceID == "" {
+		return ""
+	}
+	return "/api/resources/" + resourceID + "/file"
+}
+
+// 列表只暴露页面恢复所需的非敏感关联 ID，不下发完整任务输入或其他 metadata。
 func taskClientContext(raw string) *TaskClientContext {
 	var input struct {
 		Metadata struct {
-			Source         string `json:"source"`
-			ConversationID string `json:"conversationId"`
-			MessageID      string `json:"messageId"`
-			BatchIndex     int    `json:"batchIndex"`
-			BatchCount     int    `json:"batchCount"`
+			Source          string `json:"source"`
+			ConversationID  string `json:"conversationId"`
+			MessageID       string `json:"messageId"`
+			BatchIndex      int    `json:"batchIndex"`
+			BatchCount      int    `json:"batchCount"`
+			DomainProjectID string `json:"domainProjectId"`
+			ChapterID       string `json:"chapterId"`
+			Operation       string `json:"operation"`
+			ShotID          string `json:"shotId"`
+			WorkflowStepID  string `json:"workflowStepId"`
+			ArtifactType    string `json:"artifactType"`
 		} `json:"metadata"`
 	}
-	if json.Unmarshal([]byte(raw), &input) != nil || input.Metadata.Source != "create-page" || input.Metadata.ConversationID == "" || input.Metadata.MessageID == "" {
+	if json.Unmarshal([]byte(raw), &input) != nil {
+		return nil
+	}
+	metadata := input.Metadata
+	if metadata.Source == "create-page" && metadata.ConversationID != "" && metadata.MessageID != "" {
+		return &TaskClientContext{
+			ConversationID: metadata.ConversationID,
+			MessageID:      metadata.MessageID,
+			BatchIndex:     metadata.BatchIndex,
+			BatchCount:     metadata.BatchCount,
+		}
+	}
+	if metadata.ShotID != "" && metadata.WorkflowStepID != "" {
+		return &TaskClientContext{DomainProjectID: metadata.DomainProjectID, ShotID: metadata.ShotID, WorkflowStepID: metadata.WorkflowStepID, ArtifactType: metadata.ArtifactType}
+	}
+	chapterOperation := ""
+	if metadata.Operation == "chapter_character_breakdown" {
+		chapterOperation = "characters"
+	} else if metadata.Source == "short-drama-chapter-storyboard" {
+		chapterOperation = "storyboard"
+	}
+	if chapterOperation == "" || metadata.DomainProjectID == "" || metadata.ChapterID == "" {
 		return nil
 	}
 	return &TaskClientContext{
-		ConversationID: input.Metadata.ConversationID,
-		MessageID:      input.Metadata.MessageID,
-		BatchIndex:     input.Metadata.BatchIndex,
-		BatchCount:     input.Metadata.BatchCount,
+		DomainProjectID:  metadata.DomainProjectID,
+		ChapterID:        metadata.ChapterID,
+		ChapterOperation: chapterOperation,
 	}
 }
 
@@ -208,7 +260,7 @@ func findTaskMediaPreview(value any, hint string) (string, string) {
 		}
 		kind := hint
 		lower := strings.ToLower(text)
-		if strings.Contains(lower, ".mp4") || strings.Contains(lower, ".webm") || strings.Contains(lower, ".mov") {
+		if strings.Contains(lower, ".mp4") || strings.Contains(lower, ".webm") || strings.Contains(lower, ".mov") || strings.Contains(lower, ".m4v") || strings.Contains(lower, ".mkv") || strings.Contains(lower, ".avi") || strings.Contains(lower, ".mpeg") || strings.Contains(lower, ".mpg") || strings.Contains(lower, ".ts") {
 			kind = "video"
 		} else if kind != "video" {
 			kind = "image"
@@ -221,13 +273,30 @@ func findTaskMediaPreview(value any, hint string) (string, string) {
 			}
 		}
 	case map[string]any:
-		for _, key := range []string{"images", "image", "video", "url", "dataUrl", "resultUrl", "outputUrl"} {
+		objectHint := hint
+		mediaType := strings.ToLower(strings.TrimSpace(firstTaskMediaString(item, "mimeType", "mime_type", "contentType", "content_type")))
+		mediaTypeHint := strings.ToLower(strings.TrimSpace(firstTaskMediaString(item, "type", "mediaType", "media_type", "kind")))
+		if strings.HasPrefix(mediaType, "video/") || strings.Contains(mediaTypeHint, "video") {
+			objectHint = "video"
+		} else if strings.HasPrefix(mediaType, "image/") || strings.Contains(mediaTypeHint, "image") {
+			objectHint = "image"
+		} else if strings.HasPrefix(mediaType, "audio/") || strings.Contains(mediaTypeHint, "audio") {
+			objectHint = "audio"
+		}
+		keys := []string{"video", "videos", "video_url", "videoUrl", "video_uri", "videoUri", "download_url", "downloadUrl", "download_uri", "downloadUri", "result", "output", "outputs", "results", "result_url", "resultUrl", "output_url", "outputUrl", "content", "media", "file", "url", "dataUrl", "data_url", "file_url", "fileUrl", "uri", "src", "images", "image", "data"}
+		if objectHint != "video" {
+			keys = []string{"images", "image", "video", "videos", "video_url", "videoUrl", "video_uri", "videoUri", "download_url", "downloadUrl", "download_uri", "downloadUri", "result", "output", "outputs", "results", "result_url", "resultUrl", "output_url", "outputUrl", "content", "media", "file", "url", "dataUrl", "data_url", "file_url", "fileUrl", "uri", "src", "data"}
+		}
+		for _, key := range keys {
+			if objectHint == "video" && (key == "images" || key == "image") {
+				continue
+			}
 			child, exists := item[key]
 			if !exists {
 				continue
 			}
-			childHint := hint
-			if key == "video" {
+			childHint := objectHint
+			if key == "video" || key == "videos" || key == "video_url" || key == "videoUrl" || key == "video_uri" || key == "videoUri" {
 				childHint = "video"
 			} else if key == "images" || key == "image" {
 				childHint = "image"
@@ -236,8 +305,20 @@ func findTaskMediaPreview(value any, hint string) (string, string) {
 				return previewURL, previewKind
 			}
 		}
+		if storageKey := taskMediaStorageKey(item); storageKey != "" && canvasResourceID(storageKey) != "" {
+			return taskMediaResourcePreviewURL(storageKey), objectHint
+		}
 	}
 	return "", ""
+}
+
+func firstTaskMediaString(item map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := item[key].(string); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func truncateRunes(value string, limit int) string {

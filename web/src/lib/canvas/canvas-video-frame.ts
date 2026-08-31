@@ -2,6 +2,38 @@ import { getMediaBlobFromSource } from "@/services/file-storage";
 
 const VIDEO_FRAME_TIMEOUT_MS = 20_000;
 const LAST_FRAME_EPSILON_SECONDS = 0.001;
+const LAST_FRAME_EPSILON_MS = 1;
+
+export type CapturedVideoFrame = {
+    timeMs: number;
+    blob: Blob;
+    width: number;
+    height: number;
+};
+
+export type VideoFrameCaptureFailure = {
+    timeMs: number;
+    error: string;
+};
+
+export type VideoFrameCaptureResult = {
+    frames: CapturedVideoFrame[];
+    failures: VideoFrameCaptureFailure[];
+};
+
+export function normalizeVideoFrameTimes(timesMs: number[], durationMs: number) {
+    if (!Number.isFinite(durationMs) || durationMs <= 0) return [];
+    const lastFrameMs = Math.max(0, Math.round(durationMs) - LAST_FRAME_EPSILON_MS);
+    return Array.from(new Set(timesMs.filter(Number.isFinite).map((timeMs) => Math.min(lastFrameMs, Math.max(0, Math.round(timeMs)))))).sort((left, right) => left - right);
+}
+
+export function formatVideoFrameTime(timeMs: number) {
+    const totalMs = Math.max(0, Math.round(timeMs));
+    const minutes = Math.floor(totalMs / 60_000);
+    const seconds = Math.floor((totalMs % 60_000) / 1000);
+    const milliseconds = totalMs % 1000;
+    return String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0") + "." + String(milliseconds).padStart(3, "0");
+}
 
 export async function captureVideoLastFrame(source: Blob | string, storageKey?: string) {
     const blob = await readVideoBlob(source, storageKey);
@@ -33,6 +65,56 @@ export async function captureVideoLastFrame(source: Blob | string, storageKey?: 
         if (!context) throw new Error("浏览器无法创建图片画布");
         context.drawImage(video, 0, 0, canvas.width, canvas.height);
         return canvasToPngBlob(canvas);
+    } finally {
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+        URL.revokeObjectURL(objectUrl);
+    }
+}
+
+export async function captureVideoFrames(source: Blob | string, timesMs: number[], storageKey?: string): Promise<VideoFrameCaptureResult> {
+    const blob = await readVideoBlob(source, storageKey);
+    const objectUrl = URL.createObjectURL(blob);
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+
+    try {
+        const loaded = waitForVideoEvent(video, "loadeddata", "视频读取超时或编码不受浏览器支持");
+        video.src = objectUrl;
+        video.load();
+        await loaded;
+
+        if (!Number.isFinite(video.duration) || video.duration <= 0) throw new Error("无法确定视频时长");
+        if (!video.videoWidth || !video.videoHeight) throw new Error("无法读取视频画面尺寸");
+        const normalizedTimes = normalizeVideoFrameTimes(timesMs, video.duration * 1000);
+        if (!normalizedTimes.length) throw new Error("请至少选择一个有效时间点");
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("浏览器无法创建图片画布");
+
+        const frames: CapturedVideoFrame[] = [];
+        const failures: VideoFrameCaptureFailure[] = [];
+        for (const timeMs of normalizedTimes) {
+            try {
+                const targetSeconds = timeMs / 1000;
+                if (Math.abs(video.currentTime - targetSeconds) > 0.0005) {
+                    const seeked = waitForVideoEvent(video, "seeked", "无法定位到 " + formatVideoFrameTime(timeMs));
+                    video.currentTime = targetSeconds;
+                    await seeked;
+                }
+                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                frames.push({ timeMs, blob: await canvasToPngBlob(canvas), width: canvas.width, height: canvas.height });
+            } catch (error) {
+                failures.push({ timeMs, error: error instanceof Error ? error.message : "画面提取失败" });
+            }
+        }
+        if (!frames.length) throw new Error(failures[0]?.error || "画面提取失败");
+        return { frames, failures };
     } finally {
         video.pause();
         video.removeAttribute("src");

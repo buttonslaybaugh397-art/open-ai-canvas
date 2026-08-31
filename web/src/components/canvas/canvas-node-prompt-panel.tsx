@@ -127,7 +127,8 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     const quoteRequest = modelQuoteRequest(config, config.model, mode, requirements);
     const quoteRequestKey = JSON.stringify(quoteRequest || null);
     const [quotedCredits, setQuotedCredits] = useState<number | null>(null);
-    const credits = quotedCredits ?? configuredCredits;
+    const [quotedCreditsKey, setQuotedCreditsKey] = useState("");
+    const credits = quotedCreditsKey === quoteRequestKey ? quotedCredits ?? configuredCredits : configuredCredits;
     const activeReferenceCount = activeReferences.length;
     const videoFrameOptions = resolvedMentionReferences.filter((item) => item.active && item.kind === "image").map((item) => ({ nodeId: item.nodeId, label: item.label, title: item.title, previewUrl: item.previewUrl }));
     const hasVideoPromptTools = mode === "video" && !simpleMode && videoFrameOptions.length > 0;
@@ -172,14 +173,18 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     useEffect(() => {
         if (!creditsEnabled || !quoteRequest) {
             setQuotedCredits(null);
+            setQuotedCreditsKey("");
             return;
         }
         const controller = new AbortController();
-        setQuotedCredits(null);
         quoteLogicalModel(quoteRequest.logicalModelID, quoteRequest.intent, controller.signal)
-            .then(({ quote }) => setQuotedCredits(quote.amountMicrocredits / 1_000_000))
+            .then(({ quote }) => {
+                if (controller.signal.aborted) return;
+                setQuotedCredits(quote.amountMicrocredits / 1_000_000);
+                setQuotedCreditsKey(quoteRequestKey);
+            })
             .catch(() => {
-                if (!controller.signal.aborted) setQuotedCredits(null);
+                if (!controller.signal.aborted) setQuotedCreditsKey("");
             });
         return () => controller.abort();
         // quoteRequestKey captures the full normalized request without retriggering on object identity.
@@ -739,10 +744,10 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
         ...globalConfig,
         model,
         quality: defaults.quality || globalConfig.quality || defaultConfig.quality,
-        size: defaults.size || globalConfig.size || defaultConfig.size,
+        size: defaults.size ?? globalConfig.size ?? defaultConfig.size,
         transparentBackground: defaults.transparentBackground || "false",
         videoSeconds: defaults.videoSeconds || normalizeVideoDuration(globalConfig.videoSeconds || defaultConfig.videoSeconds),
-        vquality: defaults.vquality || normalizeVideoResolution(globalConfig.vquality || defaultConfig.vquality),
+        vquality: defaults.vquality ?? normalizeVideoResolution(globalConfig.vquality || defaultConfig.vquality),
         videoGenerateAudio: defaults.videoGenerateAudio || globalConfig.videoGenerateAudio || defaultConfig.videoGenerateAudio,
         videoWatermark: defaults.videoWatermark || globalConfig.videoWatermark || defaultConfig.videoWatermark,
         audioVoice: node.metadata?.audioVoice || globalConfig.audioVoice || defaultConfig.audioVoice,

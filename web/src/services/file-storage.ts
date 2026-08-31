@@ -2,10 +2,12 @@ import localforage from "localforage";
 import { nanoid } from "nanoid";
 
 import { getActiveUserScope } from "@/lib/user-scope";
+import { captureVideoPoster, detectVideoAudioTrackFromBlob } from "@/lib/video-poster";
 import { getResourceBlob, resourceFileUrl, resourceIdFromStorageKey, resourceIdFromUrl, resourceProxyFileUrl, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
+import { uploadImage, type UploadedImage } from "@/services/image-storage";
 import { getCachedResourceBlob, getCachedResourceObjectUrl, primeResourceBlobCache } from "@/services/resource-blob-cache";
 
-export type UploadedFile = { url: string; storageKey: string; bytes: number; mimeType: string; width?: number; height?: number; durationMs?: number };
+export type UploadedFile = { url: string; storageKey: string; bytes: number; mimeType: string; width?: number; height?: number; durationMs?: number; hasAudio?: boolean; preview?: UploadedImage };
 
 const store = localforage.createInstance({ name: "infinite-canvas", storeName: "media_files" });
 const objectUrls = new Map<string, string>();
@@ -13,22 +15,25 @@ const objectUrls = new Map<string, string>();
 export async function uploadMediaFile(input: string | Blob, prefix = "file", options?: { allowLocalFallback?: boolean }): Promise<UploadedFile> {
     const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
     const previewUrl = URL.createObjectURL(blob);
-    const meta: { width?: number; height?: number; durationMs?: number } = blob.type.startsWith("video/") ? await readVideoMeta(previewUrl) : blob.type.startsWith("audio/") ? await readAudioMeta(previewUrl) : {};
+    const captured = blob.type.startsWith("video/") ? await captureVideoPoster(previewUrl).catch(() => undefined) : undefined;
+    // Browser track probes can report a false negative for MP4/MOV files.
+    // Re-check only when capture did not positively confirm an audio track so
+    // normal uploads avoid an extra full-blob parse.
+    const parsedHasAudio = blob.type.startsWith("video/") && captured?.hasAudio !== true ? await detectVideoAudioTrackFromBlob(blob) : undefined;
+    const resolvedHasAudio = parsedHasAudio ?? (captured?.hasAudio === false ? undefined : captured?.hasAudio);
+    const meta: { width?: number; height?: number; durationMs?: number; hasAudio?: boolean } = captured
+        ? { width: captured.width, height: captured.height, durationMs: captured.durationMs, hasAudio: resolvedHasAudio }
+        : blob.type.startsWith("audio/")
+            ? await readAudioMeta(previewUrl)
+            : { hasAudio: resolvedHasAudio };
+    const poster = captured?.poster ? await uploadImage(captured.poster).catch(() => undefined) : undefined;
     const allowLocalFallback = options?.allowLocalFallback ?? !blob.type.startsWith("video/");
     try {
         const kind = blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : "file";
         const resource = await uploadResourceFile(blob, kind, { ...meta, fileName: input instanceof File ? input.name : undefined });
         await primeResourceBlobCache(resourceStorageKey(resource.id), blob).catch(() => "");
         URL.revokeObjectURL(previewUrl);
-        return {
-            url: resource.publicUrl || resourceFileUrl(resource.id),
-            storageKey: resourceStorageKey(resource.id),
-            bytes: resource.size || blob.size,
-            mimeType: resource.mimeType || blob.type || "application/octet-stream",
-            width: resource.width || meta.width,
-            height: resource.height || meta.height,
-            durationMs: resource.durationMs || meta.durationMs,
-        };
+        return { url: resource.publicUrl || resourceFileUrl(resource.id), storageKey: resourceStorageKey(resource.id), bytes: resource.size || blob.size, mimeType: resource.mimeType || blob.type || "application/octet-stream", width: resource.width || meta.width, height: resource.height || meta.height, durationMs: resource.durationMs || meta.durationMs, hasAudio: meta.hasAudio, preview: poster };
     } catch (error) {
         if (!allowLocalFallback) {
             URL.revokeObjectURL(previewUrl);
@@ -40,14 +45,14 @@ export async function uploadMediaFile(input: string | Blob, prefix = "file", opt
     await store.setItem(storageKey, blob);
     const url = previewUrl;
     objectUrls.set(storageKey, url);
-    return { url, storageKey, bytes: blob.size, mimeType: blob.type || "application/octet-stream", ...meta };
+    return { url, storageKey, bytes: blob.size, mimeType: blob.type || "application/octet-stream", ...meta, preview: poster };
 }
 
 export async function resolveMediaUrl(storageKey?: string, fallback = "") {
     if (!storageKey) return fallback;
     const resourceId = resourceIdFromStorageKey(storageKey);
     if (resourceId) {
-        // Keep the provider URL primary; the resource is the durable fallback.
+        // Keep a provider URL as the primary source; the resource is the durable fallback.
         if (fallback) return fallback;
         const cached = await getCachedResourceObjectUrl(storageKey).catch(() => "");
         return cached || resourceFileUrl(resourceId);
@@ -61,18 +66,18 @@ export async function resolveMediaUrl(storageKey?: string, fallback = "") {
     return url;
 }
 
+export async function getMediaBlob(storageKey: string) {
+    if (resourceIdFromStorageKey(storageKey)) return getCachedResourceBlob(storageKey);
+    return store.getItem<Blob>(storageKey);
+}
+
 /** Resolve a resource to a browser-readable same-origin URL for media tools. */
 export function resolveReadableMediaUrl(storageKey?: string) {
     const resourceId = resourceIdFromStorageKey(storageKey);
     return resourceId ? resourceProxyFileUrl(resourceId) : "";
 }
 
-export async function getMediaBlob(storageKey: string) {
-    if (resourceIdFromStorageKey(storageKey)) return getCachedResourceBlob(storageKey);
-    return store.getItem<Blob>(storageKey);
-}
-
-/** Read media for operations that need response bytes, using the same-origin resource proxy. */
+/** Read media bytes from local cache, the resource proxy, or the source URL. */
 export async function getMediaBlobFromSource(source?: string, storageKey?: string) {
     if (storageKey) {
         const stored = await getMediaBlob(storageKey);
@@ -83,7 +88,7 @@ export async function getMediaBlobFromSource(source?: string, storageKey?: strin
     if (resourceId) return getResourceBlob(resourceStorageKey(resourceId));
     if (!source) return null;
     const response = await fetch(source, { credentials: "same-origin" });
-    if (!response.ok) throw new Error(`媒体资源请求失败（${response.status}）`);
+    if (!response.ok) throw new Error("媒体资源请求失败（" + response.status + "）");
     return response.blob();
 }
 
@@ -123,16 +128,6 @@ export function collectMediaStorageKeys(value: unknown, keys = new Set<string>()
     if ("storageKey" in value && typeof value.storageKey === "string" && (value.storageKey.includes(":") || resourceIdFromStorageKey(value.storageKey))) keys.add(value.storageKey);
     Object.values(value).forEach((item) => (Array.isArray(item) ? item.forEach((child) => collectMediaStorageKeys(child, keys)) : collectMediaStorageKeys(item, keys)));
     return keys;
-}
-
-function readVideoMeta(url: string) {
-    return new Promise<{ width: number; height: number; durationMs?: number }>((resolve) => {
-        const video = document.createElement("video");
-        const done = () => resolve({ width: video.videoWidth || 1280, height: video.videoHeight || 720, durationMs: Number.isFinite(video.duration) ? Math.round(video.duration * 1000) : undefined });
-        video.onloadedmetadata = done;
-        video.onerror = done;
-        video.src = url;
-    });
 }
 
 function readAudioMeta(url: string) {

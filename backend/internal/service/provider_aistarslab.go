@@ -59,6 +59,9 @@ func runAiStarsLabImageTask(ctx context.Context, input canvasGenerationInput) (m
 		if err := postJSON(ctx, input.Config, "/generation/create/image", body, &created); err != nil {
 			return nil, err
 		}
+		if message := aiStarsLabResponseError(created); message != "" {
+			return nil, errors.New(message)
+		}
 		id = aiStarsLabTaskID(created)
 	}
 	if id == "" {
@@ -74,6 +77,37 @@ func runAiStarsLabImageTask(ctx context.Context, input canvasGenerationInput) (m
 	}
 	mimeType = normalizedMediaMimeType(mimeType, data)
 	return map[string]interface{}{"mode": "image", "images": []map[string]interface{}{{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}}, nil
+}
+
+func runAiStarsLabVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
+	id := resumedProviderRequestID(ctx)
+	if id == "" {
+		body, err := aiStarsLabVideoRequestBody(input)
+		if err != nil {
+			return nil, err
+		}
+		var created map[string]interface{}
+		if err := postJSON(ctx, input.Config, "/generation/create/video", body, &created); err != nil {
+			return nil, err
+		}
+		if message := aiStarsLabResponseError(created); message != "" {
+			return nil, errors.New(message)
+		}
+		id = aiStarsLabTaskID(created)
+	}
+	if id == "" {
+		return nil, errors.New("AIStarsLab 视频接口没有返回任务 ID")
+	}
+	resultURL, err := pollAiStarsLabTask(ctx, input, id, "视频")
+	if err != nil {
+		return nil, err
+	}
+	data, mimeType, err := getProviderExternalBinary(withProviderRequestKind(ctx, "download"), input.Config, resultURL)
+	if err != nil {
+		return nil, fmt.Errorf("AIStarsLab 视频结果下载失败（任务 %s）：%w", id, err)
+	}
+	mimeType = normalizedMediaMimeType(mimeType, data)
+	return videoResult(resultURL, mimeType, data), nil
 }
 
 func aiStarsLabImageRequestBody(input canvasGenerationInput) (map[string]interface{}, error) {
@@ -150,6 +184,18 @@ func aiStarsLabTaskID(payload map[string]interface{}) string {
 	return id
 }
 
+func aiStarsLabResponseError(payload map[string]interface{}) string {
+	data, _ := payload["data"].(map[string]interface{})
+	code := strings.TrimSpace(fmt.Sprint(payload["code"]))
+	nestedCode := strings.TrimSpace(fmt.Sprint(data["code"]))
+	for _, candidate := range []string{code, nestedCode} {
+		if candidate != "" && candidate != "<nil>" && candidate != "0" && !strings.EqualFold(candidate, "success") && !strings.EqualFold(candidate, "ok") {
+			return firstNonEmptyString(stringField(payload, "msg"), stringField(payload, "message"), stringField(payload, "errorMessage"), stringField(payload, "errorCode"), stringField(data, "msg"), stringField(data, "message"), stringField(data, "errorMessage"), stringField(data, "errorCode"), candidate)
+		}
+	}
+	return firstNonEmptyString(stringField(payload, "errorMessage"), stringField(payload, "errorCode"), stringField(data, "errorMessage"), stringField(data, "errorCode"))
+}
+
 func pollAiStarsLabTask(ctx context.Context, input canvasGenerationInput, id string, label string) (string, error) {
 	for deadline := providerPollingDeadline(ctx); time.Now().Before(deadline); {
 		var payload map[string]interface{}
@@ -160,7 +206,12 @@ func pollAiStarsLabTask(ctx context.Context, input canvasGenerationInput, id str
 		if data, ok := payload["data"].(map[string]interface{}); ok {
 			state = data
 		}
+		if message := aiStarsLabResponseError(payload); message != "" {
+			return "", fmt.Errorf("AIStarsLab %s查询失败（任务 %s）：%s", label, id, message)
+		}
 		switch fmt.Sprint(state["status"]) {
+		case "1", "2":
+			// Created and running are both pending from the host's perspective.
 		case "3":
 			resultURL := firstStringInList(state["outputs"])
 			if resultURL == "" {
@@ -235,6 +286,12 @@ func aiStarsLabVideoRequestBody(input canvasGenerationInput) (map[string]interfa
 	if err != nil {
 		return nil, err
 	}
+	if route.InputVideosMax >= 0 && len(videos) > route.InputVideosMax {
+		return nil, fmt.Errorf("AIStarsLab 当前模型最多支持 %d 个参考视频，当前连接了 %d 个", route.InputVideosMax, len(videos))
+	}
+	if route.InputAudiosMax >= 0 && len(audios) > route.InputAudiosMax {
+		return nil, fmt.Errorf("AIStarsLab 当前模型最多支持 %d 个参考音频，当前连接了 %d 个", route.InputAudiosMax, len(audios))
+	}
 	duration := config.Duration.Default
 	if value, parseErr := strconv.Atoi(strings.TrimSpace(input.Config.VideoSeconds)); parseErr == nil && value > 0 {
 		duration = value
@@ -259,8 +316,18 @@ func aiStarsLabVideoRequestBody(input canvasGenerationInput) (map[string]interfa
 }
 
 func aiStarsLabVideoMode(route *AIStarsLabCapabilityConfig, imageCount int) (string, error) {
+	if route == nil {
+		return "", errors.New("AIStarsLab 模型缺少线路编码，请在后台重新拉取该渠道模型")
+	}
 	if len(route.Modes) == 0 {
-		return "", nil
+		switch imageCount {
+		case 0:
+			return "text2video", nil
+		case 2:
+			return "frames2video", nil
+		default:
+			return "image2video", nil
+		}
 	}
 	supports := func(name string) bool {
 		for _, value := range route.Modes {

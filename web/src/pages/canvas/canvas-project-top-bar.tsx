@@ -141,7 +141,6 @@ export function CanvasTopBar({
                     <div ref={titleRef} className="canvas-topbar-title-block flex min-w-0 flex-auto flex-col items-start overflow-hidden">
                         {isTitleEditing ? (
                             <input
-                                name="canvas-title"
                                 autoFocus
                                 size={canvasTitleInputSize(titleDraft)}
                                 value={titleDraft}
@@ -161,13 +160,7 @@ export function CanvasTopBar({
                                     {title}
                                 </button>
                                 <CanvasTopBarTooltip label="重命名画布">
-                                    <button
-                                        type="button"
-                                        className="canvas-topbar-action grid size-7 shrink-0 place-items-center rounded-md opacity-60 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2"
-                                        style={{ color: theme.node.text }}
-                                        onClick={onStartTitleEditing}
-                                        aria-label="重命名画布"
-                                    >
+                                    <button type="button" className="canvas-topbar-action grid size-7 shrink-0 place-items-center rounded-md opacity-60 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2" style={{ color: theme.node.text }} onClick={onStartTitleEditing} aria-label="重命名画布">
                                         <Pencil className="size-3.5" />
                                     </button>
                                 </CanvasTopBarTooltip>
@@ -192,14 +185,7 @@ export function CanvasTopBar({
 
                 <div className="canvas-topbar-cluster pointer-events-auto flex items-center gap-1.5" style={dockStyle}>
                     <CanvasTopBarTooltip label="搜索画布节点">
-                        <Button
-                            type="text"
-                            className="canvas-topbar-action !hidden !h-10 !w-10 !min-w-10 !rounded-xl !p-0 lg:!inline-flex"
-                            style={{ color: theme.node.text }}
-                            icon={<Search className="size-4" />}
-                            onClick={onOpenSearch}
-                            aria-label="搜索画布节点"
-                        />
+                        <Button type="text" className="canvas-topbar-action !hidden !h-10 !w-10 !min-w-10 !rounded-xl !p-0 lg:!inline-flex" style={{ color: theme.node.text }} icon={<Search className="size-4" />} onClick={onOpenSearch} aria-label="搜索画布节点" />
                     </CanvasTopBarTooltip>
                     <CanvasTopBarTooltip label="导入第三方画布">
                         <Dropdown
@@ -249,7 +235,14 @@ export function CanvasTopBar({
                         </CanvasTopBarTooltip>
                     ) : null}
                     <CanvasTopBarTooltip label="进入专注模式（Shift + Ctrl/Cmd + F）">
-                        <Button type="text" className="canvas-topbar-action !h-10 !w-10 !min-w-10 !rounded-xl !p-0" style={{ color: theme.node.text }} icon={<Focus className="size-4" />} onClick={onEnterFocusMode} aria-label="进入专注模式" />
+                        <Button
+                            type="text"
+                            className="canvas-topbar-action !h-10 !w-10 !min-w-10 !rounded-xl !p-0"
+                            style={{ color: theme.node.text }}
+                            icon={<Focus className="size-4" />}
+                            onClick={onEnterFocusMode}
+                            aria-label="进入专注模式"
+                        />
                     </CanvasTopBarTooltip>
                     {shortDramaGuide ? (
                         <CanvasTopBarTooltip label={shortDramaGuide.collapsed ? "展开短剧流程" : "收起短剧流程"}>
@@ -367,10 +360,7 @@ function CanvasTopBarTooltip({ label, children }: { label: string; children: Rea
     return (
         <span className="group relative inline-flex">
             {children}
-            <span
-                role="tooltip"
-                className="aceternity-dock-tooltip pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-[var(--dock-tooltip-z)] -translate-x-1/2 translate-y-1 whitespace-nowrap rounded-md border px-2 py-1 text-[var(--fs-tiny)] font-medium opacity-0 shadow-xl backdrop-blur-xl transition-all duration-150 motion-reduce:transition-none group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100"
-            >
+            <span role="tooltip" className="aceternity-dock-tooltip pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-[var(--dock-tooltip-z)] -translate-x-1/2 translate-y-1 whitespace-nowrap rounded-md border px-2 py-1 text-[var(--fs-tiny)] font-medium opacity-0 shadow-xl backdrop-blur-xl transition-all duration-150 motion-reduce:transition-none group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100">
                 {label}
             </span>
         </span>
@@ -389,18 +379,9 @@ function ModeOption({ active, motionEnabled, icon, title, description, theme, on
             style={{ background: active ? theme.accent.primarySoft : "transparent", color: theme.node.text, outlineColor: theme.accent.primary }}
             onClick={onClick}
         >
-            <span className="grid size-8 shrink-0 place-items-center rounded-[var(--dock-item-radius)] [&_svg]:size-3.5" style={{ background: theme.spatial.surface, color: active ? theme.accent.primary : theme.node.muted }}>
-                {icon}
-            </span>
-            <span className="min-w-0 flex-1">
-                <span className="block text-[var(--fs-body)] font-semibold leading-none">{title}</span>
-                <span className="mt-1.5 block text-[var(--fs-caption)] leading-5" style={{ color: theme.node.muted }}>
-                    {description}
-                </span>
-            </span>
-            <span className="grid size-5 shrink-0 place-items-center" style={{ color: theme.accent.primary, opacity: active ? 1 : 0 }}>
-                <Check className="size-3.5" />
-            </span>
+            <span className="grid size-8 shrink-0 place-items-center rounded-[var(--dock-item-radius)] [&_svg]:size-3.5" style={{ background: theme.spatial.surface, color: active ? theme.accent.primary : theme.node.muted }}>{icon}</span>
+            <span className="min-w-0 flex-1"><span className="block text-[var(--fs-body)] font-semibold leading-none">{title}</span><span className="mt-1.5 block text-[var(--fs-caption)] leading-5" style={{ color: theme.node.muted }}>{description}</span></span>
+            <span className="grid size-5 shrink-0 place-items-center" style={{ color: theme.accent.primary, opacity: active ? 1 : 0 }}><Check className="size-3.5" /></span>
         </motion.button>
     );
 }
@@ -423,12 +404,5 @@ function CompactAgentStatus({ status, onClick }: { status: { connected: boolean;
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const label = status.connected ? "已连接到本地 Codex" : status.enabled ? status.activity || "连接中" : "正在连接本地 Codex";
     const dotColor = status.connected ? "#22c55e" : status.enabled ? "#f59e0b" : theme.node.muted;
-    return (
-        <CanvasTopBarTooltip label="打开本地 Codex 面板">
-            <button type="button" className="canvas-topbar-action flex h-10 items-center gap-2 rounded-xl px-3 text-sm font-medium" style={{ background: "transparent", color: theme.node.text }} onClick={onClick} aria-label="打开本地 Codex 面板">
-                <span className="size-2 rounded-full" style={{ background: dotColor }} />
-                <span className="max-w-[180px] truncate">{label}</span>
-            </button>
-        </CanvasTopBarTooltip>
-    );
+    return <CanvasTopBarTooltip label="打开本地 Codex 面板"><button type="button" className="canvas-topbar-action flex h-10 items-center gap-2 rounded-xl px-3 text-sm font-medium" style={{ background: "transparent", color: theme.node.text }} onClick={onClick} aria-label="打开本地 Codex 面板"><span className="size-2 rounded-full" style={{ background: dotColor }} /><span className="max-w-[180px] truncate">{label}</span></button></CanvasTopBarTooltip>;
 }
