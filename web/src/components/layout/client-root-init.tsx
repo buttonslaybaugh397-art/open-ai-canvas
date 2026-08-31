@@ -12,7 +12,8 @@ import { useUserStore } from "@/stores/use-user-store";
 export function ClientRootInit({ children }: { children: ReactNode }) {
     const config = useConfigStore((state) => state.config);
     const userId = useUserStore((state) => state.user?.id || "");
-    const localRuntimeConfigured = config.channels.some((channel) => channel.transport === "local-runtime" && channel.enabled !== false);
+    const desktopLocalChannelsEnabled = useUserStore((state) => state.features.desktopLocalChannelsEnabled);
+    const localRuntimeConfigured = desktopLocalChannelsEnabled && config.channels.some((channel) => channel.transport === "local-runtime" && channel.enabled !== false);
     useLocalRuntimeBootstrap(localRuntimeConfigured);
     useLocalDreaminaModelBootstrap();
     const { message } = App.useApp();

@@ -199,6 +199,18 @@ curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canv
 sudo docker compose --env-file .env -f docker-compose.deploy.yml up -d --force-recreate backend web --wait
 ```
 
+1Panel 或其他保留 `deployment-secrets` 的定制部署必须使用仓库内的专用编排，不能用标准部署文件覆盖。将下面的 `/实际编排目录` 替换为 1Panel 当前保存 `.env` 和 `docker-compose.1panel.yml` 的目录；该操作不需要重填数据库密码，也不会重建命名卷：
+
+```bash
+cd /实际编排目录
+curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canvas/main/scripts/install-host-updater.sh -o /tmp/install-open-ai-canvas-updater.sh
+sudo env INSTALL_DIR="$PWD" CANVAS_UPDATER_COMPOSE_FILE=docker-compose.1panel.yml bash /tmp/install-open-ai-canvas-updater.sh
+rm -f /tmp/install-open-ai-canvas-updater.sh
+sudo docker compose --env-file .env -f docker-compose.1panel.yml up -d --force-recreate backend web --wait
+```
+
+升级或重建时保留 `backend-data`、`deployment-secrets`、`postgres-data` 和 `redis-data`，不要执行 `docker compose down -v`。
+
 更新流程、数据库迁移、健康验证和异常回退说明见 [`docs/content/docs/backend/system-update.mdx`](docs/content/docs/backend/system-update.mdx)。
 
 ### 公网必做事项

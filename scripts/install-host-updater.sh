@@ -5,7 +5,10 @@ set -Eeuo pipefail
 INSTALL_DIR="${INSTALL_DIR:-/opt/open-ai-canvas}"
 REQUESTED_REPOSITORY="${CANVAS_UPDATER_REPOSITORY:-${REPOSITORY:-}}"
 REPOSITORY="${REQUESTED_REPOSITORY:-buttonslaybaugh397-art/open-ai-canvas}"
-SOCKET_DIR="${CANVAS_UPDATER_SOCKET_DIR:-/run/open-ai-canvas-updater}"
+REQUESTED_COMPOSE_FILE="${CANVAS_UPDATER_COMPOSE_FILE:-}"
+COMPOSE_FILE="${REQUESTED_COMPOSE_FILE:-docker-compose.deploy.yml}"
+REQUESTED_SOCKET_DIR="${CANVAS_UPDATER_SOCKET_DIR:-}"
+SOCKET_DIR="${REQUESTED_SOCKET_DIR:-/run/open-ai-canvas-updater}"
 UPDATER_BIN="/usr/local/bin/open-ai-canvas-host-updater"
 UPDATER_ENV="/etc/open-ai-canvas-updater.env"
 UPDATER_SERVICE="/etc/systemd/system/open-ai-canvas-updater.service"
@@ -23,7 +26,25 @@ require_root() {
     command -v sha256sum >/dev/null 2>&1 || fail "缺少 sha256sum"
     command -v openssl >/dev/null 2>&1 || fail "缺少 openssl"
     [[ -f "${INSTALL_DIR}/.env" ]] || fail "未找到 ${INSTALL_DIR}/.env"
-    [[ -f "${INSTALL_DIR}/docker-compose.deploy.yml" ]] || fail "未找到部署 Compose"
+}
+
+read_compose_file() {
+    local configured
+    configured="$(sed -n 's/^CANVAS_UPDATER_COMPOSE_FILE=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
+    if [[ -z "$REQUESTED_COMPOSE_FILE" && -n "$configured" ]]; then
+        COMPOSE_FILE="$configured"
+    fi
+    [[ "$COMPOSE_FILE" =~ ^[A-Za-z0-9._-]+\.ya?ml$ ]] || fail "CANVAS_UPDATER_COMPOSE_FILE 必须是安装目录中的 YAML 文件名"
+    [[ -f "${INSTALL_DIR}/${COMPOSE_FILE}" ]] || fail "未找到 ${INSTALL_DIR}/${COMPOSE_FILE}"
+}
+
+read_socket_dir() {
+    local configured
+    configured="$(sed -n 's/^CANVAS_UPDATER_SOCKET_DIR=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
+    if [[ -z "$REQUESTED_SOCKET_DIR" && -n "$configured" ]]; then
+        SOCKET_DIR="$configured"
+    fi
+    [[ "$SOCKET_DIR" =~ ^/[A-Za-z0-9._/-]+$ && "$SOCKET_DIR" != *..* ]] || fail "CANVAS_UPDATER_SOCKET_DIR 必须是无空格的绝对路径"
 }
 
 read_image_tag() {
@@ -46,6 +67,19 @@ read_repository() {
     [[ "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "CANVAS_UPDATER_REPOSITORY 必须是 owner/repository"
 }
 
+upsert_env_value() {
+    local key="$1" value="$2" temporary
+    temporary="$(mktemp "${INSTALL_DIR}/.env.XXXXXX")"
+    awk -v key="$key" -v value="$value" '
+        BEGIN { updated=0 }
+        index($0, key "=") == 1 { print key "=" value; updated=1; next }
+        { print }
+        END { if (!updated) print key "=" value }
+    ' "${INSTALL_DIR}/.env" > "$temporary"
+    chmod --reference="${INSTALL_DIR}/.env" "$temporary"
+    mv "$temporary" "${INSTALL_DIR}/.env"
+}
+
 install_binary() {
     local arch asset temporary checksum_file expected
     case "$(uname -m)" in
@@ -66,23 +100,19 @@ install_binary() {
 }
 
 ensure_token() {
-    local token temporary
+    local token
     token="$(sed -n 's/^CANVAS_UPDATER_TOKEN=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
     if [[ -z "$token" ]]; then
         token="$(openssl rand -hex 32)"
-        temporary="$(mktemp "${INSTALL_DIR}/.env.XXXXXX")"
-        awk -v token="$token" '
-            BEGIN { updated=0 }
-            /^CANVAS_UPDATER_TOKEN=/ { print "CANVAS_UPDATER_TOKEN=" token; updated=1; next }
-            { print }
-            END { if (!updated) print "CANVAS_UPDATER_TOKEN=" token }
-        ' "${INSTALL_DIR}/.env" > "$temporary"
-        chmod --reference="${INSTALL_DIR}/.env" "$temporary"
-        mv "$temporary" "${INSTALL_DIR}/.env"
     fi
     [[ ${#token} -ge 32 ]] || fail "CANVAS_UPDATER_TOKEN 长度不足"
+    upsert_env_value CANVAS_UPDATER_TOKEN "$token"
+    upsert_env_value CANVAS_IMAGE_OWNER "${REPOSITORY%%/*}"
+    upsert_env_value CANVAS_UPDATER_REPOSITORY "$REPOSITORY"
+    upsert_env_value CANVAS_UPDATER_COMPOSE_FILE "$COMPOSE_FILE"
+    upsert_env_value CANVAS_UPDATER_SOCKET_DIR "$SOCKET_DIR"
     umask 077
-    printf 'CANVAS_UPDATER_TOKEN=%s\nCANVAS_UPDATER_REPOSITORY=%s\nCANVAS_UPDATER_INSTALL_DIR=%s\nCANVAS_UPDATER_SOCKET=%s/updater.sock\n' "$token" "$REPOSITORY" "$INSTALL_DIR" "$SOCKET_DIR" > "$UPDATER_ENV"
+    printf 'CANVAS_UPDATER_TOKEN=%s\nCANVAS_UPDATER_REPOSITORY=%s\nCANVAS_UPDATER_INSTALL_DIR=%s\nCANVAS_UPDATER_COMPOSE_FILE=%s\nCANVAS_UPDATER_SOCKET=%s/updater.sock\n' "$token" "$REPOSITORY" "$INSTALL_DIR" "$COMPOSE_FILE" "$SOCKET_DIR" > "$UPDATER_ENV"
 }
 
 install_service() {
@@ -120,12 +150,14 @@ install_service() {
 
 main() {
     require_root
+    read_compose_file
+    read_socket_dir
     read_image_tag
     read_repository
     install_binary
     ensure_token
     install_service
-    printf 'Host Updater 已安装，更新仓库：%s，Socket：%s/updater.sock\n' "$REPOSITORY" "$SOCKET_DIR"
+    printf 'Host Updater 已安装，更新仓库：%s，Compose：%s，Socket：%s/updater.sock\n' "$REPOSITORY" "$COMPOSE_FILE" "$SOCKET_DIR"
     printf '请重建 backend 容器，使 Token 与 Socket 挂载生效。\n'
 }
 

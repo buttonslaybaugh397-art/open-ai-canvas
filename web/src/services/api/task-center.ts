@@ -11,6 +11,9 @@ import {
     type LocalDreaminaGenerationTask,
 } from "@/services/local-dreamina-generation";
 import { isLocalDreaminaTaskId, projectLocalDreaminaDiagnosticLog, projectLocalDreaminaTask, stripLocalDreaminaTaskPrefix } from "@/services/local-dreamina-task-projection";
+import { useConfigStore } from "@/stores/use-config-store";
+import { useLocalRuntimeStore } from "@/stores/use-local-runtime-store";
+import { useUserStore } from "@/stores/use-user-store";
 
 export type { BackendEnvelope } from "@/services/api/request";
 
@@ -254,7 +257,32 @@ type GenerationTaskListDependencies = {
     listLocal?(options?: GenerationTaskListOptions, signal?: AbortSignal): Promise<LocalDreaminaGenerationTask[]>;
     listBackendPage?(request: GenerationTaskPageRequest, signal?: AbortSignal): Promise<GenerationTaskPage<GenerationTask>>;
     listLocalPage?(request: GenerationTaskPageRequest, signal?: AbortSignal): Promise<GenerationTaskPage<LocalDreaminaGenerationTask>>;
+    shouldListLocal?(): boolean;
 };
+
+export function localGenerationTaskListingReady(state: {
+    desktopLocalChannelsEnabled: boolean;
+    channels: Array<{ transport?: string; enabled?: boolean }>;
+    connection: string;
+    modules: Array<{ id: string; scopes: readonly string[] }>;
+}) {
+    return (
+        state.desktopLocalChannelsEnabled &&
+        state.channels.some((channel) => channel.transport === "local-runtime" && channel.enabled !== false) &&
+        state.connection === "connected" &&
+        state.modules.some((module) => module.id === "dreamina" && module.scopes.includes("dreamina:generate"))
+    );
+}
+
+function shouldListDefaultLocalGenerationTasks() {
+    const runtime = useLocalRuntimeStore.getState();
+    return localGenerationTaskListingReady({
+        desktopLocalChannelsEnabled: useUserStore.getState().features.desktopLocalChannelsEnabled,
+        channels: useConfigStore.getState().config.channels,
+        connection: runtime.connection,
+        modules: runtime.modules,
+    });
+}
 
 const defaultGenerationTaskListDependencies: GenerationTaskListDependencies = {
     listBackendPage: async (page, signal) => ({
@@ -266,6 +294,7 @@ const defaultGenerationTaskListDependencies: GenerationTaskListDependencies = {
         ),
     }),
     listLocalPage: (page, signal) => listLocalDreaminaGenerationTaskPage(page, {}, signal),
+    shouldListLocal: shouldListDefaultLocalGenerationTasks,
 };
 
 export async function listGenerationTasks(limit = 30, options?: { projectId?: string; activeOnly?: boolean }, dependencies: GenerationTaskListDependencies = defaultGenerationTaskListDependencies, signal?: AbortSignal) {
@@ -301,7 +330,11 @@ export async function listGenerationTasks(limit = 30, options?: { projectId?: st
                     pageSignal,
                 )) ?? [],
         }));
-    const [backendTasks, localTasks] = await Promise.all([collectGenerationTaskPages(backendPageReader, baseRequest, boundedLimit, signal), collectGenerationTaskPages(localPageReader, baseRequest, boundedLimit, signal).catch(() => [])]);
+    const shouldListLocal = dependencies.shouldListLocal?.() ?? dependencies !== defaultGenerationTaskListDependencies;
+    const [backendTasks, localTasks] = await Promise.all([
+        collectGenerationTaskPages(backendPageReader, baseRequest, boundedLimit, signal),
+        shouldListLocal ? collectGenerationTaskPages(localPageReader, baseRequest, boundedLimit, signal).catch(() => []) : Promise.resolve([]),
+    ]);
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     return [...backendTasks, ...localTasks.map((task) => projectLocalDreaminaTask(task))]
         .filter((task) => !options?.projectId || task.projectId === options.projectId)

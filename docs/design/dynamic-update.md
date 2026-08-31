@@ -120,6 +120,7 @@ Updater 先让 Backend 进入 drain。Readiness 立即变为 503，新生成任�
 - 独立最小权限进程、操作锁、持久化状态、备份、镜像切换和健康回退；
 - 后台实时展示进度，先在 PostgreSQL 官方 Compose 上灰度；
 - SQLite 和自定义数据目录在备份/恢复验证完成后开放。
+- 1Panel 使用 `docker-compose.1panel.yml` 保留 `deployment-secrets` 与既有数据卷，并通过 `CANVAS_UPDATER_COMPOSE_FILE` 固定后续版本下载的专用编排；不得使用标准 Compose 覆盖，也不得执行 `docker compose down -v`。
 
 ### P3：自动调度
 

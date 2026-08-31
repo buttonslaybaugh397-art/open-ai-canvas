@@ -179,11 +179,12 @@ export function getResource(id: string): Promise<RemoteResource> {
     if (pending) return pending;
     const task = request<{ resource: RemoteResource }>(api.get(`/resources/${encodeURIComponent(id)}`))
         .then((data) => {
+            missingResourceIds.delete(cacheKey);
             resourceCache.set(cacheKey, data.resource);
             return data.resource;
         })
         .catch((error) => {
-            if (axios.isAxiosError(error) && error.response?.status === 404) missingResourceIds.add(cacheKey);
+            if (axios.isAxiosError(error) && (error.response?.status === 404 || error.response?.status === 410)) missingResourceIds.add(cacheKey);
             throw error;
         })
         .finally(() => resourceRequests.delete(cacheKey));
@@ -237,6 +238,12 @@ function resourceCacheKey(id: string) {
     return `${getActiveUserScope()}:${id}`;
 }
 
+export function isResourceKnownMissing(storageKeyOrId?: string) {
+    const value = String(storageKeyOrId || "").trim();
+    const id = resourceIdFromStorageKey(value) || value;
+    return Boolean(id && missingResourceIds.has(resourceCacheKey(id)));
+}
+
 export function resourceFileUrl(id: string) {
     const base = String(apiBaseURL).replace(/\/+$/, "");
     return `${base}/resources/${encodeURIComponent(id)}/file`;
@@ -259,23 +266,39 @@ export function resolveResourceUrl(storageKey?: string, fallback = "") {
     return id ? resourceFileUrl(id) : fallback;
 }
 
-export async function getResourceBlob(storageKey: string) {
+export async function getResourceBlob(
+    storageKey: string,
+    dependencies: { fetch?: typeof fetch; sleep?: (delayMs: number) => Promise<void> } = {},
+) {
     const id = resourceIdFromStorageKey(storageKey);
     if (!id) return null;
+    const cacheKey = resourceCacheKey(id);
+    if (missingResourceIds.has(cacheKey)) return null;
     const url = resourceProxyFileUrl(id);
-    let lastError: unknown = null;
+    const fetchResource = dependencies.fetch ?? fetch;
+    const sleep = dependencies.sleep ?? ((delayMs: number) => new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
     for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
-            const response = await fetch(url, { credentials: isResourceUrl(url) ? "include" : "same-origin" });
-            if (response.ok) return response.blob();
-            lastError = new Error(`资源读取失败（${response.status}）`);
-        } catch (error) {
-            lastError = error;
+            const response = await fetchResource(url, { credentials: isResourceUrl(url) ? "include" : "same-origin" });
+            if (response.ok) {
+                missingResourceIds.delete(cacheKey);
+                return response.blob();
+            }
+            if (response.status === 404 || response.status === 410) {
+                missingResourceIds.add(cacheKey);
+                return null;
+            }
+            if (!resourceBlobResponseRetryable(response.status)) return null;
+        } catch {
+            // Network failures are transient and may be retried below.
         }
-        if (attempt < 2) await new Promise((resolve) => window.setTimeout(resolve, 250 * (attempt + 1)));
+        if (attempt < 2) await sleep(250 * (attempt + 1));
     }
-    void lastError;
     return null;
+}
+
+function resourceBlobResponseRetryable(status: number) {
+    return status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
 function extensionFromMime(mimeType: string, kind: string) {

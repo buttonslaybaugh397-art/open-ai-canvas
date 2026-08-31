@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import { defaultConfig } from "../src/stores/use-config-store";
 import { runBackendGenerationTask, runBackendGenerationTaskBatch } from "../src/services/api/generation-task";
-import { deleteGenerationTask, formatTaskLog, listGenerationTasks, projectBackendSafeTaskLog, splitGenerationTaskObservationIds, type GenerationTask } from "../src/services/api/task-center";
+import { deleteGenerationTask, formatTaskLog, listGenerationTasks, localGenerationTaskListingReady, projectBackendSafeTaskLog, splitGenerationTaskObservationIds, type GenerationTask } from "../src/services/api/task-center";
 import { isLocalDreaminaBackgroundTask, localDreaminaCancellationCopy, localDreaminaDetachOutcome, projectLocalDreaminaTask } from "../src/services/local-dreamina-task-projection";
 import { LocalDreaminaGenerationClientError, runLocalDreaminaGenerationTask, type LocalDreaminaGenerationInput } from "../src/services/local-dreamina-generation";
 import { createGenerationBatchRetryContexts, createGenerationRetryContext, generationTaskMetadata, runBackendCanvasGenerationTask, runCanvasGenerationTaskToConsumer } from "../src/lib/canvas/canvas-project-generation";
@@ -992,6 +992,34 @@ test("task center merges durable local Dreamina summaries without creating Backe
     expect(calls).toEqual(["backend:30", "local:list"]);
     expect(tasks.map((task) => task.id)).toEqual(["dreamina:dreamina-task-center-0001", "backend-task-0001"]);
     expect(tasks[0]).toMatchObject({ provider: "dreamina-cli", prompt: "", status: "running" });
+});
+
+test("task center reads local history only after the configured Dreamina runtime is ready", async () => {
+    const readyState = {
+        desktopLocalChannelsEnabled: true,
+        channels: [{ transport: "local-runtime", enabled: true }],
+        connection: "connected",
+        modules: [{ id: "dreamina", scopes: ["dreamina:generate"] }],
+    };
+    expect(localGenerationTaskListingReady(readyState)).toBe(true);
+    expect(localGenerationTaskListingReady({ ...readyState, desktopLocalChannelsEnabled: false })).toBe(false);
+    expect(localGenerationTaskListingReady({ ...readyState, channels: [] })).toBe(false);
+    expect(localGenerationTaskListingReady({ ...readyState, connection: "unreachable" })).toBe(false);
+    expect(localGenerationTaskListingReady({ ...readyState, modules: [{ id: "dreamina", scopes: ["dreamina:models"] }] })).toBe(false);
+
+    let localReads = 0;
+    const tasks = await listGenerationTasks(30, undefined, {
+        async listBackend() {
+            return [];
+        },
+        async listLocal() {
+            localReads += 1;
+            return [];
+        },
+        shouldListLocal: () => false,
+    });
+    expect(tasks).toEqual([]);
+    expect(localReads).toBe(0);
 });
 
 test("project task lists include only durably scoped local Dreamina summaries", async () => {

@@ -19,6 +19,7 @@ import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { saveCanvasDrawing, type CanvasDrawingRenderDraft } from "@/lib/canvas/canvas-drawing-storage";
 import { createCanvasProjectWithRemoteSync, saveRemoteUserDataNow } from "@/services/user-data-sync";
 import { listProjects } from "@/services/api/projects";
+import { useUserStore } from "@/stores/use-user-store";
 
 export default function CanvasPage() {
     const { message } = App.useApp();
@@ -37,9 +38,10 @@ export default function CanvasPage() {
     const selectedIds = useCanvasUiStore((state) => state.selectedProjectIds);
     const setDeleteIds = useCanvasUiStore((state) => state.setDeleteProjectIds);
     const updateProject = useCanvasStore((state) => state.updateProject);
+    const shortDramaEnabled = useUserStore((state) => state.features.shortDramaEnabled);
     const [associationOpen, setAssociationOpen] = useState(false);
     const [associationProjectId, setAssociationProjectId] = useState("");
-    const projectQuery = useQuery({ queryKey: ["projects"], queryFn: () => listProjects() });
+    const projectQuery = useQuery({ queryKey: ["projects"], queryFn: () => listProjects(), enabled: shortDramaEnabled });
 
     const mode = searchParams.get("mode");
     const agentMode = mode === "new" || mode === "recent" || mode === "choose";
@@ -67,7 +69,10 @@ export default function CanvasPage() {
     const selectedProjects = projects.filter((project) => selectedIds.includes(project.id));
     const projectFilterLabel = projectFilter === "all" ? "全部画布" : projectFilter === "independent" ? "自由画布" : projectNames.get(projectFilter) || "项目画布";
     const sortLabel = sort === "name" ? "按名称" : sort === "nodes" ? "按节点" : "最近更新";
-    const projectFilterItems = useMemo(() => [{ key: "all", label: "全部画布" }, { key: "independent", label: "自由画布" }, ...(projectQuery.data?.projects || []).map(({ project }) => ({ key: project.id, label: project.name }))], [projectQuery.data]);
+    const projectFilterItems = useMemo(
+        () => [{ key: "all", label: "全部画布" }, { key: "independent", label: "自由画布" }, ...(shortDramaEnabled ? projectQuery.data?.projects || [] : []).map(({ project }) => ({ key: project.id, label: project.name }))],
+        [projectQuery.data, shortDramaEnabled],
+    );
     const sortItems = [
         { key: "updated", label: "最近更新", icon: <Clock3 className="size-3.5" /> },
         { key: "name", label: "按名称", icon: <ArrowDownAZ className="size-3.5" /> },
@@ -76,6 +81,10 @@ export default function CanvasPage() {
     useEffect(() => {
         setLoadedProjectCount(50);
     }, [keyword, projectFilter, sort]);
+    useEffect(() => {
+        if (!shortDramaEnabled && projectFilter !== "all" && projectFilter !== "independent") setProjectFilter("all");
+        if (!shortDramaEnabled) setAssociationOpen(false);
+    }, [projectFilter, shortDramaEnabled]);
     useEffect(() => {
         const node = loadMoreRef.current;
         if (!node || visibleProjects.length >= filteredProjects.length) return;
@@ -244,22 +253,24 @@ export default function CanvasPage() {
                         ) : null}
                     </div>
                     <div className="canvas-library-filters">
-                        <Dropdown
-                            trigger={["click"]}
-                            placement="bottomLeft"
-                            menu={{
-                                items: projectFilterItems,
-                                selectedKeys: [projectFilter],
-                                onClick: ({ key }) => {
-                                    setProjectFilter(String(key));
-                                },
-                            }}
-                        >
-                            <button type="button" className={`canvas-library-filter${projectFilter !== "all" ? " is-active" : ""}`} aria-label="按所属项目筛选">
-                                <SlidersHorizontal />
-                                <span>{projectFilterLabel}</span>
-                            </button>
-                        </Dropdown>
+                        {shortDramaEnabled ? (
+                            <Dropdown
+                                trigger={["click"]}
+                                placement="bottomLeft"
+                                menu={{
+                                    items: projectFilterItems,
+                                    selectedKeys: [projectFilter],
+                                    onClick: ({ key }) => {
+                                        setProjectFilter(String(key));
+                                    },
+                                }}
+                            >
+                                <button type="button" className={`canvas-library-filter${projectFilter !== "all" ? " is-active" : ""}`} aria-label="按所属项目筛选">
+                                    <SlidersHorizontal />
+                                    <span>{projectFilterLabel}</span>
+                                </button>
+                            </Dropdown>
+                        ) : null}
                         <Dropdown
                             trigger={["click"]}
                             placement="bottomLeft"
@@ -276,7 +287,7 @@ export default function CanvasPage() {
                                 <span>{sortLabel}</span>
                             </button>
                         </Dropdown>
-                        {keyword || projectFilter !== "all" || sort !== "updated" ? (
+                        {keyword || (shortDramaEnabled && projectFilter !== "all") || sort !== "updated" ? (
                             <button
                                 type="button"
                                 className="canvas-library-reset"
@@ -301,17 +312,19 @@ export default function CanvasPage() {
                 {selectedIds.length ? (
                     <div className="app-canvas-selection-toolbar mt-2 flex min-h-10 flex-wrap items-center gap-2 rounded-md border px-3 py-1.5 text-xs">
                         <strong className="mr-auto font-medium">已选 {selectedIds.length} 个画布</strong>
-                        <Button
-                            size="small"
-                            disabled={!hydrated || projectQuery.isLoading}
-                            onClick={() => {
-                                setAssociationProjectId(selectedProjects[0]?.projectId || "");
-                                setAssociationOpen(true);
-                            }}
-                        >
-                            加入项目
-                        </Button>
-                        {selectedProjects.some((project) => project.projectId) ? (
+                        {shortDramaEnabled ? (
+                            <Button
+                                size="small"
+                                disabled={!hydrated || projectQuery.isLoading}
+                                onClick={() => {
+                                    setAssociationProjectId(selectedProjects[0]?.projectId || "");
+                                    setAssociationOpen(true);
+                                }}
+                            >
+                                加入项目
+                            </Button>
+                        ) : null}
+                        {shortDramaEnabled && selectedProjects.some((project) => project.projectId) ? (
                             <Button
                                 size="small"
                                 disabled={!hydrated}
@@ -338,7 +351,7 @@ export default function CanvasPage() {
                     <CollectionGrid className="canvas-library-grid">
                         {showCreateCard ? <CanvasCreateCard disabled={!hydrated} onClick={createAndEnter} /> : null}
                         {visibleProjects.map((project) => (
-                            <CanvasFolderCard key={project.id} project={project} projectName={project.projectId ? projectNames.get(project.projectId) || "未同步项目" : undefined} onClick={() => enterProject(project.id)} />
+                            <CanvasFolderCard key={project.id} project={project} projectName={shortDramaEnabled && project.projectId ? projectNames.get(project.projectId) || "未同步项目" : undefined} onClick={() => enterProject(project.id)} />
                         ))}
                     </CollectionGrid>
                 ) : (
@@ -354,7 +367,7 @@ export default function CanvasPage() {
             <input ref={inputRef} name="canvas-archive-upload" type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importCanvas(event.target.files?.[0])} />
             <Modal
                 title="加入项目"
-                open={associationOpen}
+                open={shortDramaEnabled && associationOpen}
                 okText="保存关联"
                 cancelText="取消"
                 okButtonProps={{ disabled: !associationProjectId, loading: projectQuery.isFetching }}

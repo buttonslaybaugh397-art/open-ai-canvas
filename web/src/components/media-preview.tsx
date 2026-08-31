@@ -2,7 +2,7 @@ import { ImageOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
-import { resourceIdFromStorageKey, resourceIdFromUrl, resourceProxyFileUrl, resourceStorageKey } from "@/services/api/resources";
+import { isResourceKnownMissing, resourceIdFromStorageKey, resourceIdFromUrl, resourceProxyFileUrl, resourceStorageKey } from "@/services/api/resources";
 import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
 import { resolveMediaUrl } from "@/services/file-storage";
 
@@ -58,6 +58,11 @@ export function MediaPreview({
     }, [fallbackStorageKey, src]);
 
     const handleUnavailable = () => {
+        if (resourceId && isResourceKnownMissing(mediaStorageKey)) {
+            setUnavailable(true);
+            onUnavailable?.();
+            return;
+        }
         if (activeSrc !== proxyFallbackUrl && resourceId && !fallbackAttemptedRef.current) {
             fallbackAttemptedRef.current = true;
             const version = sourceVersionRef.current;

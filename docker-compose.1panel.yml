@@ -44,12 +44,30 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  migrate:
+    image: ghcr.io/${CANVAS_IMAGE_OWNER:-buttonslaybaugh397-art}/open-ai-canvas-backend:${CANVAS_IMAGE_TAG:-latest}
+    pull_policy: always
+    environment:
+      CANVAS_BACKEND_DATA_DIR: /data
+      CANVAS_DATABASE_DRIVER: postgres
+    command:
+      - /bin/sh
+      - -ec
+      - export DATABASE_URL="$$(cat /run/canvas-secrets/database-url)"; exec migrate-schema up
+    volumes:
+      - deployment-secrets:/run/canvas-secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   backend:
-    image: ghcr.io/buttonslaybaugh397-art/open-ai-canvas-backend:${CANVAS_IMAGE_TAG:-latest}
+    image: ghcr.io/${CANVAS_IMAGE_OWNER:-buttonslaybaugh397-art}/open-ai-canvas-backend:${CANVAS_IMAGE_TAG:-latest}
     pull_policy: always
     environment:
       CANVAS_BACKEND_ADDR: ':8080'
       CANVAS_BACKEND_DATA_DIR: /data
+      CANVAS_AUTO_MIGRATE: "false"
+      CANVAS_SHUTDOWN_TIMEOUT: ${CANVAS_SHUTDOWN_TIMEOUT:-10m}
       CANVAS_DATABASE_DRIVER: postgres
       REDIS_URL: redis://redis:6379/0
       CANVAS_WORKER_CONCURRENCY: ${CANVAS_WORKER_CONCURRENCY:-3}
@@ -58,6 +76,8 @@ services:
       CANVAS_ALLOW_PRIVATE_UPSTREAMS: ${CANVAS_ALLOW_PRIVATE_UPSTREAMS:-false}
       CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS: ${CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS:-}
       CANVAS_CORS_ORIGINS: ${CANVAS_CORS_ORIGINS:-http://192.204.35.56:6868}
+      CANVAS_UPDATER_SOCKET: /run/open-ai-canvas-updater/updater.sock
+      CANVAS_UPDATER_TOKEN: ${CANVAS_UPDATER_TOKEN:-}
       GIN_MODE: release
     command:
       - /bin/sh
@@ -66,12 +86,16 @@ services:
     volumes:
       - backend-data:/data
       - deployment-secrets:/run/canvas-secrets:ro
+      - ${CANVAS_UPDATER_SOCKET_DIR:-/run/open-ai-canvas-updater}:/run/open-ai-canvas-updater
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
+    stop_grace_period: ${CANVAS_SHUTDOWN_TIMEOUT:-10m}
 
   redis:
     image: redis:7.4-alpine
@@ -86,7 +110,7 @@ services:
     restart: unless-stopped
 
   web:
-    image: ghcr.io/buttonslaybaugh397-art/open-ai-canvas-web:${CANVAS_IMAGE_TAG:-latest}
+    image: ghcr.io/${CANVAS_IMAGE_OWNER:-buttonslaybaugh397-art}/open-ai-canvas-web:${CANVAS_IMAGE_TAG:-latest}
     pull_policy: always
     ports:
       - '${CANVAS_BIND_ADDRESS:-0.0.0.0}:${CANVAS_HTTP_PORT:-6868}:3000'

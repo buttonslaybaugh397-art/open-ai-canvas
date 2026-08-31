@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ImgHTMLAttributes, type ReactNode } from "react";
 
-import { resourceIdFromStorageKey } from "@/services/api/resources";
+import { isResourceKnownMissing, resourceIdFromStorageKey } from "@/services/api/resources";
 import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
 
 type CachedResourceImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, "src"> & {
@@ -56,11 +56,15 @@ export function CachedResourceImage({ storageKey, src = "", fallback = null, eag
         setCachedSrc("");
         const resolve = cacheResourceObjectUrl(storageKey);
         void resolve.then((url) => {
-            if (!cancelled) setCachedSrc(url || src);
+            if (cancelled) return;
+            const missing = isResourceKnownMissing(storageKey);
+            setCacheFailed(missing);
+            setCachedSrc(url || (missing ? "" : src));
         }).catch(() => {
             if (!cancelled) {
-                setCacheFailed(true);
-                setCachedSrc(src);
+                const missing = isResourceKnownMissing(storageKey);
+                setCacheFailed(missing);
+                setCachedSrc(missing ? "" : src);
             }
         });
         return () => { cancelled = true; };

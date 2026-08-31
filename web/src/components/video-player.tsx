@@ -3,7 +3,7 @@ import type { ComponentProps } from "react";
 import { isVideoProvider, MediaPlayer, MediaProvider, type MediaPlayerInstance, type VideoMimeType } from "@vidstack/react";
 import { DefaultVideoLayout, defaultLayoutIcons, type DefaultLayoutTranslations } from "@vidstack/react/player/layouts/default";
 import { detectVideoAudioTrack, detectVideoAudioTrackFromUrl } from "@/lib/video-poster";
-import { resourceIdFromStorageKey, resourceIdFromUrl, resourceProxyFileUrl, resourceStorageKey } from "@/services/api/resources";
+import { isResourceKnownMissing, resourceIdFromStorageKey, resourceIdFromUrl, resourceProxyFileUrl, resourceStorageKey } from "@/services/api/resources";
 import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
 import "@vidstack/react/player/styles/base.css";
 import "@vidstack/react/player/styles/default/theme.css";
@@ -202,6 +202,7 @@ export function VideoPlayer({ src, mimeType, title = "视频", className, brandC
     const handleError: MediaPlayerProps["onError"] = (event) => {
         // Provider URLs can be expired or blocked by CORS. Retry through the
         // authenticated resource endpoint, then use the cached blob as a final fallback.
+        if (resourceId && isResourceKnownMissing(fallbackStorageKey || resourceStorageKey(resourceId))) return event;
         if (proxyFallbackUrl && activeSrc !== proxyFallbackUrl && !fallbackAttemptedRef.current) {
             fallbackAttemptedRef.current = true;
             setActiveSrc(proxyFallbackUrl);
