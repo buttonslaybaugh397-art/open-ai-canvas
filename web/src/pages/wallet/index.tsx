@@ -160,11 +160,20 @@ export default function WalletPage() {
                                 <BalanceMetric label="冻结积分" description="调用中或待核对" value={account?.reservedMicrocredits || 0} icon={<TicketCheck className="size-4" />} />
                                 <BalanceMetric label="账户总额" description="可用与冻结合计" value={totalMicrocredits} icon={<Coins className="size-4" />} />
                             </div>
-                            <div className="wallet-consumption-grid">
-                                <ConsumptionMetric label="当日消耗" value={consumption?.todayMicrocredits || 0} />
-                                <ConsumptionMetric label="昨日消耗" value={consumption?.yesterdayMicrocredits || 0} />
-                                <ConsumptionMetric label="本周消耗" value={consumption?.weekMicrocredits || 0} />
-                                <ConsumptionMetric label="本月消耗" value={consumption?.monthMicrocredits || 0} />
+                            <div className="wallet-consumption-overview">
+                                <div className="wallet-consumption-heading">
+                                    <div>
+                                        <strong>消费概览</strong>
+                                        <span>仅统计已结算的模型调用账单</span>
+                                    </div>
+                                    <span>按北京时间自动归档</span>
+                                </div>
+                                <div className="wallet-consumption-grid">
+                                    <ConsumptionMetric label="当日消耗" value={consumption?.todayMicrocredits || 0} icon={<CalendarCheck />} />
+                                    <ConsumptionMetric label="昨日消耗" value={consumption?.yesterdayMicrocredits || 0} icon={<RotateCcw />} />
+                                    <ConsumptionMetric label="本周消耗" value={consumption?.weekMicrocredits || 0} icon={<Coins />} />
+                                    <ConsumptionMetric label="本月消耗" value={consumption?.monthMicrocredits || 0} icon={<Sparkles />} />
+                                </div>
                             </div>
                         </div>
                     </section>
@@ -242,8 +251,16 @@ function BalanceMetric({ label, description, value, icon }: { label: string; des
     );
 }
 
-function ConsumptionMetric({ label, value }: { label: string; value: number }) {
-    return <div className="wallet-consumption-metric"><span>{label}</span><strong>{formatCredits(value, 6)}</strong></div>;
+function ConsumptionMetric({ label, value, icon }: { label: string; value: number; icon: ReactNode }) {
+    return (
+        <div className="wallet-consumption-metric">
+            <span className="wallet-consumption-icon">{icon}</span>
+            <div>
+                <span>{label}</span>
+                <p><strong>{formatCredits(value, 6)}</strong><small>积分</small></p>
+            </div>
+        </div>
+    );
 }
 
 function LedgerMobileRow({ config, entry }: { config: AiConfig; entry: CreditLedgerEntry }) {

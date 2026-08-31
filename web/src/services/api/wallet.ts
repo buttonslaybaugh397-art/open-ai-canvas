@@ -237,12 +237,24 @@ export type AdminCreditConsumptionOverview = {
         settledOrders: number;
         consumingUsers: number;
         usedModels: number;
+        previousPeriodMicrocredits: number;
+        previousSettledOrders: number;
+        previousConsumingUsers: number;
+        previousUsedModels: number;
     };
     trend: Array<{
         day: string;
         totalMicrocredits: number;
         orderCount: number;
         uniqueUsers: number;
+    }>;
+    capabilities: Array<{
+        capability: string;
+        totalMicrocredits: number;
+        orderCount: number;
+        uniqueUsers: number;
+        modelCount: number;
+        lastConsumedAt: string;
     }>;
     users: {
         items: Array<{

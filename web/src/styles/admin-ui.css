@@ -9051,3 +9051,799 @@ html[data-magicui-theme-vt="active"] .admin-shell * {
         border-left: 0;
     }
 }
+
+/* Credit consumption analytics */
+.admin-credit-consumption {
+    display: grid;
+    min-width: 0;
+    gap: 20px;
+    padding-bottom: 24px;
+}
+
+.admin-credit-page-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.admin-credit-page-actions > span {
+    color: var(--admin-text-muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+
+.admin-credit-filter-panel,
+.admin-credit-panel,
+.admin-credit-ranking-section {
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid var(--admin-card-border);
+    border-radius: 12px;
+    background: var(--admin-layer-1);
+    box-shadow: var(--admin-card-shadow);
+}
+
+.admin-credit-filter-panel {
+    background:
+        linear-gradient(135deg, color-mix(in srgb, var(--admin-chart-primary) 5%, transparent), transparent 42%),
+        var(--admin-layer-1);
+}
+
+.admin-credit-filter-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--admin-divider);
+}
+
+.admin-credit-filter-heading > div:first-child {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 10px;
+}
+
+.admin-credit-filter-heading > div:first-child > svg {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 auto;
+    color: var(--admin-chart-primary);
+}
+
+.admin-credit-filter-heading strong,
+.admin-credit-filter-heading span {
+    display: block;
+}
+
+.admin-credit-filter-heading strong {
+    color: var(--admin-text-primary);
+    font-size: 13px;
+    font-weight: 650;
+}
+
+.admin-credit-filter-heading span {
+    margin-top: 2px;
+    color: var(--admin-text-muted);
+    font-size: 11px;
+}
+
+.admin-credit-range-presets {
+    display: inline-grid;
+    grid-auto-flow: column;
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid var(--admin-divider);
+    border-radius: 8px;
+    background: var(--admin-layer-2);
+}
+
+.admin-credit-range-presets button {
+    min-height: 28px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--admin-text-secondary);
+    cursor: pointer;
+    font-size: 11px;
+    transition: background-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.admin-credit-range-presets button:hover {
+    color: var(--admin-text-primary);
+}
+
+.admin-credit-range-presets button[data-active="true"] {
+    background: var(--admin-layer-1);
+    color: var(--admin-text-primary);
+    box-shadow: 0 1px 3px color-mix(in srgb, var(--foreground) 12%, transparent);
+    font-weight: 600;
+}
+
+.admin-credit-range-presets button:focus-visible,
+.admin-credit-capability-list button:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--admin-chart-primary) 65%, transparent);
+    outline-offset: 2px;
+}
+
+.admin-credit-filter-controls {
+    display: grid;
+    grid-template-columns: minmax(260px, 1.15fr) minmax(150px, 0.55fr) minmax(260px, 1fr);
+    align-items: end;
+    gap: 12px;
+    padding: 16px 20px;
+}
+
+.admin-credit-filter-controls label {
+    display: grid;
+    min-width: 0;
+    gap: 6px;
+}
+
+.admin-credit-filter-controls label > span:first-child {
+    color: var(--admin-text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.admin-credit-filter-controls :is(.ant-picker, .ant-select, .ant-input-search) {
+    width: 100%;
+}
+
+.admin-credit-active-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 20px;
+    border-top: 1px solid var(--admin-divider);
+    background: color-mix(in srgb, var(--admin-chart-primary) 4%, var(--admin-layer-2));
+}
+
+.admin-credit-active-filters > span {
+    margin-right: 2px;
+    color: var(--admin-text-muted);
+    font-size: 11px;
+}
+
+.admin-credit-active-filters .ant-tag {
+    margin-inline-end: 0;
+}
+
+.admin-credit-overview-grid {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.admin-credit-primary-stat,
+.admin-credit-metric-card {
+    position: relative;
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid var(--admin-card-border);
+    border-radius: 12px;
+    box-shadow: var(--admin-card-shadow);
+}
+
+.admin-credit-primary-stat {
+    grid-column: span 2;
+    display: flex;
+    min-height: 190px;
+    flex-direction: column;
+    padding: 20px;
+    background:
+        radial-gradient(circle at 92% 10%, color-mix(in srgb, var(--admin-chart-secondary) 16%, transparent), transparent 32%),
+        linear-gradient(145deg, color-mix(in srgb, var(--admin-chart-primary) 10%, var(--admin-layer-1)), var(--admin-layer-1) 62%);
+}
+
+.admin-credit-primary-stat::after {
+    position: absolute;
+    right: -34px;
+    bottom: -58px;
+    width: 160px;
+    height: 160px;
+    border: 1px solid color-mix(in srgb, var(--admin-chart-primary) 12%, transparent);
+    border-radius: 50%;
+    content: "";
+    pointer-events: none;
+}
+
+.admin-credit-stat-icon {
+    display: grid;
+    width: 34px;
+    height: 34px;
+    flex: 0 0 auto;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--admin-chart-primary) 18%, var(--admin-card-border));
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--admin-chart-primary) 8%, var(--admin-layer-1));
+    color: var(--admin-chart-primary);
+}
+
+.admin-credit-stat-icon svg {
+    width: 17px;
+    height: 17px;
+}
+
+.admin-credit-primary-label {
+    margin-top: 14px;
+    color: var(--admin-text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.admin-credit-primary-value {
+    display: flex;
+    min-width: 0;
+    align-items: baseline;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+.admin-credit-primary-value strong {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--admin-text-primary);
+    font-size: clamp(24px, 2vw, 34px);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.04em;
+    line-height: 1.15;
+    text-overflow: ellipsis;
+}
+
+.admin-credit-primary-value span {
+    color: var(--admin-text-muted);
+    font-size: 11px;
+}
+
+.admin-credit-primary-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: auto;
+    padding-top: 12px;
+    border-top: 1px solid var(--admin-divider);
+    color: var(--admin-text-muted);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+}
+
+.admin-credit-metric-card {
+    display: flex;
+    min-height: 190px;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 16px;
+    background: var(--admin-layer-1);
+}
+
+.admin-credit-metric-card > span:not(.admin-credit-comparison) {
+    margin-top: 18px;
+    color: var(--admin-text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.admin-credit-metric-card > strong {
+    display: block;
+    max-width: 100%;
+    margin-top: 4px;
+    overflow: hidden;
+    color: var(--admin-text-primary);
+    font-size: 22px;
+    font-weight: 680;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.03em;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+}
+
+.admin-credit-metric-card > small {
+    margin-top: auto;
+    padding-top: 10px;
+    color: var(--admin-text-muted);
+    font-size: 10px;
+}
+
+.admin-credit-comparison {
+    display: inline-flex;
+    width: fit-content;
+    align-items: center;
+    gap: 3px;
+    margin-top: 8px;
+    color: var(--admin-text-muted);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+}
+
+.admin-credit-comparison svg {
+    width: 13px;
+    height: 13px;
+}
+
+.admin-credit-comparison[data-direction="up"] {
+    color: var(--admin-status-warning);
+}
+
+.admin-credit-comparison[data-direction="down"] {
+    color: var(--admin-status-success);
+}
+
+.admin-credit-comparison[data-compact="true"] {
+    margin-top: 5px;
+}
+
+.admin-credit-insight-strip {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    overflow: hidden;
+    border: 1px solid var(--admin-card-border);
+    border-radius: 12px;
+    background: var(--admin-layer-2);
+}
+
+.admin-credit-insight {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 16px;
+}
+
+.admin-credit-insight + .admin-credit-insight {
+    border-left: 1px solid var(--admin-divider);
+}
+
+.admin-credit-insight > span {
+    display: grid;
+    width: 30px;
+    height: 30px;
+    flex: 0 0 auto;
+    place-items: center;
+    border-radius: 8px;
+    background: var(--admin-layer-1);
+    color: var(--admin-chart-secondary);
+}
+
+.admin-credit-insight svg {
+    width: 15px;
+    height: 15px;
+}
+
+.admin-credit-insight div {
+    min-width: 0;
+}
+
+.admin-credit-insight small,
+.admin-credit-insight strong {
+    display: block;
+}
+
+.admin-credit-insight small {
+    color: var(--admin-text-muted);
+    font-size: 10px;
+}
+
+.admin-credit-insight strong {
+    margin-top: 2px;
+    overflow: hidden;
+    color: var(--admin-text-primary);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.admin-credit-analysis-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.75fr);
+    gap: 12px;
+}
+
+.admin-credit-panel {
+    padding: 18px 20px 20px;
+}
+
+.admin-credit-section-heading {
+    display: flex;
+    min-width: 0;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.admin-credit-section-heading > span {
+    display: grid;
+    width: 30px;
+    height: 30px;
+    flex: 0 0 auto;
+    place-items: center;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--admin-chart-primary) 8%, var(--admin-layer-2));
+    color: var(--admin-chart-primary);
+}
+
+.admin-credit-section-heading svg {
+    width: 15px;
+    height: 15px;
+}
+
+.admin-credit-section-heading h2 {
+    margin: 0;
+    color: var(--admin-text-primary);
+    font-size: 13px;
+    font-weight: 650;
+    line-height: 1.35;
+}
+
+.admin-credit-section-heading p {
+    margin: 3px 0 0;
+    color: var(--admin-text-muted);
+    font-size: 10px;
+    line-height: 1.5;
+}
+
+.admin-credit-chart {
+    height: 300px;
+    margin-top: 18px;
+}
+
+.admin-credit-chart :is(.recharts-cartesian-axis-tick-value, .recharts-legend-item-text) {
+    fill: var(--admin-text-muted);
+    color: var(--admin-text-muted) !important;
+}
+
+.admin-credit-capability-list {
+    display: grid;
+    gap: 8px;
+    margin-top: 16px;
+}
+
+.admin-credit-capability-list button {
+    display: grid;
+    gap: 8px;
+    width: 100%;
+    padding: 11px 12px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: var(--admin-layer-2);
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+    transition: border-color 160ms ease, background-color 160ms ease;
+}
+
+.admin-credit-capability-list button:hover {
+    border-color: var(--admin-card-border);
+    background: var(--admin-layer-3);
+}
+
+.admin-credit-capability-list button[data-active="true"] {
+    border-color: color-mix(in srgb, var(--admin-chart-primary) 38%, var(--admin-card-border));
+    background: color-mix(in srgb, var(--admin-chart-primary) 8%, var(--admin-layer-1));
+}
+
+.admin-credit-capability-row,
+.admin-credit-capability-meta {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.admin-credit-capability-row strong {
+    overflow: hidden;
+    color: var(--admin-text-primary);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    text-overflow: ellipsis;
+}
+
+.admin-credit-capability-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--admin-text-secondary);
+    font-size: 11px;
+    font-weight: 650;
+}
+
+.admin-credit-capability-name::before {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--admin-chart-primary);
+    content: "";
+}
+
+.admin-credit-capability-name[data-capability="image"]::before {
+    background: var(--admin-chart-secondary);
+}
+
+.admin-credit-capability-name[data-capability="video"]::before {
+    background: var(--admin-chart-warning);
+}
+
+.admin-credit-capability-name[data-capability="audio"]::before {
+    background: var(--admin-status-success);
+}
+
+.admin-credit-capability-track {
+    height: 5px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--admin-divider);
+}
+
+.admin-credit-capability-track span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--admin-chart-primary);
+}
+
+.admin-credit-capability-meta {
+    color: var(--admin-text-muted);
+    font-size: 9px;
+    font-variant-numeric: tabular-nums;
+}
+
+.admin-credit-capability-empty,
+.admin-credit-chart-empty {
+    display: grid;
+    place-items: center;
+    color: var(--admin-text-muted);
+    text-align: center;
+}
+
+.admin-credit-capability-empty {
+    min-height: 190px;
+    font-size: 11px;
+}
+
+.admin-credit-chart-empty {
+    min-height: 300px;
+    gap: 5px;
+}
+
+.admin-credit-chart-empty svg {
+    width: 28px;
+    height: 28px;
+    margin-bottom: 5px;
+    color: color-mix(in srgb, var(--admin-text-muted) 55%, transparent);
+}
+
+.admin-credit-chart-empty strong {
+    color: var(--admin-text-secondary);
+    font-size: 12px;
+}
+
+.admin-credit-chart-empty span {
+    font-size: 10px;
+}
+
+.admin-credit-ranking-section > .admin-credit-section-heading {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--admin-divider);
+    background: color-mix(in srgb, var(--admin-layer-2) 48%, var(--admin-layer-1));
+}
+
+.admin-credit-ranking-section > .admin-data-table > .admin-table-frame {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+}
+
+.admin-credit-rank {
+    display: inline-grid;
+    min-width: 24px;
+    height: 24px;
+    place-items: center;
+    border-radius: 7px;
+    background: var(--admin-layer-2);
+    color: var(--admin-text-muted);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 650;
+}
+
+.admin-credit-entity {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+}
+
+.admin-credit-entity strong {
+    overflow: hidden;
+    color: var(--admin-text-primary);
+    font-size: 12px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.admin-credit-entity > span:not(.admin-status-badge) {
+    overflow: hidden;
+    color: var(--admin-text-muted);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.admin-credit-entity .admin-status-badge {
+    width: fit-content;
+}
+
+.admin-credit-value {
+    color: var(--admin-text-primary);
+    font-weight: 650;
+}
+
+.admin-credit-table-share {
+    display: grid;
+    min-width: 96px;
+    gap: 5px;
+}
+
+.admin-credit-table-share > span {
+    color: var(--admin-text-secondary);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+}
+
+.admin-credit-table-share > div {
+    height: 4px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--admin-divider);
+}
+
+.admin-credit-table-share i {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--admin-chart-secondary);
+}
+
+@media (max-width: 1279px) {
+    .admin-credit-overview-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .admin-credit-primary-stat {
+        grid-column: span 3;
+        min-height: 176px;
+    }
+
+    .admin-credit-metric-card {
+        min-height: 168px;
+    }
+
+    .admin-credit-filter-controls {
+        grid-template-columns: minmax(240px, 1fr) minmax(140px, 0.5fr);
+    }
+
+    .admin-credit-model-filter {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (max-width: 899px) {
+    .admin-credit-analysis-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .admin-credit-insight-strip {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .admin-credit-insight:nth-child(3) {
+        border-left: 0;
+        border-top: 1px solid var(--admin-divider);
+    }
+
+    .admin-credit-insight:nth-child(4) {
+        border-top: 1px solid var(--admin-divider);
+    }
+}
+
+@media (max-width: 699px) {
+    .admin-credit-page-actions {
+        width: 100%;
+        flex-wrap: wrap;
+    }
+
+    .admin-credit-page-actions > span {
+        margin-right: auto;
+    }
+
+    .admin-credit-filter-heading {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .admin-credit-range-presets {
+        width: 100%;
+        grid-auto-columns: 1fr;
+    }
+
+    .admin-credit-filter-controls {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .admin-credit-model-filter {
+        grid-column: auto;
+    }
+
+    .admin-credit-overview-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .admin-credit-primary-stat {
+        grid-column: span 2;
+    }
+
+    .admin-credit-chart {
+        height: 260px;
+    }
+}
+
+@media (max-width: 519px) {
+    .admin-credit-consumption {
+        gap: 12px;
+    }
+
+    .admin-credit-filter-heading,
+    .admin-credit-filter-controls,
+    .admin-credit-panel,
+    .admin-credit-ranking-section > .admin-credit-section-heading {
+        padding-inline: 14px;
+    }
+
+    .admin-credit-overview-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .admin-credit-primary-stat {
+        grid-column: auto;
+    }
+
+    .admin-credit-primary-footer {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .admin-credit-metric-card {
+        min-height: 156px;
+    }
+
+    .admin-credit-insight-strip {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .admin-credit-insight + .admin-credit-insight {
+        border-top: 1px solid var(--admin-divider);
+        border-left: 0;
+    }
+
+    .admin-credit-capability-meta {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 2px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .admin-credit-range-presets button,
+    .admin-credit-capability-list button {
+        transition: none;
+    }
+}

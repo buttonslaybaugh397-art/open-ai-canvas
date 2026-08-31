@@ -21,20 +21,25 @@ type AdminCreditConsumptionQuery struct {
 }
 
 type AdminCreditConsumptionOverview struct {
-	From    time.Time                       `json:"from"`
-	To      time.Time                       `json:"to"`
-	Summary AdminCreditConsumptionSummary   `json:"summary"`
-	Trend   []AdminCreditConsumptionTrend   `json:"trend"`
-	Users   AdminCreditConsumptionUserPage  `json:"users"`
-	Models  AdminCreditConsumptionModelPage `json:"models"`
+	From         time.Time                          `json:"from"`
+	To           time.Time                          `json:"to"`
+	Summary      AdminCreditConsumptionSummary      `json:"summary"`
+	Trend        []AdminCreditConsumptionTrend      `json:"trend"`
+	Capabilities []AdminCreditConsumptionCapability `json:"capabilities"`
+	Users        AdminCreditConsumptionUserPage     `json:"users"`
+	Models       AdminCreditConsumptionModelPage    `json:"models"`
 }
 
 type AdminCreditConsumptionSummary struct {
-	AllTimeMicrocredits int64 `json:"allTimeMicrocredits"`
-	PeriodMicrocredits  int64 `json:"periodMicrocredits"`
-	SettledOrders       int64 `json:"settledOrders"`
-	ConsumingUsers      int64 `json:"consumingUsers"`
-	UsedModels          int64 `json:"usedModels"`
+	AllTimeMicrocredits        int64 `json:"allTimeMicrocredits"`
+	PeriodMicrocredits         int64 `json:"periodMicrocredits"`
+	SettledOrders              int64 `json:"settledOrders"`
+	ConsumingUsers             int64 `json:"consumingUsers"`
+	UsedModels                 int64 `json:"usedModels"`
+	PreviousPeriodMicrocredits int64 `json:"previousPeriodMicrocredits"`
+	PreviousSettledOrders      int64 `json:"previousSettledOrders"`
+	PreviousConsumingUsers     int64 `json:"previousConsumingUsers"`
+	PreviousUsedModels         int64 `json:"previousUsedModels"`
 }
 
 type AdminCreditConsumptionTrend struct {
@@ -42,6 +47,15 @@ type AdminCreditConsumptionTrend struct {
 	TotalMicrocredits int64  `json:"totalMicrocredits"`
 	OrderCount        int64  `json:"orderCount"`
 	UniqueUsers       int64  `json:"uniqueUsers"`
+}
+
+type AdminCreditConsumptionCapability struct {
+	Capability        string    `json:"capability"`
+	TotalMicrocredits int64     `json:"totalMicrocredits"`
+	OrderCount        int64     `json:"orderCount"`
+	UniqueUsers       int64     `json:"uniqueUsers"`
+	ModelCount        int64     `json:"modelCount"`
+	LastConsumedAt    time.Time `json:"lastConsumedAt"`
 }
 
 type AdminCreditConsumptionUser struct {
@@ -93,6 +107,10 @@ func (s *Service) AdminCreditConsumption(actor *model.User, query AdminCreditCon
 	if err != nil {
 		return nil, err
 	}
+	capabilityRows, err := s.repo.AdminCreditConsumptionCapabilities(filter)
+	if err != nil {
+		return nil, err
+	}
 	userRows, userTotal, err := s.repo.AdminCreditConsumptionUsers(filter, userLimit, (userPage-1)*userLimit)
 	if err != nil {
 		return nil, err
@@ -105,18 +123,23 @@ func (s *Service) AdminCreditConsumption(actor *model.User, query AdminCreditCon
 		From: filter.From,
 		To:   filter.To,
 		Summary: AdminCreditConsumptionSummary{
-			AllTimeMicrocredits: summary.AllTimeMicrocredits,
-			PeriodMicrocredits:  summary.PeriodMicrocredits,
-			SettledOrders:       summary.SettledOrders,
-			ConsumingUsers:      summary.ConsumingUsers,
-			UsedModels:          summary.UsedModels,
+			AllTimeMicrocredits: summary.AllTimeMicrocredits, PeriodMicrocredits: summary.PeriodMicrocredits,
+			SettledOrders: summary.SettledOrders, ConsumingUsers: summary.ConsumingUsers, UsedModels: summary.UsedModels,
+			PreviousPeriodMicrocredits: summary.PreviousPeriodMicrocredits, PreviousSettledOrders: summary.PreviousSettledOrders,
+			PreviousConsumingUsers: summary.PreviousConsumingUsers, PreviousUsedModels: summary.PreviousUsedModels,
 		},
-		Trend:  make([]AdminCreditConsumptionTrend, 0, len(trendRows)),
+		Trend: make([]AdminCreditConsumptionTrend, 0, len(trendRows)), Capabilities: make([]AdminCreditConsumptionCapability, 0, len(capabilityRows)),
 		Users:  AdminCreditConsumptionUserPage{Items: make([]AdminCreditConsumptionUser, 0, len(userRows)), Total: userTotal, Page: userPage, Limit: userLimit},
 		Models: AdminCreditConsumptionModelPage{Items: make([]AdminCreditConsumptionModel, 0, len(modelRows)), Total: modelTotal, Page: modelPage, Limit: modelLimit},
 	}
 	for _, row := range trendRows {
 		result.Trend = append(result.Trend, AdminCreditConsumptionTrend(row))
+	}
+	for _, row := range capabilityRows {
+		result.Capabilities = append(result.Capabilities, AdminCreditConsumptionCapability{
+			Capability: row.Capability, TotalMicrocredits: row.TotalMicrocredits, OrderCount: row.OrderCount,
+			UniqueUsers: row.UniqueUsers, ModelCount: row.ModelCount, LastConsumedAt: creditConsumptionTimeFromUnix(row.LastConsumedUnix),
+		})
 	}
 	for _, row := range userRows {
 		result.Users.Items = append(result.Users.Items, AdminCreditConsumptionUser{

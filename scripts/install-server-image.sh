@@ -3,14 +3,15 @@
 set -Eeuo pipefail
 
 REPOSITORY_REF="${REPOSITORY_REF:-main}"
+REPOSITORY="${CANVAS_UPDATER_REPOSITORY:-${REPOSITORY:-buttonslaybaugh397-art/open-ai-canvas}}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/open-ai-canvas}"
 CANVAS_HTTP_PORT="${CANVAS_HTTP_PORT:-3000}"
 REQUESTED_IMAGE_TAG="${CANVAS_IMAGE_TAG:-}"
 CANVAS_IMAGE_TAG="${REQUESTED_IMAGE_TAG:-latest}"
 CANVAS_IMAGE_TAG="${CANVAS_IMAGE_TAG#v}"
 COMPOSE_FILE="docker-compose.deploy.yml"
-COMPOSE_URL="${COMPOSE_URL:-https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/${REPOSITORY_REF}/${COMPOSE_FILE}}"
-UPDATER_INSTALL_URL="${UPDATER_INSTALL_URL:-https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/${REPOSITORY_REF}/scripts/install-host-updater.sh}"
+COMPOSE_URL="${COMPOSE_URL:-https://raw.githubusercontent.com/${REPOSITORY}/${REPOSITORY_REF}/${COMPOSE_FILE}}"
+UPDATER_INSTALL_URL="${UPDATER_INSTALL_URL:-https://raw.githubusercontent.com/${REPOSITORY}/${REPOSITORY_REF}/scripts/install-host-updater.sh}"
 
 step() {
     printf '\n==> %s\n' "$1"
@@ -29,6 +30,7 @@ require_root() {
     [[ "$CANVAS_HTTP_PORT" =~ ^[0-9]+$ ]] || fail "CANVAS_HTTP_PORT 必须是 1 到 65535 的数字"
     ((CANVAS_HTTP_PORT >= 1 && CANVAS_HTTP_PORT <= 65535)) || fail "CANVAS_HTTP_PORT 必须是 1 到 65535 的数字"
     [[ "$CANVAS_IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || fail "CANVAS_IMAGE_TAG 不是有效的 Docker 镜像标签"
+    [[ "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "CANVAS_UPDATER_REPOSITORY 必须是 owner/repository"
 }
 
 install_packages() {
@@ -76,6 +78,34 @@ login_ghcr() {
     fi
 }
 
+resolve_release_image_tag() {
+    if [[ -n "$REQUESTED_IMAGE_TAG" || -f "${INSTALL_DIR}/.env" ]]; then
+        return
+    fi
+    local release_url release_tag
+    release_url="$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/${REPOSITORY}/releases/latest" || true)"
+    release_tag="${release_url##*/}"
+    if [[ "$release_tag" == v* && "${release_tag#v}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+        CANVAS_IMAGE_TAG="${release_tag#v}"
+        printf '使用 %s 的最新发布版本 %s。\n' "$REPOSITORY" "$release_tag"
+    else
+        printf '提示：%s 暂无可用 Release，本次使用 latest 并跳过在线更新器安装。\n' "$REPOSITORY"
+    fi
+}
+
+upsert_env_value() {
+    local key="$1" value="$2" temporary_env
+    temporary_env="$(mktemp "${INSTALL_DIR}/.env.XXXXXX")"
+    awk -v key="$key" -v value="$value" '
+        BEGIN { updated=0 }
+        index($0, key "=") == 1 { print key "=" value; updated=1; next }
+        { print }
+        END { if (!updated) print key "=" value }
+    ' .env > "$temporary_env"
+    chmod --reference=.env "$temporary_env"
+    mv "$temporary_env" .env
+}
+
 prepare_environment() {
     mkdir -p "$INSTALL_DIR"
     cd "$INSTALL_DIR"
@@ -109,6 +139,8 @@ prepare_environment() {
             [[ "$configured_image_tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || fail ".env 中的 CANVAS_IMAGE_TAG 无效"
             CANVAS_IMAGE_TAG="${configured_image_tag#v}"
         fi
+        upsert_env_value CANVAS_IMAGE_OWNER "${REPOSITORY%%/*}"
+        upsert_env_value CANVAS_UPDATER_REPOSITORY "$REPOSITORY"
         return
     fi
 
@@ -122,7 +154,9 @@ POSTGRES_USER=open_ai_canvas
 POSTGRES_PASSWORD=${database_password}
 DATABASE_URL=postgresql://open_ai_canvas:${database_password}@postgres:5432/open_ai_canvas?sslmode=disable
 CANVAS_HTTP_PORT=${CANVAS_HTTP_PORT}
+CANVAS_IMAGE_OWNER=${REPOSITORY%%/*}
 CANVAS_IMAGE_TAG=${CANVAS_IMAGE_TAG}
+CANVAS_UPDATER_REPOSITORY=${REPOSITORY}
 CANVAS_REGISTRATION_ENABLED=false
 CANVAS_ALLOW_PRIVATE_UPSTREAMS=false
 CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=
@@ -147,7 +181,7 @@ install_host_updater() {
     local installer
     installer="$(mktemp)"
     curl -fsSL "$UPDATER_INSTALL_URL" -o "$installer"
-    INSTALL_DIR="$INSTALL_DIR" bash "$installer"
+    INSTALL_DIR="$INSTALL_DIR" CANVAS_UPDATER_REPOSITORY="$REPOSITORY" bash "$installer"
     rm -f "$installer"
 }
 
@@ -176,6 +210,7 @@ main() {
     step "安装服务器基础工具"
     install_packages
     install_docker
+    resolve_release_image_tag
     login_ghcr
     prepare_environment
     download_compose

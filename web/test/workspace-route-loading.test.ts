@@ -47,6 +47,7 @@ describe("workspace route loading", () => {
 describe("wallet balance summary", () => {
     test("uses the workspace surface instead of an inverted primary button surface", () => {
         const css = source("../src/styles/globals.css");
+        const wallet = source("../src/pages/wallet/index.tsx");
         const rule = css.match(/\.credit-balance-card \{[^}]+}/)?.[0] || "";
 
         expect(rule).toContain("background: var(--library-surface)");
@@ -54,5 +55,9 @@ describe("wallet balance summary", () => {
         expect(rule).not.toContain("--btn-solid-bg");
         expect(css.match(/\.wallet-balance-inner \{/g)).toHaveLength(3);
         expect(css).not.toContain(".wallet-library-page .wallet-balance-inner { padding-left: 0; }");
+        expect(wallet).toContain('className="wallet-consumption-overview"');
+        expect(wallet).toContain("仅统计已结算的模型调用账单");
+        expect(css).toContain(".wallet-consumption-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));");
+        expect(css).toContain(".wallet-consumption-metric { display: grid;");
     });
 });

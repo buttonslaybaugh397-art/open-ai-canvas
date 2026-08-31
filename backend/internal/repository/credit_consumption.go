@@ -17,11 +17,15 @@ type CreditConsumptionFilter struct {
 }
 
 type AdminCreditConsumptionSummary struct {
-	AllTimeMicrocredits int64
-	PeriodMicrocredits  int64
-	SettledOrders       int64
-	ConsumingUsers      int64
-	UsedModels          int64
+	AllTimeMicrocredits        int64
+	PeriodMicrocredits         int64
+	SettledOrders              int64
+	ConsumingUsers             int64
+	UsedModels                 int64
+	PreviousPeriodMicrocredits int64
+	PreviousSettledOrders      int64
+	PreviousConsumingUsers     int64
+	PreviousUsedModels         int64
 }
 
 type AdminCreditConsumptionTrendRow struct {
@@ -51,19 +55,41 @@ type AdminCreditConsumptionModelRow struct {
 	LastConsumedUnix  int64
 }
 
+type AdminCreditConsumptionCapabilityRow struct {
+	Capability        string
+	TotalMicrocredits int64
+	OrderCount        int64
+	UniqueUsers       int64
+	ModelCount        int64
+	LastConsumedUnix  int64
+}
+
 func (r *Repository) AdminCreditConsumptionSummary(filter CreditConsumptionFilter) (AdminCreditConsumptionSummary, error) {
 	var summary AdminCreditConsumptionSummary
 	amountExpression := billingConsumptionAmountExpression()
-	periodQuery := r.creditConsumptionQuery(filter, true).
-		Select(
-			"COALESCE(SUM(" + amountExpression + "), 0) AS period_microcredits, " +
-				"COUNT(*) AS settled_orders, " +
-				"COUNT(DISTINCT billing_orders.user_id) AS consuming_users, " +
-				"COUNT(DISTINCT billing_orders.model) AS used_models",
-		)
-	if err := periodQuery.Scan(&summary).Error; err != nil {
+	periodSelect := "COALESCE(SUM(" + amountExpression + "), 0) AS period_microcredits, " +
+		"COUNT(*) AS settled_orders, " +
+		"COUNT(DISTINCT billing_orders.user_id) AS consuming_users, " +
+		"COUNT(DISTINCT billing_orders.model) AS used_models"
+	if err := r.creditConsumptionQuery(filter, true).Select(periodSelect).Scan(&summary).Error; err != nil {
 		return summary, err
 	}
+	previousFilter := filter
+	previousFilter.To = filter.From
+	previousFilter.From = filter.From.Add(-filter.To.Sub(filter.From))
+	var previous struct {
+		PeriodMicrocredits int64 `gorm:"column:period_microcredits"`
+		SettledOrders      int64 `gorm:"column:settled_orders"`
+		ConsumingUsers     int64 `gorm:"column:consuming_users"`
+		UsedModels         int64 `gorm:"column:used_models"`
+	}
+	if err := r.creditConsumptionQuery(previousFilter, true).Select(periodSelect).Scan(&previous).Error; err != nil {
+		return summary, err
+	}
+	summary.PreviousPeriodMicrocredits = previous.PeriodMicrocredits
+	summary.PreviousSettledOrders = previous.SettledOrders
+	summary.PreviousConsumingUsers = previous.ConsumingUsers
+	summary.PreviousUsedModels = previous.UsedModels
 	var allTime struct {
 		Total int64 `gorm:"column:total"`
 	}
@@ -74,6 +100,23 @@ func (r *Repository) AdminCreditConsumptionSummary(filter CreditConsumptionFilte
 	}
 	summary.AllTimeMicrocredits = allTime.Total
 	return summary, nil
+}
+
+func (r *Repository) AdminCreditConsumptionCapabilities(filter CreditConsumptionFilter) ([]AdminCreditConsumptionCapabilityRow, error) {
+	rows := make([]AdminCreditConsumptionCapabilityRow, 0)
+	err := r.creditConsumptionQuery(filter, true).
+		Select(
+			"billing_orders.capability, " +
+				"COALESCE(SUM(" + billingConsumptionAmountExpression() + "), 0) AS total_microcredits, " +
+				"COUNT(*) AS order_count, " +
+				"COUNT(DISTINCT billing_orders.user_id) AS unique_users, " +
+				"COUNT(DISTINCT billing_orders.model) AS model_count, " +
+				"MAX(" + billingConsumptionUnixTimeExpression(r) + ") AS last_consumed_unix",
+		).
+		Group("billing_orders.capability").
+		Order("total_microcredits desc, last_consumed_unix desc").
+		Scan(&rows).Error
+	return rows, err
 }
 
 func (r *Repository) AdminCreditConsumptionTrend(filter CreditConsumptionFilter) ([]AdminCreditConsumptionTrendRow, error) {

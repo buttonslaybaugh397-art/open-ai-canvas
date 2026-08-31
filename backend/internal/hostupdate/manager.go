@@ -19,7 +19,10 @@ import (
 	"time"
 )
 
-const maxReleaseResponseBytes = 4 << 20
+const (
+	DefaultRepository       = "buttonslaybaugh397-art/open-ai-canvas"
+	maxReleaseResponseBytes = 4 << 20
+)
 
 type Config struct {
 	Repository   string
@@ -70,7 +73,7 @@ type Manager struct {
 func NewManager(config Config) (*Manager, error) {
 	config.Repository = strings.TrimSpace(config.Repository)
 	if config.Repository == "" {
-		config.Repository = "ddcat-ai/open-ai-canvas"
+		config.Repository = DefaultRepository
 	}
 	if config.InstallDir == "" {
 		config.InstallDir = "/opt/open-ai-canvas"

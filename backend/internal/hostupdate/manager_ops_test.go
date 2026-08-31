@@ -17,6 +17,12 @@ type recordingRunner struct {
 	calls [][]string
 }
 
+func TestDefaultRepositoryUsesProjectOrigin(t *testing.T) {
+	if DefaultRepository != "buttonslaybaugh397-art/open-ai-canvas" {
+		t.Fatalf("DefaultRepository=%q", DefaultRepository)
+	}
+}
+
 func (r *recordingRunner) Run(_ context.Context, _ string, args, _ []string, stdout, _ io.Writer) error {
 	r.calls = append(r.calls, append([]string(nil), args...))
 	if stdout != nil {

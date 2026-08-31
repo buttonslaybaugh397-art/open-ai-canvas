@@ -27,7 +27,7 @@ services:
     restart: unless-stopped
 
   migrate:
-    image: ghcr.io/ddcat-ai/open-ai-canvas-backend:${CANVAS_IMAGE_TAG:-latest}
+    image: ghcr.io/${CANVAS_IMAGE_OWNER:-buttonslaybaugh397-art}/open-ai-canvas-backend:${CANVAS_IMAGE_TAG:-latest}
     command: ["migrate-schema", "up"]
     environment:
       CANVAS_BACKEND_DATA_DIR: /data

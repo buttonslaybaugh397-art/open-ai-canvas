@@ -6,8 +6,8 @@ import (
 )
 
 type versionPart struct {
-	major, minor, patch int
-	pre                 []string
+	core []int
+	pre  []string
 }
 
 func CompareVersions(left, right string) int {
@@ -16,11 +16,19 @@ func CompareVersions(left, right string) int {
 	if !aok || !bok {
 		return strings.Compare(strings.TrimSpace(left), strings.TrimSpace(right))
 	}
-	for _, pair := range [][2]int{{a.major, b.major}, {a.minor, b.minor}, {a.patch, b.patch}} {
-		if pair[0] < pair[1] {
+	coreLength := max(len(a.core), len(b.core))
+	for index := 0; index < coreLength; index++ {
+		leftPart, rightPart := 0, 0
+		if index < len(a.core) {
+			leftPart = a.core[index]
+		}
+		if index < len(b.core) {
+			rightPart = b.core[index]
+		}
+		if leftPart < rightPart {
 			return -1
 		}
-		if pair[0] > pair[1] {
+		if leftPart > rightPart {
 			return 1
 		}
 	}
@@ -62,16 +70,17 @@ func parseVersion(raw string) (versionPart, bool) {
 	value = strings.SplitN(value, "+", 2)[0]
 	parts := strings.SplitN(value, "-", 2)
 	core := strings.Split(parts[0], ".")
-	if len(core) != 3 {
+	if len(core) < 3 {
 		return versionPart{}, false
 	}
-	major, err1 := strconv.Atoi(core[0])
-	minor, err2 := strconv.Atoi(core[1])
-	patch, err3 := strconv.Atoi(core[2])
-	if err1 != nil || err2 != nil || err3 != nil {
-		return versionPart{}, false
+	parsed := versionPart{core: make([]int, 0, len(core))}
+	for _, segment := range core {
+		number, err := strconv.Atoi(segment)
+		if err != nil || number < 0 {
+			return versionPart{}, false
+		}
+		parsed.core = append(parsed.core, number)
 	}
-	parsed := versionPart{major: major, minor: minor, patch: patch}
 	if len(parts) == 2 && parts[1] != "" {
 		parsed.pre = strings.FieldsFunc(parts[1], func(r rune) bool { return r == '.' || r == '-' })
 	}

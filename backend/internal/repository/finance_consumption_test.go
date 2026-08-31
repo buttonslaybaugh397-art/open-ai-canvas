@@ -85,7 +85,8 @@ func TestAdminCreditConsumptionAggregatesUsersModelsAndTrend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.AllTimeMicrocredits != 3_600_000 || summary.PeriodMicrocredits != 3_300_000 || summary.SettledOrders != 3 || summary.ConsumingUsers != 2 || summary.UsedModels != 2 {
+	if summary.AllTimeMicrocredits != 3_600_000 || summary.PeriodMicrocredits != 3_300_000 || summary.SettledOrders != 3 || summary.ConsumingUsers != 2 || summary.UsedModels != 2 ||
+		summary.PreviousPeriodMicrocredits != 300_000 || summary.PreviousSettledOrders != 1 || summary.PreviousConsumingUsers != 1 || summary.PreviousUsedModels != 1 {
 		t.Fatalf("unexpected summary: %#v", summary)
 	}
 	trend, err := repo.AdminCreditConsumptionTrend(filter)
@@ -94,6 +95,14 @@ func TestAdminCreditConsumptionAggregatesUsersModelsAndTrend(t *testing.T) {
 	}
 	if len(trend) != 2 || trend[0].Day != "2026-08-20" || trend[0].TotalMicrocredits != 800_000 || trend[1].Day != "2026-08-21" || trend[1].TotalMicrocredits != 2_500_000 {
 		t.Fatalf("unexpected trend: %#v", trend)
+	}
+	capabilityRows, err := repo.AdminCreditConsumptionCapabilities(filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(capabilityRows) != 2 || capabilityRows[0].Capability != "video" || capabilityRows[0].TotalMicrocredits != 2_000_000 ||
+		capabilityRows[1].Capability != "image" || capabilityRows[1].TotalMicrocredits != 1_300_000 || capabilityRows[1].UniqueUsers != 2 {
+		t.Fatalf("unexpected capability rows: %#v", capabilityRows)
 	}
 	userRows, userTotal, err := repo.AdminCreditConsumptionUsers(filter, 20, 0)
 	if err != nil {

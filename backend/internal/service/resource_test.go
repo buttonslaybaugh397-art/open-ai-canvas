@@ -394,13 +394,13 @@ func TestPlatformProviderSwitchKeepsHistoricalCredentials(t *testing.T) {
 func TestPlatformProviderSwitchRestoresArchivedSettingWhenFormIsEmpty(t *testing.T) {
 	aliyun := ossSettingValue{
 		Provider: aliyunOSSProvider, Region: "cn-hangzhou", Endpoint: "https://oss-cn-hangzhou.aliyuncs.com",
-		CDNBaseURL: "https://aliyun.example.com", Bucket: "aliyun-bucket", PathPrefix: "projects/custom",
+		CDNBaseURL: "https://example.com", Bucket: "aliyun-bucket", PathPrefix: "projects/custom",
 		AccessKeyID: "aliyun-id", AccessKeySecret: "aliyun-secret", PublicBaseURL: "https://public.aliyun.example.com",
 		S3Preset: "r2", PathStyle: true, SessionToken: "aliyun-session", StorageLocationID: "aliyun-location",
 	}
 	tencent, err := ossSettingFromRequest(OSSSettingRequest{
 		Enabled: true, Provider: tencentCOSProvider, Region: "ap-guangzhou",
-		Endpoint: "https://cos.ap-guangzhou.myqcloud.com", CDNBaseURL: "https://tencent.example.com",
+		Endpoint: "https://cos.ap-guangzhou.myqcloud.com", CDNBaseURL: "https://example.com",
 		Bucket: "tencent-bucket-1250000000", PathPrefix: "canvas", AccessKeyID: "cos-id", AccessKeySecret: "cos-secret",
 	}, aliyun)
 	if err != nil {

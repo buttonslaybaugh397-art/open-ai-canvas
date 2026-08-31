@@ -168,7 +168,7 @@ CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=192.168.1.10
 适用于 Linux 云服务器。脚本会安装 Docker，拉取源码，生成受保护的 `.env`，构建网页/后端镜像并启动 PostgreSQL、Redis、后端和网页：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/main/scripts/install-server.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canvas/main/scripts/install-server.sh | sudo bash
 ```
 
 默认访问 `http://服务器IP:3000`。第一个注册账号会成为管理员；公开注册默认关闭。更新或排查：
@@ -186,16 +186,16 @@ sudo docker compose --env-file .env \
 服务器不需要源码时可使用镜像脚本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/main/scripts/install-server-image.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canvas/main/scripts/install-server-image.sh | sudo bash
 ```
 
-容器包不可匿名拉取时，先通过 `GHCR_USERNAME` 和 `GHCR_TOKEN` 登录 GHCR。生产环境应在 `/opt/open-ai-canvas/.env` 中把 `CANVAS_IMAGE_TAG` 固定为具体 Release（不要使用 `latest`），端口由 `CANVAS_HTTP_PORT` 配置。
+容器包不可匿名拉取时，先通过 `GHCR_USERNAME` 和 `GHCR_TOKEN` 登录 GHCR。新安装默认解析 `buttonslaybaugh397-art/open-ai-canvas` 的最新 Release、固定 `CANVAS_IMAGE_TAG` 并安装 Host Updater；仓库尚无 Release 时才回退到 `latest` 并跳过更新器。端口由 `CANVAS_HTTP_PORT` 配置。
 
 固定版本的 GHCR 部署可安装宿主机在线更新器；安装后管理后台会出现“系统配置 → 系统更新”，更新器会在切换前强制生成并校验 PostgreSQL 与数据目录 ZIP 备份：
 
 ```bash
 cd /opt/open-ai-canvas
-curl -fsSL https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/main/scripts/install-host-updater.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canvas/main/scripts/install-host-updater.sh | sudo bash
 sudo docker compose --env-file .env -f docker-compose.deploy.yml up -d --force-recreate backend web --wait
 ```
 

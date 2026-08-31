@@ -202,7 +202,14 @@ func (s *Service) Wallet(user *model.User, entryType string, page int, limit int
 	if err != nil {
 		return nil, err
 	}
-	return &WalletSummary{Account: *account, Entries: entries, Total: total, Page: page, Limit: limit, Policy: policy}, nil
+	consumptionByUserID, err := s.creditConsumptionStatsForUsers([]string{user.ID})
+	if err != nil {
+		return nil, err
+	}
+	return &WalletSummary{
+		Account: *account, Entries: entries, Total: total, Page: page, Limit: limit,
+		Consumption: consumptionByUserID[user.ID], Policy: policy,
+	}, nil
 }
 
 func (s *Service) RedeemCredits(user *model.User, code string, redeemedIP string) (*model.CreditAccount, error) {

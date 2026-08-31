@@ -3,7 +3,8 @@
 set -Eeuo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/open-ai-canvas}"
-REPOSITORY="${REPOSITORY:-ddcat-ai/open-ai-canvas}"
+REQUESTED_REPOSITORY="${CANVAS_UPDATER_REPOSITORY:-${REPOSITORY:-}}"
+REPOSITORY="${REQUESTED_REPOSITORY:-buttonslaybaugh397-art/open-ai-canvas}"
 SOCKET_DIR="${CANVAS_UPDATER_SOCKET_DIR:-/run/open-ai-canvas-updater}"
 UPDATER_BIN="/usr/local/bin/open-ai-canvas-host-updater"
 UPDATER_ENV="/etc/open-ai-canvas-updater.env"
@@ -34,6 +35,15 @@ read_image_tag() {
     else
         RELEASE_TAG="v${configured}"
     fi
+}
+
+read_repository() {
+    local configured
+    configured="$(sed -n 's/^CANVAS_UPDATER_REPOSITORY=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
+    if [[ -z "$REQUESTED_REPOSITORY" && -n "$configured" ]]; then
+        REPOSITORY="$configured"
+    fi
+    [[ "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "CANVAS_UPDATER_REPOSITORY 必须是 owner/repository"
 }
 
 install_binary() {
@@ -72,7 +82,7 @@ ensure_token() {
     fi
     [[ ${#token} -ge 32 ]] || fail "CANVAS_UPDATER_TOKEN 长度不足"
     umask 077
-    printf 'CANVAS_UPDATER_TOKEN=%s\nCANVAS_UPDATER_INSTALL_DIR=%s\nCANVAS_UPDATER_SOCKET=%s/updater.sock\n' "$token" "$INSTALL_DIR" "$SOCKET_DIR" > "$UPDATER_ENV"
+    printf 'CANVAS_UPDATER_TOKEN=%s\nCANVAS_UPDATER_REPOSITORY=%s\nCANVAS_UPDATER_INSTALL_DIR=%s\nCANVAS_UPDATER_SOCKET=%s/updater.sock\n' "$token" "$REPOSITORY" "$INSTALL_DIR" "$SOCKET_DIR" > "$UPDATER_ENV"
 }
 
 install_service() {
@@ -111,10 +121,11 @@ install_service() {
 main() {
     require_root
     read_image_tag
+    read_repository
     install_binary
     ensure_token
     install_service
-    printf 'Host Updater 已安装，Socket：%s/updater.sock\n' "$SOCKET_DIR"
+    printf 'Host Updater 已安装，更新仓库：%s，Socket：%s/updater.sock\n' "$REPOSITORY" "$SOCKET_DIR"
     printf '请重建 backend 容器，使 Token 与 Socket 挂载生效。\n'
 }
 
