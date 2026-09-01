@@ -25,6 +25,11 @@ describe("findAvailableGenerationGroupPosition", () => {
         expect(groupSize).toEqual({ width: 1176, height: 516 });
         expect(findAvailableGenerationGroupPosition([node("child-area", 900, 0)], { x: 436, y: 0 }, groupSize)).toEqual({ x: 436, y: 276 });
     });
+
+    test("输出组会避开来源卡片之外的已有节点", () => {
+        const nodes = [node("source", 0, 0, 480, 390), node("existing-output", 576, 75, 340, 240)];
+        expect(findAvailableGenerationGroupPosition(nodes, { x: 576, y: 75 }, { width: 340, height: 240 })).toEqual({ x: 576, y: 351 });
+    });
 });
 
 describe("canGenerateImageInPlace", () => {

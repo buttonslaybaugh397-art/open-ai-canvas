@@ -2412,6 +2412,7 @@ function InfiniteCanvasPage() {
                             node={dialogNode}
                             viewport={viewport}
                             containerRef={containerRef}
+                            placement="below"
                             dragOffset={dragPreview?.nodeIds.has(dialogNode.id) ? { x: dragPreview.x, y: dragPreview.y } : null}
                             isDragging={isNodeDragging && Boolean(dragPreview?.nodeIds.has(dialogNode.id))}
                         >

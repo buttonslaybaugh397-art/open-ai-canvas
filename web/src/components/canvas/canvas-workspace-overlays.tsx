@@ -93,12 +93,12 @@ type NodePanelPlacement = "above" | "below";
 // 拖动时保留当前上下方向，并允许短暂越过安全边界，避免面板在临界位置反复翻转。
 const NODE_PANEL_PLACEMENT_BUFFER = 32;
 
-export function CanvasNodePanelOverlay({ node, viewport, containerRef, panelWidth, panelHeight = 190, dragOffset, isDragging = false, children }: { node: CanvasNodeData; viewport: ViewportTransform; containerRef: RefObject<HTMLDivElement | null>; panelWidth?: number; panelHeight?: number; dragOffset?: Position | null; isDragging?: boolean; children: ReactNode }) {
+export function CanvasNodePanelOverlay({ node, viewport, containerRef, panelWidth, panelHeight = 190, placement = "auto", dragOffset, isDragging = false, children }: { node: CanvasNodeData; viewport: ViewportTransform; containerRef: RefObject<HTMLDivElement | null>; panelWidth?: number; panelHeight?: number; placement?: NodePanelPlacement | "auto"; dragOffset?: Position | null; isDragging?: boolean; children: ReactNode }) {
     const panelRef = useRef<HTMLDivElement>(null);
     const placementRef = useRef<NodePanelPlacement | null>(null);
     const { bringToFront, zIndex } = useCanvasOverlayLayer(`node-panel:${node.id}`, "var(--z-modal-overlay)");
     const initialWidth = resolveNodePanelWidth(node, viewport, panelWidth);
-    const initialPosition = getNodePanelPosition(node, viewport, { width: containerRef.current?.clientWidth || 0, height: containerRef.current?.clientHeight || 0 }, initialWidth, panelHeight, dragOffset);
+    const initialPosition = getNodePanelPosition(node, viewport, { width: containerRef.current?.clientWidth || 0, height: containerRef.current?.clientHeight || 0 }, initialWidth, panelHeight, dragOffset, null, 0, placement);
 
     useLayoutEffect(() => {
         bringToFront();
@@ -122,6 +122,7 @@ export function CanvasNodePanelOverlay({ node, viewport, containerRef, panelWidt
                 dragOffset,
                 isDragging ? placementRef.current : null,
                 isDragging ? NODE_PANEL_PLACEMENT_BUFFER : 0,
+                placement,
             );
             if (isDragging && placementRef.current && placementRef.current !== position.placement) {
                 panel.classList.remove("canvas-node-panel-placement-change");
@@ -132,6 +133,8 @@ export function CanvasNodePanelOverlay({ node, viewport, containerRef, panelWidt
             placementRef.current = isDragging ? position.placement : null;
             panel.style.left = `${position.left}px`;
             panel.style.top = `${position.top}px`;
+            if (placement === "below") panel.style.maxHeight = `${Math.max(80, container.clientHeight - position.top - 12)}px`;
+            else panel.style.maxHeight = "calc(100% - 84px)";
         };
         update(viewport);
         const resizeObserver = new ResizeObserver(() => update(viewport));
@@ -142,11 +145,12 @@ export function CanvasNodePanelOverlay({ node, viewport, containerRef, panelWidt
             resizeObserver.disconnect();
             unsubscribeViewport();
         };
-    }, [containerRef, dragOffset?.x, dragOffset?.y, isDragging, node.height, node.id, node.position.x, node.position.y, node.width, panelHeight, panelWidth, viewport]);
+    }, [containerRef, dragOffset?.x, dragOffset?.y, isDragging, node.height, node.id, node.position.x, node.position.y, node.width, panelHeight, panelWidth, placement, viewport]);
 
     return (
         <div
             ref={panelRef}
+            data-canvas-node-panel
             data-canvas-no-zoom
             className="thin-scrollbar absolute max-w-[calc(100%_-_24px)] overflow-y-auto"
             style={{ left: initialPosition.left, top: initialPosition.top, width: initialWidth, maxHeight: "calc(100% - 84px)", zIndex }}
@@ -257,7 +261,7 @@ function getConnectionMenuPosition(position: Position, viewport: ViewportTransfo
     };
 }
 
-function getNodePanelPosition(node: CanvasNodeData, viewport: ViewportTransform, viewportSize: { width: number; height: number }, panelWidth: number, panelHeight: number, dragOffset?: Position | null, lockedPlacement?: NodePanelPlacement | null, placementBuffer = 0) {
+function getNodePanelPosition(node: CanvasNodeData, viewport: ViewportTransform, viewportSize: { width: number; height: number }, panelWidth: number, panelHeight: number, dragOffset?: Position | null, lockedPlacement?: NodePanelPlacement | null, placementBuffer = 0, fixedPlacement: NodePanelPlacement | "auto" = "auto") {
     const gap = 10;
     const margin = 12;
     const topBoundary = 72;
@@ -273,7 +277,9 @@ function getNodePanelPosition(node: CanvasNodeData, viewport: ViewportTransform,
     const canFitBelow = belowTop + panelHeight <= viewportSize.height - margin;
     const canFitAbove = aboveTop >= topBoundary;
     let placement: NodePanelPlacement;
-    if (lockedPlacement === "below") {
+    if (fixedPlacement !== "auto") {
+        placement = fixedPlacement;
+    } else if (lockedPlacement === "below") {
         placement = !canFitBelow && belowTop + panelHeight > viewportSize.height - margin + placementBuffer && canFitAbove ? "above" : "below";
     } else if (lockedPlacement === "above") {
         placement = !canFitAbove && aboveTop < topBoundary - placementBuffer && canFitBelow ? "below" : "above";
@@ -283,7 +289,7 @@ function getNodePanelPosition(node: CanvasNodeData, viewport: ViewportTransform,
     const preferredTop = placement === "below" ? belowTop : aboveTop;
     return {
         left,
-        top: clamp(preferredTop, topBoundary, Math.max(topBoundary, viewportSize.height - panelHeight - margin)),
+        top: fixedPlacement === "below" ? Math.max(topBoundary, preferredTop) : clamp(preferredTop, topBoundary, Math.max(topBoundary, viewportSize.height - panelHeight - margin)),
         placement,
     };
 }

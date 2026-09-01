@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
 
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
+import { findAvailableGenerationGroupPosition } from "@/lib/canvas/canvas-generation-layout";
 import { getGenerationCount, runCanvasGenerationTaskToConsumer } from "@/lib/canvas/canvas-project-generation";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
@@ -12,6 +13,7 @@ const NODE_STATUS_SUCCESS = "success" as const;
 export async function executeTextGeneration({
     nodeId,
     sourceNode,
+    canvasNodes,
     prompt,
     effectivePrompt,
     generationConfig,
@@ -37,17 +39,26 @@ export async function executeTextGeneration({
     const parentConfig = NODE_DEFAULT_SIZE[isConfigNode ? CanvasNodeType.Config : CanvasNodeType.Text];
     const textConfig = NODE_DEFAULT_SIZE[CanvasNodeType.Text];
     const parentPosition = sourceNode?.position || { x: 0, y: 0 };
+    const parentWidth = sourceNode?.width || parentConfig.width;
+    const parentHeight = sourceNode?.height || parentConfig.height;
     const generateInPlace = !isConfigNode && !editingTextNode;
     const childIds = Array.from({ length: generateInPlace ? Math.max(0, textCount - 1) : textCount }, () => nanoid());
     registerPendingNodeIds(childIds);
     if (childIds.length) {
+        const childGap = 36;
+        const groupHeight = childIds.length * textConfig.height + Math.max(0, childIds.length - 1) * childGap;
+        const preferredPosition = {
+            x: parentPosition.x + parentWidth + 96,
+            y: parentPosition.y + parentHeight / 2 - groupHeight / 2,
+        };
+        const groupPosition = findAvailableGenerationGroupPosition(canvasNodes, preferredPosition, { width: textConfig.width, height: groupHeight });
         const childNodes: CanvasNodeData[] = childIds.map((id, index) => ({
             id,
             type: CanvasNodeType.Text,
             title: effectivePrompt.slice(0, 32) || "Generated Text",
             position: {
-                x: parentPosition.x + parentConfig.width + 96,
-                y: parentPosition.y + parentConfig.height / 2 - textConfig.height / 2 + (index - (childIds.length - 1) / 2) * (textConfig.height + 36),
+                x: groupPosition.x,
+                y: groupPosition.y + index * (textConfig.height + childGap),
             },
             width: textConfig.width,
             height: textConfig.height,

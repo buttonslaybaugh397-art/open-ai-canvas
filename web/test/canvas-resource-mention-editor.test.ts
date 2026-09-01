@@ -7,6 +7,29 @@ function source(path: string) {
 }
 
 describe("canvas resource mention editor", () => {
+    test("limits the canvas prompt editor resize to the visible panel height", () => {
+        const overlays = source("../src/components/canvas/canvas-workspace-overlays.tsx");
+        const panel = source("../src/components/canvas/canvas-node-prompt-panel.tsx");
+        const project = source("../src/pages/canvas/project.tsx");
+        expect(overlays).toContain("data-canvas-node-panel");
+        expect(overlays).toContain('fixedPlacement === "below"');
+        expect(overlays).toContain('placement === "below"');
+        expect(project).toContain('placement="below"');
+        expect(panel).toContain('closest<HTMLElement>("[data-canvas-node-panel]")');
+        expect(panel).toContain("const PROMPT_EDITOR_MAX_LINES = 14");
+        expect(panel).toContain("panel.parentElement.clientHeight - panel.offsetTop - 12");
+        expect(panel).toContain("panel.scrollHeight - height");
+        expect(panel).toContain("Math.min(drag.maxHeight");
+    });
+
+    test("gives the expanded prompt editor a large non-fullscreen workspace", () => {
+        const panel = source("../src/components/canvas/canvas-node-prompt-panel.tsx");
+        expect(panel).toContain('width="min(1120px, calc(100vw - 48px))"');
+        expect(panel).toContain('height: "min(760px, calc(100vh - 72px))"');
+        expect(panel).toContain('expanded ? "min-h-[360px] flex-1"');
+        expect(panel).toContain('className="flex h-full min-h-0 flex-col gap-2.5 p-4"');
+    });
+
     test("uses stable component classes for inline media references", () => {
         const component = source("../src/components/canvas/canvas-resource-mention-textarea.tsx");
 

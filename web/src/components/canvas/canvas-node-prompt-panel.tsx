@@ -55,7 +55,7 @@ const PROMPT_EDITOR_LINE_HEIGHT = 20;
 const PROMPT_EDITOR_EXPANDED_LINE_HEIGHT = 24;
 const PROMPT_EDITOR_VERTICAL_PADDING = 12;
 const PROMPT_EDITOR_EXPANDED_VERTICAL_PADDING = 20;
-const PROMPT_EDITOR_MAX_LINES = 8;
+const PROMPT_EDITOR_MAX_LINES = 14;
 
 export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, mentionReferences = [], onRemoveReference, onClose, onNodeMouseDown, onImageSettingsOpenChange, workspaceMode = "professional" }: CanvasNodePromptPanelProps) {
     const globalConfig = useEffectiveConfig();
@@ -403,7 +403,10 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
         const height = expanded ? expandedComposerHeight : composerHeight;
         return (
             <>
-                <div className="canvas-node-composer-editor" style={{ height }}>
+                <div
+                    className={`canvas-node-composer-editor ${expanded ? "min-h-[360px] flex-1" : ""}`}
+                    style={{ height, flexBasis: expanded ? 0 : undefined }}
+                >
                     <ConnectedReferenceShelf references={resolvedMentionReferences} theme={theme} onInsert={insertPromptReference} onRemove={(reference) => onRemoveReference?.(node.id, reference)} />
                     <CanvasResourceMentionTextarea
                         value={prompt}
@@ -486,18 +489,18 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                 title={null}
                 footer={null}
                 centered
-                width={920}
+                width="min(1120px, calc(100vw - 48px))"
                 destroyOnHidden
                 onCancel={() => {
                     setExpandedPresetOpen(false);
                     setExpandedPromptOpen(false);
                 }}
                 styles={{
-                    container: { border: 0, borderRadius: "var(--canvas-composer-radius)", padding: 0, overflow: "hidden", background: theme.node.panel, boxShadow: theme.node.shadow },
-                    body: { minHeight: 0, padding: 0 },
+                    container: { height: "min(760px, calc(100vh - 72px))", border: 0, borderRadius: "var(--canvas-composer-radius)", padding: 0, overflow: "hidden", background: theme.node.panel, boxShadow: theme.node.shadow },
+                    body: { height: "100%", minHeight: 0, padding: 0 },
                 }}
             >
-                <div className="flex min-h-0 flex-col gap-2.5 p-3" style={{ ...composerTokens, color: theme.node.text }}>
+                <div className="flex h-full min-h-0 flex-col gap-2.5 p-4" style={{ ...composerTokens, color: theme.node.text }}>
                     <div className="shrink-0 pr-8">{renderComposerHeader(true)}</div>
                     {renderPromptEditor(true)}
                     {hasVideoPromptTools ? (
@@ -616,7 +619,7 @@ function ReferenceThumbnail({ reference }: { reference: CanvasResourceReference 
 }
 
 function PromptResizeHandle({ height, min, max, onResize }: { height: number; min: number; max: number; onResize: (height: number) => void }) {
-    const dragRef = useRef<{ pointerId: number; startY: number; startHeight: number } | null>(null);
+    const dragRef = useRef<{ pointerId: number; startY: number; startHeight: number; maxHeight: number } | null>(null);
 
     const finishResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
         if (dragRef.current?.pointerId !== event.pointerId) return;
@@ -655,7 +658,11 @@ function PromptResizeHandle({ height, min, max, onResize }: { height: number; mi
                 if (event.button !== 0) return;
                 event.preventDefault();
                 event.stopPropagation();
-                dragRef.current = { pointerId: event.pointerId, startY: event.clientY, startHeight: height };
+                const panel = event.currentTarget.closest<HTMLElement>("[data-canvas-node-panel]");
+                const panelHeightLimit = panel?.parentElement?.clientHeight ? panel.parentElement.clientHeight - panel.offsetTop - 12 : window.innerHeight - 84;
+                const panelChromeHeight = panel ? Math.max(0, panel.scrollHeight - height) : 0;
+                const maxHeight = Math.max(min, Math.min(max, panelHeightLimit - panelChromeHeight));
+                dragRef.current = { pointerId: event.pointerId, startY: event.clientY, startHeight: height, maxHeight };
                 event.currentTarget.setPointerCapture(event.pointerId);
             }}
             onPointerMove={(event) => {
@@ -669,7 +676,7 @@ function PromptResizeHandle({ height, min, max, onResize }: { height: number; mi
                     finishResize(event);
                     return;
                 }
-                onResize(Math.min(max, Math.max(min, drag.startHeight + event.clientY - drag.startY)));
+                onResize(Math.min(drag.maxHeight, Math.max(min, drag.startHeight + event.clientY - drag.startY)));
             }}
             onPointerUp={finishResize}
             onPointerCancel={finishResize}

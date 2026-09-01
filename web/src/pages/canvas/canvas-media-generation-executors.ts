@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
 
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
+import { findAvailableGenerationGroupPosition } from "@/lib/canvas/canvas-generation-layout";
 import { nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
 import { nextCanvasVersionLabel } from "@/lib/canvas/canvas-layout";
 import { buildAudioGenerationMetadata, buildVideoGenerationMetadata, generationReferenceUrls, runCanvasGenerationTaskToConsumer } from "@/lib/canvas/canvas-project-generation";
@@ -14,6 +15,7 @@ const NODE_STATUS_SUCCESS = "success" as const;
 export async function executeVideoGeneration({
     nodeId,
     sourceNode,
+    canvasNodes,
     effectivePrompt,
     generationConfig,
     generationContext,
@@ -38,12 +40,17 @@ export async function executeVideoGeneration({
     const videoId = isEmptyVideoNode ? nodeId : nanoid();
     const versionRootId = isExistingVideoNode && sourceNode ? sourceNode.metadata?.versionOfNodeId || sourceNode.id : undefined;
     const parent = sourceNode?.position || { x: 0, y: 0 };
+    const preferredPosition = {
+        x: parent.x + (sourceNode?.width || spec.width) + 96,
+        y: parent.y + ((sourceNode?.height || spec.height) - spec.height) / 2,
+    };
+    const outputPosition = findAvailableGenerationGroupPosition(canvasNodes, preferredPosition, spec);
     const videoGenerationMetadata = buildVideoGenerationMetadata(sourceNode, generationContext, generationConfig);
     const videoNode: CanvasNodeData = {
         id: videoId,
         type: CanvasNodeType.Video,
         title: effectivePrompt.slice(0, 32) || "Generated Video",
-        position: isEmptyVideoNode ? sourceNode.position : { x: parent.x + (sourceNode?.width || spec.width) + 96, y: parent.y },
+        position: isEmptyVideoNode ? sourceNode.position : outputPosition,
         width: isEmptyVideoNode ? sourceNode.width : spec.width,
         height: isEmptyVideoNode ? sourceNode.height : spec.height,
         metadata: {
@@ -129,6 +136,7 @@ export async function executeVideoGeneration({
 export async function executeAudioGeneration({
     nodeId,
     sourceNode,
+    canvasNodes,
     effectivePrompt,
     generationConfig,
     generationContext,
@@ -149,11 +157,16 @@ export async function executeAudioGeneration({
     const isEmptyAudioNode = sourceNode?.type === CanvasNodeType.Audio && !sourceNode.metadata?.content;
     const audioId = isEmptyAudioNode ? nodeId : nanoid();
     const parent = sourceNode?.position || { x: 0, y: 0 };
+    const preferredPosition = {
+        x: parent.x + (sourceNode?.width || spec.width) + 96,
+        y: parent.y + ((sourceNode?.height || spec.height) - spec.height) / 2,
+    };
+    const outputPosition = findAvailableGenerationGroupPosition(canvasNodes, preferredPosition, spec);
     const audioNode: CanvasNodeData = {
         id: audioId,
         type: CanvasNodeType.Audio,
         title: effectivePrompt.slice(0, 32) || "Generated Audio",
-        position: isEmptyAudioNode ? sourceNode.position : { x: parent.x + (sourceNode?.width || spec.width) + 96, y: parent.y + ((sourceNode?.height || spec.height) - spec.height) / 2 },
+        position: isEmptyAudioNode ? sourceNode.position : outputPosition,
         width: isEmptyAudioNode ? sourceNode.width : spec.width,
         height: isEmptyAudioNode ? sourceNode.height : spec.height,
         metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, ...buildAudioGenerationMetadata(generationConfig), ...skillMetadata },
