@@ -5,6 +5,7 @@ import { canGenerateImageInPlace, findAvailableGenerationGroupPosition, imageGen
 import { buildImageGenerationNodeTitle } from "@/lib/canvas/canvas-generation-title";
 import { nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
 import { canvasImageReferenceLimitError, buildImageGenerationMetadata, getGenerationCount, isGenerationCanceled, runCanvasGenerationTaskToConsumer } from "@/lib/canvas/canvas-project-generation";
+import { canvasGenerationPromptMetadata } from "@/lib/canvas/canvas-generation-submission";
 import { CONTENT_MODERATION_ERROR_CODE, generationFailureMetadata, type GenerationFailureMetadata } from "@/lib/generation-error";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
@@ -90,7 +91,7 @@ export async function executeImageGeneration({
         height: rootHeight,
         metadata: {
             ...(reuseSourceNode ? sourceNode?.metadata || {} : {}),
-            prompt: effectivePrompt,
+            ...canvasGenerationPromptMetadata(prompt, effectivePrompt),
             status: NODE_STATUS_LOADING,
             size: generationConfig.size,
             isBatchRoot: count > 1,
@@ -116,7 +117,7 @@ export async function executeImageGeneration({
         width: outputNodeSize.width,
         height: outputNodeSize.height,
         metadata: {
-            prompt: effectivePrompt,
+            ...canvasGenerationPromptMetadata(prompt, effectivePrompt),
             status: NODE_STATUS_LOADING,
             size: generationConfig.size,
             batchRootId: count > 1 && !directCopiedBatch ? rootId : undefined,
@@ -135,7 +136,7 @@ export async function executeImageGeneration({
     const nextNodes: CanvasNodeData[] = [
         ...canvasNodes.map((node) => {
             if (node.id !== nodeId) return node;
-            if (isConfigNode) return { ...node, metadata: { ...node.metadata, prompt: effectivePrompt, status: NODE_STATUS_LOADING, errorDetails: undefined } };
+            if (isConfigNode) return { ...node, metadata: { ...node.metadata, ...canvasGenerationPromptMetadata(prompt, effectivePrompt), status: NODE_STATUS_LOADING, errorDetails: undefined } };
             if (reuseSourceNode) return { ...node, position: rootNode.position, width: rootNode.width, height: rootNode.height, title: rootNode.title, metadata: { ...node.metadata, ...rootNode.metadata, errorDetails: undefined } };
             if (isImageNode) return node;
             return {
@@ -144,7 +145,7 @@ export async function executeImageGeneration({
                 title: prompt.slice(0, 32) || "Prompt",
                 width: parentConfig.width,
                 height: parentConfig.height,
-                metadata: { ...node.metadata, content: prompt, richText: undefined, prompt, status: NODE_STATUS_SUCCESS, fontSize: 14, errorDetails: undefined },
+                metadata: { ...node.metadata, content: prompt, richText: undefined, prompt, composerContent: prompt, status: NODE_STATUS_SUCCESS, fontSize: 14, errorDetails: undefined },
             };
         }),
         ...(reuseSourceNode || directCopiedBatch ? [] : [rootNode]),

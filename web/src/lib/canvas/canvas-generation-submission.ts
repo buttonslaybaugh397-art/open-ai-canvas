@@ -25,6 +25,11 @@ export type CanvasGenerationRequestFingerprintInput = {
     context: Pick<NodeGenerationContext, "referenceImages" | "referenceVideos" | "referenceAudios" | "characterReferences" | "resolvedCharacterVersions" | "resolvedCharacterVoices">;
 };
 
+/** Keep the editable prompt separate from the prompt transformed for the model. */
+export function canvasGenerationPromptMetadata(composerContent: string, effectivePrompt: string) {
+    return { composerContent, prompt: effectivePrompt };
+}
+
 export function canvasGenerationRequestFingerprint(input: CanvasGenerationRequestFingerprintInput) {
     const serialized = canonicalize({
         version: 1,
