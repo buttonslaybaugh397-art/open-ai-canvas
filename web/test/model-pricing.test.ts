@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { modelQuoteRequest, normalizeTierResolution, priceTiersForCurrentSelection, requestCreditCost } from "../src/lib/model-pricing";
+import { modelQuoteRequest, normalizeTierResolution, priceTierSummaryLabel, priceTiersForCurrentSelection, requestCreditCost } from "../src/lib/model-pricing";
 import type { ModelRequirements } from "../src/lib/model-selection";
 import { createModelChannel, defaultConfig, normalizeConfigSnapshot, resolveModelChannel, type AiConfig } from "../src/stores/use-config-store";
 
@@ -58,6 +58,18 @@ const textVideoRequirements: ModelRequirements = {
 };
 
 describe("model request pricing", () => {
+    test("shows zero-priced fixed and per-second tiers instead of unconfigured", () => {
+        const fixedConfig = systemConfig({
+            tiers: [{ selector: {}, billingMode: "fixed_request", unitPriceMicrocredits: 0 }],
+        });
+        const perSecondConfig = systemConfig({
+            tiers: [{ selector: {}, billingMode: "per_second", unitPriceMicrocredits: 0 }],
+        });
+
+        expect(priceTierSummaryLabel(resolveModelChannel(fixedConfig, fixedConfig.model).modelCosts![0]!.logicalPriceTiers!)).toBe("0 积分");
+        expect(priceTierSummaryLabel(resolveModelChannel(perSecondConfig, perSecondConfig.model).modelCosts![0]!.logicalPriceTiers!)).toBe("0 积分/秒");
+    });
+
     test("preserves provider-specific resolution enums when matching price tiers", () => {
         expect(normalizeTierResolution("768P竖")).toBe("768p竖");
         expect(normalizeTierResolution("HD_Portrait")).toBe("hd_portrait");
