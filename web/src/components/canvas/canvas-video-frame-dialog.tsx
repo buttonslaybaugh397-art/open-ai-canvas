@@ -218,5 +218,3 @@ export function CanvasVideoFrameDialog({ node, open, onClose, onConfirm }: Canva
         </Modal>
     );
 }
-
-

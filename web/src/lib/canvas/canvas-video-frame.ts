@@ -130,7 +130,7 @@ async function readVideoBlob(source: Blob | string, storageKey?: string) {
         if (!blob) throw new Error("媒体资源为空");
         return blob;
     } catch {
-        throw new Error("无法读取视频文件，请重新上传视频后再截取尾帧");
+        throw new Error("无法读取视频文件，请重新上传视频后再提取画面");
     }
 }
 
@@ -157,5 +157,5 @@ function waitForVideoEvent(video: HTMLVideoElement, eventName: "loadeddata" | "s
 }
 
 function canvasToPngBlob(canvas: HTMLCanvasElement) {
-    return new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("尾帧图片编码失败"))), "image/png"));
+    return new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("画面图片编码失败"))), "image/png"));
 }
