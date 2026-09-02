@@ -94,7 +94,7 @@ func TestProtocolRequestURLCanResolveSameOriginRootPath(t *testing.T) {
 	}
 }
 
-func TestRunVideoTaskUsesHostBackedAgnesJSONProtocol(t *testing.T) {
+func TestRunVideoTaskUsesDeclarativeAgnesJSONProtocol(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
 	center, err := newPluginRuntime(t.TempDir())
 	if err != nil {
@@ -102,9 +102,9 @@ func TestRunVideoTaskUsesHostBackedAgnesJSONProtocol(t *testing.T) {
 	}
 	adapter, ok := center.registrySnapshot().Resolve("agnes-video")
 	if !ok {
-		t.Fatal("host-backed Agnes adapter is missing")
+		t.Fatal("declarative Agnes adapter is missing")
 	}
-	if metadata := adapter.Metadata(); metadata.Version != "1.2.0" || metadata.Execution != "host:agnes-video" || !metadata.RequiresPublicMediaURLs {
+	if metadata := adapter.Metadata(); metadata.Version != "2.0.0" || metadata.Execution != "declarative" || !metadata.RequiresPublicMediaURLs {
 		t.Fatalf("Agnes runtime metadata = %#v", metadata)
 	}
 
@@ -165,47 +165,32 @@ func TestRunVideoTaskUsesHostBackedAgnesJSONProtocol(t *testing.T) {
 	if !ok || video["dataUrl"] != "data:video/mp4;base64,dmlkZW8=" {
 		t.Fatalf("video = %#v", result["video"])
 	}
-	wantPaths := "POST /v1/videos,GET /agnesapi?video_id=video-1&model_name=agnes-video-2.5,GET /video.mp4"
+	wantPaths := "POST /v1/videos,GET /agnesapi?model_name=agnes-video-2.5&video_id=video-1,GET /video.mp4"
 	if got := strings.Join(paths, ","); got != wantPaths {
 		t.Fatalf("paths = %q, want %q", got, wantPaths)
 	}
 }
 
-func TestRunVideoTaskUsesWeijinBearerForTaskAndContent(t *testing.T) {
+func TestRunVideoTaskDownloadsAuthenticatedDeclarativeResult(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
 	center, err := newPluginRuntime(t.TempDir())
 	if err != nil {
-		t.Fatalf("newPluginRuntime() error = %v", err)
+		t.Fatal(err)
 	}
-	if _, ok := center.registrySnapshot().Resolve("weijin-video"); !ok {
-		t.Fatal("host-backed Weijin adapter is missing")
-	}
-
-	paths := make([]string, 0, 3)
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		paths = append(paths, r.Method+" "+r.URL.RequestURI())
-		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
-			t.Errorf("%s Authorization = %q, want Bearer test-key", r.URL.Path, got)
-		}
-		switch r.Method + " " + r.URL.Path {
-		case "POST /v1/videos":
-			var body map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Errorf("decode create body: %v", err)
-			}
-			if body["model"] != "seedance2.0-one-full-flex-720p" || body["seconds"] != float64(10) || body["aspect_ratio"] != "16:9" {
-				t.Errorf("create body = %#v", body)
-			}
-			if _, exists := body["resolution"]; exists {
-				t.Errorf("fixed-resolution model must omit resolution: %#v", body)
-			}
+	paths := make([]string, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/videos":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":"weijin-task-1","status":"queued"}`))
-		case "GET /v1/videos/weijin-task-1":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":"weijin-task-1","status":"completed","content":"` + server.URL + `/v1/videos/weijin-task-1/content"}`))
-		case "GET /v1/videos/weijin-task-1/content":
+			_, _ = w.Write([]byte(`{"id":"video-1","status":"completed"}`))
+		case "/v1/videos/video-1/content":
+			if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+				t.Errorf("Authorization = %q", got)
+			}
+			if got := r.Header.Get("Accept"); got != "video/mp4" {
+				t.Errorf("Accept = %q", got)
+			}
 			w.Header().Set("Content-Type", "video/mp4")
 			_, _ = w.Write([]byte("video"))
 		default:
@@ -216,29 +201,18 @@ func TestRunVideoTaskUsesWeijinBearerForTaskAndContent(t *testing.T) {
 
 	ctx := withProtocolRegistry(context.Background(), center.registrySnapshot())
 	result, err := runVideoTask(ctx, canvasGenerationInput{
-		Mode:   "video",
-		Prompt: "make it move",
-		Config: providerConfig{BaseURL: server.URL, APIKey: "test-key", InterfaceType: "weijin-video", Model: "seedance2.0-one-full-flex-720p", VideoSeconds: "10", Size: "16:9", VQuality: "720p"},
+		Mode: "video", Prompt: "cinematic shot",
+		Config: providerConfig{BaseURL: server.URL, APIKey: "test-key", InterfaceType: "newapi", Model: "sora-2", VideoSeconds: "5", Size: "1280x720"},
 	})
 	if err != nil {
-		t.Fatalf("runVideoTask() error = %v", err)
+		t.Fatal(err)
 	}
-	video, ok := result["video"].(map[string]interface{})
-	if !ok || video["dataUrl"] != "data:video/mp4;base64,dmlkZW8=" {
-		t.Fatalf("video = %#v", result["video"])
+	video, _ := result["video"].(map[string]interface{})
+	if video["dataUrl"] != "data:video/mp4;base64,dmlkZW8=" {
+		t.Fatalf("video = %#v", video)
 	}
-	wantPaths := "POST /v1/videos,GET /v1/videos/weijin-task-1,GET /v1/videos/weijin-task-1/content"
-	if got := strings.Join(paths, ","); got != wantPaths {
-		t.Fatalf("paths = %q, want %q", got, wantPaths)
-	}
-}
-
-func TestProtocolPollIntervalUsesWeijinGuidance(t *testing.T) {
-	if got := protocolPollInterval("weijin-video"); got != 10*time.Second {
-		t.Fatalf("Weijin poll interval = %s", got)
-	}
-	if got := protocolPollInterval("agnes-video"); got != 2500*time.Millisecond {
-		t.Fatalf("default poll interval = %s", got)
+	if got := strings.Join(paths, ","); got != "POST /v1/videos,GET /v1/videos/video-1/content" {
+		t.Fatalf("paths = %q", got)
 	}
 }
 

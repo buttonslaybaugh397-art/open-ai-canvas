@@ -185,6 +185,11 @@ export function useCanvasGenerationExecutor({
                             return;
                         }
                     }
+                    const promptLengthError = mode === "video" ? modelPromptLengthError(generationConfig, generationConfig.model, mode, effectivePrompt) : "";
+                    if (promptLengthError) {
+                        message.error(promptLengthError);
+                        return;
+                    }
                     const generationContext = { ...rawGenerationContext, prompt: effectivePrompt };
                     if (mode === "audio" && generationContext.characterReferences.length) {
                         if (generationContext.characterReferences.length !== 1) {

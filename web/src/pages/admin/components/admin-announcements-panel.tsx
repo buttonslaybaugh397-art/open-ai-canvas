@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
-import { App, Button, Form, Input, Modal, Select, Segmented, Switch } from "antd";
+import { App, Button, Form, Input, Modal, Select, Switch } from "antd";
 import type { InputRef } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { Eye, Pencil, PencilLine, Pin, Plus, RefreshCw, Search, Send, Upload, X } from "lucide-react";
+import { PencilLine, Pin, Plus, RefreshCw, Search, Send, Upload, X } from "lucide-react";
 
 import { PaginationBar } from "@/components/layout/workspace-page";
 import { AnnouncementContent } from "@/components/ui/announcement-content";
@@ -99,7 +99,6 @@ export default function AdminAnnouncementsPanel({
     const closeInFlightRef = useRef(new Set<string>());
     const writeBlockedRef = useRef(publishBlocked);
     const editorReturnFocusRef = useRef<HTMLElement | null>(null);
-    const [editorMode, setEditorMode] = useState<"edit" | "preview">("edit");
     const imageInputRef = useRef<HTMLInputElement | null>(null);
     writeBlockedRef.current = publishBlocked;
     const watchedTitle = Form.useWatch("title", form);
@@ -179,7 +178,6 @@ export default function AdminAnnouncementsPanel({
         form.setFieldsValue(DEFAULT_ANNOUNCEMENT);
         setImagePreviewUrl("");
         setDraftImageResourceId("");
-        setEditorMode("edit");
     }, [form, publishOpen, publishReturnFocus]);
 
     const editorOpen = publishOpen || Boolean(editingAnnouncement);
@@ -661,8 +659,6 @@ export default function AdminAnnouncementsPanel({
                 watchedContent={watchedContent}
                 watchedLevel={watchedLevel}
                 watchedPinned={watchedPinned}
-                editorMode={editorMode}
-                onEditorModeChange={setEditorMode}
                 imagePreviewUrl={imagePreviewUrl}
                 imageUploading={imageUploading}
                 imageInputRef={imageInputRef}
@@ -689,8 +685,6 @@ function AnnouncementEditor({
     watchedContent,
     watchedLevel,
     watchedPinned,
-    editorMode,
-    onEditorModeChange,
     imagePreviewUrl,
     imageUploading,
     imageInputRef,
@@ -712,8 +706,6 @@ function AnnouncementEditor({
     watchedContent?: string;
     watchedLevel?: AnnouncementLevel;
     watchedPinned?: boolean;
-    editorMode: "edit" | "preview";
-    onEditorModeChange: (mode: "edit" | "preview") => void;
     imagePreviewUrl: string;
     imageUploading: boolean;
     imageInputRef: { current: HTMLInputElement | null };
@@ -758,27 +750,16 @@ function AnnouncementEditor({
                 }
                 styles={{ body: { maxHeight: "calc(100vh - 190px)", overflowY: "auto" } }}
             >
-                <div className="mb-4 flex justify-end border-b border-border/70 pb-3">
-                    <Segmented
-                        aria-label="公告编辑模式"
-                        value={editorMode}
-                        onChange={(value) => onEditorModeChange(value as "edit" | "preview")}
-                        options={[
-                            { value: "edit", label: <span className="inline-flex items-center gap-1.5"><Pencil className="size-3.5" />编辑</span> },
-                            { value: "preview", label: <span className="inline-flex items-center gap-1.5"><Eye className="size-3.5" />预览</span> },
-                        ]}
-                    />
-                </div>
                 <div className={`admin-announcement-editor-intro${editingAnnouncement ? " is-warning" : ""}`}>
                     <strong>{editingAnnouncement ? "保存会重新向全体用户发布" : "发布成功后会进入用户公告中心"}</strong>
                     <p>{editingAnnouncement ? "无论当前公告是否已关闭，保存都会刷新发布时间、恢复为发布中，并清除所有用户的旧已读状态。" : "已打开的页面会在下一次同步后看到（通常 5 分钟内）；请写清影响范围、所需操作和预计恢复时间。"}</p>
                 </div>
                 <Form form={form} layout="vertical" requiredMark={false} disabled={publishBlocked} initialValues={DEFAULT_ANNOUNCEMENT} scrollToFirstError={{ focus: true, block: "center" }} onFinish={onPreview}>
                     <div className="admin-announcement-editor-layout">
-                        <section className={`admin-announcement-editor-section${editorMode === "preview" ? " hidden" : ""}`}>
-                    <div className="admin-announcement-editor-section-heading">
-                        <h2>公告内容</h2>
-                                <p>支持 Markdown 标题、加粗、列表、链接、引用和表格；原始 HTML 不会被解析。</p>
+                        <section className="admin-announcement-editor-section">
+                            <div className="admin-announcement-editor-section-heading">
+                                <h2>公告内容</h2>
+                                <p>支持换行以及链接、强调、列表等受控 HTML；Markdown 不会被解析。</p>
                             </div>
                             <div className="admin-announcement-form-grid">
                                 <Form.Item

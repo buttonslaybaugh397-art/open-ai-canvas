@@ -171,7 +171,6 @@ export default function ProjectSettingsView({ detail, refreshProject }: ProjectD
                 multiple={false}
                 eyebrow="项目设置"
                 title="选择项目主图"
-                teamAssetKinds={["image"]}
                 confirmLabel={() => "设为项目主图"}
                 emptyTitle="素材库还没有图片"
                 emptyDescription="可以从底部上传一张新图片，上传后会自动选中。"

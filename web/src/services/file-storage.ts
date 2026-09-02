@@ -3,7 +3,7 @@ import { nanoid } from "nanoid";
 
 import { getActiveUserScope } from "@/lib/user-scope";
 import { captureVideoPoster, detectVideoAudioTrackFromBlob } from "@/lib/video-poster";
-import { getResourceBlob, resourceFileUrl, resourceIdFromStorageKey, resourceIdFromUrl, resourceProxyFileUrl, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
+import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
 import { uploadImage, type UploadedImage } from "@/services/image-storage";
 import { getCachedResourceBlob, getCachedResourceObjectUrl, primeResourceBlobCache } from "@/services/resource-blob-cache";
 
@@ -12,8 +12,8 @@ export type UploadedFile = { url: string; storageKey: string; bytes: number; mim
 const store = localforage.createInstance({ name: "infinite-canvas", storeName: "media_files" });
 const objectUrls = new Map<string, string>();
 
-export async function uploadMediaFile(input: string | Blob, prefix = "file", options?: { allowLocalFallback?: boolean }): Promise<UploadedFile> {
-    // Reuse this identity if direct upload falls back to IndexedDB and sync retries later.
+export async function uploadMediaFile(input: string | Blob, prefix = "file"): Promise<UploadedFile> {
+    // 直传和失败后的本地同步必须复用同一上传身份，避免响应丢失后创建第二个对象。
     const storageKey = `${prefix}:${getActiveUserScope()}:${nanoid()}`;
     const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
     const previewUrl = URL.createObjectURL(blob);
@@ -29,18 +29,13 @@ export async function uploadMediaFile(input: string | Blob, prefix = "file", opt
             ? await readAudioMeta(previewUrl)
             : { hasAudio: resolvedHasAudio };
     const poster = captured?.poster ? await uploadImage(captured.poster).catch(() => undefined) : undefined;
-    const allowLocalFallback = options?.allowLocalFallback ?? !blob.type.startsWith("video/");
     try {
         const kind = blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : "file";
         const resource = await uploadResourceFile(blob, kind, { ...meta, fileName: input instanceof File ? input.name : undefined, idempotencyKey: storageKey });
         await primeResourceBlobCache(resourceStorageKey(resource.id), blob).catch(() => "");
         URL.revokeObjectURL(previewUrl);
         return { url: resource.publicUrl || resourceFileUrl(resource.id), storageKey: resourceStorageKey(resource.id), bytes: resource.size || blob.size, mimeType: resource.mimeType || blob.type || "application/octet-stream", width: resource.width || meta.width, height: resource.height || meta.height, durationMs: resource.durationMs || meta.durationMs, hasAudio: meta.hasAudio, preview: poster };
-    } catch (error) {
-        if (!allowLocalFallback) {
-            URL.revokeObjectURL(previewUrl);
-            throw error instanceof Error ? error : new Error("媒体同步到服务器资源存储失败");
-        }
+    } catch {
         // OSS is optional during local/self-hosted setup. Keep the existing local fallback.
     }
     await store.setItem(storageKey, blob);

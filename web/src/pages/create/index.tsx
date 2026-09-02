@@ -1,21 +1,24 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type PointerEvent, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode, type RefObject } from "react";
 import { App, Button, Drawer, Modal, Popover, Spin, Tooltip } from "antd";
 import { Reorder } from "motion/react";
-import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Clock3, Copy, Download, FileText, Film, FolderOpen, History, Image as ImageIcon, LoaderCircle, Maximize2, MessageSquareText, Minimize2, Music2, Paperclip, Plus, RefreshCw, Search, SlidersHorizontal, Sparkles, Trash2, WandSparkles, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, Clapperboard, Clock3, Copy, Download, FileText, Film, History, Image as ImageIcon, LoaderCircle, Maximize2, MessageSquareText, Minimize2, Music2, Plus, RefreshCw, Search, SlidersHorizontal, Sparkles, Trash2, WandSparkles, X } from "lucide-react";
 import { Link } from "react-router";
 
 import { AIMessageMarkdown } from "@/components/ai/ai-message-markdown";
 import { GenerationToolCard, type GenerationToolStatus } from "@/components/ai/generation-tool-card";
 import { MessageReasoning } from "@/components/ai/message-reasoning";
 import { AssetLibraryPickerModal, type AssetLibraryPickerItem } from "@/components/assets/asset-library-picker-modal";
+import { CachedResourceImage } from "@/components/cached-resource-image";
 import { CanvasResourceMentionTextarea } from "@/components/canvas/canvas-resource-mention-textarea";
 import { CanvasPromptOptimizerDrawer } from "@/components/canvas/canvas-prompt-optimizer-drawer";
 import { VoiceRecordingButton } from "@/components/conversation/voice-recording-button";
 import { ModelPicker } from "@/components/model-picker";
 import { CreditSymbol, requestCreditCost } from "@/constant/credits";
 import { creationCanvasHandoffPath, creationResultAssetIds } from "@/lib/canvas/canvas-asset-handoff";
+import { ASSET_CATEGORY_LABELS } from "@/lib/asset-category";
 import { createGenerationBatchRetryContexts, createGenerationRetryContext, runGenerationOperationOnce, type GenerationRetryContext } from "@/lib/canvas/canvas-project-generation";
 import { createClientId } from "@/lib/client-id";
+import { formatShotOrdinal } from "@/lib/shot-label";
 import { generationErrorCode, generationErrorMessage } from "@/lib/generation-error";
 import { useCopyText } from "@/hooks/use-copy-text";
 import { useExternalAssetSources } from "@/hooks/use-external-asset-sources";
@@ -23,13 +26,12 @@ import { buildImageResolutionOptions, formatImageResolutionSize, imageRatioForSi
 import { formatVideoResolutionLabel as videoResolutionLabel, VIDEO_RESOLUTION_OPTIONS } from "@/lib/video-generation-options";
 import { modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, videoDurationAllowed, videoDurationOptions, type ImageCapabilityConfig, type VideoCapabilityConfig } from "@/lib/model-capabilities";
 import { inferVideoOperation, resolveCompatibleModel, mergedImageCapabilityConfig, type ModelRequirements } from "@/lib/model-selection";
-import { backendModelRuntimeRequired, isGenerationTaskCancelled, runBackendGenerationTask, runBackendGenerationTaskBatch, type BackendGenerationResult } from "@/services/api/generation-task";
-import { requestImageQuestion, type AiTextContentPart } from "@/services/api/image";
+import { isGenerationTaskCancelled, runBackendGenerationTask, runBackendGenerationTaskBatch, type BackendGenerationResult } from "@/services/api/generation-task";
 import { listAddedSkills, type Skill } from "@/services/api/skills";
 import { subscribeGenerationTasks, type GenerationTask } from "@/services/api/task-center";
-import { createTextReplayPublisher } from "@/lib/creation-text-replay";
 import { isLocalDreaminaWaitStopped, localDreaminaCancellationMessage } from "@/services/local-dreamina-task-projection";
-import { getMediaBlob, uploadMediaFile } from "@/services/file-storage";
+import { resolveResourceUrl } from "@/services/api/resources";
+import { uploadMediaFile } from "@/services/file-storage";
 import { uploadImage } from "@/services/image-storage";
 import { consumeGenerationTaskMessage, generationTaskMaterializedUrls, materializeGenerationTaskAssets, projectGenerationTaskResult } from "@/services/project-asset-sync";
 import { applyGenerationConsumerEffect } from "@/services/generation-consumer-dedupe";
@@ -98,7 +100,6 @@ const qualityOptions = [
 ];
 const resolutionOptions = VIDEO_RESOLUTION_OPTIONS.map((value) => ({ value: String(value), label: videoResolutionLabel(value) }));
 const countOptions = ["1", "2", "3", "4"];
-const TEXT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
 const conversationTimeFormatter = new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
 const messageTimeFormatter = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
 
@@ -170,7 +171,6 @@ export default function CreatePage() {
     const [libraryOpen, setLibraryOpen] = useState(false);
     const externalAssetSources = useExternalAssetSources(libraryOpen);
     const abortRef = useRef<AbortController | null>(null);
-    const fileInputRef = useRef<HTMLInputElement>(null);
     const composerFocusRef = useRef<HTMLTextAreaElement>(null);
     const threadScrollRef = useRef<HTMLElement>(null);
     const followLatestMessageRef = useRef(true);
@@ -417,27 +417,6 @@ export default function CreatePage() {
             attachment: creationAttachmentFromImage(file, uploaded),
         };
     };
-    const addAttachments = (files: FileList | File[]) => {
-        if ((mode === "image" || mode === "video") && maxReferences === 0) {
-            toast.warning(mode === "image" ? "当前图片模型不支持参考图" : "当前模型不支持图生视频");
-            return;
-        }
-        const next = Array.from(files)
-            .filter((file) => creationFileAccepted(mode, file))
-            .slice(0, Math.max(0, maxReferences - attachments.length));
-        if (!next.length) return;
-        void Promise.allSettled(next.map(async (file) => {
-            const { asset, attachment } = await uploadCreationAsset(file);
-            if (asset) addAsset(asset);
-            return attachment;
-        })).then((settled) => {
-            const items = settled.flatMap((entry) => entry.status === "fulfilled" ? [entry.value] : []);
-            const failed = settled.filter((entry) => entry.status === "rejected");
-            if (items.length) setAttachments((current) => [...current, ...items].slice(0, maxReferences));
-            if (failed.length) toast.error(`${failed.length} 个参考素材上传失败，请重试`);
-        });
-    };
-
     const uploadLibraryAssets = async (files: FileList | File[]) => {
         const next = Array.from(files).filter((file) => creationFileAccepted(mode, file));
         if (!next.length) return [];
@@ -452,13 +431,7 @@ export default function CreatePage() {
         return assetIds;
     };
 
-    const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
-        if (event.target.files) addAttachments(event.target.files);
-        event.target.value = "";
-    };
-
-    const handleLibrarySelect = (selectedIds: string[], { materializedAssets = [] }: { materializedAssets?: Asset[] } = {}) => {
-        const materializedById = new Map(materializedAssets.map((asset) => [asset.id, asset]));
+    const handleLibrarySelect = (selectedIds: string[]) => {
         const next = selectedIds.flatMap((id): CreationAttachment[] => {
             const asset = materializedById.get(id) || assets.find((item) => item.id === id);
             if (asset?.kind === "image") return [creationAttachmentFromAsset(asset)];
@@ -633,43 +606,22 @@ export default function CreatePage() {
         };
         try {
             if (mode === "text") {
-                if (backendModelRuntimeRequired(requestConfig)) {
-					const result = await runGenerationOperationOnce(retryContext?.clientOperationId, () => runBackendGenerationTask({
-						mode: "text",
-						prompt: expandedPrompt,
-						config: requestConfig,
-						referenceImages,
-						referenceVideos,
-						referenceAudios,
-						textHistory: (activeConversation.messages || []).filter((item) => item.content.trim()).map((item) => ({ role: item.role, content: item.content })),
-						signal: requestLifecycle.signal,
-						metadata: { source: "create-page", conversationId: activeConversation.id, messageId: assistantMessage.id, ...referenceMetadata },
-						onTaskUpdate: bindTask,
-						onTextDelta: (text) => updateOriginAssistant((item) => ({ ...item, content: text })),
-						...retryContext,
-					}));
-					if (!result.text?.trim()) throw new Error("后端任务没有返回文本");
-					updateOriginAssistant((item) => ({ ...item, content: result.text || "" }));
-				} else {
-					const history = await Promise.all([...(activeConversation.messages || []), userMessage].map(async (item) => ({
-						role: item.role,
-						content: item.role === "user"
-							? await buildTextMessageContent(item)
-							: item.content,
-					})));
-					const replayPublisher = createTextReplayPublisher(requestConfig, text);
-					void replayPublisher.start();
-					let finalText = "";
-					await requestImageQuestion(requestConfig, history, (full) => {
-						finalText = full;
-						updateOriginAssistant((item) => ({ ...item, content: full }));
-						replayPublisher.publish(full);
-					}, {
-						signal: requestLifecycle.signal,
-						onReasoning: (reasoning) => updateOriginAssistant((item) => ({ ...item, reasoning })),
-					});
-					replayPublisher.finish(finalText);
-				}
+                const result = await runGenerationOperationOnce(retryContext?.clientOperationId, () => runBackendGenerationTask({
+                    mode: "text",
+                    prompt: expandedPrompt,
+                    config: requestConfig,
+                    referenceImages,
+                    referenceVideos,
+                    referenceAudios,
+                    textHistory: (activeConversation.messages || []).filter((item) => item.content.trim()).map((item) => ({ role: item.role, content: item.content })),
+                    signal: requestLifecycle.signal,
+                    metadata: { source: "create-page", conversationId: activeConversation.id, messageId: assistantMessage.id, ...referenceMetadata },
+                    onTaskUpdate: bindTask,
+                    onTextDelta: (value) => updateOriginAssistant((item) => ({ ...item, content: value })),
+                    ...retryContext,
+                }));
+                if (!result.text?.trim()) throw new Error("后端任务没有返回文本");
+                updateOriginAssistant((item) => ({ ...item, content: result.text || "", reasoning: result.reasoning }));
             } else if (mode === "image") {
                 const taskCount = Math.max(1, Math.min(imageProfile.maxOutputs, Math.floor(Number(count) || 1)));
                 const settled = await runGenerationOperationOnce(retryContext?.clientOperationId, () => runBackendGenerationTaskBatch({
@@ -914,8 +866,6 @@ export default function CreatePage() {
         onReplaceAttachment: replaceReferenceFromTrack,
         onReplaceReferenceFiles: replaceReferenceFromFiles,
         onOpenLibrary: () => setLibraryOpen(true),
-        fileInputRef,
-        onFileChange: handleFileChange,
         onModeChange: selectMode,
         model: selectedModel,
         modelRequirements,
@@ -935,7 +885,7 @@ export default function CreatePage() {
         setCount,
         promptOptimizerProvider,
         composerFocusRef,
-        placeholderOverride: viewMode === "storyboard" && composingNextShot ? `SC.${String(nextShotNumber).padStart(2, "0")} · 写下这一镜的镜头、画面或故事` : undefined,
+        placeholderOverride: viewMode === "storyboard" && composingNextShot ? `${formatShotOrdinal(nextShotNumber - 1)} · 写下这一镜的镜头、画面或故事` : undefined,
         onSubmit: () => void submit(),
     };
 
@@ -1020,7 +970,7 @@ export default function CreatePage() {
     </>;
 }
 
-const creationAssetCategoryLabels: Record<string, string> = { all: "全部素材", character: "角色", environment: "场景", wardrobe: "服饰", prop: "道具", weapon: "武器", style: "画风", other: "其他" };
+const creationAssetCategoryLabels: Record<string, string> = { all: "全部素材", ...ASSET_CATEGORY_LABELS };
 
 function CreationHistoryDrawer({ open, conversations, activeId, onClose, onSelect, onDelete }: { open: boolean; conversations: CreationConversation[]; activeId: string; onClose: () => void; onSelect: (conversation: CreationConversation) => void; onDelete: (conversation: CreationConversation) => void }) {
     const [keyword, setKeyword] = useState("");
@@ -1110,7 +1060,9 @@ function CreationUserMessage({ item }: { item: CreationMessage }) {
             const kind = creationAttachmentKind(attachment);
             const previewable = kind === "image" || kind === "video";
             const url = attachment.previewUrl || ("dataUrl" in attachment ? attachment.dataUrl : attachment.url) || "";
-            return <button key={attachment.id} type="button" className={!previewable ? "is-file" : undefined} onClick={() => { if (!previewable) return; setPreviewType(kind === "video" ? "video" : "image"); setPreviewUrl(kind === "video" ? attachment.url || "" : url); }} aria-label={previewable ? `预览 ${attachment.name || "附件"}` : attachment.name || "附件"} disabled={previewable && !url}>{kind === "video" ? <video src={attachment.url || ""} poster={url !== attachment.url ? url : undefined} muted playsInline preload="metadata" /> : kind === "image" ? <img src={url} alt={attachment.name || "附件"} width={44} height={44} loading="lazy" /> : kind === "audio" ? <Music2 /> : <FileText />}{previewable ? <span aria-hidden="true"><Maximize2 /></span> : null}</button>;
+            const imageUrl = kind === "image" ? resolveResourceUrl(attachment.storageKey, url) : "";
+            const previewUrl = kind === "image" ? imageUrl : url;
+            return <button key={attachment.id} type="button" className={!previewable ? "is-file" : undefined} onClick={() => { if (!previewable) return; setPreviewType(kind === "video" ? "video" : "image"); setPreviewUrl(kind === "video" ? attachment.url || "" : previewUrl); }} aria-label={previewable ? `预览 ${attachment.name || "附件"}` : attachment.name || "附件"} disabled={previewable && !previewUrl}>{kind === "video" ? <video src={attachment.url || ""} poster={url !== attachment.url ? url : undefined} muted playsInline preload="metadata" /> : kind === "image" ? <CachedResourceImage storageKey={attachment.storageKey} src={imageUrl} alt={attachment.name || "附件"} width={44} height={44} loading="lazy" decoding="async" /> : kind === "audio" ? <Music2 /> : <FileText />}{previewable ? <span aria-hidden="true"><Maximize2 /></span> : null}</button>;
         })}</div> : null}
         <CreationMediaPreviewModal url={previewUrl} type={previewType} onClose={() => setPreviewUrl("")} />
     </article>;
@@ -1141,7 +1093,8 @@ function CreationMediaPending({ mode, ratio }: { mode: CreationMode; ratio?: str
 function CreationMessageReferences({ references }: { references: CreationReference[] }) {
     return <div className="creation-user-message-references" aria-label="本次引用">{references.map((reference) => {
         const Icon = reference.kind === "skill" ? Sparkles : reference.kind === "image" ? ImageIcon : reference.kind === "video" ? Film : reference.kind === "audio" ? Music2 : FileText;
-        return <span key={reference.id} className="creation-user-message-reference">{reference.previewUrl && reference.kind === "video" ? <video src={reference.previewUrl} muted playsInline preload="metadata" aria-label={reference.label} /> : reference.previewUrl && reference.kind === "image" ? <img src={reference.previewUrl} alt="" /> : <Icon />}<span>{reference.label}</span></span>;
+        const imageUrl = reference.kind === "image" ? resolveResourceUrl(reference.storageKey, reference.previewUrl) : reference.previewUrl;
+        return <span key={reference.id} className="creation-user-message-reference">{imageUrl && reference.kind === "video" ? <video src={imageUrl} muted playsInline preload="metadata" aria-label={reference.label} /> : imageUrl && reference.kind === "image" ? <CachedResourceImage storageKey={reference.storageKey} src={imageUrl} alt="" loading="lazy" decoding="async" /> : <Icon />}<span>{reference.label}</span></span>;
     })}</div>;
 }
 
@@ -1157,9 +1110,11 @@ function CreationAttachmentThumbnail({ item, onPreview, onRemove }: {
     const kind = creationAttachmentKind(item);
     const previewable = kind === "image" || kind === "video";
     const url = (kind === "video" ? item.url : item.previewUrl) || "";
-    const content = kind === "video" ? <video src={item.url} poster={item.previewUrl !== item.url ? item.previewUrl : undefined} muted playsInline preload="metadata" aria-label={item.name} /> : kind === "image" ? <img src={item.previewUrl} alt={item.name} /> : <span className="creation-chat-file-icon">{kind === "audio" ? <Music2 /> : <FileText />}<em>{item.name}</em></span>;
+    const imageUrl = kind === "image" ? resolveResourceUrl(item.storageKey, item.previewUrl) : "";
+    const previewUrl = kind === "image" ? imageUrl : url;
+    const content = kind === "video" ? <video src={item.url} poster={item.previewUrl !== item.url ? item.previewUrl : undefined} muted playsInline preload="metadata" aria-label={item.name} /> : kind === "image" ? <CachedResourceImage storageKey={item.storageKey} src={imageUrl} alt={item.name} loading="lazy" decoding="async" fallback={<span className="creation-chat-file-icon"><ImageIcon /></span>} /> : <span className="creation-chat-file-icon">{kind === "audio" ? <Music2 /> : <FileText />}<em>{item.name}</em></span>;
     return <div className="creation-reference-card-content">
-        {previewable ? <button type="button" className="creation-reference-card-preview" onClick={() => onPreview(kind === "video" ? "video" : "image", url)} aria-label={`放大预览 ${item.name}`} disabled={!url}>{content}<span aria-hidden="true"><Maximize2 /></span></button> : <div className="creation-reference-card-preview is-file" aria-label={item.name}>{content}</div>}
+        {previewable ? <button type="button" className="creation-reference-card-preview" onClick={() => onPreview(kind === "video" ? "video" : "image", previewUrl)} aria-label={`放大预览 ${item.name}`} disabled={!previewUrl}>{content}<span aria-hidden="true"><Maximize2 /></span></button> : <div className="creation-reference-card-preview is-file" aria-label={item.name}>{content}</div>}
         <button type="button" className="creation-reference-card-remove" onPointerDownCapture={(event) => event.stopPropagation()} onMouseDownCapture={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onRemove(item.id); }} aria-label={`移除 ${item.name}`}><X /></button>
     </div>;
 }
@@ -1181,8 +1136,6 @@ type ComposerProps = {
     onReplaceAttachment: (targetAttachmentId: string, replacement: CreationAttachment) => void;
     onReplaceReferenceFiles: (targetAttachmentId: string, files: File[]) => void;
     onOpenLibrary: () => void;
-    fileInputRef: RefObject<HTMLInputElement | null>;
-    onFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
     onModeChange: (mode: CreationMode) => void;
     model: string;
     modelRequirements: ModelRequirements;
@@ -1218,7 +1171,8 @@ function CreationComposer(props: ComposerProps) {
     const attachmentTrackRef = useRef<HTMLUListElement>(null);
     const cardDragRef = useRef<{ startX: number; startY: number; moved: boolean } | null>(null);
     const suppressAttachmentClickRef = useRef(false);
-    const [trackState, setTrackState] = useState({ canScrollLeft: false, canScrollRight: false, isExpanded: false, isDragging: false });
+    const [trackState, setTrackState] = useState({ canScrollLeft: false, canScrollRight: false, isExpanded: true, isDragging: false });
+    const previousAttachmentCountRef = useRef(props.attachments.length);
     const interactionBusy = props.busy || props.referenceReplacementBusy;
     const canSubmit = Boolean(props.prompt.trim()) && !interactionBusy;
     const creditsEnabled = useUserStore((state) => state.features.creditsEnabled);
@@ -1271,7 +1225,10 @@ function CreationComposer(props: ComposerProps) {
         if (!isExpanded) setReferenceFilter("all");
     }, []);
     useEffect(() => {
+        const hadAttachments = previousAttachmentCountRef.current > 0;
         if (!props.attachments.length) setReferencePanelExpanded(false);
+        else if (!hadAttachments) setReferencePanelExpanded(true);
+        previousAttachmentCountRef.current = props.attachments.length;
         updateTrackScrollState();
     }, [props.attachments.length, setReferencePanelExpanded, updateTrackScrollState]);
     useEffect(() => {
@@ -1343,7 +1300,6 @@ function CreationComposer(props: ComposerProps) {
     };
     const composer = <section className={`creation-chat-composer is-${props.variant}`}>
         <div className="creation-chat-writing-surface">
-            <input ref={props.fileInputRef} type="file" hidden accept={creationUploadAccept(props.mode)} multiple onChange={props.onFileChange} />
             <div className="creation-chat-editor">
                 <CanvasResourceMentionTextarea ref={props.composerFocusRef} value={props.prompt} references={props.references} mentionMenuWidth={400} sendOnEnter={false} onChange={props.setPrompt} onSubmit={props.onSubmit} containerClassName="creation-chat-mention-container" className="creation-chat-mention-editor creation-scrollbar" style={{ color: "var(--creation-text)" }} placeholder={props.placeholderOverride || (props.variant === "empty" ? emptyPlaceholder : placeholder)} aria-label="创作提示词，可使用 @ 引用当前参考内容或技能" spellCheck disabled={interactionBusy} activeDropReferenceId={dropTargetReferenceId} onReferenceFilesDrop={(reference, files) => { const target = props.references.find((item) => item.id === reference.id); if (target?.attachmentId) props.onReplaceReferenceFiles(target.attachmentId, files); }} />
                 {props.attachments.length || referencesSupported ? <div className={`creation-reference-panel${trackState.isExpanded ? " is-expanded" : ""}`} aria-busy={interactionBusy}>
@@ -1432,9 +1388,7 @@ function CreationComposer(props: ComposerProps) {
                         <span>优化</span>
                     </button>
                 </Tooltip> : null}
-                <Tooltip title="从本机上传附件"><button type="button" className="creation-chat-control" onClick={() => props.fileInputRef.current?.click()} disabled={interactionBusy || !referencesSupported} aria-label="从本机上传附件"><Paperclip /><span>附件</span></button></Tooltip>
-                <Tooltip title={!referencesSupported ? "当前模型不支持参考媒体" : "从素材库选择参考内容"}><button type="button" className="creation-chat-control" onClick={props.onOpenLibrary} disabled={interactionBusy || !referencesSupported} aria-label="打开素材库选择参考内容"><FolderOpen /><span>素材库</span></button></Tooltip>
-				<ModelPicker config={props.config} value={props.model} onChange={props.onModelChange} capability={props.mode} requirements={props.modelRequirements} className="creation-model-picker" placeholder={`选择${modeLabels[props.mode]}模型`} showSelectedPrice variant="creation" />
+				<ModelPicker config={props.config} value={props.model} onChange={props.onModelChange} capability={props.mode} requirements={props.modelRequirements} className="creation-model-picker" placeholder={`选择${modeLabels[props.mode]}模型`} showSelectedPrice={false} showOptionPrices variant="creation" />
                 {props.mode === "video" || (props.mode === "image" && imageSettingsSupported) ? <GenerationSettingsMenu {...props} /> : null}
                 {props.mode === "video" ? <DurationMenu profile={props.videoProfile} seconds={props.seconds} onChange={props.setSeconds} /> : null}
             </div>
@@ -1577,9 +1531,9 @@ function DurationMenu({ profile, seconds, onChange }: { profile: VideoCapability
 }
 
 const creationEmptyBannerFrames = [
-    { src: "/short-drama-styles/cyberpunk-neon.jpg", caption: "SC.01 · 雨夜霓虹" },
-    { src: "/short-drama-styles/suspense-noir.jpg", caption: "SC.02 · 暗巷追逐" },
-    { src: "/short-drama-styles/retro-hong-kong.jpg", caption: "SC.03 · 天台重逢" },
+    { src: "/short-drama-styles/cyberpunk-neon.jpg", caption: "镜头01 · 雨夜霓虹" },
+    { src: "/short-drama-styles/suspense-noir.jpg", caption: "镜头02 · 暗巷追逐" },
+    { src: "/short-drama-styles/retro-hong-kong.jpg", caption: "镜头03 · 天台重逢" },
 ];
 
 function CreationEmptyBanner() {
@@ -1635,7 +1589,7 @@ function StoryboardToolbar({ shots, activeIndex, composing, onSelect, onBeginCom
         <div className="storyboard-workbench-rail">
             <Tooltip title="镜头时间线"><button type="button" className={`storyboard-workbench-rail-button${railOpen ? " is-open" : ""}${composing ? " is-draft" : ""}`} aria-expanded={railOpen} aria-label="镜头时间线" onClick={() => setRailOpen((value) => !value)}><Film /><span className="storyboard-workbench-rail-badge">{composing ? nextShotNumber : shots.length}</span></button></Tooltip>
             {railOpen ? <div className="storyboard-workbench-rail-pop" role="listbox" aria-label="镜头列表">
-                <div className="storyboard-workbench-rail-pop-head"><span className="storyboard-workbench-rail-pop-title"><Clapperboard />镜头时间线<small>{composing ? `下一镜 SC.${String(nextShotNumber).padStart(2, "0")}` : `${shots.length} 个镜头`}</small></span><button type="button" className="storyboard-workbench-rail-pop-close" aria-label="关闭镜头列表" onClick={closeRail}><X /></button></div>
+                <div className="storyboard-workbench-rail-pop-head"><span className="storyboard-workbench-rail-pop-title"><Clapperboard />镜头时间线<small>{composing ? `下一镜 ${formatShotOrdinal(nextShotNumber - 1)}` : `${shots.length} 个镜头`}</small></span><button type="button" className="storyboard-workbench-rail-pop-close" aria-label="关闭镜头列表" onClick={closeRail}><X /></button></div>
                 <ul className="creation-scrollbar">
                     {shots.map((shot, index) => {
                         const status = statusOf(shot);
@@ -1644,15 +1598,15 @@ function StoryboardToolbar({ shots, activeIndex, composing, onSelect, onBeginCom
                         const thumbIsVideo = shot.result?.mode === "video";
                         return <li key={shot.user?.id || shot.result?.id || index}>
                             <button type="button" className={`storyboard-workbench-rail-row${index === activeIndex && !composing ? " is-active" : ""}`} onClick={() => { onSelect(index); closeRail(); }}>
-                                <span className="storyboard-workbench-rail-thumb">{thumbUrl ? (thumbIsVideo ? <video muted preload="metadata" src={thumbUrl} /> : <img src={thumbUrl} alt="" />) : <span className="storyboard-workbench-rail-thumb-ph"><Clapperboard /><em>SC.{String(index + 1).padStart(2, "0")}</em></span>}</span>
+                                <span className="storyboard-workbench-rail-thumb">{thumbUrl ? (thumbIsVideo ? <video muted preload="metadata" src={thumbUrl} /> : <img src={thumbUrl} alt="" />) : <span className="storyboard-workbench-rail-thumb-ph"><Clapperboard /><em>{formatShotOrdinal(index)}</em></span>}</span>
                                 <span className="storyboard-workbench-rail-info">
-                                    <span className="storyboard-workbench-rail-head"><span className="storyboard-workbench-rail-row-shot">SC.{String(index + 1).padStart(2, "0")}</span><span className={`storyboard-workbench-rail-row-state is-${status}`}>{status === "pending" ? "生成中" : status === "error" ? "失败" : status === "done" ? "完成" : "待生成"}</span>{shot.result?.createdAt ? <time dateTime={shot.result.createdAt}>{formatMessageTime(shot.result.createdAt)}</time> : null}</span>
+                                    <span className="storyboard-workbench-rail-head"><span className="storyboard-workbench-rail-row-shot">{formatShotOrdinal(index)}</span><span className={`storyboard-workbench-rail-row-state is-${status}`}>{status === "pending" ? "生成中" : status === "error" ? "失败" : status === "done" ? "完成" : "待生成"}</span>{shot.result?.createdAt ? <time dateTime={shot.result.createdAt}>{formatMessageTime(shot.result.createdAt)}</time> : null}</span>
                                     <span className="storyboard-workbench-rail-row-title">{title}</span>
                                 </span>
                             </button>
                         </li>;
                     })}
-                    {composing ? <li><button type="button" className="storyboard-workbench-rail-row is-draft" onClick={() => { onCancelCompose(); closeRail(); }}><span className="storyboard-workbench-rail-thumb"><span className="storyboard-workbench-rail-thumb-ph"><Clapperboard /><em>SC.{String(nextShotNumber).padStart(2, "0")}</em></span></span><span className="storyboard-workbench-rail-info"><span className="storyboard-workbench-rail-head"><span className="storyboard-workbench-rail-row-shot">SC.{String(nextShotNumber).padStart(2, "0")}</span><span className="storyboard-workbench-rail-row-state">待撰写</span></span><span className="storyboard-workbench-rail-row-title">等待你的脚本</span></span></button></li> : null}
+                    {composing ? <li><button type="button" className="storyboard-workbench-rail-row is-draft" onClick={() => { onCancelCompose(); closeRail(); }}><span className="storyboard-workbench-rail-thumb"><span className="storyboard-workbench-rail-thumb-ph"><Clapperboard /><em>{formatShotOrdinal(nextShotNumber - 1)}</em></span></span><span className="storyboard-workbench-rail-info"><span className="storyboard-workbench-rail-head"><span className="storyboard-workbench-rail-row-shot">{formatShotOrdinal(nextShotNumber - 1)}</span><span className="storyboard-workbench-rail-row-state">待撰写</span></span><span className="storyboard-workbench-rail-row-title">等待你的脚本</span></span></button></li> : null}
                 </ul>
                 <button type="button" className="storyboard-workbench-rail-pop-add" onClick={() => { closeRail(); onBeginCompose(); }}><Plus />新增镜头</button>
             </div> : null}
@@ -1682,7 +1636,7 @@ function StoryboardShotCard({ shot, shotNumber, modelName, busy, onRetryFailure,
     return <article className={`storyboard-workbench-card is-${status}`}>
         <header className="storyboard-workbench-card-head">
             <div className="storyboard-workbench-card-heading">
-                <span className="storyboard-workbench-card-shot"><span className="storyboard-workbench-card-shot-index">SC.{String(shotNumber).padStart(2, "0")}</span>镜头 {shotNumber}</span>
+                <span className="storyboard-workbench-card-shot"><span className="storyboard-workbench-card-shot-index">{formatShotOrdinal(shotNumber - 1)}</span></span>
                 <span className="storyboard-workbench-card-mode">{mode === "video" ? <Film /> : mode === "image" ? <ImageIcon /> : <MessageSquareText />}{modeLabels[mode]}</span>
                 {modelName ? <span className="storyboard-workbench-card-model">{modelName}</span> : null}
                 {status === "pending" ? <span className="storyboard-workbench-card-state is-pending"><LoaderCircle className="animate-spin" />生成中</span> : status === "error" ? <span className="storyboard-workbench-card-state is-error">生成失败</span> : status === "done" ? <span className="storyboard-workbench-card-state is-done"><Check />已完成</span> : <span className="storyboard-workbench-card-state">待生成</span>}
@@ -1725,7 +1679,7 @@ function StoryboardNextShotCard({ shotNumber, onCancel }: { shotNumber: number; 
     return <article className="storyboard-workbench-card is-next">
         <header className="storyboard-workbench-card-head">
             <div className="storyboard-workbench-card-heading">
-                <span className="storyboard-workbench-card-shot"><span className="storyboard-workbench-card-shot-index">SC.{String(shotNumber).padStart(2, "0")}</span>下一镜 {shotNumber}</span>
+                <span className="storyboard-workbench-card-shot"><span className="storyboard-workbench-card-shot-index">{formatShotOrdinal(shotNumber - 1)}</span>下一镜</span>
                 <span className="storyboard-workbench-card-state is-draft"><Clapperboard />待撰写</span>
             </div>
             <div className="storyboard-workbench-card-actions">
@@ -1736,8 +1690,8 @@ function StoryboardNextShotCard({ shotNumber, onCancel }: { shotNumber: number; 
             <div className="storyboard-workbench-next-panel">
                 <span className="storyboard-workbench-next-panel-icon"><Clapperboard /></span>
                 <div className="storyboard-workbench-next-panel-copy">
-                    <strong>SC.{String(shotNumber).padStart(2, "0")} 等待你的脚本</strong>
-                    <span>在下方写下这一镜的镜头、画面或故事。影策会拆解脚本、设计运镜并渲染成片，这一镜会作为 SC.{String(shotNumber).padStart(2, "0")} 自动加入镜头轨道。</span>
+                    <strong>{formatShotOrdinal(shotNumber - 1)} 等待你的脚本</strong>
+                    <span>在下方写下这一镜的镜头、画面或故事。影策会拆解脚本、设计运镜并渲染成片，这一镜会作为 {formatShotOrdinal(shotNumber - 1)} 自动加入镜头轨道。</span>
                 </div>
             </div>
         </div>
@@ -1750,7 +1704,9 @@ function StoryboardBriefAttachments({ attachments }: { attachments: CreationAtta
         const kind = creationAttachmentKind(attachment);
         const previewable = kind === "image" || kind === "video";
         const url = attachment.previewUrl || ("dataUrl" in attachment ? attachment.dataUrl : attachment.url) || "";
-        return <button key={attachment.id} type="button" className={!previewable ? "is-file" : undefined} onClick={() => { if (!previewable) return; setPreviewType(kind === "video" ? "video" : "image"); setPreviewUrl(kind === "video" ? attachment.url || "" : url); }} aria-label={previewable ? `预览 ${attachment.name || "附件"}` : attachment.name || "附件"} disabled={previewable && !url}>{kind === "video" ? <video src={attachment.url || ""} poster={url !== attachment.url ? url : undefined} muted playsInline preload="metadata" /> : kind === "image" ? <img src={url} alt={attachment.name || "附件"} width={44} height={44} loading="lazy" /> : kind === "audio" ? <Music2 /> : <FileText />}{previewable ? <span aria-hidden="true"><Maximize2 /></span> : null}</button>;
+        const imageUrl = kind === "image" ? resolveResourceUrl(attachment.storageKey, url) : "";
+        const previewUrl = kind === "image" ? imageUrl : url;
+        return <button key={attachment.id} type="button" className={!previewable ? "is-file" : undefined} onClick={() => { if (!previewable) return; setPreviewType(kind === "video" ? "video" : "image"); setPreviewUrl(kind === "video" ? attachment.url || "" : previewUrl); }} aria-label={previewable ? `预览 ${attachment.name || "附件"}` : attachment.name || "附件"} disabled={previewable && !previewUrl}>{kind === "video" ? <video src={attachment.url || ""} poster={url !== attachment.url ? url : undefined} muted playsInline preload="metadata" /> : kind === "image" ? <CachedResourceImage storageKey={attachment.storageKey} src={imageUrl} alt={attachment.name || "附件"} width={44} height={44} loading="lazy" decoding="async" /> : kind === "audio" ? <Music2 /> : <FileText />}{previewable ? <span aria-hidden="true"><Maximize2 /></span> : null}</button>;
     })}</div><CreationMediaPreviewModal url={previewUrl} type={previewType} onClose={() => setPreviewUrl("")} /></>;
 }
 
@@ -1796,44 +1752,6 @@ function conversationPreviewMessage(conversation: CreationConversation) {
         if (message.role === "user") return message;
     }
     return fallback;
-}
-
-async function buildTextMessageContent(item: CreationMessage) {
-    const content = expandCreationPrompt(item.content, item.references || [], item.attachments || []);
-    const attachments = item.attachments || [];
-    if (!attachments.length) return content;
-    const parts: AiTextContentPart[] = [{ type: "text", text: content }];
-    for (const attachment of attachments) {
-        if (isImageAttachment(attachment)) {
-            parts.push({ type: "image_url", image_url: { url: attachment.dataUrl || attachment.url || "" } });
-            continue;
-        }
-        const url = await creationAttachmentDataUrl(attachment);
-        parts.push({ type: "file_url", file_url: { url, name: attachment.name || "附件", mimeType: attachment.type || "application/octet-stream" } });
-    }
-    return parts;
-}
-
-async function creationAttachmentDataUrl(attachment: CreationAttachment) {
-    if ((attachment.bytes || 0) > TEXT_ATTACHMENT_MAX_BYTES) throw new Error(`${attachment.name} 超过 20MB，当前文本模型附件需要压缩后再上传`);
-    const attachmentUrl = attachment.url || "";
-    if (attachmentUrl.startsWith("data:")) return attachmentUrl;
-    const blob = attachment.storageKey ? await getMediaBlob(attachment.storageKey) : null;
-    if (blob) {
-        if (blob.size > TEXT_ATTACHMENT_MAX_BYTES) throw new Error(`${attachment.name} 超过 20MB，当前文本模型附件需要压缩后再上传`);
-        return blobToDataUrl(blob);
-    }
-    if (/^https:\/\//i.test(attachmentUrl)) return attachmentUrl;
-    throw new Error(`${attachment.name} 无法读取，请重新上传后再试`);
-}
-
-function blobToDataUrl(blob: Blob) {
-    return new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ""));
-        reader.onerror = () => reject(reader.error || new Error("附件读取失败"));
-        reader.readAsDataURL(blob);
-    });
 }
 
 function isVideoAttachment(attachment: CreationAttachment): attachment is CreationAttachment & { url: string } {

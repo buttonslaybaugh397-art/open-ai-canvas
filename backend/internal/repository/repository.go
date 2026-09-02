@@ -511,14 +511,6 @@ func (r *Repository) UpdateTaskProviderProgress(id string, progress int) error {
 	}).Error
 }
 
-// UpdateTaskProviderStage records queue/processing state without replacing a
-// real percentage already reported by the provider.
-func (r *Repository) UpdateTaskProviderStage(id string, stage string) error {
-	return r.db.Model(&model.Task{}).Where("id = ? AND status = ?", id, model.TaskStatusRunning).Updates(map[string]any{
-		"stage": stage, "updated_at": time.Now(),
-	}).Error
-}
-
 func (r *Repository) SaveTaskCompletion(task *model.Task, expected model.TaskStatus, session *model.Session, message *model.Message, results []model.Result) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		updated := tx.Model(&model.Task{}).
@@ -1030,19 +1022,6 @@ func (r *Repository) ClaimFailedResourceUpload(userID string, id string) (bool, 
 		Where("id = ? AND user_id = ? AND status = ?", id, userID, model.ResourceStatusFailed).
 		Updates(map[string]any{"status": model.ResourceStatusPending, "error": "", "updated_at": time.Now()})
 	return result.RowsAffected == 1, result.Error
-}
-
-func (r *Repository) MarkResourceCloudSyncPending(id string, lastError string, nextAttemptAt time.Time) error {
-	return r.db.Model(&model.Resource{}).
-		Where("id = ? AND provider <> ? AND local_backup_key <> ''", id, "local").
-		Updates(map[string]any{
-			"cloud_sync_status":           model.ResourceCloudSyncStatusPending,
-			"cloud_sync_error":            lastError,
-			"cloud_sync_next_attempt_at":  nextAttemptAt,
-			"cloud_sync_lease_owner":      "",
-			"cloud_sync_lease_expires_at": nil,
-			"updated_at":                  time.Now(),
-		}).Error
 }
 
 func (r *Repository) DeleteResource(userID string, id string) error {
@@ -2104,6 +2083,11 @@ func (r *Repository) CreateProjectAssetCandidates(candidates []model.ProjectAsse
 		return nil
 	}
 	return r.db.Create(&candidates).Error
+}
+
+func (r *Repository) CreateProjectAssetCandidate(candidate *model.ProjectAssetCandidate) (bool, error) {
+	result := r.db.Clauses(clause.OnConflict{DoNothing: true}).Create(candidate)
+	return result.RowsAffected == 1, result.Error
 }
 
 // ConfirmProjectAssetCandidate 将正式资产身份、首版本、项目引用和候选状态放在同一事务中，避免出现半确认数据。

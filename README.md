@@ -55,6 +55,8 @@
 | <img src="assets/user-rou.jpg" alt="Rou" width="80"> | Rou | [rou325089@163.com](mailto:rou325089@163.com) | 上善若水 |
 | <img src="assets/user-vv.jpg" alt="vv" width="80"> | vv<br><sub>dy/xhs：荣灵</sub> | [2838033228@qq.com](mailto:2838033228@qq.com) | 就是水水 |
 | <img src="assets/user-dominic1556.jpg" alt="Dominic1556" width="80"> | Dominic1556 | [184026530@qq.com](mailto:184026530@qq.com) | Done is better than perfect |
+| <img src="assets/user-yuxi.jpg" alt="宇熙" width="80"> | 宇熙 | [53121904@qq.com](mailto:53121904@qq.com) | 年轻的时候不狂，老了拿什么回忆 |
+| <img src="assets/user-yingzi.png" alt="影子" width="80"> | 影子 | [305818148@qq.com](mailto:305818148@qq.com) | 年纪大佬才明白人要顺势而为。 |
 
 ## 交流与反馈
 
@@ -192,27 +194,15 @@ sudo docker compose --env-file .env \
 curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canvas/main/scripts/install-server-image.sh | sudo bash
 ```
 
-容器包不可匿名拉取时，先通过 `GHCR_USERNAME` 和 `GHCR_TOKEN` 登录 GHCR。新安装默认解析 `buttonslaybaugh397-art/open-ai-canvas` 的最新 Release、固定 `CANVAS_IMAGE_TAG` 并安装 Host Updater；仓库尚无 Release 时才回退到 `latest` 并跳过更新器。端口由 `CANVAS_HTTP_PORT` 配置。
+容器包不可匿名拉取时，先通过 `GHCR_USERNAME` 和 `GHCR_TOKEN` 登录 GHCR。生产环境应在 `/opt/open-ai-canvas/.env` 中把 `CANVAS_IMAGE_TAG` 固定为具体 Release（不要使用 `latest`），端口由 `CANVAS_HTTP_PORT` 配置。
 
 固定版本的 GHCR 部署可安装宿主机在线更新器；安装后管理后台会出现“系统配置 → 系统更新”，更新器会在切换前强制生成并校验 PostgreSQL 与数据目录 ZIP 备份：
 
 ```bash
 cd /opt/open-ai-canvas
-curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canvas/main/scripts/install-host-updater.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/main/scripts/install-host-updater.sh | sudo bash
 sudo docker compose --env-file .env -f docker-compose.deploy.yml up -d --force-recreate backend web --wait
 ```
-
-1Panel 或其他保留 `deployment-secrets` 的定制部署必须使用仓库内的专用编排，不能用标准部署文件覆盖。将下面的 `/实际编排目录` 替换为 1Panel 当前保存 `.env` 和 `docker-compose.1panel.yml` 的目录；该操作不需要重填数据库密码，也不会重建命名卷：
-
-```bash
-cd /实际编排目录
-curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canvas/main/scripts/install-host-updater.sh -o /tmp/install-open-ai-canvas-updater.sh
-sudo env INSTALL_DIR="$PWD" CANVAS_UPDATER_COMPOSE_FILE=docker-compose.1panel.yml bash /tmp/install-open-ai-canvas-updater.sh
-rm -f /tmp/install-open-ai-canvas-updater.sh
-sudo docker compose --env-file .env -f docker-compose.1panel.yml up -d --force-recreate backend web --wait
-```
-
-升级或重建时保留 `backend-data`、`deployment-secrets`、`postgres-data` 和 `redis-data`，不要执行 `docker compose down -v`。
 
 更新流程、数据库迁移、健康验证和异常回退说明见 [`docs/content/docs/backend/system-update.mdx`](docs/content/docs/backend/system-update.mdx)。
 

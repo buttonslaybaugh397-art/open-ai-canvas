@@ -19,7 +19,8 @@ const store = localforage.createInstance({ name: "infinite-canvas", storeName: "
 const objectUrls = new Map<string, string>();
 
 export async function uploadImage(input: string | Blob): Promise<UploadedImage> {
-    // Keep one identity across direct upload, local fallback, and later cloud sync.
+    // 同一个逻辑上传在直传失败后会退回 IndexedDB，并由云端数据同步再次提交。
+    // 提前生成本地 key，确保两条路径向后端发送相同的幂等标识。
     const storageKey = `image:${getActiveUserScope()}:${nanoid()}`;
     if (typeof input === "string" && shouldImportRemoteImage(input)) {
         try {

@@ -43,7 +43,7 @@ func TestDecorateAPICallLogsUsesBillingOrderSnapshot(t *testing.T) {
 		{ID: "log-refunded", UserID: "user-1", BillingOrderID: "refunded", Capability: "text", Billable: true},
 		{ID: "log-missing", UserID: "user-1", BillingOrderID: "missing", Capability: "text", Billable: true},
 		{ID: "log-other-user", UserID: "user-1", BillingOrderID: "other-user", Capability: "text", Billable: true},
-		{ID: "log-download", UserID: "user-1", BillingOrderID: "settled", Capability: "video", RequestKind: "download", Billable: false},
+		{ID: "log-download", UserID: "user-1", BillingOrderID: "settled", Capability: "image", RequestKind: "download", Billable: false},
 	}
 
 	svc := &Service{repo: repository.New(db)}

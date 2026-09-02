@@ -812,6 +812,25 @@ func validateImageTask(profile *ImageCapabilityConfig, input canvasGenerationInp
 	return nil
 }
 
+func validateWorkflowProviderPromptLength(input canvasGenerationInput) error {
+	profile := input.Config.CapabilityConfig
+	if input.Mode != "video" || profile == nil || profile.Video == nil {
+		return nil
+	}
+	return validateModelPromptLength("视频", input.Prompt, profile.Video.References.PromptMaxChars)
+}
+
+func validateModelPromptLength(label string, prompt string, maxChars int) error {
+	if maxChars <= 0 {
+		return nil
+	}
+	actualChars := utf8.RuneCountInString(prompt)
+	if actualChars <= maxChars {
+		return nil
+	}
+	return BadAuthRequest(fmt.Sprintf("当前%s模型提示词最多 %d 个字符，完整提示词为 %d 个字符。系统不会自动截断，请精简当前输入、连线内容或技能上下文后重试", label, maxChars, actualChars))
+}
+
 func validateGPTImage2CustomSize(value string) error {
 	value = strings.ToLower(strings.TrimSpace(strings.ReplaceAll(value, "×", "x")))
 	if value == "" || value == "auto" {

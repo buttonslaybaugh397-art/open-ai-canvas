@@ -20,7 +20,7 @@ func newProjectWorkflowV2TestService(t *testing.T) (*Service, *gorm.DB) {
 	}
 	if err := db.AutoMigrate(
 		&model.Project{}, &model.ProjectUnit{}, &model.CanvasProject{}, &model.Asset{}, &model.AssetVersion{}, &model.ProjectAssetLink{}, &model.ProjectAssetCandidate{},
-		&model.AssetRepresentation{},
+		&model.AssetRepresentation{}, &model.CharacterVoiceBinding{},
 		&model.Shot{}, &model.ShotRevision{}, &model.ShotArtifact{}, &model.ShotAssetReference{},
 		&model.WorkflowTemplateVersion{}, &model.WorkflowInstance{}, &model.WorkflowStepInstance{}, &model.WorkflowStepTask{},
 		&model.ProductionTaskLink{}, &model.Task{}, &model.Resource{},
@@ -59,7 +59,7 @@ func TestRegisterTaskOutputFromTaskPersistsMediaAssetAndArtifactIdempotently(t *
 	if err := db.Create(&resource).Error; err != nil {
 		t.Fatal(err)
 	}
-	task := model.Task{ID: "workflow-video-task-1", UserID: "user-1", ProjectID: project.ID, Type: "canvas_video", Status: model.TaskStatusSucceeded,
+	task := model.Task{ID: "ac745990450a86d3365eb92ec26f378e", UserID: "user-1", ProjectID: project.ID, Type: "canvas_video", Status: model.TaskStatusSucceeded,
 		InputJSON:  `{"metadata":{"workflowStepId":"` + videoStep.ID + `","domainProjectId":"` + project.ID + `","unitId":"` + unit.ID + `","shotId":"` + shot.ID + `","shotRevisionId":"` + submittedRevisionID + `","artifactType":"video","role":"output","artifactMetadata":{"model":"MiniMax-H3"}}}`,
 		ResultJSON: `{"mode":"video","video":{"resourceId":"resource-video-1","storageKey":"resource:resource-video-1","mimeType":"video/mp4"}}`, CreatedAt: now, UpdatedAt: now}
 	if err := db.Create(&task).Error; err != nil {
@@ -71,16 +71,37 @@ func TestRegisterTaskOutputFromTaskPersistsMediaAssetAndArtifactIdempotently(t *
 	if err := service.RegisterTaskOutputFromTask(task); err != nil {
 		t.Fatal(err)
 	}
-	for table, query := range map[string]string{
-		"assets":                "id = '" + workflowGeneratedEntityID("asset", task.ID) + "'",
-		"project_asset_links":   "asset_id = '" + workflowGeneratedEntityID("asset", task.ID) + "'",
-		"asset_representations": "task_id = 'workflow-video-task-1' AND role = 'output'",
-		"shot_artifacts":        "task_id = 'workflow-video-task-1' AND type = 'video'",
-	} {
+	assetID := workflowGeneratedEntityID("asset", task.ID)
+	versionID := workflowGeneratedEntityID("version", task.ID)
+	checks := []struct {
+		table string
+		where string
+		value string
+	}{
+		{table: "assets", where: "id = ?", value: assetID},
+		{table: "project_asset_links", where: "asset_id = ?", value: assetID},
+		{table: "asset_representations", where: "task_id = ? AND role = 'output'", value: task.ID},
+		{table: "shot_artifacts", where: "task_id = ? AND type = 'video'", value: task.ID},
+	}
+	for _, check := range checks {
 		var count int64
-		if err := db.Table(table).Where(query).Count(&count).Error; err != nil || count != 1 {
-			t.Fatalf("%s count = %d, error = %v", table, count, err)
+		if err := db.Table(check.table).Where(check.where, check.value).Count(&count).Error; err != nil || count != 1 {
+			t.Fatalf("%s count = %d, error = %v", check.table, count, err)
 		}
+	}
+	var asset model.Asset
+	if err := db.First(&asset, "id = ?", assetID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(asset.PrimaryVersionID) > 36 || asset.PrimaryVersionID != versionID {
+		t.Fatalf("primary version ID = %q, want %q with at most 36 characters", asset.PrimaryVersionID, versionID)
+	}
+	var version model.AssetVersion
+	if err := db.First(&version, "id = ?", versionID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(version.ID) > 36 {
+		t.Fatalf("asset version ID length = %d, want at most 36", len(version.ID))
 	}
 	var artifact model.ShotArtifact
 	if err := db.First(&artifact, "task_id = ?", task.ID).Error; err != nil {
@@ -129,6 +150,79 @@ func TestShortDramaWorkflowV2UsesProductionOrder(t *testing.T) {
 	if workflow.Steps[0].Status != model.WorkflowStepStatusReady {
 		t.Fatalf("first step status = %s, want ready", workflow.Steps[0].Status)
 	}
+}
+
+func TestCreateProjectCharacterCandidatesIsIdempotentAcrossPendingAndConfirmed(t *testing.T) {
+	service, db := newProjectWorkflowV2TestService(t)
+	project, unit := seedWorkflowProject(t, db)
+	request := CreateAssetCandidatesRequest{
+		Source: assetCandidateSourceChapterCharacter,
+		Candidates: []AssetCandidateInput{{
+			UnitID: unit.ID, Name: " 小红帽 ", Category: string(model.AssetCategoryCharacter),
+			Details: validCharacterCandidateDetails([]any{"小红"}),
+		}},
+	}
+
+	created, err := service.CreateProjectAssetCandidates("user-1", project.ID, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("created candidates = %d, want 1", len(created))
+	}
+	created, err = service.CreateProjectAssetCandidates("user-1", project.ID, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 0 {
+		t.Fatalf("duplicate pending candidates = %d, want 0", len(created))
+	}
+
+	if _, err := service.ConfirmProjectAssetCandidate("user-1", project.ID, firstProjectCandidateID(t, db), ConfirmProjectAssetCandidateRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	created, err = service.CreateProjectAssetCandidates("user-1", project.ID, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 0 {
+		t.Fatalf("confirmed character was extracted again: %d", len(created))
+	}
+	var assetCount int64
+	if err := db.Model(&model.Asset{}).Where("user_id = ? AND category = ?", "user-1", model.AssetCategoryCharacter).Count(&assetCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if assetCount != 1 {
+		t.Fatalf("character assets = %d, want 1", assetCount)
+	}
+}
+
+func TestCreateProjectCharacterCandidatesRejectsNonChapterSource(t *testing.T) {
+	service, db := newProjectWorkflowV2TestService(t)
+	project, unit := seedWorkflowProject(t, db)
+	_, err := service.CreateProjectAssetCandidates("user-1", project.ID, CreateAssetCandidatesRequest{
+		Source:     "agent",
+		Candidates: []AssetCandidateInput{{UnitID: unit.ID, Name: "猎人", Category: string(model.AssetCategoryCharacter), Details: validCharacterCandidateDetails(nil)}},
+	})
+	if err == nil {
+		t.Fatal("agent source unexpectedly created a character candidate")
+	}
+}
+
+func validCharacterCandidateDetails(aliases []any) map[string]any {
+	return map[string]any{
+		"role": "主角", "aliases": aliases, "appearance": "红色斗篷", "clothing": "红色兜帽与斗篷", "physique": "儿童体型",
+		"personality": "勇敢", "voiceLanguage": "普通话", "voiceAge": "儿童", "voiceTimbre": "清亮",
+	}
+}
+
+func firstProjectCandidateID(t *testing.T, db *gorm.DB) string {
+	t.Helper()
+	var candidate model.ProjectAssetCandidate
+	if err := db.Order("created_at asc").First(&candidate).Error; err != nil {
+		t.Fatal(err)
+	}
+	return candidate.ID
 }
 
 func TestWorkflowCompletionRequiresStageGate(t *testing.T) {

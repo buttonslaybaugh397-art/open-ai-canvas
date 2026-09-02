@@ -113,9 +113,7 @@ function managedModelChannels(models: PublicLogicalModel[]) {
         scope: "system",
         enabled: true,
         models: availableModels.map((item) => item.id),
-        modelAliases: Object.fromEntries(
-            availableModels.flatMap((item) => (item.legacyModelIds || []).map((legacyID) => [legacyID, item.id])),
-        ),
+        modelAliases: Object.fromEntries(availableModels.flatMap((item) => (item.legacyModelIds || []).map((legacyID) => [legacyID, item.id]))),
         modelCosts: availableModels.map((item) => ({
             model: item.id,
             displayName: item.name,
@@ -132,7 +130,7 @@ function managedModelChannels(models: PublicLogicalModel[]) {
             logicalModelId: item.id,
             logicalCapabilitySpec: item.capabilitySpec,
             logicalCapabilityProfiles: item.capabilityProfiles,
-			logicalPriceTiers: item.priceTiers,
+            logicalPriceTiers: item.priceTiers,
             defaultOptions: item.defaultOptions,
         })),
     };

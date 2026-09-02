@@ -59,7 +59,7 @@ function LogDetail({ log, querying, onQueryProviderTask }: { log: ApiCallLog; qu
     const displayStatus = apiLogDisplayStatus(log);
     const items = [
         ["时间", new Date(log.startedAt || log.createdAt).toLocaleString("zh-CN", { hour12: false })],
-        ["状态", <AdminStatusBadge label={displayStatus.label} tone={displayStatus.tone} />],
+        ["状态", <AdminStatusBadge label={failed ? "失败" : processing ? "处理中" : "成功"} tone={failed ? "error" : processing ? "warning" : "success"} />],
         [
             "用户",
             <span>
@@ -92,7 +92,7 @@ function LogDetail({ log, querying, onQueryProviderTask }: { log: ApiCallLog; qu
             {canQueryProviderTask ? (
                 <div className="flex justify-end">
                     <Button icon={<RefreshCw className="size-4" />} loading={querying} onClick={onQueryProviderTask}>
-                        手动查询任务
+                        {querying ? "正在下载并入库" : "手动查询任务"}
                     </Button>
                 </div>
             ) : null}

@@ -140,25 +140,6 @@ export function isResourceUrl(url?: string) {
     return path.startsWith(`${basePath}/resources/`) && path.endsWith("/file");
 }
 
-export function resourceIdFromUrl(url?: string) {
-    const value = String(url || "");
-    if (!isResourceUrl(value)) return "";
-    const base = String(apiBaseURL).replace(/\/+$/, "");
-    const prefix = `${base.startsWith("http") ? new URL(base).pathname : base}/resources/`;
-    let path = value.split(/[?#]/, 1)[0];
-    try {
-        path = new URL(value, window.location.origin).pathname;
-    } catch {
-        // Keep the relative path for non-browser callers and tests.
-    }
-    if (!path.startsWith(prefix) || !path.endsWith("/file")) return "";
-    try {
-        return decodeURIComponent(path.slice(prefix.length, -"/file".length));
-    } catch {
-        return "";
-    }
-}
-
 export async function uploadResourceFile(file: Blob, kind: "image" | "video" | "audio" | "file", meta?: ResourceUploadMeta) {
     const formData = new FormData();
     const name = meta?.fileName || (file instanceof File ? file.name : `${kind}.${extensionFromMime(file.type, kind)}`);
@@ -176,6 +157,11 @@ export async function importResourceFromUrl(url: string, kind: "image" | "video"
     const data = await request<{ resource: RemoteResource }>(api.post("/resources/import", { url, kind, width: meta?.width, height: meta?.height, durationMs: meta?.durationMs }, uploadRequestConfig(meta?.idempotencyKey)));
     resourceCache.set(resourceCacheKey(data.resource.id), data.resource);
     return data.resource;
+}
+
+function uploadRequestConfig(idempotencyKey?: string) {
+    const value = idempotencyKey?.trim();
+    return value ? { headers: { "X-Idempotency-Key": value } } : undefined;
 }
 
 export function getResource(id: string): Promise<RemoteResource> {

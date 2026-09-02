@@ -41,7 +41,7 @@ type CanvasStore = {
     renameProject: (id: string, title: string) => void;
     deleteProjects: (ids: string[]) => void;
     replaceProjects: (projects: CanvasProject[]) => void;
-    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "projectId" | "nodes" | "connections" | "chatSessions" | "activeChatId" | "starterMode" | "appearance" | "backgroundMode" | "showImageInfo" | "generationRatio" | "viewport" | "directorScenes" | "timeline">>) => void;
+    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "projectId" | "nodes" | "connections" | "chatSessions" | "activeChatId" | "starterMode" | "appearance" | "backgroundMode" | "showImageInfo" | "viewport" | "directorScenes" | "timeline">>) => void;
 };
 
 const initialViewport: ViewportTransform = { x: 0, y: 0, k: 1 };
@@ -268,6 +268,7 @@ function pendingGenerationAttempt(scope: string, projectId: string, effectKeys?:
 }
 
 function ordinaryCanvasProjectSnapshot(scope: string, project: CanvasProject, durableProject: CanvasProject | undefined) {
+    if (!hasGenerationEffectKeys(project) && !hasGenerationEffectKeys(durableProject)) return project;
     const durableNodes = new Map((durableProject?.nodes || []).map((node) => [node.id, node]));
     const durableSessions = new Map((durableProject?.chatSessions || []).map((session) => [session.id, session]));
     let changed = false;
@@ -296,7 +297,7 @@ function ordinaryCanvasProjectSnapshot(scope: string, project: CanvasProject, du
             }
             continue;
         }
-        if (JSON.stringify(localKeys) === JSON.stringify(durableKeys)) {
+        if (sameGenerationEffectKeys(localKeys, durableKeys)) {
             nodes.push(node);
             continue;
         }
@@ -326,7 +327,7 @@ function ordinaryCanvasProjectSnapshot(scope: string, project: CanvasProject, du
             }
             continue;
         }
-        if (JSON.stringify(session.generationEffectKeys) === JSON.stringify(durableKeys)) {
+        if (sameGenerationEffectKeys(session.generationEffectKeys, durableKeys)) {
             chatSessions.push(session);
             continue;
         }
@@ -347,6 +348,19 @@ function ordinaryCanvasProjectSnapshot(scope: string, project: CanvasProject, du
         };
     }
     return changed ? { ...project, nodes, chatSessions } : project;
+}
+
+function hasGenerationEffectKeys(value: CanvasProject | undefined) {
+    if (!value) return false;
+    return value.nodes.some((node) => Boolean(node.metadata?.generationEffectKeys?.length))
+        || value.chatSessions.some((session) => Boolean(session.generationEffectKeys?.length));
+}
+
+function sameGenerationEffectKeys(left?: readonly string[], right?: readonly string[]) {
+    if (left === right) return true;
+    if (!left?.length && !right?.length) return true;
+    if (!left || !right || left.length !== right.length) return false;
+    return left.every((value, index) => value === right[index]);
 }
 
 function ordinaryCanvasPersistenceState(scope: string, state: PersistedCanvasState, durableProjects: CanvasProject[]) {

@@ -276,7 +276,6 @@ func (s *Service) readRuntimePolicy() (*model.SystemSetting, RuntimePolicySettin
 	if err != nil {
 		return nil, RuntimePolicySetting{}, err
 	}
-	// Unmarshal over defaults so settings saved by older versions gain new fields.
 	value := defaultRuntimePolicy()
 	if strings.TrimSpace(setting.ValueJSON) == "" || json.Unmarshal([]byte(setting.ValueJSON), &value) != nil {
 		return nil, RuntimePolicySetting{}, errors.New("资源与请求策略配置格式无效")
@@ -319,7 +318,7 @@ func validateRuntimePolicy(value RuntimePolicySetting) error {
 		}
 	}
 	if resource.RecycleBinRetentionDays < 0 || resource.RecycleBinRetentionDays > 365 {
-		return BadAuthRequest("回收站保留天数必须是 0-365 的整数（0 表示不自动清理）")
+		return BadAuthRequest("回收站保留天数必须是 0-365 的整数 (0 表示不自动清理)")
 	}
 	task := value.Task
 	for label, item := range map[string]int{

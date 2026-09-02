@@ -305,11 +305,13 @@ function downloadMedia(url: string, kind: "image" | "video") {
 }
 
 function CallStatus({ log }: { log: ApiCallLog }) {
-    const displayStatus = apiLogDisplayStatus(log);
+    const providerStatus = log.providerStatus?.toLowerCase();
+    const processing = ["queued", "pending", "processing", "running", "in_progress"].includes(providerStatus || "");
+    const failed = log.status === "failed" || ["failed", "cancelled", "expired"].includes(providerStatus || "");
     return (
         <div>
             <div className="mb-1 text-xs font-medium text-foreground/70">{requestKindText(log.requestKind)}</div>
-            <AdminStatusBadge label={displayStatus.label} tone={displayStatus.tone} />
+            <AdminStatusBadge label={failed ? "失败" : processing ? "处理中" : "成功"} tone={failed ? "error" : processing ? "warning" : "success"} />
             {log.capability === "video" ? <div className="mt-1 text-xs tabular-nums text-foreground/45">已轮询 {log.pollCount || 0} 次</div> : null}
         </div>
     );

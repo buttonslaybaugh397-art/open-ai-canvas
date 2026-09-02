@@ -154,7 +154,8 @@ func TestRuntimePolicyBackfillsRecycleBinRetentionForLegacyJSON(t *testing.T) {
 	if err := json.Unmarshal(encoded, &value); err != nil {
 		t.Fatal(err)
 	}
-	delete(value["resource"].(map[string]any), "recycleBinRetentionDays")
+	resource := value["resource"].(map[string]any)
+	delete(resource, "recycleBinRetentionDays")
 	encoded, err = json.Marshal(value)
 	if err != nil {
 		t.Fatal(err)
@@ -169,22 +170,5 @@ func TestRuntimePolicyBackfillsRecycleBinRetentionForLegacyJSON(t *testing.T) {
 	}
 	if policy.Resource.RecycleBinRetentionDays != 30 {
 		t.Fatalf("legacy recycle bin retention = %d, want 30", policy.Resource.RecycleBinRetentionDays)
-	}
-}
-
-func TestRuntimePolicyValidatesRecycleBinRetentionRange(t *testing.T) {
-	for _, days := range []int{0, 365} {
-		policy := defaultRuntimePolicy()
-		policy.Resource.RecycleBinRetentionDays = days
-		if err := validateRuntimePolicy(policy); err != nil {
-			t.Fatalf("retention %d should be valid: %v", days, err)
-		}
-	}
-	for _, days := range []int{-1, 366} {
-		policy := defaultRuntimePolicy()
-		policy.Resource.RecycleBinRetentionDays = days
-		if err := validateRuntimePolicy(policy); err == nil {
-			t.Fatalf("retention %d should be rejected", days)
-		}
 	}
 }

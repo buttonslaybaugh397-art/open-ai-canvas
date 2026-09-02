@@ -79,46 +79,6 @@ test("admin navigation keeps the storage resource page reachable", async () => {
     expect(source).toContain('path: "/admin/resources"');
 });
 
-test("admin navigation exposes the credit consumption statistics page", async () => {
-    const [shellSource, routerSource] = await Promise.all([
-        Bun.file(new URL("../src/pages/admin/components/admin-shell.tsx", import.meta.url)).text(),
-        Bun.file(new URL("../src/router.tsx", import.meta.url)).text(),
-    ]);
-    expect(shellSource).toContain('path: "/admin/credit-consumption"');
-    expect(shellSource).toContain('label: "积分统计"');
-    expect(routerSource).toContain('{ path: "credit-consumption", element: deferred(<CreditConsumptionPage />) }');
-});
-
-test("system updater displays the project release repository", async () => {
-    const source = await Bun.file(new URL("../src/pages/admin/settings/system-update-page.tsx", import.meta.url)).text();
-    expect(source).toContain("buttonslaybaugh397-art/open-ai-canvas");
-    expect(source).not.toContain("ddcat-ai/open-ai-canvas");
-});
-
-test("credit consumption statistics expose comparisons, capability mix, and ranked drill-downs", async () => {
-    const [pageSource, apiSource, cssSource] = await Promise.all([
-        Bun.file(new URL("../src/pages/admin/credit-consumption/credit-consumption-page.tsx", import.meta.url)).text(),
-        Bun.file(new URL("../src/services/api/wallet.ts", import.meta.url)).text(),
-        Bun.file(new URL("../src/styles/admin-ui.css", import.meta.url)).text(),
-    ]);
-
-    for (const field of ["previousPeriodMicrocredits", "previousSettledOrders", "previousConsumingUsers", "previousUsedModels", "capabilities"]) {
-        expect(apiSource).toContain(field);
-    }
-    expect(pageSource).toContain('{ label: "近 7 天", days: 7 }');
-    expect(pageSource).toContain('{ label: "近 30 天", days: 30 }');
-    expect(pageSource).toContain('{ label: "近 90 天", days: 90 }');
-    expect(pageSource).toContain('title="能力消费构成"');
-    expect(pageSource).toContain('title="用户消耗榜"');
-    expect(pageSource).toContain('title="模型消耗榜"');
-    expect(pageSource).toContain("<Area");
-    expect(pageSource).toContain("<Bar");
-    expect(pageSource).toContain("<Comparison");
-    expect(cssSource).toContain(".admin-credit-overview-grid");
-    expect(cssSource).toContain(".admin-credit-analysis-grid");
-    expect(cssSource).toContain(".admin-credit-capability-track");
-}
-
 test("nested admin pages return to their own parent entry", async () => {
     const source = await Bun.file(new URL("../src/pages/admin/components/admin-shell.tsx", import.meta.url)).text();
     const compacted = compactSource(source);

@@ -141,7 +141,7 @@ describe("逻辑模型选择", () => {
         expect(resolveModelGenerationDefaults(config, model, "video", {}, { videoSeconds: "6" }).videoSeconds).toBe("15");
     });
 
-    test("视频模型不支持同步选项时强制关闭旧的全局开关", () => {
+    test("镜头视频不会向不支持同步音频的模型提交全局 true 默认值", () => {
         const model = "platform::silent-video";
         const profile = defaultModelCapabilityConfig(undefined, "silent-video");
         profile.video!.generateAudio = { supported: false, default: false };
@@ -151,13 +151,47 @@ describe("逻辑模型选择", () => {
             videoGenerateAudio: "true",
             videoWatermark: "true",
             channels: [{
-                id: "platform", name: "平台模型", baseUrl: "/api", apiKey: "system", apiFormat: "openai", scope: "system", models: ["silent-video"],
-                modelCosts: [{ model: "silent-video", capability: "video", billingMode: "fixed_request", unitPriceMicrocredits: 1, logicalModelId: "silent-video", logicalCapabilitySpec: { version: 1, capability: "video", options: { videoGenerateAudio: { values: [false] }, videoWatermark: { values: [false] } } }, capabilityConfig: profile }],
+                id: "platform",
+                name: "平台模型",
+                baseUrl: "/api",
+                apiKey: "system",
+                apiFormat: "openai",
+                scope: "system",
+                models: ["silent-video"],
+                modelCosts: [{
+                    model: "silent-video",
+                    capability: "video",
+                    billingMode: "per_second",
+                    unitPriceMicrocredits: 1,
+                    logicalModelId: "silent-video",
+                    logicalCapabilitySpec: {
+                        version: 1,
+                        capability: "video",
+                        options: {
+                            videoGenerateAudio: { values: [false] },
+                            videoWatermark: { values: [false] },
+                        },
+                    },
+                    capabilityConfig: profile,
+                }],
             }],
-            models: [model], videoModels: [model], videoModel: model, model,
+            models: [model],
+            videoModels: [model],
+            videoModel: model,
+            model,
         };
 
-        expect(resolveModelVideoBooleanOptions(config, model, {}, { videoGenerateAudio: config.videoGenerateAudio, videoWatermark: config.videoWatermark })).toEqual({ videoGenerateAudio: "false", videoWatermark: "false" });
+        expect(resolveModelVideoBooleanOptions(config, model, {}, {
+            videoGenerateAudio: config.videoGenerateAudio,
+            videoWatermark: config.videoWatermark,
+        })).toEqual({ videoGenerateAudio: "false", videoWatermark: "false" });
+
+        profile.video!.generateAudio = { supported: true, default: true };
+        config.videoGenerateAudio = "false";
+        expect(resolveModelVideoBooleanOptions(config, model, {}, {
+            videoGenerateAudio: config.videoGenerateAudio,
+            videoWatermark: config.videoWatermark,
+        })).toEqual({ videoGenerateAudio: "true", videoWatermark: "false" });
     });
 
 

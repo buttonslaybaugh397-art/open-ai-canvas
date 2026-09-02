@@ -132,61 +132,6 @@ func taskSummaryForOutput(task model.Task) TaskSummary {
 	}
 }
 
-func taskMediaPreviewStorageKey(raw string, previewURL string) string {
-	if strings.TrimSpace(raw) == "" || strings.TrimSpace(previewURL) == "" {
-		return ""
-	}
-	var payload any
-	if json.Unmarshal([]byte(raw), &payload) != nil {
-		return ""
-	}
-	return findTaskMediaStorageKey(payload, previewURL)
-}
-
-func findTaskMediaStorageKey(value any, previewURL string) string {
-	switch item := value.(type) {
-	case []any:
-		for _, child := range item {
-			if storageKey := findTaskMediaStorageKey(child, previewURL); storageKey != "" {
-				return storageKey
-			}
-		}
-	case map[string]any:
-		storageKey := taskMediaStorageKey(item)
-		if storageKey != "" && previewURL == taskMediaResourcePreviewURL(storageKey) {
-			return storageKey
-		}
-		for _, key := range []string{"url", "videoUrl", "video_url", "imageUrl", "image_url", "outputUrl", "output_url", "mediaUrl", "media_url", "dataUrl", "data_url", "content", "coverUrl", "cover_url", "resultUrl", "result_url", "downloadUrl", "download_url", "fileUrl", "file_url", "uri", "src"} {
-			if candidate, _ := item[key].(string); candidate == previewURL && storageKey != "" {
-				return storageKey
-			}
-		}
-		for _, child := range item {
-			if found := findTaskMediaStorageKey(child, previewURL); found != "" {
-				return found
-			}
-		}
-	}
-	return ""
-}
-
-func taskMediaStorageKey(item map[string]any) string {
-	for _, key := range []string{"storageKey", "storage_key", "resourceKey", "resource_key", "providerArtifactRef", "provider_artifact_ref"} {
-		if value, ok := item[key].(string); ok && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
-}
-
-func taskMediaResourcePreviewURL(storageKey string) string {
-	resourceID := canvasResourceID(storageKey)
-	if resourceID == "" {
-		return ""
-	}
-	return "/api/resources/" + resourceID + "/file"
-}
-
 // 列表只暴露页面恢复所需的非敏感关联 ID，不下发完整任务输入或其他 metadata。
 func taskClientContext(raw string) *TaskClientContext {
 	var input struct {

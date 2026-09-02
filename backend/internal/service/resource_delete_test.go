@@ -164,22 +164,55 @@ func TestDeleteAssetDatabaseFailureLeavesPhysicalObjectAndNoOutbox(t *testing.T)
 	}
 }
 
-func TestDeleteAssetKeepsResourceReferencedByTeamAsset(t *testing.T) {
+func TestDeleteAssetKeepsResourceSharedByIndependentAsset(t *testing.T) {
 	svc, db, _ := newResourceDeletionTestService(t)
-	resource := model.Resource{ID: "resource-team-shared", UserID: "user-1", Provider: "local", ObjectKey: "users/user-1/image/shared.png", Status: model.ResourceStatusReady}
-	asset := model.Asset{ID: "asset-team-shared", UserID: "user-1", Title: "个人原素材", PayloadJSON: `{"data":{"storageKey":"resource:resource-team-shared"}}`}
-	teamAsset := model.TeamAsset{ID: "team-asset-shared", TeamID: "team-1", OwnerUserID: "user-1", SourceAssetID: asset.ID, Title: "团队共享素材"}
-	teamResource := model.TeamAssetResource{TeamAssetID: teamAsset.ID, ResourceID: resource.ID}
-	for _, item := range []any{&resource, &asset, &teamAsset, &teamResource} {
+	resource := model.Resource{ID: "resource-shared", UserID: "user-1", Provider: "local", ObjectKey: "users/user-1/image/shared.png", Status: model.ResourceStatusReady}
+	target := model.Asset{ID: "asset-target", UserID: "user-1", Title: "待删除素材", PayloadJSON: `{"data":{"storageKey":"resource:resource-shared"}}`}
+	independent := model.Asset{ID: "asset-independent", UserID: "user-1", Title: "生成图片", PayloadJSON: `{"data":{"storageKey":"resource:resource-shared"}}`}
+	for _, item := range []any{&resource, &target, &independent} {
+		if err := db.Create(item).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := svc.DeleteUserAsset("user-1", target.ID); err != nil {
+		t.Fatalf("DeleteUserAsset() error = %v", err)
+	}
+
+	var targetCount, independentCount, resourceCount, jobCount int64
+	if err := db.Model(&model.Asset{}).Where("id = ?", target.ID).Count(&targetCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.Asset{}).Where("id = ?", independent.ID).Count(&independentCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.Resource{}).Where("id = ?", resource.ID).Count(&resourceCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.ResourceDeletionJob{}).Count(&jobCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if targetCount != 0 || independentCount != 1 || resourceCount != 1 || jobCount != 0 {
+		t.Fatalf("unexpected delete result: target=%d independent=%d resource=%d jobs=%d", targetCount, independentCount, resourceCount, jobCount)
+	}
+}
+
+func TestDeleteAssetStillRejectsLiveCanvasResourceReference(t *testing.T) {
+	svc, db, _ := newResourceDeletionTestService(t)
+	resource := model.Resource{ID: "resource-canvas", UserID: "user-1", Provider: "local", ObjectKey: "users/user-1/image/canvas.png", Status: model.ResourceStatusReady}
+	asset := model.Asset{ID: "asset-canvas", UserID: "user-1", Title: "画布素材", PayloadJSON: `{"data":{"storageKey":"resource:resource-canvas"}}`}
+	canvas := model.CanvasProject{ID: "canvas-live", UserID: "user-1", Title: "仍在使用的画布", PayloadJSON: `{"nodes":[{"data":{"storageKey":"resource:resource-canvas"}}]}`}
+	for _, item := range []any{&resource, &asset, &canvas} {
 		if err := db.Create(item).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	err := svc.DeleteUserAsset("user-1", asset.ID)
-	if err == nil || !strings.Contains(err.Error(), "团队素材「团队共享素材」") {
-		t.Fatalf("DeleteUserAsset() error = %v, want team asset reference", err)
+	if err == nil || !strings.Contains(err.Error(), "画布「仍在使用的画布」") {
+		t.Fatalf("DeleteUserAsset() error = %v, want live canvas reference", err)
 	}
+
 	var assetCount, resourceCount int64
 	if err := db.Model(&model.Asset{}).Where("id = ?", asset.ID).Count(&assetCount).Error; err != nil {
 		t.Fatal(err)
@@ -189,44 +222,6 @@ func TestDeleteAssetKeepsResourceReferencedByTeamAsset(t *testing.T) {
 	}
 	if assetCount != 1 || resourceCount != 1 {
 		t.Fatalf("blocked delete changed data: asset=%d resource=%d", assetCount, resourceCount)
-	}
-}
-
-func TestExpiredArchivedAssetCleanupRespectsReferencesAndUsesDeletionOutbox(t *testing.T) {
-	svc, db, _ := newResourceDeletionTestService(t)
-	old := time.Now().Add(-45 * 24 * time.Hour)
-	resource := model.Resource{ID: "resource-expired-archive", UserID: "user-1", Provider: "unsupported-test-provider", ObjectKey: "users/user-1/image/expired.png", Status: model.ResourceStatusReady}
-	asset := model.Asset{ID: "asset-expired-archive", UserID: "user-1", Title: "过期回收站素材", Status: model.AssetVersionStatusArchived, PayloadJSON: `{"data":{"storageKey":"resource:resource-expired-archive"}}`, CreatedAt: old, UpdatedAt: old}
-	canvas := model.CanvasProject{ID: "canvas-expired-archive", UserID: "user-1", Title: "仍引用回收站素材的画布", PayloadJSON: `{"nodes":[{"data":{"storageKey":"resource:resource-expired-archive"}}]}`}
-	for _, item := range []any{&resource, &asset, &canvas} {
-		if err := db.Create(item).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	svc.cleanupExpiredArchivedAssets()
-	assertArchivedAssetCleanupCounts(t, db, asset.ID, resource.ID, 1, 1, 0)
-	if err := db.Delete(&model.CanvasProject{}, "id = ? AND user_id = ?", canvas.ID, canvas.UserID).Error; err != nil {
-		t.Fatal(err)
-	}
-	svc.cleanupExpiredArchivedAssets()
-	assertArchivedAssetCleanupCounts(t, db, asset.ID, resource.ID, 0, 0, 1)
-}
-
-func assertArchivedAssetCleanupCounts(t *testing.T, db *gorm.DB, assetID string, resourceID string, wantAssets int64, wantResources int64, wantJobs int64) {
-	t.Helper()
-	var assetCount, resourceCount, jobCount int64
-	if err := db.Model(&model.Asset{}).Where("id = ?", assetID).Count(&assetCount).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Model(&model.Resource{}).Where("id = ?", resourceID).Count(&resourceCount).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Model(&model.ResourceDeletionJob{}).Where("resource_id = ?", resourceID).Count(&jobCount).Error; err != nil {
-		t.Fatal(err)
-	}
-	if assetCount != wantAssets || resourceCount != wantResources || jobCount != wantJobs {
-		t.Fatalf("cleanup counts: asset=%d resource=%d jobs=%d, want %d/%d/%d", assetCount, resourceCount, jobCount, wantAssets, wantResources, wantJobs)
 	}
 }
 
@@ -259,6 +254,61 @@ func TestResourceDeletionWorkerRemovesObjectAndCompletesOutbox(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatal("completed deletion job was not removed")
+	}
+}
+
+func TestExpiredArchivedAssetCleanupRespectsCanvasReferencesAndUsesDeletionOutbox(t *testing.T) {
+	svc, db, _ := newResourceDeletionTestService(t)
+	old := time.Now().Add(-45 * 24 * time.Hour)
+	resource := model.Resource{
+		ID: "resource-expired-archive", UserID: "user-1", Provider: "unsupported-test-provider",
+		ObjectKey: "users/user-1/image/expired.png", Status: model.ResourceStatusReady,
+	}
+	asset := model.Asset{
+		ID: "asset-expired-archive", UserID: "user-1", Title: "过期回收站素材",
+		Status: model.AssetVersionStatusArchived, PayloadJSON: `{"data":{"storageKey":"resource:resource-expired-archive"}}`,
+		CreatedAt: old, UpdatedAt: old,
+	}
+	canvas := model.CanvasProject{
+		ID: "canvas-expired-archive", UserID: "user-1", Title: "仍引用回收站素材的画布",
+		PayloadJSON: `{"nodes":[{"data":{"storageKey":"resource:resource-expired-archive"}}]}`,
+	}
+	for _, item := range []any{&resource, &asset, &canvas} {
+		if err := db.Create(item).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	svc.cleanupExpiredArchivedAssets()
+	var assetCount, resourceCount, jobCount int64
+	if err := db.Model(&model.Asset{}).Where("id = ?", asset.ID).Count(&assetCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.Resource{}).Where("id = ?", resource.ID).Count(&resourceCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.ResourceDeletionJob{}).Where("resource_id = ?", resource.ID).Count(&jobCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if assetCount != 1 || resourceCount != 1 || jobCount != 0 {
+		t.Fatalf("referenced archived asset cleanup changed data: asset=%d resource=%d jobs=%d", assetCount, resourceCount, jobCount)
+	}
+
+	if err := db.Delete(&model.CanvasProject{}, "id = ? AND user_id = ?", canvas.ID, canvas.UserID).Error; err != nil {
+		t.Fatal(err)
+	}
+	svc.cleanupExpiredArchivedAssets()
+	if err := db.Model(&model.Asset{}).Where("id = ?", asset.ID).Count(&assetCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.Resource{}).Where("id = ?", resource.ID).Count(&resourceCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.ResourceDeletionJob{}).Where("resource_id = ?", resource.ID).Count(&jobCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if assetCount != 0 || resourceCount != 0 || jobCount != 1 {
+		t.Fatalf("unreferenced archived asset did not use deletion outbox: asset=%d resource=%d jobs=%d", assetCount, resourceCount, jobCount)
 	}
 }
 
