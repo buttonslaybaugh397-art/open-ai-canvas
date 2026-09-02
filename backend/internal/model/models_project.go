@@ -83,6 +83,7 @@ type AnnouncementImageDraft struct {
 type Asset struct {
 	ID               string             `json:"id" gorm:"primaryKey;size:80"`
 	UserID           string             `json:"userId" gorm:"index;size:36;index:idx_assets_user_updated,priority:1"`
+	FolderID         string             `json:"folderId,omitempty" gorm:"index;size:36"`
 	Kind             string             `json:"kind" gorm:"index;size:24"`
 	Category         AssetCategory      `json:"category" gorm:"index;size:32"`
 	Status           AssetVersionStatus `json:"status" gorm:"index;size:24"`
@@ -169,6 +170,17 @@ type TeamInvitation struct {
 	ConsumedByUserID string         `json:"consumedByUserId,omitempty" gorm:"size:36"`
 	RevokedAt        *time.Time     `json:"revokedAt,omitempty" gorm:"index"`
 	CreatedAt        time.Time      `json:"createdAt" gorm:"index:idx_team_invitations_team_created,priority:2"`
+}
+
+// AssetFolder 是用户素材库的一层自定义分类；业务分类仍由 Asset.Category 表达。
+type AssetFolder struct {
+	ID        string    `json:"id" gorm:"primaryKey;size:36"`
+	UserID    string    `json:"userId" gorm:"index;size:36;uniqueIndex:idx_asset_folders_user_name,priority:1"`
+	Name      string    `json:"name" gorm:"size:80"`
+	NameKey   string    `json:"-" gorm:"size:80;uniqueIndex:idx_asset_folders_user_name,priority:2"`
+	Position  int       `json:"position" gorm:"index"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 type ProjectAssetLink struct {

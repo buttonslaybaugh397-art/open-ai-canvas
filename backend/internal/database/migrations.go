@@ -10,7 +10,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 8
+const CurrentSchemaVersion int64 = 10
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -20,6 +20,8 @@ const teamAuditEventsChecksum = "sha256:team-audit-events-v5-20260901"
 const teamInvitationsChecksum = "sha256:team-invitations-v6-20260901"
 const resourceUploadKeyChecksum = "sha256:resource-upload-key-v7-20260901"
 const assetTaxonomyCandidateIdentityChecksum = "sha256:asset-taxonomy-candidate-identity-v8-20260902-r1"
+const paymentTopupChecksum = "sha256:payment-topup-v9-20260902"
+const assetLibraryFoldersChecksum = "sha256:asset-library-folders-v10-20260902"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -54,6 +56,8 @@ var schemaMigrations = []migration{
 	{version: 6, name: "team_invitations", checksum: teamInvitationsChecksum, apply: migrateTeamInvitations},
 	{version: 7, name: "resource_upload_key", checksum: resourceUploadKeyChecksum, apply: migrateSchemaV4},
 	{version: 8, name: "asset_taxonomy_candidate_identity", checksum: assetTaxonomyCandidateIdentityChecksum, apply: migrateSchemaV3},
+	{version: 9, name: "payment_topup", checksum: paymentTopupChecksum, apply: migrateSchemaV5},
+	{version: 10, name: "asset_library_folders", checksum: assetLibraryFoldersChecksum, apply: migrateSchemaV6},
 }
 
 func migrateSchemaV2(tx *gorm.DB) error {
@@ -110,6 +114,28 @@ func migrateSchemaV4(tx *gorm.DB) error {
 	}
 	if err := tx.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_user_upload_key ON resources (user_id, upload_key)").Error; err != nil {
 		return fmt.Errorf("创建资源上传幂等索引：%w", err)
+	}
+	return nil
+}
+
+func migrateSchemaV5(tx *gorm.DB) error {
+	if err := tx.AutoMigrate(
+		&model.CreditLedgerEntry{},
+		&model.TopupProduct{},
+		&model.PaymentProviderConfig{},
+		&model.PaymentOrder{},
+		&model.PaymentNotification{},
+		&model.PaymentReconciliationRun{},
+		&model.PaymentReconciliationItem{},
+	); err != nil {
+		return fmt.Errorf("创建积分支付与对账结构：%w", err)
+	}
+	return nil
+}
+
+func migrateSchemaV6(tx *gorm.DB) error {
+	if err := tx.AutoMigrate(&model.Asset{}, &model.AssetFolder{}); err != nil {
+		return fmt.Errorf("创建个人素材分类并扩展素材目录字段：%w", err)
 	}
 	return nil
 }
