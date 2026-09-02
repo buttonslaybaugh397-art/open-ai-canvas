@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
@@ -936,6 +937,71 @@ func newResourceTestService(t *testing.T) *Service {
 	return &Service{repo: repository.New(db), dataDir: t.TempDir()}
 }
 
+func TestStoreResourceReusesReadyUploadIdentity(t *testing.T) {
+	svc := newResourceTestService(t)
+	uploadKey := normalizedResourceUploadKey([]string{"image:user-1:logical-upload"})
+	first, stored, err := svc.storeResource("user-1", "image", "first.png", "image/png", 7, 1, 1, 0, bytes.NewReader([]byte("payload")), uploadKey)
+	if err != nil || !stored {
+		t.Fatalf("first upload stored=%v error=%v", stored, err)
+	}
+	second, stored, err := svc.storeResource("user-1", "image", "second.png", "image/png", 7, 1, 1, 0, bytes.NewReader([]byte("payload")), uploadKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored || second.ID != first.ID || second.ObjectKey != first.ObjectKey {
+		t.Fatalf("idempotent upload = %#v, stored=%v; first=%#v", second, stored, first)
+	}
+	resources, err := svc.repo.Resources("user-1", 10)
+	if err != nil || len(resources) != 1 {
+		t.Fatalf("resources=%d error=%v, want 1", len(resources), err)
+	}
+}
+
+func TestRetryStoredResourceKeepsOriginalObjectKey(t *testing.T) {
+	svc := newResourceTestService(t)
+	uploadKey := normalizedResourceUploadKey([]string{"image:user-1:retry-upload"})
+	failed := &model.Resource{
+		ID: "resource-failed", UserID: "user-1", Kind: "image", Status: model.ResourceStatusFailed,
+		Provider: "local", ObjectKey: "users/user-1/image/fixed.png", MimeType: "image/png", Size: 7,
+		UploadKey: uploadKey, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := svc.repo.CreateResource(failed); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := svc.retryStoredResource("user-1", failed, "image", "fixed.png", "image/png", 7, bytes.NewReader([]byte("payload")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.ID != failed.ID || retried.ObjectKey != "users/user-1/image/fixed.png" || retried.Status != model.ResourceStatusReady {
+		t.Fatalf("retried resource = %#v", retried)
+	}
+	usage, err := svc.repo.DailyUploadBytes("user-1", time.Now().UTC().Format("2006-01-02"))
+	if err != nil || usage != 7 {
+		t.Fatalf("daily upload usage=%d error=%v, want 7", usage, err)
+	}
+}
+
+func TestRetryStoredResourceReleasesDailyQuotaAfterFailure(t *testing.T) {
+	svc := newResourceTestService(t)
+	uploadKey := normalizedResourceUploadKey([]string{"image:user-1:failed-retry"})
+	failed := &model.Resource{
+		ID: "resource-failed-retry", UserID: "user-1", Kind: "image", Status: model.ResourceStatusFailed,
+		Provider: "local", ObjectKey: "users/user-1/image/failed.png", MimeType: "image/png", Size: 7,
+		UploadKey: uploadKey, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	if err := svc.repo.CreateResource(failed); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.retryStoredResource("user-1", failed, "image", "failed.png", "image/png", 7, iotest.ErrReader(errors.New("write failed")))
+	if err == nil || !strings.Contains(err.Error(), "write failed") {
+		t.Fatalf("retryStoredResource() error = %v", err)
+	}
+	usage, usageErr := svc.repo.DailyUploadBytes("user-1", time.Now().UTC().Format("2006-01-02"))
+	if usageErr != nil || usage != 0 {
+		t.Fatalf("daily upload usage=%d error=%v, want 0", usage, usageErr)
+	}
+}
+
 func TestCloudUploadFailureKeepsResourceReadyWithLocalBackup(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
 	requests := 0
@@ -958,7 +1024,7 @@ func TestCloudUploadFailureKeepsResourceReadyWithLocalBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := []byte("local disaster backup")
-	resource, err := svc.storeResource("user-1", "image", "sample.png", "image/png", int64(len(payload)), 0, 0, 0, bytes.NewReader(payload))
+	resource, _, err := svc.storeResource("user-1", "image", "sample.png", "image/png", int64(len(payload)), 0, 0, 0, bytes.NewReader(payload), nil)
 	if err != nil {
 		t.Fatalf("storeResource() error = %v", err)
 	}
@@ -1019,7 +1085,7 @@ func TestVideoCloudUploadSuccessDoesNotKeepLocalBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := []byte("cloud first video")
-	resource, err := svc.storeResource("user-1", "video", "sample.mp4", "video/mp4", int64(len(payload)), 1280, 720, 0, bytes.NewReader(payload))
+	resource, _, err := svc.storeResource("user-1", "video", "sample.mp4", "video/mp4", int64(len(payload)), 1280, 720, 0, bytes.NewReader(payload), nil)
 	if err != nil {
 		t.Fatalf("storeResource() error = %v", err)
 	}
@@ -1056,7 +1122,7 @@ func TestVideoCloudUploadFailureKeepsLocalBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := []byte("video local fallback")
-	resource, err := svc.storeResource("user-1", "video", "fallback.mp4", "video/mp4", int64(len(payload)), 1280, 720, 0, bytes.NewReader(payload))
+	resource, _, err := svc.storeResource("user-1", "video", "fallback.mp4", "video/mp4", int64(len(payload)), 1280, 720, 0, bytes.NewReader(payload), nil)
 	if err != nil {
 		t.Fatalf("storeResource() error = %v", err)
 	}

@@ -18,6 +18,7 @@ func TestChannelPluginForMatchesDedicatedChannels(t *testing.T) {
 		{name: "globalaiopc by URL", baseURL: "https://zcbservice.aizfw.cn/kyyReactApiServer/", wantID: "globalaiopc"},
 		{name: "huiquyun by connection type", baseURL: "https://custom.example.com", connectionType: "huiquyun", wantID: "huiquyun"},
 		{name: "aistarslab by URL", baseURL: "https://api.video.aistarslab.com/openapi/", wantID: "aistarslab"},
+		{name: "weijin by URL", baseURL: "https://www.weijinapi.top/", wantID: "weijin"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -52,6 +53,7 @@ func TestNormalizeCustomRelayFormat(t *testing.T) {
 		{input: "openai", want: "openai"},
 		{input: "globalaiopc", want: "openai"},
 		{input: "aistarslab", want: "openai"},
+		{input: "weijin", want: "openai"},
 		{input: "gemini", want: "gemini"},
 		{input: "claude", want: "claude"},
 	} {

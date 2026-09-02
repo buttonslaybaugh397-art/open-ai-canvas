@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"infinite-canvas/backend/internal/model"
 )
@@ -609,6 +610,9 @@ func (s *Service) ValidateTaskCapability(input map[string]any) error {
 		return nil
 	}
 	if isWorkflowProviderInterface(taskInput.Config.InterfaceType) {
+		if err := validateWorkflowProviderPromptLength(taskInput); err != nil {
+			return err
+		}
 		return validateWorkflowProviderConfig(taskInput.Mode, taskInput.Config)
 	}
 	// 普通音频模型沿用主线的能力校验路径；当前专用能力表只覆盖图片和视频。
@@ -688,6 +692,12 @@ func applyFixedVideoResolution(input *canvasGenerationInput, profile *VideoCapab
 }
 
 func validateVideoTask(profile *VideoCapabilityConfig, input canvasGenerationInput) error {
+	if profile == nil {
+		return BadAuthRequest("当前视频模型能力参数无效")
+	}
+	if err := validateModelPromptLength("视频", input.Prompt, profile.References.PromptMaxChars); err != nil {
+		return err
+	}
 	if len(input.ReferenceImages) > profile.References.MaxImages || len(input.ReferenceVideos) > profile.References.MaxVideos || len(input.ReferenceAudios) > profile.References.MaxAudios {
 		return BadAuthRequest("参考素材数量超过当前模型限制")
 	}
@@ -740,6 +750,25 @@ func validateVideoTask(profile *VideoCapabilityConfig, input canvasGenerationInp
 		return BadAuthRequest("当前视频模型不支持该生成模式")
 	}
 	return nil
+}
+
+func validateWorkflowProviderPromptLength(input canvasGenerationInput) error {
+	profile := input.Config.CapabilityConfig
+	if input.Mode != "video" || profile == nil || profile.Video == nil {
+		return nil
+	}
+	return validateModelPromptLength("视频", input.Prompt, profile.Video.References.PromptMaxChars)
+}
+
+func validateModelPromptLength(label string, prompt string, maxChars int) error {
+	if maxChars <= 0 {
+		return nil
+	}
+	actualChars := utf8.RuneCountInString(prompt)
+	if actualChars <= maxChars {
+		return nil
+	}
+	return BadAuthRequest(fmt.Sprintf("当前%s模型提示词最多 %d 个字符，完整提示词为 %d 个字符。系统不会自动截断，请精简当前输入、连线内容或技能上下文后重试", label, maxChars, actualChars))
 }
 
 func validateImageTask(profile *ImageCapabilityConfig, input canvasGenerationInput) error {

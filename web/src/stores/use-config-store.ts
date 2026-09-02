@@ -973,6 +973,7 @@ export function defaultBaseUrlForApiFormat(apiFormat: ApiCallFormat) {
 }
 
 export function defaultBaseUrlForChannelInterface(interfaceType?: ChannelInterfaceType) {
+    if (interfaceType === "weijin-video") return "https://www.weijinapi.top";
     if (interfaceType === "gemini-veo" || interfaceType === "gemini-image") return GEMINI_BASE_URL;
     if (interfaceType === "novita-video") return "https://api.novita.ai/v3";
     if (interfaceType === "volcengine-ark-image" || interfaceType === "volcengine-ark-video") return "https://ark.cn-beijing.volces.com/api/v3";

@@ -104,7 +104,7 @@ func migrateTable[T any](name string) tableMigration {
 	return tableMigration{
 		name: name,
 		run: func(source *gorm.DB, target *gorm.DB, copyRows bool) (int, error) {
-			primaryKey, err := primaryKeyColumn[T](source)
+			primaryKey, err := primaryKeyOrder[T](source)
 			if err != nil {
 				return 0, err
 			}
@@ -130,15 +130,19 @@ func migrateTable[T any](name string) tableMigration {
 	}
 }
 
-func primaryKeyColumn[T any](db *gorm.DB) (string, error) {
+func primaryKeyOrder[T any](db *gorm.DB) (string, error) {
 	statement := &gorm.Statement{DB: db}
 	if err := statement.Parse(new(T)); err != nil {
 		return "", err
 	}
-	if len(statement.Schema.PrimaryFields) != 1 {
-		return "", fmt.Errorf("表 %s 必须有且只有一个主键", statement.Schema.Table)
+	if len(statement.Schema.PrimaryFields) == 0 {
+		return "", fmt.Errorf("表 %s 必须包含主键", statement.Schema.Table)
 	}
-	return statement.Schema.PrimaryFields[0].DBName, nil
+	columns := make([]string, 0, len(statement.Schema.PrimaryFields))
+	for _, field := range statement.Schema.PrimaryFields {
+		columns = append(columns, field.DBName)
+	}
+	return strings.Join(columns, ", "), nil
 }
 
 var timeType = reflect.TypeOf(time.Time{})
@@ -251,6 +255,13 @@ func migrations() []tableMigration {
 		migrateTable[model.ResourceDeletionJob]("resource_deletion_jobs"),
 		migrateTable[model.AnnouncementImageDraft]("announcement_image_drafts"),
 		migrateTable[model.Asset]("assets"),
+		migrateTable[model.Team]("teams"),
+		migrateTable[model.TeamMember]("team_members"),
+		migrateTable[model.TeamAsset]("team_assets"),
+		migrateTable[model.TeamAssetFolder]("team_asset_folders"),
+		migrateTable[model.TeamAssetResource]("team_asset_resources"),
+		migrateTable[model.TeamAuditEvent]("team_audit_events"),
+		migrateTable[model.TeamInvitation]("team_invitations"),
 		migrateTable[model.ProjectAssetLink]("project_asset_links"),
 		migrateTable[model.ProjectAssetFolder]("project_asset_folders"),
 		migrateTable[model.ProjectAssetCandidate]("project_asset_candidates"),

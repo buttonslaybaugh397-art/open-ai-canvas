@@ -50,6 +50,7 @@ function buildNav(features: FeatureAvailability, balance: string, isAdmin: boole
                 toolItem("canvas", "/canvas"),
                 ...(features.taskCenterEnabled ? [toolItem("tasks", "/tasks")] : []),
                 toolItem("assets", "/assets"),
+                toolItem("teams", "/teams"),
             ],
         },
         {

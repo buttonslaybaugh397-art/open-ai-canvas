@@ -22,6 +22,10 @@ export type ChannelModelCatalogItem = {
     supportsImages?: boolean;
     minImages?: number;
     maxImages?: number;
+    maxVideos?: number;
+    maxVideoDurationSeconds?: number;
+    maxAudios?: number;
+    audioRequiresImage?: boolean;
     aistarslab?: {
         channel: string;
         capability: "image" | "video";
@@ -71,6 +75,10 @@ export function sanitizeChannelModelCatalogItem(value: unknown): ChannelModelCat
         supportsImages: typeof record.supportsImages === "boolean" ? record.supportsImages : undefined,
         minImages: nonNegativeInteger(record.minImages),
         maxImages: nonNegativeInteger(record.maxImages),
+        maxVideos: nonNegativeInteger(record.maxVideos),
+        maxVideoDurationSeconds: nonNegativeInteger(record.maxVideoDurationSeconds),
+        maxAudios: nonNegativeInteger(record.maxAudios),
+        audioRequiresImage: typeof record.audioRequiresImage === "boolean" ? record.audioRequiresImage : undefined,
         aistarslab: aiStarsLab && stringValue(aiStarsLab.channel) && stringValue(aiStarsLab.model) ? {
             channel: stringValue(aiStarsLab.channel),
             capability: stringValue(aiStarsLab.capability) === "video" ? "video" : "image",
@@ -140,7 +148,7 @@ function protocolTemplateForNewCatalogModel(capability: ChannelModelCost["capabi
 }
 
 function hasCatalogCapabilityConfig(item: ChannelModelCatalogItem) {
-    return Boolean(item.defaultParameters || item.options || item.supportsImages !== undefined || item.minImages !== undefined || item.maxImages !== undefined || item.aistarslab);
+    return Boolean(item.defaultParameters || item.options || item.supportsImages !== undefined || item.minImages !== undefined || item.maxImages !== undefined || item.maxVideos !== undefined || item.maxVideoDurationSeconds !== undefined || item.maxAudios !== undefined || item.aistarslab);
 }
 
 // AIStarsLab 的目录 ID 是「线路:模型」（同一模型可在多条线路下报不同价格和能力）；
@@ -206,6 +214,9 @@ function catalogCapabilityConfig(item: ChannelModelCatalogItem, protocol: ModelP
             video.defaultOperation = "image_to_video";
         }
     }
+    if (item.maxVideos !== undefined) video.references.maxVideos = item.maxVideos;
+    if (item.maxVideoDurationSeconds !== undefined) video.references.maxVideoDurationSeconds = item.maxVideoDurationSeconds;
+    if (item.maxAudios !== undefined) video.references.maxAudios = item.maxAudios;
     return config;
 }
 
@@ -222,6 +233,10 @@ function compactCatalogItem(item: ChannelModelCatalogItem): ChannelModelCatalogI
         ...(item.supportsImages !== undefined ? { supportsImages: item.supportsImages } : {}),
         ...(item.minImages !== undefined ? { minImages: item.minImages } : {}),
         ...(item.maxImages !== undefined ? { maxImages: item.maxImages } : {}),
+        ...(item.maxVideos !== undefined ? { maxVideos: item.maxVideos } : {}),
+        ...(item.maxVideoDurationSeconds !== undefined ? { maxVideoDurationSeconds: item.maxVideoDurationSeconds } : {}),
+        ...(item.maxAudios !== undefined ? { maxAudios: item.maxAudios } : {}),
+        ...(item.audioRequiresImage !== undefined ? { audioRequiresImage: item.audioRequiresImage } : {}),
         ...(item.aistarslab ? { aistarslab: item.aistarslab } : {}),
     };
 }

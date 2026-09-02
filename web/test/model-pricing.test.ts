@@ -98,6 +98,19 @@ describe("model request pricing", () => {
         ).toBe(0.125);
     });
 
+    test("displays zero-price system tiers as configured free pricing", () => {
+        const fixedConfig = systemConfig({
+            capability: "image",
+            tiers: [{ selector: {}, billingMode: "fixed_request", unitPriceMicrocredits: 0 }],
+        });
+        const perSecondConfig = systemConfig({
+            tiers: [{ selector: {}, billingMode: "per_second", unitPriceMicrocredits: 0 }],
+        });
+
+        expect(priceTierSummaryLabel(resolveModelChannel(fixedConfig, fixedConfig.model).modelCosts![0]!.logicalPriceTiers!)).toBe("0 积分");
+        expect(priceTierSummaryLabel(resolveModelChannel(perSecondConfig, perSecondConfig.model).modelCosts![0]!.logicalPriceTiers!)).toBe("0 积分/秒");
+    });
+
     test("uses reference count and operation to avoid a text-video price tier", () => {
         const config = systemConfig({
             tiers: [

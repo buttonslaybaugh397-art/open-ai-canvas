@@ -31,6 +31,9 @@ func TestCreditConsumptionsUsesLocalTimeBoundariesAndSettledAmounts(t *testing.T
 	}
 	orders := []model.BillingOrder{
 		{ID: "today", UserID: "user-1", IdempotencyKey: "today", AmountMicrocredits: 1_500_000, ActualAmountMicrocredits: 1_200_000, Status: model.BillingStatusSettled, SettledAt: timePointer(now.Add(-time.Hour))},
+		{ID: "zero-usage", UserID: "user-1", IdempotencyKey: "zero-usage", AmountMicrocredits: 700_000, ActualAmountMicrocredits: 0, UsageAvailable: true, Status: model.BillingStatusSettled, SettledAt: timePointer(now.Add(-2 * time.Hour))},
+		{ID: "beijing-day", UserID: "user-1", IdempotencyKey: "beijing-day", AmountMicrocredits: 250_000, Status: model.BillingStatusSettled, SettledAt: timePointer(time.Date(2026, time.August, 20, 23, 30, 0, 0, time.UTC))},
+		{ID: "future", UserID: "user-1", IdempotencyKey: "future", AmountMicrocredits: 8_000_000, Status: model.BillingStatusSettled, SettledAt: timePointer(now.Add(time.Hour))},
 		{ID: "yesterday", UserID: "user-1", IdempotencyKey: "yesterday", AmountMicrocredits: 500_000, Status: model.BillingStatusSettled, SettledAt: timePointer(time.Date(2026, time.August, 20, 12, 0, 0, 0, location))},
 		{ID: "week", UserID: "user-1", IdempotencyKey: "week", AmountMicrocredits: 1_000_000, Status: model.BillingStatusSettled, SettledAt: timePointer(time.Date(2026, time.August, 17, 10, 0, 0, 0, location))},
 		{ID: "month", UserID: "user-1", IdempotencyKey: "month", AmountMicrocredits: 2_000_000, Status: model.BillingStatusSettled, SettledAt: timePointer(time.Date(2026, time.August, 1, 10, 0, 0, 0, location))},
@@ -45,7 +48,7 @@ func TestCreditConsumptionsUsesLocalTimeBoundariesAndSettledAmounts(t *testing.T
 		t.Fatal(err)
 	}
 	got := totals["user-1"]
-	if got.Today != 1_200_000 || got.Yesterday != 500_000 || got.Week != 2_700_000 || got.Month != 4_700_000 {
+	if got.Today != 1_450_000 || got.Yesterday != 500_000 || got.Week != 2_950_000 || got.Month != 4_950_000 {
 		t.Fatalf("unexpected consumption totals: %#v", got)
 	}
 }
@@ -93,7 +96,7 @@ func TestAdminCreditConsumptionAggregatesUsersModelsAndTrend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(trend) != 2 || trend[0].Day != "2026-08-20" || trend[0].TotalMicrocredits != 800_000 || trend[1].Day != "2026-08-21" || trend[1].TotalMicrocredits != 2_500_000 {
+	if len(trend) != 31 || trend[0].Day != "2026-08-01" || trend[0].TotalMicrocredits != 0 || trend[19].Day != "2026-08-20" || trend[19].TotalMicrocredits != 800_000 || trend[20].Day != "2026-08-21" || trend[20].TotalMicrocredits != 2_500_000 || trend[30].Day != "2026-08-31" || trend[30].TotalMicrocredits != 0 {
 		t.Fatalf("unexpected trend: %#v", trend)
 	}
 	capabilityRows, err := repo.AdminCreditConsumptionCapabilities(filter)
@@ -126,6 +129,35 @@ func TestAdminCreditConsumptionAggregatesUsersModelsAndTrend(t *testing.T) {
 	}
 	if filteredSummary.AllTimeMicrocredits != 800_000 || filteredSummary.PeriodMicrocredits != 500_000 || filteredSummary.ConsumingUsers != 1 {
 		t.Fatalf("unexpected filtered summary: %#v", filteredSummary)
+	}
+}
+
+func TestAdminCreditConsumptionTrendUsesBeijingDaysAndExcludesEndBoundary(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:admin-credit-consumption-boundaries?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.BillingOrder{}); err != nil {
+		t.Fatal(err)
+	}
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	from := time.Date(2026, time.August, 1, 0, 0, 0, 0, location)
+	to := time.Date(2026, time.August, 4, 0, 0, 0, 0, location)
+	orders := []model.BillingOrder{
+		{ID: "boundary-before-midnight", UserID: "user-1", IdempotencyKey: "boundary-before-midnight", AmountMicrocredits: 100, Status: model.BillingStatusSettled, SettledAt: timePointer(time.Date(2026, time.August, 1, 23, 59, 59, 0, location))},
+		{ID: "boundary-after-midnight", UserID: "user-1", IdempotencyKey: "boundary-after-midnight", AmountMicrocredits: 200, Status: model.BillingStatusSettled, SettledAt: timePointer(time.Date(2026, time.August, 2, 0, 0, 1, 0, location))},
+		{ID: "boundary-end", UserID: "user-1", IdempotencyKey: "boundary-end", AmountMicrocredits: 900, Status: model.BillingStatusSettled, SettledAt: timePointer(to)},
+	}
+	if err := db.Create(&orders).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	trend, err := (&Repository{db: db}).AdminCreditConsumptionTrend(CreditConsumptionFilter{From: from, To: to})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trend) != 3 || trend[0].Day != "2026-08-01" || trend[0].TotalMicrocredits != 100 || trend[1].Day != "2026-08-02" || trend[1].TotalMicrocredits != 200 || trend[2].Day != "2026-08-03" || trend[2].TotalMicrocredits != 0 {
+		t.Fatalf("unexpected boundary trend: %#v", trend)
 	}
 }
 

@@ -19,7 +19,7 @@ const AssetIDMaxLength = 80
 
 type Resource struct {
 	ID       string         `json:"id" gorm:"primaryKey;size:36"`
-	UserID   string         `json:"userId" gorm:"index;size:36;index:idx_resources_user_created,priority:1"`
+	UserID   string         `json:"userId" gorm:"index;size:36;index:idx_resources_user_created,priority:1;uniqueIndex:idx_resources_user_upload_key,priority:1"`
 	Kind     string         `json:"kind" gorm:"index;size:24"`
 	Status   ResourceStatus `json:"status" gorm:"index;size:24"`
 	Provider string         `json:"provider" gorm:"size:24"`
@@ -42,9 +42,11 @@ type Resource struct {
 	Height                  int                     `json:"height"`
 	DurationMs              int64                   `json:"durationMs"`
 	ETag                    string                  `json:"etag" gorm:"size:160"`
-	Error                   string                  `json:"error"`
-	CreatedAt               time.Time               `json:"createdAt" gorm:"index:idx_resources_user_created,priority:2"`
-	UpdatedAt               time.Time               `json:"updatedAt"`
+	// UploadKey stores a digest of the client upload identity. NULL opts out of idempotency.
+	UploadKey *string   `json:"-" gorm:"size:64;uniqueIndex:idx_resources_user_upload_key,priority:2"`
+	Error     string    `json:"error"`
+	CreatedAt time.Time `json:"createdAt" gorm:"index:idx_resources_user_created,priority:2"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // ResourceDeletionJob is the durable handoff between database deletion and
@@ -91,23 +93,47 @@ type Asset struct {
 	UpdatedAt        time.Time          `json:"updatedAt" gorm:"index:idx_assets_user_updated,priority:2"`
 }
 
+type Team struct {
+	ID              string    `json:"id" gorm:"primaryKey;size:36"`
+	Name            string    `json:"name" gorm:"size:120"`
+	Description     string    `json:"description,omitempty" gorm:"size:500"`
+	AssetLimit      int64     `json:"assetLimit" gorm:"not null;default:5000"`
+	StorageLimit    int64     `json:"storageLimitBytes" gorm:"not null;default:107374182400"`
+	CreatedByUserID string    `json:"createdByUserId" gorm:"index;size:36"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt" gorm:"index"`
+}
+
+type TeamMember struct {
+	TeamID    string           `json:"teamId" gorm:"primaryKey;size:36;index:idx_team_members_user_status,priority:2"`
+	UserID    string           `json:"userId" gorm:"primaryKey;size:36;index:idx_team_members_user_status,priority:1"`
+	Role      TeamMemberRole   `json:"role" gorm:"index;size:24"`
+	Status    TeamMemberStatus `json:"status" gorm:"index:idx_team_members_user_status,priority:3;size:24"`
+	CreatedAt time.Time        `json:"createdAt"`
+	UpdatedAt time.Time        `json:"updatedAt"`
+}
+
 type TeamAsset struct {
-	ID          string             `json:"id" gorm:"primaryKey;size:36"`
-	OwnerUserID string             `json:"ownerUserId" gorm:"index;size:36;index:idx_team_assets_owner_updated,priority:1"`
-	FolderID    string             `json:"folderId,omitempty" gorm:"index;size:36"`
-	Kind        string             `json:"kind" gorm:"index;size:24"`
-	Category    AssetCategory      `json:"category" gorm:"index;size:32"`
-	Status      AssetVersionStatus `json:"status" gorm:"index;size:24"`
-	Title       string             `json:"title" gorm:"size:240"`
-	PayloadJSON string             `json:"payloadJson" gorm:"type:text"`
-	CreatedAt   time.Time          `json:"createdAt"`
-	UpdatedAt   time.Time          `json:"updatedAt" gorm:"index;index:idx_team_assets_owner_updated,priority:2"`
+	ID            string             `json:"id" gorm:"primaryKey;size:36"`
+	TeamID        string             `json:"teamId" gorm:"index;size:36;uniqueIndex:idx_team_assets_source,priority:1;index:idx_team_assets_team_updated,priority:1"`
+	OwnerUserID   string             `json:"ownerUserId" gorm:"index;size:36;index:idx_team_assets_owner_updated,priority:1"`
+	SourceAssetID string             `json:"sourceAssetId" gorm:"size:80;uniqueIndex:idx_team_assets_source,priority:2"`
+	FolderID      string             `json:"folderId,omitempty" gorm:"index;size:36"`
+	Kind          string             `json:"kind" gorm:"index;size:24"`
+	Category      AssetCategory      `json:"category" gorm:"index;size:32"`
+	Status        AssetVersionStatus `json:"status" gorm:"index;size:24"`
+	Title         string             `json:"title" gorm:"size:240"`
+	PayloadJSON   string             `json:"payloadJson" gorm:"type:text"`
+	CreatedAt     time.Time          `json:"createdAt"`
+	UpdatedAt     time.Time          `json:"updatedAt" gorm:"index;index:idx_team_assets_owner_updated,priority:2;index:idx_team_assets_team_updated,priority:2"`
 }
 
 type TeamAssetFolder struct {
 	ID          string    `json:"id" gorm:"primaryKey;size:36"`
+	TeamID      string    `json:"teamId" gorm:"index;size:36"`
 	OwnerUserID string    `json:"ownerUserId" gorm:"index;size:36"`
 	Name        string    `json:"name" gorm:"size:120"`
+	NameKey     string    `json:"-" gorm:"size:120"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt" gorm:"index"`
 }
@@ -117,6 +143,32 @@ type TeamAssetResource struct {
 	TeamAssetID string    `json:"teamAssetId" gorm:"primaryKey;size:36"`
 	ResourceID  string    `json:"resourceId" gorm:"primaryKey;index;size:36"`
 	CreatedAt   time.Time `json:"createdAt"`
+}
+
+// TeamAuditEvent is append-only and intentionally excludes request payloads and resource URLs.
+type TeamAuditEvent struct {
+	ID          string    `json:"id" gorm:"primaryKey;size:36"`
+	TeamID      string    `json:"teamId" gorm:"index:idx_team_audit_events_team_created,priority:1;size:36"`
+	ActorUserID string    `json:"actorUserId" gorm:"index;size:36"`
+	Action      string    `json:"action" gorm:"index;size:64"`
+	TargetType  string    `json:"targetType,omitempty" gorm:"size:32"`
+	TargetID    string    `json:"targetId,omitempty" gorm:"size:80"`
+	Summary     string    `json:"summary" gorm:"size:500"`
+	CreatedAt   time.Time `json:"createdAt" gorm:"index:idx_team_audit_events_team_created,priority:2"`
+}
+
+// TeamInvitation stores only a token digest. The plaintext invite token is returned once at creation.
+type TeamInvitation struct {
+	ID               string         `json:"id" gorm:"primaryKey;size:36"`
+	TeamID           string         `json:"teamId" gorm:"index:idx_team_invitations_team_created,priority:1;size:36"`
+	Role             TeamMemberRole `json:"role" gorm:"size:24"`
+	TokenHash        string         `json:"-" gorm:"uniqueIndex;size:64"`
+	CreatedByUserID  string         `json:"createdByUserId" gorm:"index;size:36"`
+	ExpiresAt        time.Time      `json:"expiresAt" gorm:"index"`
+	ConsumedAt       *time.Time     `json:"consumedAt,omitempty" gorm:"index"`
+	ConsumedByUserID string         `json:"consumedByUserId,omitempty" gorm:"size:36"`
+	RevokedAt        *time.Time     `json:"revokedAt,omitempty" gorm:"index"`
+	CreatedAt        time.Time      `json:"createdAt" gorm:"index:idx_team_invitations_team_created,priority:2"`
 }
 
 type ProjectAssetLink struct {

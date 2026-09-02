@@ -5,13 +5,20 @@ import (
 	"fmt"
 	"time"
 
+	"infinite-canvas/backend/internal/model"
+
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 2
+const CurrentSchemaVersion int64 = 7
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
+const teamAssetIsolationChecksum = "sha256:team-asset-isolation-v3-20260901"
+const teamSettingsQuotaChecksum = "sha256:team-settings-quota-v4-20260901"
+const teamAuditEventsChecksum = "sha256:team-audit-events-v5-20260901"
+const teamInvitationsChecksum = "sha256:team-invitations-v6-20260901"
+const resourceUploadKeyChecksum = "sha256:resource-upload-key-v7-20260901"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -40,10 +47,30 @@ type migration struct {
 var schemaMigrations = []migration{
 	{version: 1, name: "baseline_gorm_schema", checksum: baselineSchemaChecksum, apply: migrateSchemaV1},
 	{version: 2, name: "schema_migrations_applied_at_index", checksum: schemaMigrationAppliedAtIndexChecksum, apply: migrateSchemaV2},
+	{version: 3, name: "team_asset_isolation", checksum: teamAssetIsolationChecksum, apply: migrateTeamAssetIsolation},
+	{version: 4, name: "team_settings_quota", checksum: teamSettingsQuotaChecksum, apply: migrateTeamSettingsQuota},
+	{version: 5, name: "team_audit_events", checksum: teamAuditEventsChecksum, apply: migrateTeamAuditEvents},
+	{version: 6, name: "team_invitations", checksum: teamInvitationsChecksum, apply: migrateTeamInvitations},
+	{version: 7, name: "resource_upload_key", checksum: resourceUploadKeyChecksum, apply: migrateResourceUploadKey},
 }
 
 func migrateSchemaV2(tx *gorm.DB) error {
 	return tx.Exec("CREATE INDEX IF NOT EXISTS idx_schema_migrations_applied_at ON schema_migrations (applied_at)").Error
+}
+
+func migrateResourceUploadKey(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.Resource{}) {
+		return nil
+	}
+	if !tx.Migrator().HasColumn(&model.Resource{}, "upload_key") {
+		if err := tx.Migrator().AddColumn(&model.Resource{}, "UploadKey"); err != nil {
+			return fmt.Errorf("增加资源上传幂等列：%w", err)
+		}
+	}
+	if err := tx.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_user_upload_key ON resources (user_id, upload_key)").Error; err != nil {
+		return fmt.Errorf("创建资源上传幂等索引：%w", err)
+	}
+	return nil
 }
 
 func MigrateSchema(db *gorm.DB) error {

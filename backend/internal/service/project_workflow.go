@@ -1,6 +1,8 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -590,8 +592,8 @@ func (s *Service) ensureGeneratedProjectAsset(task model.Task, projectID string,
 		return "", err
 	}
 	now := time.Now()
-	assetID := "workflow-asset-" + task.ID
-	versionID := "workflow-version-" + task.ID
+	assetID := workflowGeneratedEntityID("asset", task.ID)
+	versionID := workflowGeneratedEntityID("version", task.ID)
 	label := "图片"
 	if mediaType == "video" {
 		label = "视频"
@@ -625,6 +627,12 @@ func (s *Service) ensureGeneratedProjectAsset(task model.Task, projectID string,
 		return "", err
 	}
 	return versionID, nil
+}
+
+// 重试时复用同一工作流产物 ID，同时满足素材表 varchar(36) 的约束。
+func workflowGeneratedEntityID(namespace string, taskID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(namespace) + ":" + strings.TrimSpace(taskID)))
+	return hex.EncodeToString(sum[:16])
 }
 
 func validWorkflowStepStatus(status model.WorkflowStepStatus) bool {

@@ -16,6 +16,7 @@ describe("canvas resource mention editor", () => {
         expect(overlays).toContain('placement === "below"');
         expect(project).toContain('placement="below"');
         expect(panel).toContain('closest<HTMLElement>("[data-canvas-node-panel]")');
+        expect(panel).toContain("const PROMPT_EDITOR_MIN_HEIGHT = 140");
         expect(panel).toContain("const PROMPT_EDITOR_MAX_LINES = 14");
         expect(panel).toContain("panel.parentElement.clientHeight - panel.offsetTop - 12");
         expect(panel).toContain("panel.scrollHeight - height");

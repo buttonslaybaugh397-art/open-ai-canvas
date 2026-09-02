@@ -457,9 +457,10 @@ export default function CreatePage() {
         event.target.value = "";
     };
 
-    const handleLibrarySelect = (selectedIds: string[]) => {
+    const handleLibrarySelect = (selectedIds: string[], { materializedAssets = [] }: { materializedAssets?: Asset[] } = {}) => {
+        const materializedById = new Map(materializedAssets.map((asset) => [asset.id, asset]));
         const next = selectedIds.flatMap((id): CreationAttachment[] => {
-            const asset = assets.find((item) => item.id === id);
+            const asset = materializedById.get(id) || assets.find((item) => item.id === id);
             if (asset?.kind === "image") return [creationAttachmentFromAsset(asset)];
             if (asset?.kind === "video" && mode !== "image") return [creationAttachmentFromVideoAsset(asset)];
             if (asset?.kind === "audio" && mode !== "image") return [creationAttachmentFromAudioAsset(asset)];
@@ -1009,6 +1010,7 @@ export default function CreatePage() {
             open={libraryOpen}
             items={libraryItems}
             categoryLabels={{ ...creationAssetCategoryLabels, ...externalAssetSources.categoryLabels }}
+            teamAssetKinds={mode === "image" ? ["image"] : ["image", "video", "audio"]}
             folders={externalAssetSources.folders}
             initialSelectedIds={attachments.flatMap((item) => item.id.startsWith("asset:") ? [item.id.slice(6)] : item.id.startsWith("external:") ? [item.id] : [])}
             upload={{ accept: creationUploadAccept(mode), description: mode === "text" ? "支持图片、视频、音频和常用文档；媒体会保存到素材库" : `支持图片${mode === "video" ? "、视频和音频" : ""}，上传后保存到素材库`, onUpload: uploadLibraryAssets, external: { accept: "image/*", description: "写入当前 Eagle 文件夹；Eagle 当前支持图片文件", onUpload: (files, folderId) => externalAssetSources.uploadExternalFiles(files, folderId) } }}

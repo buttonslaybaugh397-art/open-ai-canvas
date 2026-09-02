@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { App, Button, Dropdown, Modal, Select } from "antd";
-import { ArrowDownAZ, Clock3, Download, FileUp, ListFilter, MoreHorizontal, Plus, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { ArrowDownAZ, Clock3, Download, FileUp, History, ListFilter, MoreHorizontal, Plus, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
 
 import { CollectionGrid, PageHeader, WorkspacePage } from "@/components/layout/workspace-page";
 import { WorkspaceLoadingState, WorkspaceState } from "@/components/layout/workspace-state";
@@ -12,6 +12,7 @@ import { setMediaBlob } from "@/services/file-storage";
 import { setImageBlob } from "@/services/image-storage";
 import { CanvasCreateCard } from "@/components/canvas/canvas-project-card";
 import { CanvasFolderCard } from "@/components/canvas/canvas-folder-card";
+import { CanvasHistoryDrawer } from "@/components/canvas/canvas-history-drawer";
 import type { CanvasExportFile } from "@/types/canvas-export";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useCanvasUiStore } from "@/stores/canvas/use-canvas-ui-store";
@@ -39,6 +40,7 @@ export default function CanvasPage() {
     const setDeleteIds = useCanvasUiStore((state) => state.setDeleteProjectIds);
     const updateProject = useCanvasStore((state) => state.updateProject);
     const shortDramaEnabled = useUserStore((state) => state.features.shortDramaEnabled);
+    const [historyOpen, setHistoryOpen] = useState(false);
     const [associationOpen, setAssociationOpen] = useState(false);
     const [associationProjectId, setAssociationProjectId] = useState("");
     const projectQuery = useQuery({ queryKey: ["projects"], queryFn: () => listProjects(), enabled: shortDramaEnabled });
@@ -287,6 +289,10 @@ export default function CanvasPage() {
                                 <span>{sortLabel}</span>
                             </button>
                         </Dropdown>
+                        <button type="button" className="canvas-library-filter" onClick={() => setHistoryOpen(true)} aria-label="查看画布历史">
+                            <History />
+                            <span>历史</span>
+                        </button>
                         {keyword || (shortDramaEnabled && projectFilter !== "all") || sort !== "updated" ? (
                             <button
                                 type="button"
@@ -383,6 +389,7 @@ export default function CanvasPage() {
                     onChange={setAssociationProjectId}
                 />
             </Modal>
+            <CanvasHistoryDrawer open={historyOpen} onClose={() => setHistoryOpen(false)} />
         </WorkspacePage>
     );
 }

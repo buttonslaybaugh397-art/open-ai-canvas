@@ -12,6 +12,8 @@
 
 - [用户诊断包设计](design/user-diagnostic-bundle.mdx)：面向普通用户的一键日志导出、前后端链路关联、脱敏、权限与排障方案。
 
+- [团队素材库产品与实施方案](design/team-asset-library.mdx)：团队租户边界、角色权限、素材分享与物化、数据/API、迁移、实施里程碑和发布门槛。
+
 - [肖像权可识别性排查画布插件实施规格](design/portrait-clearance-canvas-plugin.mdx)：TypeScript 重写、画布节点与全屏工作台、项目模型复用、本机 ONNX/百度识图/候选去重、任务合同、报告和验收方案。
 
 ## 本地协作文档（不随仓库分发）

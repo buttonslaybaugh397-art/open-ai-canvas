@@ -135,7 +135,38 @@ func (r *Repository) AdminCreditConsumptionTrend(filter CreditConsumptionFilter)
 		Group(dayExpression).
 		Order("day asc").
 		Scan(&rows).Error
-	return rows, err
+	if err != nil {
+		return rows, err
+	}
+	return completeAdminCreditConsumptionTrend(filter, rows), nil
+}
+
+func completeAdminCreditConsumptionTrend(filter CreditConsumptionFilter, rows []AdminCreditConsumptionTrendRow) []AdminCreditConsumptionTrendRow {
+	if !filter.To.After(filter.From) {
+		return rows
+	}
+	byDay := make(map[string]AdminCreditConsumptionTrendRow, len(rows))
+	for _, row := range rows {
+		byDay[row.Day] = row
+	}
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	firstDay := dateAtLocation(filter.From, location)
+	lastDay := dateAtLocation(filter.To.Add(-time.Nanosecond), location)
+	result := make([]AdminCreditConsumptionTrendRow, 0, int(lastDay.Sub(firstDay).Hours()/24)+1)
+	for day := firstDay; !day.After(lastDay); day = day.AddDate(0, 0, 1) {
+		key := day.Format("2006-01-02")
+		if row, ok := byDay[key]; ok {
+			result = append(result, row)
+			continue
+		}
+		result = append(result, AdminCreditConsumptionTrendRow{Day: key})
+	}
+	return result
+}
+
+func dateAtLocation(value time.Time, location *time.Location) time.Time {
+	local := value.In(location)
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location)
 }
 
 func (r *Repository) AdminCreditConsumptionUsers(filter CreditConsumptionFilter, limit int, offset int) ([]AdminCreditConsumptionUserRow, int64, error) {
@@ -191,7 +222,7 @@ func (r *Repository) AdminCreditConsumptionModels(filter CreditConsumptionFilter
 func (r *Repository) creditConsumptionQuery(filter CreditConsumptionFilter, includeRange bool) *gorm.DB {
 	query := r.db.Model(&model.BillingOrder{}).
 		Where("billing_orders.status = ?", model.BillingStatusSettled).
-		Where("(billing_orders.actual_amount_microcredits > 0 OR billing_orders.amount_microcredits > 0)")
+		Where("(billing_orders.usage_available = TRUE OR billing_orders.actual_amount_microcredits > 0 OR billing_orders.amount_microcredits > 0)")
 	if includeRange {
 		comparisonExpression := billingConsumptionTimeExpression()
 		parameterExpression := "?"
@@ -214,7 +245,7 @@ func (r *Repository) creditConsumptionQuery(filter CreditConsumptionFilter, incl
 }
 
 func billingConsumptionAmountExpression() string {
-	return "CASE WHEN billing_orders.actual_amount_microcredits > 0 THEN billing_orders.actual_amount_microcredits ELSE billing_orders.amount_microcredits END"
+	return "CASE WHEN billing_orders.usage_available = TRUE OR billing_orders.actual_amount_microcredits > 0 THEN billing_orders.actual_amount_microcredits ELSE billing_orders.amount_microcredits END"
 }
 
 func billingConsumptionTimeExpression() string {

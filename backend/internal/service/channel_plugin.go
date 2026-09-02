@@ -24,6 +24,9 @@ var channelPlugins = []ChannelPlugin{
 	{ID: "aistarslab", ProtocolID: "aistarslab-image", Label: "AIStarsLab", BaseURL: "https://api.video.aistarslab.com/openapi", RelayFormat: "aistarslab", Dedicated: true, FetchCatalog: func(s *Service, ctx context.Context, baseURL, apiKey string, allowLocal bool, headers []OutboundHeader) ([]ChannelModelCatalogItem, error) {
 		return s.fetchAiStarsLabCatalog(ctx, baseURL, apiKey, allowLocal, headers)
 	}},
+	{ID: "weijin", ProtocolID: "weijin-video", Label: "维今 ONE API", BaseURL: "https://www.weijinapi.top", RelayFormat: "weijin", Dedicated: true, FetchCatalog: func(s *Service, ctx context.Context, baseURL, apiKey string, allowLocal bool, headers []OutboundHeader) ([]ChannelModelCatalogItem, error) {
+		return s.fetchWeijinCatalog(ctx, baseURL, apiKey, allowLocal, headers)
+	}},
 }
 
 func globalAiOpcCatalog() []ChannelModelCatalogItem {
@@ -59,7 +62,7 @@ func ChannelPluginFor(baseURL, connectionType string) *ChannelPlugin {
 // 专用格式可以保留在请求头中作为扩展标识，但路径和内容类型仍遵循对应协议族。
 func NormalizeCustomRelayFormat(value string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "openai", "huiquyun", "globalaiopc", "aistarslab":
+	case "openai", "huiquyun", "globalaiopc", "aistarslab", "weijin":
 		return "openai", true
 	case "gemini":
 		return "gemini", true

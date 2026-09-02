@@ -305,11 +305,11 @@ func (r *Repository) CreditAccounts(userIDs []string) ([]model.CreditAccount, er
 }
 
 type CreditConsumptionWindow struct {
-	TodayFrom      time.Time
-	YesterdayFrom  time.Time
-	TodayTo        time.Time
-	WeekFrom       time.Time
-	MonthFrom      time.Time
+	TodayFrom     time.Time
+	YesterdayFrom time.Time
+	TodayTo       time.Time
+	WeekFrom      time.Time
+	MonthFrom     time.Time
 }
 
 type CreditConsumptionTotals struct {
@@ -332,7 +332,7 @@ func (r *Repository) CreditConsumptions(userIDs []string, window CreditConsumpti
 		Week      int64  `gorm:"column:week"`
 		Month     int64  `gorm:"column:month"`
 	}
-	amountExpression := "CASE WHEN actual_amount_microcredits > 0 THEN actual_amount_microcredits ELSE amount_microcredits END"
+	amountExpression := "CASE WHEN usage_available = TRUE OR actual_amount_microcredits > 0 THEN actual_amount_microcredits ELSE amount_microcredits END"
 	settledAtExpression := "COALESCE(settled_at, updated_at, created_at)"
 	comparisonExpression := settledAtExpression
 	parameterExpression := "?"
@@ -343,16 +343,16 @@ func (r *Repository) CreditConsumptions(userIDs []string, window CreditConsumpti
 	query := r.db.Model(&model.BillingOrder{}).
 		Select(
 			"user_id, "+
-			"COALESCE(SUM(CASE WHEN "+comparisonExpression+" >= "+parameterExpression+" AND "+comparisonExpression+" < "+parameterExpression+" THEN "+amountExpression+" ELSE 0 END), 0) AS today, "+
-			"COALESCE(SUM(CASE WHEN "+comparisonExpression+" >= "+parameterExpression+" AND "+comparisonExpression+" < "+parameterExpression+" THEN "+amountExpression+" ELSE 0 END), 0) AS yesterday, "+
-			"COALESCE(SUM(CASE WHEN "+comparisonExpression+" >= "+parameterExpression+" AND "+comparisonExpression+" < "+parameterExpression+" THEN "+amountExpression+" ELSE 0 END), 0) AS week, "+
-			"COALESCE(SUM(CASE WHEN "+comparisonExpression+" >= "+parameterExpression+" AND "+comparisonExpression+" < "+parameterExpression+" THEN "+amountExpression+" ELSE 0 END), 0) AS month",
+				"COALESCE(SUM(CASE WHEN "+comparisonExpression+" >= "+parameterExpression+" AND "+comparisonExpression+" < "+parameterExpression+" THEN "+amountExpression+" ELSE 0 END), 0) AS today, "+
+				"COALESCE(SUM(CASE WHEN "+comparisonExpression+" >= "+parameterExpression+" AND "+comparisonExpression+" < "+parameterExpression+" THEN "+amountExpression+" ELSE 0 END), 0) AS yesterday, "+
+				"COALESCE(SUM(CASE WHEN "+comparisonExpression+" >= "+parameterExpression+" AND "+comparisonExpression+" < "+parameterExpression+" THEN "+amountExpression+" ELSE 0 END), 0) AS week, "+
+				"COALESCE(SUM(CASE WHEN "+comparisonExpression+" >= "+parameterExpression+" AND "+comparisonExpression+" < "+parameterExpression+" THEN "+amountExpression+" ELSE 0 END), 0) AS month",
 			window.TodayFrom, window.TodayTo,
 			window.YesterdayFrom, window.TodayFrom,
 			window.WeekFrom, window.TodayTo,
 			window.MonthFrom, window.TodayTo,
 		).
-		Where("user_id IN ? AND status = ? AND (actual_amount_microcredits > 0 OR amount_microcredits > 0)", userIDs, model.BillingStatusSettled).
+		Where("user_id IN ? AND status = ? AND (usage_available = TRUE OR actual_amount_microcredits > 0 OR amount_microcredits > 0)", userIDs, model.BillingStatusSettled).
 		Group("user_id")
 	if err := query.Find(&rows).Error; err != nil {
 		return nil, err

@@ -160,6 +160,11 @@ func (s *Service) AdminCreditConsumption(actor *model.User, query AdminCreditCon
 
 func normalizeCreditConsumptionFilter(query AdminCreditConsumptionQuery) repository.CreditConsumptionFilter {
 	now := time.Now().In(creditConsumptionLocation)
+	return normalizeCreditConsumptionFilterAt(query, now)
+}
+
+func normalizeCreditConsumptionFilterAt(query AdminCreditConsumptionQuery, now time.Time) repository.CreditConsumptionFilter {
+	now = now.In(creditConsumptionLocation)
 	to := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, creditConsumptionLocation)
 	from := to.AddDate(0, 0, -30)
 	if parsed, ok := parseCreditConsumptionTime(query.From); ok {
@@ -171,8 +176,28 @@ func normalizeCreditConsumptionFilter(query AdminCreditConsumptionQuery) reposit
 			to = to.AddDate(0, 0, 1)
 		}
 	}
+	// A date-only upper bound for today means "up to now", not the rest of the day.
+	// This prevents future timestamps from entering live daily statistics.
+	if to.After(now) {
+		to = now
+	}
 	if !to.After(from) {
+		if from.After(now) {
+			return repository.CreditConsumptionFilter{
+				From:       now,
+				To:         now,
+				UserID:     strings.TrimSpace(query.UserID),
+				Model:      strings.TrimSpace(query.Model),
+				Capability: normalizeCapability(query.Capability),
+			}
+		}
 		to = from.AddDate(0, 0, 1)
+		if to.After(now) {
+			to = now
+		}
+		if !to.After(from) {
+			to = from
+		}
 	}
 	if to.Sub(from) > 366*24*time.Hour {
 		from = to.AddDate(-1, 0, 0)

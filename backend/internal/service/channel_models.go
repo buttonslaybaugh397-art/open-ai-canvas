@@ -178,7 +178,9 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 		if idErr != nil {
 			return nil, idErr
 		}
-		missing = append(missing, model.ChannelModel{ID: modelID, ChannelID: channelID, ModelKey: name, DisplayName: name, BillingMode: "fixed_request", Enabled: false, PriceVersion: 1})
+		discovered := discoveredChannelModel(*channel, name, nil, catalogItemByID(catalog, name))
+		discovered.ID = modelID
+		missing = append(missing, discovered)
 	}
 	added, err := s.repo.CreateMissingChannelModels(missing)
 	if err != nil {
@@ -236,6 +238,9 @@ func channelConnectionType(channel *model.ModelChannel) string {
 	if channel != nil && isAiStarsLabBaseURL(channel.BaseURL) {
 		return "aistarslab"
 	}
+	if channel != nil && isWeijinBaseURL(channel.BaseURL) {
+		return "weijin"
+	}
 	return ""
 }
 
@@ -288,7 +293,75 @@ func syncChannelModelContract(channel model.ModelChannel, item *model.ChannelMod
 		}
 		return changed
 	}
+	if catalog != nil && containsStringFold(catalog.SupportedEndpointTypes, string(model.ChannelInterfaceWeijinVideo)) {
+		changed := item.Protocol != model.ChannelInterfaceWeijinVideo || item.Capability != "video"
+		item.Protocol, item.Capability = model.ChannelInterfaceWeijinVideo, "video"
+		config := DefaultModelCapabilityConfigForModel(string(model.ChannelInterfaceWeijinVideo), item.ModelKey)
+		video := config.Video
+		video.References.MaxImages = pointerValue(catalog.MaxImages)
+		video.References.MaxVideos = pointerValue(catalog.MaxVideos)
+		video.References.MaxVideoDuration = pointerValue(catalog.MaxVideoDuration)
+		video.References.MaxAudios = pointerValue(catalog.MaxAudios)
+		video.Ratios = catalogOptionValues(catalog.Options.AspectRatio)
+		video.Resolutions = catalogOptionValues(catalog.Options.Resolution)
+		durations := catalogOptionInts(catalog.Options.DurationSeconds)
+		if len(durations) > 0 {
+			video.Duration = VideoDurationConfig{Selection: "enum", Values: durations, Default: durations[0]}
+		}
+		video.DefaultRatio = firstNonEmpty(catalog.DefaultParameters.AspectRatio, firstSliceValue(video.Ratios))
+		video.DefaultResolution = firstNonEmpty(catalog.DefaultParameters.Resolution, firstSliceValue(video.Resolutions))
+		encoded, err := json.Marshal(config)
+		if err == nil && item.CapabilityConfigJSON != string(encoded) {
+			item.CapabilityConfigJSON = string(encoded)
+			item.CapabilityVersion++
+			changed = true
+		}
+		return changed
+	}
 	return syncHuiQuYunModelContract(channel, item, endpointTypes)
+}
+
+func containsStringFold(values []string, expected string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), expected) {
+			return true
+		}
+	}
+	return false
+}
+
+func pointerValue(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func firstSliceValue(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func catalogOptionValues(values []ChannelModelCatalogOption) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if item := strings.TrimSpace(value.Value); item != "" {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func catalogOptionInts(values []ChannelModelCatalogOption) []int {
+	result := make([]int, 0, len(values))
+	for _, value := range values {
+		if item, err := strconv.Atoi(strings.TrimSpace(value.Value)); err == nil && item > 0 {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 func syncHuiQuYunModelContract(channel model.ModelChannel, item *model.ChannelModel, endpointTypes []string) bool {
@@ -336,7 +409,7 @@ func capabilityForProtocolValue(protocol model.ChannelInterfaceType) string {
 		return "image"
 	case model.ChannelInterfaceOpenAIAudio:
 		return "audio"
-	case model.ChannelInterfaceHuiQuYunVideo, model.ChannelInterfaceAIStarsLabVideo, model.ChannelInterfaceVolcengineJiMengVideo, model.ChannelInterfaceVolcengineArkVideo:
+	case model.ChannelInterfaceHuiQuYunVideo, model.ChannelInterfaceAIStarsLabVideo, model.ChannelInterfaceWeijinVideo, model.ChannelInterfaceVolcengineJiMengVideo, model.ChannelInterfaceVolcengineArkVideo:
 		return "video"
 	case model.ChannelInterfaceChatCompletion, model.ChannelInterfaceOpenAIResponse:
 		return "text"
@@ -357,6 +430,11 @@ func isHuiQuYunBaseURL(value string) bool {
 func isAiStarsLabBaseURL(value string) bool {
 	normalized := strings.ToLower(strings.TrimRight(strings.TrimSpace(value), "/"))
 	return normalized == "https://api.video.aistarslab.com/openapi"
+}
+
+func isWeijinBaseURL(value string) bool {
+	normalized := strings.ToLower(strings.TrimRight(strings.TrimSpace(value), "/"))
+	return normalized == "https://www.weijinapi.top" || normalized == "https://www.weijinapi.top/v1"
 }
 
 func huiQuYunProtocolForModel(name string, endpointTypes []string) model.ChannelInterfaceType {
@@ -933,7 +1011,7 @@ func normalizeChannelModelContractWithRegistry(registry *protocol.Registry, chan
 
 func isHostBackedChannelProtocol(protocol model.ChannelInterfaceType) bool {
 	switch protocol {
-	case model.ChannelInterfaceGlobalAiOpcImage, model.ChannelInterfaceGlobalAiOpcVideo, model.ChannelInterfaceHuiQuYunVideo, model.ChannelInterfaceAIStarsLabImage, model.ChannelInterfaceAIStarsLabVideo:
+	case model.ChannelInterfaceGlobalAiOpcImage, model.ChannelInterfaceGlobalAiOpcVideo, model.ChannelInterfaceHuiQuYunVideo, model.ChannelInterfaceAIStarsLabImage, model.ChannelInterfaceAIStarsLabVideo, model.ChannelInterfaceWeijinVideo:
 		return true
 	default:
 		return false

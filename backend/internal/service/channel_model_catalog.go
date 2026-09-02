@@ -43,6 +43,19 @@ type channelModelItem struct {
 	MaxImages              *int                          `json:"max_images"`
 }
 
+type weijinModelItem struct {
+	ID                      string   `json:"id"`
+	Name                    string   `json:"name"`
+	Resolution              string   `json:"resolution"`
+	DurationsSeconds        []int    `json:"durations_seconds"`
+	Ratios                  []string `json:"ratios"`
+	MaxImages               int      `json:"max_images"`
+	MaxVideos               int      `json:"max_videos"`
+	MaxVideoDurationSeconds int      `json:"max_video_duration_seconds"`
+	MaxAudios               int      `json:"max_audios"`
+	AudioRequiresImage      bool     `json:"audio_requires_image"`
+}
+
 type aiStarsLabConfig struct {
 	ImageConfig []aiStarsLabChannel `json:"imageConfig"`
 	VideoConfig []aiStarsLabChannel `json:"videoConfig"`
@@ -171,6 +184,10 @@ type ChannelModelCatalogItem struct {
 	SupportsImages         *bool                                `json:"supportsImages,omitempty"`
 	MinImages              *int                                 `json:"minImages,omitempty"`
 	MaxImages              *int                                 `json:"maxImages,omitempty"`
+	MaxVideos              *int                                 `json:"maxVideos,omitempty"`
+	MaxVideoDuration       *int                                 `json:"maxVideoDurationSeconds,omitempty"`
+	MaxAudios              *int                                 `json:"maxAudios,omitempty"`
+	AudioRequiresImage     *bool                                `json:"audioRequiresImage,omitempty"`
 	AIStarsLab             *AIStarsLabCatalogRoute              `json:"aistarslab,omitempty"`
 }
 
@@ -395,6 +412,101 @@ func (s *Service) fetchAiStarsLabCatalog(ctx context.Context, baseURL, apiKey st
 	sort.SliceStable(items, func(i, j int) bool { return items[i].ID < items[j].ID })
 	return items, nil
 }
+
+func (s *Service) fetchWeijinCatalog(ctx context.Context, baseURL, apiKey string, allowLocal bool, rawHeaders []OutboundHeader) ([]ChannelModelCatalogItem, error) {
+	normalizedBase := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	target := normalizedBase + "/v1/models"
+	if strings.HasSuffix(strings.ToLower(normalizedBase), "/v1") {
+		target = normalizedBase + "/models"
+	}
+	if _, err := s.validateChannelOutboundURL(target, allowLocal, false); err != nil {
+		return nil, err
+	}
+	headers, err := NormalizeOutboundHeaders(rawHeaders)
+	if err != nil {
+		return nil, err
+	}
+	requestContext := withProviderOutboundPolicy(ctx, providerConfig{BaseURL: baseURL, AllowLocalChannel: s.effectiveAllowLocalChannel(allowLocal)})
+	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, BadAuthRequest("模型服务地址无效")
+	}
+	request.Header.Set("Authorization", "Bearer "+apiKey)
+	request.Header.Set("Accept", "application/json")
+	ApplyOutboundHeaders(request, headers)
+	data, _, err := doBinary(request)
+	if err != nil {
+		return nil, channelModelsUpstreamError(err)
+	}
+	var envelope struct {
+		Data   []weijinModelItem `json:"data"`
+		Models []weijinModelItem `json:"models"`
+		Error  *providerError    `json:"error"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return nil, WrapAppError(http.StatusBadGateway, "维今模型服务返回的不是有效 JSON", err)
+	}
+	if envelope.Error != nil && strings.TrimSpace(envelope.Error.Message) != "" {
+		return nil, NewAppError(http.StatusBadGateway, "维今模型目录读取失败："+envelope.Error.Message)
+	}
+	models := envelope.Data
+	if len(models) == 0 {
+		models = envelope.Models
+	}
+	seen := make(map[string]bool, len(models))
+	catalog := make([]ChannelModelCatalogItem, 0, len(models))
+	for _, item := range models {
+		id := strings.TrimSpace(firstNonEmpty(item.ID, item.Name))
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		entry := ChannelModelCatalogItem{ID: id, DisplayName: id, ModelType: "video", SupportedEndpointTypes: []string{"weijin-video"}}
+		entry.Options.AspectRatio = catalogStringOptions(item.Ratios)
+		entry.Options.DurationSeconds = catalogIntOptions(item.DurationsSeconds)
+		if value := strings.TrimSpace(item.Resolution); value != "" {
+			entry.DefaultParameters.Resolution = value
+			entry.Options.Resolution = []ChannelModelCatalogOption{{Value: value}}
+		}
+		if len(entry.Options.AspectRatio) > 0 {
+			entry.DefaultParameters.AspectRatio = entry.Options.AspectRatio[0].Value
+		}
+		if len(entry.Options.DurationSeconds) > 0 {
+			entry.DefaultParameters.DurationSeconds = entry.Options.DurationSeconds[0].Value
+		}
+		supportsImages := item.MaxImages > 0
+		entry.SupportsImages, entry.MaxImages = &supportsImages, intPointer(item.MaxImages)
+		entry.MaxVideos, entry.MaxVideoDuration = intPointer(item.MaxVideos), intPointer(item.MaxVideoDurationSeconds)
+		entry.MaxAudios, entry.AudioRequiresImage = intPointer(item.MaxAudios), boolPointer(item.AudioRequiresImage)
+		catalog = append(catalog, entry)
+	}
+	sort.Slice(catalog, func(i, j int) bool { return catalog[i].ID < catalog[j].ID })
+	return catalog, nil
+}
+
+func catalogStringOptions(values []string) []ChannelModelCatalogOption {
+	options := make([]ChannelModelCatalogOption, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" && !seen[value] {
+			seen[value] = true
+			options = append(options, ChannelModelCatalogOption{Value: value})
+		}
+	}
+	return options
+}
+
+func catalogIntOptions(values []int) []ChannelModelCatalogOption {
+	options := make([]ChannelModelCatalogOption, 0, len(values))
+	for _, value := range normalizePositiveInts(values) {
+		options = append(options, ChannelModelCatalogOption{Value: fmt.Sprint(value)})
+	}
+	return options
+}
+
+func intPointer(value int) *int    { return &value }
+func boolPointer(value bool) *bool { return &value }
 
 // 同名模型会出现在多条线路下，仅用官方 label 无法区分，这里补上线路标题（缺失时退回线路编码）。
 func aiStarsLabCatalogDisplayName(label, model, title string) string {

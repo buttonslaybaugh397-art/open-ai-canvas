@@ -13,6 +13,8 @@ const store = localforage.createInstance({ name: "infinite-canvas", storeName: "
 const objectUrls = new Map<string, string>();
 
 export async function uploadMediaFile(input: string | Blob, prefix = "file", options?: { allowLocalFallback?: boolean }): Promise<UploadedFile> {
+    // Reuse this identity if direct upload falls back to IndexedDB and sync retries later.
+    const storageKey = `${prefix}:${getActiveUserScope()}:${nanoid()}`;
     const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
     const previewUrl = URL.createObjectURL(blob);
     const captured = blob.type.startsWith("video/") ? await captureVideoPoster(previewUrl).catch(() => undefined) : undefined;
@@ -30,7 +32,7 @@ export async function uploadMediaFile(input: string | Blob, prefix = "file", opt
     const allowLocalFallback = options?.allowLocalFallback ?? !blob.type.startsWith("video/");
     try {
         const kind = blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : "file";
-        const resource = await uploadResourceFile(blob, kind, { ...meta, fileName: input instanceof File ? input.name : undefined });
+        const resource = await uploadResourceFile(blob, kind, { ...meta, fileName: input instanceof File ? input.name : undefined, idempotencyKey: storageKey });
         await primeResourceBlobCache(resourceStorageKey(resource.id), blob).catch(() => "");
         URL.revokeObjectURL(previewUrl);
         return { url: resource.publicUrl || resourceFileUrl(resource.id), storageKey: resourceStorageKey(resource.id), bytes: resource.size || blob.size, mimeType: resource.mimeType || blob.type || "application/octet-stream", width: resource.width || meta.width, height: resource.height || meta.height, durationMs: resource.durationMs || meta.durationMs, hasAudio: meta.hasAudio, preview: poster };
@@ -41,7 +43,6 @@ export async function uploadMediaFile(input: string | Blob, prefix = "file", opt
         }
         // OSS is optional during local/self-hosted setup. Keep the existing local fallback.
     }
-    const storageKey = `${prefix}:${getActiveUserScope()}:${nanoid()}`;
     await store.setItem(storageKey, blob);
     const url = previewUrl;
     objectUrls.set(storageKey, url);

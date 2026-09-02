@@ -4,7 +4,7 @@ import { createBrowserRouter, Navigate, Outlet } from "react-router";
 import { RequireAuth } from "@/components/auth/require-auth";
 import { RequireFeature } from "@/components/auth/require-feature";
 import { FullScreenLoader, WorkspaceRouteLoader } from "@/components/ui/aceternity/full-screen-loader";
-import { loadAssetsPage, loadCanvasPage, loadCreatePage, loadProjectsPage, loadWalletPage } from "@/lib/workspace-route-modules";
+import { loadAssetsPage, loadCanvasPage, loadCreatePage, loadProjectsPage, loadTeamsPage, loadWalletPage } from "@/lib/workspace-route-modules";
 import UserLayout from "@/layouts/user-layout";
 import { AuthScene } from "@/pages/auth/auth-scene";
 import RouteErrorPage from "@/pages/route-error";
@@ -33,6 +33,8 @@ const SystemUpdatePage = lazy(() => import("@/pages/admin/settings/system-update
 const StoryboardPromptsPage = lazy(() => import("@/pages/admin/storyboard-prompts/storyboard-prompts-page"));
 const UsersPage = lazy(() => import("@/pages/admin/users/users-page"));
 const AssetsPage = lazy(loadAssetsPage);
+const TeamsPage = lazy(loadTeamsPage);
+const TeamJoinPage = lazy(() => import("@/pages/teams/join"));
 const LoginPage = lazy(() => import("@/pages/auth/login"));
 const RegisterPage = lazy(() => import("@/pages/auth/register"));
 const ForgotPasswordPage = lazy(() => import("@/pages/auth/forgot-password"));
@@ -109,6 +111,8 @@ export const router = createBrowserRouter([
                 ),
             },
             { path: "/assets", element: <RequireAuth>{deferred(<AssetsPage />)}</RequireAuth> },
+            { path: "/teams", element: <RequireAuth>{deferred(<TeamsPage />)}</RequireAuth> },
+            { path: "/teams/join/:token", element: <RequireAuth>{deferred(<TeamJoinPage />)}</RequireAuth> },
             { path: "/skills", element: <RequireAuth>{deferred(<SkillsPage />)}</RequireAuth> },
             {
                 path: "/plugins",

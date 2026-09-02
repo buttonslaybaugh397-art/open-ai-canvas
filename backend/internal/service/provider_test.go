@@ -171,6 +171,77 @@ func TestRunVideoTaskUsesHostBackedAgnesJSONProtocol(t *testing.T) {
 	}
 }
 
+func TestRunVideoTaskUsesWeijinBearerForTaskAndContent(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	center, err := newPluginRuntime(t.TempDir())
+	if err != nil {
+		t.Fatalf("newPluginRuntime() error = %v", err)
+	}
+	if _, ok := center.registrySnapshot().Resolve("weijin-video"); !ok {
+		t.Fatal("host-backed Weijin adapter is missing")
+	}
+
+	paths := make([]string, 0, 3)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.RequestURI())
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Errorf("%s Authorization = %q, want Bearer test-key", r.URL.Path, got)
+		}
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/videos":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode create body: %v", err)
+			}
+			if body["model"] != "seedance2.0-one-full-flex-720p" || body["seconds"] != float64(10) || body["aspect_ratio"] != "16:9" {
+				t.Errorf("create body = %#v", body)
+			}
+			if _, exists := body["resolution"]; exists {
+				t.Errorf("fixed-resolution model must omit resolution: %#v", body)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"weijin-task-1","status":"queued"}`))
+		case "GET /v1/videos/weijin-task-1":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"weijin-task-1","status":"completed","content":"` + server.URL + `/v1/videos/weijin-task-1/content"}`))
+		case "GET /v1/videos/weijin-task-1/content":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("video"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	ctx := withProtocolRegistry(context.Background(), center.registrySnapshot())
+	result, err := runVideoTask(ctx, canvasGenerationInput{
+		Mode:   "video",
+		Prompt: "make it move",
+		Config: providerConfig{BaseURL: server.URL, APIKey: "test-key", InterfaceType: "weijin-video", Model: "seedance2.0-one-full-flex-720p", VideoSeconds: "10", Size: "16:9", VQuality: "720p"},
+	})
+	if err != nil {
+		t.Fatalf("runVideoTask() error = %v", err)
+	}
+	video, ok := result["video"].(map[string]interface{})
+	if !ok || video["dataUrl"] != "data:video/mp4;base64,dmlkZW8=" {
+		t.Fatalf("video = %#v", result["video"])
+	}
+	wantPaths := "POST /v1/videos,GET /v1/videos/weijin-task-1,GET /v1/videos/weijin-task-1/content"
+	if got := strings.Join(paths, ","); got != wantPaths {
+		t.Fatalf("paths = %q, want %q", got, wantPaths)
+	}
+}
+
+func TestProtocolPollIntervalUsesWeijinGuidance(t *testing.T) {
+	if got := protocolPollInterval("weijin-video"); got != 10*time.Second {
+		t.Fatalf("Weijin poll interval = %s", got)
+	}
+	if got := protocolPollInterval("agnes-video"); got != 2500*time.Millisecond {
+		t.Fatalf("default poll interval = %s", got)
+	}
+}
+
 func TestSystemChannelIDFromBaseURLSupportsShortAndLegacyProxyPaths(t *testing.T) {
 	for _, test := range []struct{ base, want string }{
 		{base: "/api/channel-1", want: "channel-1"},

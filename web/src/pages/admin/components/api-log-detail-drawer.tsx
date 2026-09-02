@@ -5,6 +5,7 @@ import { RefreshCw } from "lucide-react";
 import { formatCredits } from "@/constant/credits";
 import { getAdminApiLog, queryAdminApiLogTask, type ApiCallLog } from "@/services/api/auth";
 import { AdminStatusBadge } from "./admin-ui";
+import { apiLogDisplayStatus } from "./api-log-status";
 
 export function ApiLogDetailDrawer({ logId, onClose, onLogUpdated }: { logId: string | null; onClose: () => void; onLogUpdated?: (log: ApiCallLog) => void }) {
     const { message } = App.useApp();
@@ -55,12 +56,10 @@ export function ApiLogDetailDrawer({ logId, onClose, onLogUpdated }: { logId: st
 }
 
 function LogDetail({ log, querying, onQueryProviderTask }: { log: ApiCallLog; querying: boolean; onQueryProviderTask: () => void }) {
-    const providerStatus = log.providerStatus?.toLowerCase();
-    const processing = ["queued", "pending", "processing", "running", "in_progress"].includes(providerStatus || "");
-    const failed = log.status === "failed" || ["failed", "cancelled", "expired"].includes(providerStatus || "");
+    const displayStatus = apiLogDisplayStatus(log);
     const items = [
         ["时间", new Date(log.startedAt || log.createdAt).toLocaleString("zh-CN", { hour12: false })],
-        ["状态", <AdminStatusBadge label={failed ? "失败" : processing ? "处理中" : "成功"} tone={failed ? "error" : processing ? "warning" : "success"} />],
+        ["状态", <AdminStatusBadge label={displayStatus.label} tone={displayStatus.tone} />],
         [
             "用户",
             <span>
@@ -70,6 +69,8 @@ function LogDetail({ log, querying, onQueryProviderTask }: { log: ApiCallLog; qu
         ],
         ["渠道 / 模型", `${log.channelName || "未记录渠道"} / ${log.model || "未识别模型"}`],
         ["能力", capabilityText(log.capability)],
+        ["请求阶段", requestKindText(log.requestKind)],
+        ["计费属性", log.billable ? "计费调用" : "不计费"],
         ["总耗时", formatDuration(log.durationMs)],
         ["视频轮询", log.capability === "video" ? `${log.pollCount || 0} 次` : "--"],
         ["Token", log.usageAvailable ? `${log.inputTokens} 输入 / ${log.outputTokens} 输出 / ${log.cachedTokens} 缓存` : "未返回"],
@@ -110,10 +111,16 @@ function LogDetail({ log, querying, onQueryProviderTask }: { log: ApiCallLog; qu
 }
 
 function billingText(log: ApiCallLog) {
+    if (!log.billable) return "不计费";
     if (!log.billingAvailable) return "未扣积分";
     const status = log.billingStatus || "reserved";
     const statusLabel = ({ settled: "已结算", refunded: "已退回", uncertain: "待核对", running: "运行中", reserved: "已预授权" } as const)[status];
     return `${formatCredits(log.billingAmountMicrocredits)} 积分 · ${statusLabel}`;
+}
+
+function requestKindText(value: ApiCallLog["requestKind"]) {
+    const labels: Partial<Record<ApiCallLog["requestKind"], string>> = { create: "模型生成", poll: "状态查询", download: "结果下载", repair: "结果修复" };
+    return labels[value] || "上游请求";
 }
 
 function PayloadPanel({ value, empty }: { value?: string; empty: string }) {

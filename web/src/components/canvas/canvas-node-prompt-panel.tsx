@@ -49,7 +49,7 @@ type CanvasNodePromptPanelProps = {
 type CanvasTheme = (typeof canvasThemes)[keyof typeof canvasThemes];
 
 const PROMPT_REFERENCE_SHELF_HEIGHT = 36;
-const PROMPT_EDITOR_MIN_HEIGHT = 44;
+const PROMPT_EDITOR_MIN_HEIGHT = 140;
 const PROMPT_EDITOR_EXPANDED_MIN_HEIGHT = 76;
 const PROMPT_EDITOR_LINE_HEIGHT = 20;
 const PROMPT_EDITOR_EXPANDED_LINE_HEIGHT = 24;

@@ -1,5 +1,4 @@
 import { nanoid } from "nanoid";
-
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { canGenerateImageInPlace, findAvailableGenerationGroupPosition, imageGenerationChildPosition, imageGenerationGroupSize } from "@/lib/canvas/canvas-generation-layout";
 import { buildImageGenerationNodeTitle } from "@/lib/canvas/canvas-generation-title";

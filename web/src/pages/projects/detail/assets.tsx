@@ -457,6 +457,7 @@ export default function ProjectAssetsView({ detail, refreshProject }: ProjectDet
                 multiple={false}
                 eyebrow="绑定图片"
                 title={imageAsset?.title || "角色三视图"}
+                teamAssetKinds={["image"]}
                 confirmLabel={() => "绑定并生成新版本"}
                 emptyTitle="没有可绑定的图片"
                 emptyDescription="需要一张包含正面、侧面、背面的角色设定图。"
@@ -474,6 +475,7 @@ export default function ProjectAssetsView({ detail, refreshProject }: ProjectDet
                 multiple={false}
                 eyebrow="声音素材"
                 title="从素材库选择"
+                teamAssetKinds={["audio"]}
                 confirmLabel={() => "使用这份声音"}
                 emptyTitle="素材库还没有可用音频"
                 emptyDescription="可以从底部上传声音素材，上传后会自动选中。"
@@ -489,12 +491,13 @@ export default function ProjectAssetsView({ detail, refreshProject }: ProjectDet
                     return ids;
                 } }}
                 onClose={() => setVoicePickerOpen(false)}
-                onConfirm={(ids) => {
+                onConfirm={(ids, { materializedAssets }) => {
                     const id = ids[0];
-                    const resourceId = id ? audioResourceByItemId.get(id) : "";
+                    const imported = materializedAssets.find((asset) => asset.id === id);
+                    const resourceId = imported?.kind === "audio" ? resourceIdFromStorageKey(imported.data.storageKey) : id ? audioResourceByItemId.get(id) : "";
                     if (!resourceId) throw new Error("所选声音素材尚未同步到服务端资源库");
                     const item = audioPickerItems.find((entry) => entry.id === id);
-                    setVoiceSample({ resourceId, name: item?.title || "角色声音", url: resourceFileUrl(resourceId) });
+                    setVoiceSample({ resourceId, name: imported?.title || item?.title || "角色声音", url: resourceFileUrl(resourceId) });
                     setVoicePickerOpen(false);
                 }}
             />

@@ -196,6 +196,23 @@ func (r *Repository) ResourceReferenceSnapshot(userID string, excludingAssetID s
 		snapshot.Direct = append(snapshot.Direct, ResourceDirectReference{Kind: "素材", ID: representation.ID, Title: representation.Title, ResourceID: representation.ResourceID})
 	}
 
+	type joinedTeamAssetResource struct {
+		ID         string
+		Title      string
+		ResourceID string
+	}
+	var teamAssets []joinedTeamAssetResource
+	if err := r.db.Table("team_asset_resources").
+		Select("team_assets.id, team_assets.title, team_asset_resources.resource_id").
+		Joins("JOIN team_assets ON team_assets.id = team_asset_resources.team_asset_id").
+		Where("team_asset_resources.resource_id IN ?", resourceIDs).
+		Scan(&teamAssets).Error; err != nil {
+		return snapshot, err
+	}
+	for _, teamAsset := range teamAssets {
+		snapshot.Direct = append(snapshot.Direct, ResourceDirectReference{Kind: "团队素材", ID: teamAsset.ID, Title: teamAsset.Title, ResourceID: teamAsset.ResourceID})
+	}
+
 	var voices []model.VoiceProfile
 	if err := r.db.Where("user_id = ? AND sample_resource_id IN ?", userID, resourceIDs).Find(&voices).Error; err != nil {
 		return snapshot, err

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"infinite-canvas/backend/internal/model"
 
@@ -53,6 +54,13 @@ func Models() []any {
 		&model.ResourceDeletionJob{},
 		&model.AnnouncementImageDraft{},
 		&model.Asset{},
+		&model.Team{},
+		&model.TeamMember{},
+		&model.TeamAsset{},
+		&model.TeamAssetFolder{},
+		&model.TeamAssetResource{},
+		&model.TeamAuditEvent{},
+		&model.TeamInvitation{},
 		&model.ProjectAssetLink{},
 		&model.ProjectAssetFolder{},
 		&model.ProjectAssetCandidate{},
@@ -89,6 +97,91 @@ func Models() []any {
 		&model.ComfyBridge{},
 		&model.ComfyBridgeRequest{},
 	}
+}
+
+func migrateTeamAssetIsolation(db *gorm.DB) error {
+	if err := db.AutoMigrate(&model.Team{}, &model.TeamMember{}); err != nil {
+		return err
+	}
+	if !db.Migrator().HasTable(&model.TeamAsset{}) {
+		return db.AutoMigrate(&model.TeamAsset{}, &model.TeamAssetFolder{}, &model.TeamAssetResource{})
+	}
+	for _, field := range []string{"TeamID", "SourceAssetID"} {
+		if !db.Migrator().HasColumn(&model.TeamAsset{}, field) {
+			if err := db.Migrator().AddColumn(&model.TeamAsset{}, field); err != nil {
+				return fmt.Errorf("新增团队素材字段 %s：%w", field, err)
+			}
+		}
+	}
+	if db.Migrator().HasTable(&model.TeamAssetFolder{}) {
+		for _, field := range []string{"TeamID", "NameKey"} {
+			if !db.Migrator().HasColumn(&model.TeamAssetFolder{}, field) {
+				if err := db.Migrator().AddColumn(&model.TeamAssetFolder{}, field); err != nil {
+					return fmt.Errorf("新增团队素材目录字段 %s：%w", field, err)
+				}
+			}
+		}
+	}
+	var owners []string
+	if err := db.Model(&model.TeamAsset{}).Where("COALESCE(team_id, '') = ''").Distinct().Pluck("owner_user_id", &owners).Error; err != nil {
+		return err
+	}
+	if db.Migrator().HasTable(&model.TeamAssetFolder{}) {
+		var folderOwners []string
+		if err := db.Model(&model.TeamAssetFolder{}).Where("COALESCE(team_id, '') = ''").Distinct().Pluck("owner_user_id", &folderOwners).Error; err != nil {
+			return err
+		}
+		owners = append(owners, folderOwners...)
+	}
+	seen := make(map[string]struct{}, len(owners))
+	now := time.Now().UTC()
+	for _, ownerID := range owners {
+		ownerID = strings.TrimSpace(ownerID)
+		if ownerID == "" {
+			return errors.New("发现缺少所有者的历史团队素材，拒绝迁移以避免跨账号泄漏")
+		}
+		if _, exists := seen[ownerID]; exists {
+			continue
+		}
+		seen[ownerID] = struct{}{}
+		digest := sha256.Sum256([]byte("legacy-team:" + ownerID))
+		teamID := fmt.Sprintf("legacy-%x", digest[:14])
+		team := model.Team{ID: teamID, Name: "历史共享素材", CreatedByUserID: ownerID, CreatedAt: now, UpdatedAt: now}
+		member := model.TeamMember{TeamID: teamID, UserID: ownerID, Role: model.TeamMemberRoleOwner, Status: model.TeamMemberStatusActive, CreatedAt: now, UpdatedAt: now}
+		if err := db.Where("id = ?", teamID).FirstOrCreate(&team).Error; err != nil {
+			return err
+		}
+		if err := db.Where("team_id = ? AND user_id = ?", teamID, ownerID).FirstOrCreate(&member).Error; err != nil {
+			return err
+		}
+		if err := db.Model(&model.TeamAsset{}).Where("owner_user_id = ? AND COALESCE(team_id, '') = ''", ownerID).Updates(map[string]any{"team_id": teamID, "source_asset_id": gorm.Expr("id")}).Error; err != nil {
+			return err
+		}
+		if db.Migrator().HasTable(&model.TeamAssetFolder{}) {
+			if err := db.Model(&model.TeamAssetFolder{}).Where("owner_user_id = ? AND COALESCE(team_id, '') = ''", ownerID).Updates(map[string]any{"team_id": teamID, "name_key": gorm.Expr("lower(trim(name))")}).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return db.AutoMigrate(&model.TeamAsset{}, &model.TeamAssetFolder{}, &model.TeamAssetResource{})
+}
+
+func migrateTeamSettingsQuota(db *gorm.DB) error {
+	if err := db.AutoMigrate(&model.Team{}); err != nil {
+		return err
+	}
+	return db.Model(&model.Team{}).Where("asset_limit <= 0 OR storage_limit <= 0").Updates(map[string]any{
+		"asset_limit":   int64(5000),
+		"storage_limit": int64(100) << 30,
+	}).Error
+}
+
+func migrateTeamAuditEvents(db *gorm.DB) error {
+	return db.AutoMigrate(&model.TeamAuditEvent{})
+}
+
+func migrateTeamInvitations(db *gorm.DB) error {
+	return db.AutoMigrate(&model.TeamInvitation{})
 }
 
 func migrateSchemaV1(db *gorm.DB) error {

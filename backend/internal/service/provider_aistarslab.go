@@ -25,7 +25,7 @@ func generationRequiresPublicReferenceURL(ctx context.Context, input canvasGener
 
 func protocolRequiresPublicReferenceURL(interfaceType string) bool {
 	switch interfaceType {
-	case "newapi-channel-1", "newapi-channel-2", string(model.ChannelInterfaceGlobalAiOpcImage), string(model.ChannelInterfaceGlobalAiOpcVideo), string(model.ChannelInterfaceHuiQuYunVideo), string(model.ChannelInterfaceVolcengineArkVideo), string(model.ChannelInterfaceAIStarsLabImage), string(model.ChannelInterfaceAIStarsLabVideo):
+	case "newapi-channel-1", "newapi-channel-2", string(model.ChannelInterfaceGlobalAiOpcImage), string(model.ChannelInterfaceGlobalAiOpcVideo), string(model.ChannelInterfaceHuiQuYunVideo), string(model.ChannelInterfaceVolcengineArkVideo), string(model.ChannelInterfaceAIStarsLabImage), string(model.ChannelInterfaceAIStarsLabVideo), string(model.ChannelInterfaceWeijinVideo):
 		return true
 	default:
 		return false

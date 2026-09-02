@@ -1,14 +1,16 @@
-import { AudioLines, Box, CheckCheck, Clapperboard, Copy, Download, FileText, FileUp, FolderOpen, Image as ImageIcon, Link2, MoreHorizontal, PencilLine, Play, Plus, Search, Trash2, Upload, type LucideIcon } from "lucide-react";
+import { AudioLines, Box, CheckCheck, Clapperboard, Copy, Download, FileText, FileUp, FolderOpen, Image as ImageIcon, Link2, MoreHorizontal, PencilLine, Play, Plus, RotateCcw, Search, Share2, Trash2, Upload, Users, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { App, Button, Drawer, Dropdown, Form, Input, Modal, Progress, Select, Space, Tag, Typography } from "antd";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { App, Button, Drawer, Dropdown, Form, Input, Modal, Progress, Segmented, Select, Space, Tag, Typography } from "antd";
 import type { MenuProps } from "antd";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 
 import { CollectionGrid, ListToolbar, PageHeader, PaginationBar, WorkspacePage } from "@/components/layout/workspace-page";
 import { WorkspaceState } from "@/components/layout/workspace-state";
 import { AssetMediaPreview } from "@/components/asset-media-preview";
 import { AssetLibraryCard, AssetLibraryCardMedia } from "@/components/assets/asset-library-card";
+import { TeamAssetBrowser } from "@/components/assets/team-asset-library";
+import { TeamMemberManager } from "@/components/assets/team-member-manager";
 import { saveAs } from "file-saver";
 
 import { useCopyText } from "@/hooks/use-copy-text";
@@ -16,10 +18,12 @@ import { resourceStorageLabel, resourceStorageLocation, resourceStorageTitle } f
 import { formatBytes, readFileAsDataUrl, readImageMeta } from "@/lib/image-utils";
 import { uploadImage } from "@/services/image-storage";
 import { uploadMediaFile } from "@/services/file-storage";
-import { useAssetStore, type Asset, type AssetCategory, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
+import { flushAssetStorePersistence, useAssetStore, type Asset, type AssetCategory, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
 import { exportAssets, readAssetPackage } from "./asset-transfer";
 import { AssetStorageUsage, assetStorageUsageQueryKey } from "./asset-storage-usage";
-import { deleteAssetWithRemoteSync } from "@/services/user-data-sync";
+import { deleteAssetWithRemoteSync, saveRemoteUserDataNow } from "@/services/user-data-sync";
+import { canWriteTeamAssets, createTeam, listTeams, shareTeamAssets } from "@/services/api/team-assets";
+import { useUserStore } from "@/stores/use-user-store";
 
 
 type LibraryAsset = Exclude<Asset, { kind: "entity" }>;
@@ -36,6 +40,8 @@ type AssetFormValues = {
 };
 
 type ImageDraft = ImageAsset["data"] | null;
+type AssetScope = "personal" | "team";
+type PersonalAssetView = "library" | "trash";
 
 const kindOptions = [
     { label: "全部", value: "all" },
@@ -68,6 +74,7 @@ const assetKindIcons: Record<LibraryAsset["kind"], LucideIcon> = {
 export default function AssetsPage() {
     const { message } = App.useApp();
     const navigate = useNavigate();
+    const [searchParams] = useSearchParams();
     const queryClient = useQueryClient();
     const copyText = useCopyText();
     const [form] = Form.useForm<AssetFormValues>();
@@ -79,6 +86,13 @@ export default function AssetsPage() {
     const addAsset = useAssetStore((state) => state.addAsset);
 
     const updateAsset = useAssetStore((state) => state.updateAsset);
+    const retentionDays = useUserStore((state) => state.runtimeLimits.recycleBinRetentionDays ?? 30);
+    const [assetScope, setAssetScope] = useState<AssetScope>(() => searchParams.get("scope") === "team" ? "team" : "personal");
+    const [personalView, setPersonalView] = useState<PersonalAssetView>("library");
+    const [activeTeamId, setActiveTeamId] = useState(() => searchParams.get("teamId") || "");
+    const [createTeamOpen, setCreateTeamOpen] = useState(false);
+    const [teamMembersOpen, setTeamMembersOpen] = useState(false);
+    const [teamName, setTeamName] = useState("");
     const [keyword, setKeyword] = useState("");
     const [kindFilter, setKindFilter] = useState<AssetKind | "all">("all");
     const [categoryFilter, setCategoryFilter] = useState<AssetCategory | "all">("all");
@@ -90,6 +104,14 @@ export default function AssetsPage() {
     const [deletingAsset, setDeletingAsset] = useState<LibraryAsset | null>(null);
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
     const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+    const teamsQuery = useQuery({
+        queryKey: ["teams"],
+        queryFn: ({ signal }) => listTeams(signal),
+        staleTime: 30_000,
+    });
+    const teams = teamsQuery.data?.teams || [];
+    const activeTeam = teams.find((team) => team.id === activeTeamId) || teams[0];
+    const canShareToTeam = canWriteTeamAssets(activeTeam?.role);
 
     const [formKind, setFormKind] = useState<AssetKind>("text");
     const [imageDraft, setImageDraft] = useState<ImageDraft>(null);
@@ -100,11 +122,14 @@ export default function AssetsPage() {
     const title = Form.useWatch("title", form) || "";
     const tags = Form.useWatch("tags", form) || [];
     const content = Form.useWatch("content", form) || "";
-    const validAssets = useMemo(() => assets.filter((asset): asset is LibraryAsset => asset.kind !== "entity"), [assets]);
+    const allLibraryAssets = useMemo(() => assets.filter((asset): asset is LibraryAsset => asset.kind !== "entity"), [assets]);
+    const activeAssets = useMemo(() => allLibraryAssets.filter((asset) => asset.status !== "archived"), [allLibraryAssets]);
+    const trashAssets = useMemo(() => allLibraryAssets.filter((asset) => asset.status === "archived"), [allLibraryAssets]);
+    const validAssets = personalView === "trash" ? trashAssets : activeAssets;
     const selectedAssets = useMemo(() => validAssets.filter((asset) => selectedIds.includes(asset.id)), [selectedIds, validAssets]);
     const kindCounts = useMemo(() => new Map(kindOptions.map((option) => [option.value, option.value === "all" ? validAssets.length : validAssets.filter((asset) => asset.kind === option.value).length])), [validAssets]);
     const categoryCounts = useMemo(() => new Map(categoryOptions.map((option) => [option.value, option.value === "all" ? validAssets.length : validAssets.filter((asset) => (asset.category || "other") === option.value).length])), [validAssets]);
-    const canCreateAsset = !keyword.trim() && kindFilter === "all" && categoryFilter === "all";
+    const canCreateAsset = personalView === "library" && !keyword.trim() && kindFilter === "all" && categoryFilter === "all";
 
     const filteredAssets = useMemo(() => {
         const query = keyword.trim().toLowerCase();
@@ -132,6 +157,35 @@ export default function AssetsPage() {
         const existingIds = new Set(validAssets.map((asset) => asset.id));
         setSelectedIds((current) => current.filter((id) => existingIds.has(id)));
     }, [validAssets]);
+
+    useEffect(() => {
+        if (activeTeamId && teams.some((team) => team.id === activeTeamId)) return;
+        setActiveTeamId(teams[0]?.id || "");
+    }, [activeTeamId, teams]);
+
+    const createTeamMutation = useMutation({
+        mutationFn: () => createTeam({ name: teamName.trim() }),
+        onSuccess: async ({ team }) => {
+            await queryClient.invalidateQueries({ queryKey: ["teams"] });
+            setActiveTeamId(team.id);
+            setTeamName("");
+            setCreateTeamOpen(false);
+            setAssetScope("team");
+            message.success("团队已创建");
+        },
+        onError: (error) => message.error(readAssetsError(error, "创建团队失败")),
+    });
+
+    const shareMutation = useMutation({
+        mutationFn: () => activeTeam ? shareTeamAssets(activeTeam.id, selectedAssets.map((asset) => asset.id)) : Promise.reject(new Error("请先选择团队")),
+        onSuccess: async (result) => {
+            await queryClient.invalidateQueries({ queryKey: ["team-assets"] });
+            const skipped = result.skipped?.length || 0;
+            message.success(skipped ? "已共享 " + result.assets.length + " 个素材，" + skipped + " 个未处理" : "已共享 " + result.assets.length + " 个素材到团队");
+            setSelectedIds([]);
+        },
+        onError: (error) => message.error(readAssetsError(error, "共享团队素材失败")),
+    });
 
     const openCreate = () => {
         setEditingAsset(null);
@@ -284,9 +338,21 @@ export default function AssetsPage() {
 
     const confirmDelete = async () => {
         if (!deletingAsset) return;
+        if (personalView === "library") {
+            updateAsset(deletingAsset.id, { status: "archived" });
+            await flushAssetStorePersistence();
+            try {
+                await saveRemoteUserDataNow();
+                message.success("素材已移入回收站");
+            } catch {
+                message.warning("素材已在本地移入回收站，稍后将自动同步");
+            }
+            setDeletingAsset(null);
+            return;
+        }
         try {
             await deleteAssetWithRemoteSync(deletingAsset.id);
-            message.success("素材已删除");
+            message.success("素材已彻底删除");
             setDeletingAsset(null);
         } catch (error) {
             message.error(error instanceof Error ? error.message : "素材删除失败");
@@ -300,14 +366,40 @@ export default function AssetsPage() {
 
     const confirmBatchDelete = async () => {
         if (!selectedAssets.length) return;
+        if (personalView === "library") {
+            for (const asset of selectedAssets) updateAsset(asset.id, { status: "archived" });
+            await flushAssetStorePersistence();
+            try {
+                await saveRemoteUserDataNow();
+                message.success(`已将 ${selectedAssets.length} 个素材移入回收站`);
+            } catch {
+                message.warning("素材已在本地移入回收站，稍后将自动同步");
+            }
+            setSelectedIds([]);
+            setBatchDeleteOpen(false);
+            return;
+        }
         try {
             for (const asset of selectedAssets) await deleteAssetWithRemoteSync(asset.id);
-            message.success(`已删除 ${selectedAssets.length} 个素材`);
+            message.success(`已彻底删除 ${selectedAssets.length} 个素材`);
             setSelectedIds([]);
             setBatchDeleteOpen(false);
         } catch (error) {
             message.error(error instanceof Error ? error.message : "批量删除失败");
         }
+    };
+
+    const restoreAssets = async (items: LibraryAsset[]) => {
+        if (!items.length) return;
+        for (const asset of items) updateAsset(asset.id, { status: "confirmed" });
+        await flushAssetStorePersistence();
+        try {
+            await saveRemoteUserDataNow();
+            message.success(items.length === 1 ? "素材已还原" : `已还原 ${items.length} 个素材`);
+        } catch {
+            message.warning("素材已在本地还原，稍后将自动同步");
+        }
+        setSelectedIds([]);
     };
 
 
@@ -316,10 +408,10 @@ export default function AssetsPage() {
             <WorkspacePage grid className="library-page assets-library-page canvas-library-page">
             <div className="studio-band">
                 <PageHeader
-                    title="素材库"
-                    description="管理文本、图片、视频、音频和 3D 模型素材。"
-                    meta={<span className="app-projects-header-meta assets-header-meta">{validAssets.length} 个素材</span>}
-                    actions={(
+                    title={assetScope === "personal" && personalView === "trash" ? "素材回收站" : "素材库"}
+                    description={assetScope === "team" ? "浏览和管理团队共享素材。" : personalView === "trash" ? (retentionDays > 0 ? `归档素材将在 ${retentionDays} 天后自动清理，也可以随时还原。` : "归档素材不会自动清理，可以随时还原或彻底删除。") : "管理文本、图片、视频、音频和 3D 模型素材。"}
+                    meta={<span className="app-projects-header-meta assets-header-meta">{assetScope === "personal" ? validAssets.length + " 个素材" : activeTeam?.name || "未选择团队"}</span>}
+                    actions={assetScope === "personal" && personalView === "library" ? (
                         <div className="assets-header-actions">
                             <div className="assets-header-action-buttons">
                                 <Button className="library-primary-action" type="primary" icon={<Plus className="size-3.5" />} onClick={openCreate}>新增素材</Button>
@@ -331,14 +423,26 @@ export default function AssetsPage() {
                             </div>
                             <AssetStorageUsage />
                         </div>
-                    )}
+                    ) : null}
                 />
-                <ListToolbar className="library-toolbar" active={Boolean(keyword || kindFilter !== "all" || categoryFilter !== "all")} onReset={() => { setKeyword(""); setKindFilter("all"); setCategoryFilter("all"); setPage(1); }}>
+                <div className="flex flex-wrap items-center justify-between gap-3 py-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                        <Segmented<AssetScope> value={assetScope} options={[{ label: "我的素材", value: "personal" }, { label: "团队素材", value: "team" }]} onChange={(value) => { setAssetScope(value); setSelectedIds([]); }} />
+                        {assetScope === "personal" ? <Segmented<PersonalAssetView> value={personalView} options={[{ label: `素材库 ${activeAssets.length}`, value: "library" }, { label: `回收站 ${trashAssets.length}`, value: "trash" }]} onChange={(value) => { setPersonalView(value); setSelectedIds([]); setPage(1); }} /> : null}
+                    </div>
+                    {assetScope === "team" ? <div className="flex items-center gap-2">
+                        {teams.length ? <Select className="min-w-48" value={activeTeam?.id} options={teams.map((team) => ({ value: team.id, label: team.name }))} onChange={setActiveTeamId} /> : null}
+                        {activeTeam ? <Button icon={<Users className="size-4" />} onClick={() => setTeamMembersOpen(true)}>成员管理</Button> : null}
+                        <Button icon={<Users className="size-4" />} onClick={() => setCreateTeamOpen(true)}>创建团队</Button>
+                    </div> : null}
+                </div>
+                {assetScope === "personal" ? <ListToolbar className="library-toolbar" active={Boolean(keyword || kindFilter !== "all" || categoryFilter !== "all")} onReset={() => { setKeyword(""); setKindFilter("all"); setCategoryFilter("all"); setPage(1); }}>
                     <Input allowClear className="w-full sm:w-80" prefix={<Search className="size-4 text-foreground/40" />} value={keyword} placeholder="搜索标题、内容、标签或来源" onChange={(event) => { setPage(1); setKeyword(event.target.value); }} />
-                </ListToolbar>
+                </ListToolbar> : null}
             </div>
 
             <div className="canvas-library-frame assets-library-frame">
+                {assetScope === "personal" ? (
                 <div className="grid min-h-0 gap-4 lg:grid-cols-[176px_minmax(0,1fr)]">
                     <aside className="thin-scrollbar flex gap-2 overflow-x-auto py-3 lg:sticky lg:top-0 lg:block lg:max-h-[calc(100vh-150px)] lg:overflow-y-auto lg:pr-3">
                         <AssetFilterGroup title="素材类型" options={kindOptions} value={kindFilter} counts={kindCounts} onChange={(value) => { setKindFilter(value as AssetKind | "all"); setPage(1); }} />
@@ -346,10 +450,10 @@ export default function AssetsPage() {
                     </aside>
                     <section className="min-w-0">
                         {selectedAssets.length ? (
-                            <AssetsBatchBar count={selectedAssets.length} allSelected={allFilteredSelected} onSelectAll={() => setSelectedIds((current) => Array.from(new Set([...current, ...filteredAssetIds])))} onClear={() => setSelectedIds([])} onExport={() => void exportSelectedAssets()} onDelete={() => setBatchDeleteOpen(true)} />
+                            <AssetsBatchBar count={selectedAssets.length} isTrash={personalView === "trash"} allSelected={allFilteredSelected} shareLabel={activeTeam ? "分享到 " + activeTeam.name : "分享到团队"} canShare={Boolean(activeTeam && canShareToTeam)} sharing={shareMutation.isPending} onSelectAll={() => setSelectedIds((current) => Array.from(new Set([...current, ...filteredAssetIds])))} onClear={() => setSelectedIds([])} onShare={() => shareMutation.mutate()} onExport={() => void exportSelectedAssets()} onRestore={() => void restoreAssets(selectedAssets)} onDelete={() => setBatchDeleteOpen(true)} />
                         ) : null}
                         {validAssets.length === 0 ? (
-                            <AssetsEmptyState onNew={openCreate} onImport={() => assetInputRef.current?.click()} onGoCanvas={() => navigate("/canvas")} />
+                            personalView === "trash" ? <WorkspaceState icon="assets" compact title="回收站是空的" description="移入回收站的个人素材会显示在这里。" /> : <AssetsEmptyState onNew={openCreate} onImport={() => assetInputRef.current?.click()} onGoCanvas={() => navigate("/canvas")} />
                         ) : (
                             <>
                                 {filteredAssets.length === 0 ? (
@@ -362,7 +466,7 @@ export default function AssetsPage() {
                                             <span className="library-create-meta">文本、图片、音视频或模型</span>
                                         </button> : null}
                                         {visibleAssets.map((asset) => (
-                                            <AssetCard key={asset.id} asset={asset} selected={selectedIds.includes(asset.id)} onSelect={(selected) => setSelectedIds((current) => selected ? [...new Set([...current, asset.id])] : current.filter((id) => id !== asset.id))} onOpen={() => setPreviewAsset(asset)} onEdit={() => openEdit(asset)} onCopy={copyAssetText} onDownload={downloadImage} onDelete={() => setDeletingAsset(asset)} />
+                                            <AssetCard key={asset.id} asset={asset} isTrash={personalView === "trash"} selected={selectedIds.includes(asset.id)} onSelect={(selected) => setSelectedIds((current) => selected ? [...new Set([...current, asset.id])] : current.filter((id) => id !== asset.id))} onOpen={() => setPreviewAsset(asset)} onEdit={() => openEdit(asset)} onCopy={copyAssetText} onDownload={downloadImage} onRestore={() => void restoreAssets([asset])} onDelete={() => setDeletingAsset(asset)} />
                                         ))}
                                     </CollectionGrid>
                                 )}
@@ -371,6 +475,15 @@ export default function AssetsPage() {
                         )}
                     </section>
                 </div>
+                ) : teamsQuery.isLoading ? (
+                    <WorkspaceState icon="assets" compact title="正在加载团队" description="正在读取你的团队和素材权限。" />
+                ) : teamsQuery.isError ? (
+                    <WorkspaceState icon="assets" compact title="团队加载失败" description={readAssetsError(teamsQuery.error, "请稍后重试。")} action={<Button onClick={() => void teamsQuery.refetch()}>重新加载</Button>} />
+                ) : activeTeam ? (
+                    <TeamAssetBrowser teamId={activeTeam.id} role={activeTeam.role} manageable pageSize={35} />
+                ) : (
+                    <WorkspaceState icon="assets" compact title="还没有团队" description="创建团队后，就可以把个人素材共享给团队成员统一使用。" action={<Button type="primary" icon={<Users className="size-4" />} onClick={() => setCreateTeamOpen(true)}>创建第一个团队</Button>} />
+                )}
             </div>
             </WorkspacePage>
 
@@ -500,34 +613,47 @@ export default function AssetsPage() {
             <input ref={assetInputRef} type="file" accept="application/zip,.zip" className="hidden" onChange={(event) => void importAssetZip(event.target.files?.[0])} />
             <input ref={modelInputRef} type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" className="hidden" onChange={(event) => { void readModelFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
 
-            <Modal className="library-modal library-confirm-modal" title="删除素材" open={Boolean(deletingAsset)} onCancel={() => setDeletingAsset(null)} onOk={() => void confirmDelete()} okText="删除" okButtonProps={{ danger: true }} cancelText="取消">
-                确定删除「{deletingAsset?.title}」吗？未被其他内容引用的服务器本地或对象存储文件也会同步删除；若仍被画布、任务或其他素材占用，本次删除将被阻止。
+            <Modal className="library-modal library-confirm-modal" title={personalView === "trash" ? "彻底删除素材" : "移入回收站"} open={Boolean(deletingAsset)} onCancel={() => setDeletingAsset(null)} onOk={() => void confirmDelete()} okText={personalView === "trash" ? "彻底删除" : "移入回收站"} okButtonProps={{ danger: personalView === "trash" }} cancelText="取消">
+                {personalView === "trash" ? `确定彻底删除「${deletingAsset?.title || ""}」吗？仍被画布、任务、团队素材或其他内容占用时，本次删除会被安全阻止。` : `确定将「${deletingAsset?.title || ""}」移入回收站吗？之后仍可还原。`}
             </Modal>
-            <Modal className="library-modal library-confirm-modal" title="批量删除素材" open={batchDeleteOpen} onCancel={() => setBatchDeleteOpen(false)} onOk={() => void confirmBatchDelete()} okText="删除" okButtonProps={{ danger: true }} cancelText="取消">
-                确定删除已选择的 {selectedAssets.length} 个素材吗？未被复用的服务器文件会同步删除；仍被画布、任务或其他素材占用的素材会保留并提示具体来源。
+            <Modal className="library-modal library-confirm-modal" title={personalView === "trash" ? "批量彻底删除" : "批量移入回收站"} open={batchDeleteOpen} onCancel={() => setBatchDeleteOpen(false)} onOk={() => void confirmBatchDelete()} okText={personalView === "trash" ? "彻底删除" : "移入回收站"} okButtonProps={{ danger: personalView === "trash" }} cancelText="取消">
+                {personalView === "trash" ? `确定彻底删除已选择的 ${selectedAssets.length} 个素材吗？此操作不可撤销，仍被引用的素材会保留。` : `确定将已选择的 ${selectedAssets.length} 个素材移入回收站吗？之后仍可还原。`}
             </Modal>
+            <Modal title="创建团队" open={createTeamOpen} onCancel={() => setCreateTeamOpen(false)} onOk={() => createTeamMutation.mutate()} okText="创建" confirmLoading={createTeamMutation.isPending} okButtonProps={{ disabled: !teamName.trim() }} destroyOnHidden>
+                <Input value={teamName} maxLength={80} placeholder="输入团队名称" onChange={(event) => setTeamName(event.target.value)} onPressEnter={() => { if (teamName.trim()) createTeamMutation.mutate(); }} />
+            </Modal>
+            <TeamMemberManager open={teamMembersOpen} team={activeTeam} onClose={() => setTeamMembersOpen(false)} onLeftTeam={(teamId) => {
+                setTeamMembersOpen(false);
+                setActiveTeamId((current) => current === teamId ? "" : current);
+            }} />
         </>
     );
 }
 
-function AssetCard({ asset, selected, onSelect, onOpen, onEdit, onCopy, onDownload, onDelete }: { asset: LibraryAsset; selected: boolean; onSelect: (selected: boolean) => void; onOpen: () => void; onEdit: () => void; onCopy: (asset: LibraryAsset) => void; onDownload: (asset: LibraryAsset) => void; onDelete: () => void }) {
+function AssetCard({ asset, selected, isTrash, onSelect, onOpen, onEdit, onCopy, onDownload, onRestore, onDelete }: { asset: LibraryAsset; selected: boolean; isTrash: boolean; onSelect: (selected: boolean) => void; onOpen: () => void; onEdit: () => void; onCopy: (asset: LibraryAsset) => void; onDownload: (asset: LibraryAsset) => void; onRestore: () => void; onDelete: () => void }) {
     const summary = assetSummary(asset);
-    const menuItems: MenuProps["items"] = [
-        ...(asset.kind === "text" || asset.kind === "image" ? [{ key: "edit", icon: <PencilLine className="size-3.5" />, label: "编辑", onClick: onEdit }] : []),
-        ...(asset.kind === "text" ? [{ key: "copy", icon: <Copy className="size-3.5" />, label: "复制文本", onClick: () => void onCopy(asset) }] : []),
-        ...(asset.kind === "image" || asset.kind === "video" || asset.kind === "audio" || asset.kind === "model" ? [{ key: "download", icon: <Download className="size-3.5" />, label: "下载", onClick: () => onDownload(asset) }] : []),
-        { type: "divider" as const },
-        { key: "delete", danger: true, icon: <Trash2 className="size-3.5" />, label: "删除", onClick: onDelete },
-    ];
+    const menuItems: MenuProps["items"] = isTrash
+        ? [
+            { key: "restore", icon: <RotateCcw className="size-3.5" />, label: "还原到素材库", onClick: onRestore },
+            { type: "divider" as const },
+            { key: "delete", danger: true, icon: <Trash2 className="size-3.5" />, label: "彻底删除", onClick: onDelete },
+        ]
+        : [
+            ...(asset.kind === "text" || asset.kind === "image" ? [{ key: "edit", icon: <PencilLine className="size-3.5" />, label: "编辑", onClick: onEdit }] : []),
+            ...(asset.kind === "text" ? [{ key: "copy", icon: <Copy className="size-3.5" />, label: "复制文本", onClick: () => void onCopy(asset) }] : []),
+            ...(asset.kind === "image" || asset.kind === "video" || asset.kind === "audio" || asset.kind === "model" ? [{ key: "download", icon: <Download className="size-3.5" />, label: "下载", onClick: () => onDownload(asset) }] : []),
+            { type: "divider" as const },
+            { key: "archive", icon: <Trash2 className="size-3.5" />, label: "移入回收站", onClick: onDelete },
+        ];
     return (
         <AssetLibraryCard selected={selected}>
-            <AssetCover asset={asset} selected={selected} onSelect={onSelect} onOpen={onOpen} menuItems={menuItems} />
+            <AssetCover asset={asset} selected={selected} isTrash={isTrash} onSelect={onSelect} onOpen={onOpen} menuItems={menuItems} />
             <button type="button" className="block w-full px-2.5 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--workspace-accent)]" onClick={onOpen}>
                 <div className="flex min-w-0 items-center justify-between gap-2">
                     <h2 className="truncate text-[var(--fs-body)] font-semibold text-foreground" title={asset.title}>{asset.title}</h2>
                     <span className="shrink-0 text-[var(--fs-tiny)] tabular-nums text-foreground/38">{formatAssetTime(asset.updatedAt)}</span>
                 </div>
-                <div className="mt-1 truncate text-[var(--fs-label)] text-foreground/52" title={summary}>{summary}</div>
+                <div className={isTrash ? "mt-1 truncate text-[var(--fs-label)] font-medium text-amber-600 dark:text-amber-400" : "mt-1 truncate text-[var(--fs-label)] text-foreground/52"} title={summary}>{isTrash ? "已移入回收站，可还原或彻底删除" : summary}</div>
                 <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[var(--fs-tiny)] text-foreground/38">
                     <span className="truncate">{asset.source || "未标注来源"}</span>
                     <span aria-hidden="true">·</span>
@@ -538,7 +664,7 @@ function AssetCard({ asset, selected, onSelect, onOpen, onEdit, onCopy, onDownlo
     );
 }
 
-function AssetCover({ asset, selected, onSelect, onOpen, menuItems }: { asset: LibraryAsset; selected: boolean; onSelect: (selected: boolean) => void; onOpen: () => void; menuItems: MenuProps["items"] }) {
+function AssetCover({ asset, selected, isTrash, onSelect, onOpen, menuItems }: { asset: LibraryAsset; selected: boolean; isTrash: boolean; onSelect: (selected: boolean) => void; onOpen: () => void; menuItems: MenuProps["items"] }) {
     const KindIcon = assetKindIcons[asset.kind];
     const clock = asset.kind === "video" || asset.kind === "audio" ? formatAssetClock(asset.data.durationMs) : null;
     const showPlay = asset.kind === "video";
@@ -560,7 +686,7 @@ function AssetCover({ asset, selected, onSelect, onOpen, menuItems }: { asset: L
             </button>
             <span className="assets-cover-badges">
                 <span className="assets-cover-badge is-kind"><KindIcon />{assetKindLabel(asset.kind)}</span>
-                <span className="assets-cover-badge is-category">{assetCategoryLabel(asset.category)}</span>
+                <span className="assets-cover-badge is-category">{isTrash ? "回收站" : assetCategoryLabel(asset.category)}</span>
             </span>
             {clock ? <span className="assets-cover-clock">{clock}</span> : null}
             <input type="checkbox" checked={selected} onClick={(event) => event.stopPropagation()} onChange={(event) => onSelect(event.target.checked)} className="assets-select-check" aria-label={`选择 ${asset.title}`} />
@@ -603,15 +729,25 @@ function ModelCover({ asset }: { asset: LibraryAsset & { kind: "model" } }) {
     );
 }
 
-function AssetsBatchBar({ count, allSelected, onSelectAll, onClear, onExport, onDelete }: { count: number; allSelected: boolean; onSelectAll: () => void; onClear: () => void; onExport: () => void; onDelete: () => void }) {
+function AssetsBatchBar({ count, isTrash, allSelected, shareLabel, canShare, sharing, onSelectAll, onClear, onShare, onExport, onRestore, onDelete }: { count: number; isTrash: boolean; allSelected: boolean; shareLabel: string; canShare: boolean; sharing: boolean; onSelectAll: () => void; onClear: () => void; onShare: () => void; onExport: () => void; onRestore: () => void; onDelete: () => void }) {
     return (
         <div className="assets-batch-bar" role="toolbar" aria-label="批量操作">
             <span className="assets-batch-count">已选择 <strong>{count}</strong> 个素材</span>
             <div className="assets-batch-actions">
                 <Button size="small" icon={<CheckCheck className="size-3.5" />} disabled={allSelected} onClick={onSelectAll}>全选</Button>
                 <Button size="small" onClick={onClear}>取消选择</Button>
-                <Button size="small" icon={<Download className="size-3.5" />} onClick={onExport}>导出</Button>
-                <Button size="small" danger icon={<Trash2 className="size-3.5" />} onClick={onDelete}>删除</Button>
+                {isTrash ? (
+                    <>
+                        <Button size="small" type="primary" icon={<RotateCcw className="size-3.5" />} onClick={onRestore}>还原已选</Button>
+                        <Button size="small" danger icon={<Trash2 className="size-3.5" />} onClick={onDelete}>彻底删除</Button>
+                    </>
+                ) : (
+                    <>
+                        <Button size="small" type="primary" icon={<Share2 className="size-3.5" />} disabled={!canShare} loading={sharing} onClick={onShare}>{shareLabel}</Button>
+                        <Button size="small" icon={<Download className="size-3.5" />} onClick={onExport}>导出</Button>
+                        <Button size="small" icon={<Trash2 className="size-3.5" />} onClick={onDelete}>移入回收站</Button>
+                    </>
+                )}
             </div>
         </div>
     );
@@ -837,4 +973,8 @@ function audioWaveBars(seed: string) {
         bars.push(Math.round((0.18 + 0.82 * random * envelope) * 100));
     }
     return bars;
+}
+
+function readAssetsError(error: unknown, fallback: string) {
+    return error instanceof Error && error.message ? error.message : fallback;
 }

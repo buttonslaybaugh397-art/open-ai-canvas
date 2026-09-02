@@ -49,6 +49,7 @@ export type RuntimeLimits = {
     activeTaskLimit: number;
     resourceUploadMB: number;
     sessionUploadMB: number;
+    recycleBinRetentionDays?: number;
 };
 
 export type ApiCallLog = {
@@ -319,6 +320,7 @@ export type RuntimeResourcePolicy = {
     sessionCount: number;
     taskCount: number;
     apiCallLogCount: number;
+    recycleBinRetentionDays: number;
 };
 
 export type RuntimeTaskPolicy = {

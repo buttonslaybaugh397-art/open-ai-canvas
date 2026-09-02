@@ -5,7 +5,10 @@ import (
 	"testing"
 
 	"infinite-canvas/backend/internal/database"
+	"infinite-canvas/backend/internal/model"
 
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
 )
 
@@ -32,5 +35,19 @@ func TestMigrationListCoversSchemaModels(t *testing.T) {
 		if !covered {
 			t.Errorf("migration list is missing table %q", table)
 		}
+	}
+}
+
+func TestPrimaryKeyOrderSupportsCompositeKeys(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:migration-primary-key-order?mode=memory&cache=shared"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	order, err := primaryKeyOrder[model.TeamMember](db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if order != "team_id, user_id" {
+		t.Fatalf("unexpected composite primary key order: %q", order)
 	}
 }

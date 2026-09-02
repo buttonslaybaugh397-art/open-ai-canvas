@@ -75,4 +75,29 @@ func TestUpdateTaskProviderProgressIsMonotonic(t *testing.T) {
 	}
 }
 
+func TestUpdateTaskProviderStagePreservesProgress(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:provider-stage?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.Task{}); err != nil {
+		t.Fatal(err)
+	}
+	task := model.Task{ID: "task-stage", UserID: "user-1", Type: "canvas_video", Status: model.TaskStatusRunning, Stage: "正在连接上游", Progress: 42}
+	if err := db.Create(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	repo := New(db)
+	if err := repo.UpdateTaskProviderStage(task.ID, "上游生成中"); err != nil {
+		t.Fatal(err)
+	}
+	var stored model.Task
+	if err := db.First(&stored, "id = ?", task.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Stage != "上游生成中" || stored.Progress != 42 {
+		t.Fatalf("stored progress = %d, stage = %q", stored.Progress, stored.Stage)
+	}
+}
+
 func ptrTime(value time.Time) *time.Time { return &value }

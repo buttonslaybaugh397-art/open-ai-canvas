@@ -6,6 +6,7 @@ import type { Asset } from "@/stores/use-asset-store";
 import { flushAssetStorePersistence, useAssetStore } from "@/stores/use-asset-store";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { useCanvasHistoryStore } from "@/stores/canvas/use-canvas-history-store";
 
 let activeRemoteUserId = "";
 type RemoteUserDataPhase = "inactive" | "hydrating" | "ready" | "failed";
@@ -32,17 +33,23 @@ export async function syncRemoteUserData(userId?: string | null) {
         }
         remoteUserDataPhase = "hydrating";
         try {
+            const projectsAtHydrationStart = useCanvasStore.getState().projects;
+            const assetsAtHydrationStart = useAssetStore.getState().assets;
             // 登录只拉一次聚合快照。摘要列表再逐条请求详情会把 N 条数据放大成 2N+2 个请求，
             // 并且会在登录阶段同时触发大量媒体解析，任何一项失败都会污染登录结果。
             const snapshot = await getRemoteUserDataSnapshot();
             // 登录时服务端是实体真相。浏览器 IndexedDB 只作为首屏缓存，不能把服务端已删除的记录补回去。
+            // 但快照请求在途期间产生的编辑必须保留，否则旧响应会把刚添加的节点和素材整批覆盖。
             // 这里只替换结构化记录，不在登录阶段解析图片/视频/音频 URL；媒体由实际使用方按需解析。
-            useCanvasStore.getState().replaceProjects(snapshot.projects);
-            useAssetStore.getState().replaceAssets(snapshot.assets);
+            const projects = mergeRemoteHydrationEntities(snapshot.projects, projectsAtHydrationStart, useCanvasStore.getState().projects);
+            const assets = mergeRemoteHydrationEntities(snapshot.assets, assetsAtHydrationStart, useAssetStore.getState().assets);
+            useCanvasStore.getState().replaceProjects(projects);
+            useAssetStore.getState().replaceAssets(assets);
             await Promise.all([flushCanvasStorePersistence(), flushAssetStorePersistence()]);
             acknowledgedProjects = new Map(snapshot.projects.map((project) => [project.id, project]));
             acknowledgedAssets = new Map(snapshot.assets.map((asset) => [asset.id, asset]));
             remoteUserDataPhase = "ready";
+            if (!sameEntitySnapshot(snapshot.projects, projects) || !sameEntitySnapshot(snapshot.assets, assets)) scheduleRemoteUserDataSync();
         } catch (error) {
             remoteUserDataPhase = "failed";
             throw error;
@@ -127,6 +134,7 @@ export async function deleteCanvasProjectsWithRemoteSync(ids: string[]) {
     if (!projectIds.length) return;
     await withRemoteUserDataSyncExclusive(async () => {
         if (activeRemoteUserId) requireRemoteUserDataBaseline();
+        const projectById = new Map(useCanvasStore.getState().projects.map((project) => [project.id, project]));
         for (const id of projectIds) {
             if (activeRemoteUserId) {
                 await deleteRemoteCanvasProject(id);
@@ -135,6 +143,8 @@ export async function deleteCanvasProjectsWithRemoteSync(ids: string[]) {
             useCanvasStore.getState().deleteProjects([id]);
             // 批量删除允许部分成功；每个已成功远端删除的实体都立即落实到本地 durable cache。
             await flushCanvasStorePersistence();
+            const deletedProject = projectById.get(id);
+            if (deletedProject) useCanvasHistoryStore.getState().recordDeletedProjects([deletedProject]);
         }
     });
 }
@@ -218,7 +228,11 @@ async function ensureRemoteResourceReferences<T>(value: T, uploaded = new Map<st
     if (!isLocalStorageKey(storageKey)) {
         const inline = inlineMediaDataUrl(next);
         if (!inline) return next as T;
-        const resourceStorage = await uploadInlineDataUrl(inline);
+        const identity = await inlineMediaUploadIdentity(inline);
+        const cached = uploaded.get(identity);
+        if (cached) return applyResourceReference(next, cached) as T;
+        const resourceStorage = await uploadInlineDataUrl(inline, identity);
+        uploaded.set(identity, resourceStorage);
         return applyResourceReference(next, resourceStorage) as T;
     }
 
@@ -245,13 +259,18 @@ function inlineMediaDataUrl(payload: Record<string, unknown>) {
     return "";
 }
 
-async function uploadInlineDataUrl(dataUrl: string) {
+async function uploadInlineDataUrl(dataUrl: string, identity: string) {
     const response = await fetch(dataUrl);
     if (!response.ok) throw new Error("内嵌媒体读取失败");
     const blob = await response.blob();
     const kind: "image" | "video" | "audio" | "file" = blob.type.startsWith("image/") ? "image" : blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : "file";
-    const resource = await uploadResourceFile(blob, kind);
+    const resource = await uploadResourceFile(blob, kind, { idempotencyKey: identity });
     return resourceStorageKey(resource.id);
+}
+
+async function inlineMediaUploadIdentity(dataUrl: string) {
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(dataUrl));
+    return `inline:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
 async function uploadLocalStorageKey(storageKey: string, payload: Record<string, unknown>) {
@@ -262,6 +281,7 @@ async function uploadLocalStorageKey(storageKey: string, payload: Record<string,
         width: numberValue(payload.naturalWidth) || numberValue(payload.width),
         height: numberValue(payload.naturalHeight) || numberValue(payload.height),
         durationMs: numberValue(payload.durationMs),
+        idempotencyKey: storageKey,
     });
     return resourceStorageKey(resource.id);
 }
@@ -272,6 +292,49 @@ function requireRemoteUserDataBaseline() {
 
 function sameEntitySnapshot<T>(acknowledged: T | undefined, current: T) {
     return acknowledged !== undefined && (acknowledged === current || JSON.stringify(acknowledged) === JSON.stringify(current));
+}
+
+export function mergeRemoteHydrationEntities<T extends { id: string; updatedAt?: string }>(remote: T[], localAtStart: T[], currentLocal: T[]) {
+    const remoteById = new Map(remote.map((entity) => [entity.id, entity]));
+    const localAtStartById = new Map(localAtStart.map((entity) => [entity.id, entity]));
+    const currentLocalById = new Map(currentLocal.map((entity) => [entity.id, entity]));
+    const changedLocally = new Set<string>();
+
+    for (const id of new Set([...localAtStartById.keys(), ...currentLocalById.keys()])) {
+        const before = localAtStartById.get(id);
+        const current = currentLocalById.get(id);
+        if (before === current) continue;
+        if (before === undefined || current === undefined || JSON.stringify(before) !== JSON.stringify(current)) changedLocally.add(id);
+    }
+
+    const merged: T[] = [];
+    const included = new Set<string>();
+    for (const current of currentLocal) {
+        const remoteEntity = remoteById.get(current.id);
+        // 刷新前普通持久化可能已落盘，但 1.2 秒云端防抖尚未提交。远端仍存在同一实体时，
+        // 用客户端生成并随 payload 保存的 updatedAt 识别这类未确认的新版本。远端缺失仍代表删除。
+        if (changedLocally.has(current.id) || localEntityIsNewer(current, remoteEntity)) {
+            merged.push(current);
+            included.add(current.id);
+            continue;
+        }
+        if (remoteEntity) {
+            merged.push(remoteEntity);
+            included.add(current.id);
+        }
+    }
+    for (const remoteEntity of remote) {
+        if (included.has(remoteEntity.id) || changedLocally.has(remoteEntity.id)) continue;
+        merged.push(remoteEntity);
+    }
+    return merged;
+}
+
+function localEntityIsNewer<T extends { updatedAt?: string }>(local: T, remote?: T) {
+    if (!remote) return false;
+    const localTime = Date.parse(local.updatedAt || "");
+    const remoteTime = Date.parse(remote.updatedAt || "");
+    return Number.isFinite(localTime) && Number.isFinite(remoteTime) && localTime > remoteTime;
 }
 
 function isLocalStorageKey(value: string) {

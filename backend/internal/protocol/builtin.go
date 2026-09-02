@@ -1091,13 +1091,13 @@ func normalizeStatus(raw string) Status {
 		return StatusSucceeded
 	case "4":
 		return StatusFailed
-	case "queued", "pending", "created", "submitted", "in_queue", "task_status_queued":
+	case "queued", "queueing", "pending", "created", "submitted", "waiting", "in_queue", "task_status_queued":
 		return StatusPending
-	case "running", "processing", "in_progress", "executing", "task_status_running":
+	case "running", "processing", "generating", "started", "in_progress", "executing", "task_status_running":
 		return StatusProcessing
 	case "succeeded", "success", "completed", "complete", "done", "task_status_succeed":
 		return StatusSucceeded
-	case "failed", "failure", "error", "cancelled", "canceled", "expired":
+	case "fail", "failed", "failure", "error", "errored", "rejected", "aborted", "timeout", "timed_out", "cancelled", "canceled", "expired":
 		return StatusFailed
 	default:
 		return ""

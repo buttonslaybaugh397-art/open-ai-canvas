@@ -338,6 +338,9 @@ func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string
 		if err := s.RequireWorkflowPluginForInterface(input.Config.InterfaceType); err != nil {
 			return nil, err
 		}
+		if err := validateWorkflowProviderPromptLength(input); err != nil {
+			return nil, err
+		}
 		if err := validateWorkflowProviderConfig(input.Mode, input.Config); err != nil {
 			return nil, err
 		}
@@ -2304,8 +2307,15 @@ func runDeclarativeProtocolTask(ctx context.Context, input canvasGenerationInput
 }
 
 func runProtocolAdapterTask(ctx context.Context, input canvasGenerationInput, adapter protocol.Adapter) (map[string]interface{}, error) {
-	request := protocolRequestFromInput(input)
 	taskID := resumedProviderRequestID(ctx)
+	if taskID == "" && input.Config.InterfaceType == string(model.ChannelInterfaceWeijinVideo) {
+		var err error
+		input, err = prepareWeijinGenerationMedia(ctx, input)
+		if err != nil {
+			return nil, err
+		}
+	}
+	request := protocolRequestFromInput(input)
 	var created protocol.CreateResult
 	if taskID == "" {
 		spec, err := adapter.BuildCreate(ctx, protocol.RequestContext{BaseURL: input.Config.BaseURL, Request: request})
@@ -2321,6 +2331,7 @@ func runProtocolAdapterTask(ctx context.Context, input canvasGenerationInput, ad
 			return nil, err
 		}
 		taskID = created.TaskID
+		syncProtocolTaskState(ctx, created.Status)
 		if created.Status == protocol.StatusFailed || created.Status == protocol.StatusCancelled {
 			return nil, protocolResultError(created.Message, taskID)
 		}
@@ -2348,17 +2359,44 @@ func runProtocolAdapterTask(ctx context.Context, input canvasGenerationInput, ad
 		if state.TaskID != "" {
 			taskID = state.TaskID
 		}
+		syncProtocolTaskState(ctx, state.Status)
 		switch state.Status {
 		case protocol.StatusSucceeded:
 			return finishProtocolResult(ctx, input.Config, input.Mode, state.Result)
 		case protocol.StatusFailed, protocol.StatusCancelled:
 			return nil, protocolResultError(state.Message, taskID)
 		}
-		if err := sleepContext(ctx, 2500*time.Millisecond); err != nil {
+		if err := sleepContext(ctx, protocolPollInterval(input.Config.InterfaceType)); err != nil {
 			return nil, err
 		}
 	}
 	return nil, fmt.Errorf("声明式协议任务超时（任务 %s）", taskID)
+}
+
+func protocolPollInterval(interfaceType string) time.Duration {
+	if interfaceType == string(model.ChannelInterfaceWeijinVideo) {
+		return 10 * time.Second
+	}
+	return 2500 * time.Millisecond
+}
+
+func syncProtocolTaskState(ctx context.Context, status protocol.Status) {
+	metadata, ok := ctx.Value(providerAnalyticsKey{}).(providerAnalyticsContext)
+	if !ok || metadata.Service == nil || metadata.Service.repo == nil || strings.TrimSpace(metadata.TaskID) == "" {
+		return
+	}
+	stage := ""
+	switch status {
+	case protocol.StatusPending:
+		stage = "上游排队中"
+	case protocol.StatusProcessing:
+		stage = "上游生成中"
+	default:
+		return
+	}
+	if err := metadata.Service.repo.UpdateTaskProviderStage(metadata.TaskID, stage); err != nil {
+		log.Printf("provider status sync failed: task_id=%s status=%s error=%v", metadata.TaskID, status, err)
+	}
 }
 
 func protocolRequestFromInput(input canvasGenerationInput) protocol.GenerationRequest {
@@ -2773,6 +2811,13 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 		adapter, ok := protocolAdapterForContext(ctx, input.Config.InterfaceType)
 		if !ok {
 			return nil, errors.New("Agnes 视频插件未安装")
+		}
+		return runProtocolAdapterTask(ctx, input, adapter)
+	}
+	if input.Config.InterfaceType == string(model.ChannelInterfaceWeijinVideo) {
+		adapter, ok := protocolAdapterForContext(ctx, input.Config.InterfaceType)
+		if !ok {
+			return nil, errors.New("维今 ONE 视频插件未安装")
 		}
 		return runProtocolAdapterTask(ctx, input, adapter)
 	}
@@ -4441,8 +4486,7 @@ func doJSON(req *http.Request, target interface{}) error {
 		}
 	}
 	if payload, ok := target.(*map[string]interface{}); ok {
-		if code, ok := (*payload)["code"].(float64); ok && code != 0 {
-			rawMessage := stringField(*payload, "msg")
+		if _, rawMessage, failed := providerPayloadBusinessFailure(*payload); failed {
 			return providerPayloadError{raw: rawMessage, message: providerPayloadErrorMessage(rawMessage)}
 		}
 		if errValue, ok := (*payload)["error"].(map[string]interface{}); ok && stringField(errValue, "message") != "" {
@@ -4629,12 +4673,16 @@ func recordProviderRequest(req *http.Request, startedAt time.Time, statusCode in
 	if requestErr != nil || statusCode < 200 || statusCode >= 300 {
 		status = model.ApiCallStatusFailed
 		errorCode, errorText = providerRequestErrorDetails(requestErr)
+	} else if businessCode, businessMessage, failed := providerResponseBusinessFailure(responseBody); failed {
+		status = model.ApiCallStatusFailed
+		errorCode = businessCode
+		errorText = businessMessage
 	}
 	requestKind := providerRequestKind(req.Method, req.URL.Path)
 	if metadata.RequestKind != "" {
 		requestKind = metadata.RequestKind
 	}
-	if requestErr == nil && statusCode >= 200 && statusCode < 300 && (requestKind == "create" || requestKind == "poll") && (metadata.Capability == "image" || metadata.Capability == "video") {
+	if status == model.ApiCallStatusSucceeded && (requestKind == "create" || requestKind == "poll") && (metadata.Capability == "image" || metadata.Capability == "video") {
 		metadata.Service.syncProviderTaskProgress(metadata.TaskID, responseBody)
 	}
 	apiFormat := "openai"

@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -215,8 +216,12 @@ func (s *Service) UpsertUserCanvasProject(userID string, raw json.RawMessage) (U
 	if err := validateStructuredStorageQuotaWithPolicy(usage, "canvas", errors.Is(existingErr, gorm.ErrRecordNotFound), int64(len(raw))-existingBytes, policy.Resource); err != nil {
 		return UserDataSummary{}, err
 	}
-	if err := s.repo.UpsertCanvasProject(&project); err != nil {
+	accepted, err := s.repo.UpsertCanvasProject(&project)
+	if err != nil {
 		return UserDataSummary{}, err
+	}
+	if !accepted {
+		return UserDataSummary{}, NewAppError(http.StatusConflict, "画布已在其他页面更新，请刷新后继续编辑")
 	}
 	if existingErr != nil || existing.PayloadJSON != project.PayloadJSON || existing.Title != project.Title {
 		s.recordActivity(userID, "canvas", 1)

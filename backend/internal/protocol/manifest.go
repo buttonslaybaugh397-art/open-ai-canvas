@@ -422,7 +422,8 @@ func (a manifestAdapter) parse(payload map[string]any, c PollContext) CreateResu
 	if id == "" {
 		id = c.TaskID
 	}
-	status := normalizeStatus(firstPathValue(payload, a.manifest.Response.StatusPaths...))
+	rawStatus := firstPathValue(payload, a.manifest.Response.StatusPaths...)
+	status := normalizeStatus(rawStatus)
 	if status == "" {
 		status = StatusPending
 	}
@@ -449,7 +450,9 @@ func (a manifestAdapter) parse(payload map[string]any, c PollContext) CreateResu
 			}
 		}
 	}
-	if status == StatusPending && (result.Text != "" || len(result.Images) > 0 || len(result.Videos) > 0 || len(result.Audios) > 0) {
+	// Only status-less synchronous responses may infer completion from a result.
+	// Async providers can include partial or stale result fields before success.
+	if rawStatus == "" && status == StatusPending && !manifestError(payload, a.manifest.Response.ErrorPaths...) && (result.Text != "" || len(result.Images) > 0 || len(result.Videos) > 0 || len(result.Audios) > 0) {
 		status = StatusSucceeded
 	}
 	if result.Text == "" && result.Reasoning == "" && len(result.Images) == 0 && len(result.Videos) == 0 && len(result.Audios) == 0 {

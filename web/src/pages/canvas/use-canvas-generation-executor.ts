@@ -9,7 +9,7 @@ import { isGenerationTaskCapacityError } from "@/lib/canvas/canvas-generation-ba
 import { buildPortraitTexturePrompt } from "@/lib/canvas/canvas-portrait-texture";
 import { resolveCanvasStyleExecution } from "@/lib/canvas/canvas-style-execution";
 import { generationErrorMessage, generationFailureMetadata } from "@/lib/generation-error";
-import { modelCompatibilityError, modelGroupReferenceLimits, modelRequestOptions, type ModelRequirements } from "@/lib/model-selection";
+import { modelCompatibilityError, modelGroupReferenceLimits, modelPromptLengthError, modelRequestOptions, type ModelRequirements } from "@/lib/model-selection";
 import { navigateToSettings } from "@/lib/settings-navigation";
 import type { Skill } from "@/services/api/skills";
 import { skillRuntime } from "@/services/skill-runtime";
@@ -199,6 +199,11 @@ export function useCanvasGenerationExecutor({
                         generationConfig = { ...generationConfig, audioVoice: voice.voiceKey, audioInstructions: [voice.instructions, generationConfig.audioInstructions].filter(Boolean).join("；") };
                     }
                     if (!effectivePrompt && (mode === "text" || mode === "audio")) {
+                        return;
+                    }
+                    const promptLengthError = mode === "video" ? modelPromptLengthError(generationConfig, generationConfig.model, mode, effectivePrompt) : "";
+                    if (promptLengthError) {
+                        message.error(promptLengthError);
                         return;
                     }
 

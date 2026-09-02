@@ -15,7 +15,31 @@ description: 影策后端核心持久化表与状态边界
 
 容器内命令 `migrate-schema up` 应用缺失迁移，`migrate-schema status` 输出当前和期望版本，`migrate-schema verify` 只检查兼容性。`CANVAS_AUTO_MIGRATE=true` 仅用于开发和旧部署兼容；受管生产部署设置为 `false`，并由 Compose 的一次性 `migrate` 服务先完成迁移。后续迁移必须新增版本，不得修改已经发布迁移的实现或校验和。
 
-当前结构版本为 2。版本 2 为 `schema_migrations.applied_at` 增加 `idx_schema_migrations_applied_at` 索引，用于验证在线更新中的顺序迁移、事务提交和版本健康检查。
+当前结构版本为 7。版本 2 为 `schema_migrations.applied_at` 增加 `idx_schema_migrations_applied_at` 索引；版本 3 增加团队、成员和团队素材租户字段，升级时按历史团队素材的上传者分别创建私有团队并迁移素材、目录和资源引用；版本 4 增加团队描述、素材数量配额和存储配额，并为已有团队回填 5000 个素材与 100 GB 默认值；版本 5 增加团队操作审计表及团队时间索引；版本 6 增加一次性团队邀请表；版本 7 为 `resources` 增加 `upload_key` 和 `(user_id, upload_key)` 唯一索引，使同一账号的资源上传可安全重试。
+
+## 团队素材库
+
+| 表 | 用途 | 关键边界 |
+| --- | --- | --- |
+| `teams` | 保存团队身份、描述、创建者和配额 | 团队是素材共享的租户边界；平台管理员不会自动成为任意团队成员；默认限制为 5000 个素材与 100 GB 存储 |
+| `team_members` | 保存用户在团队中的角色和成员状态 | `(team_id, user_id)` 唯一；只有 `active` 成员可读取团队素材，移除后标记为 `removed`，再次添加会原位激活；`owner/admin/editor` 可共享个人素材 |
+| `team_assets` | 保存由个人素材创建的团队快照 | 所有查询和写入必须携带 `team_id`；`(team_id, source_asset_id)` 唯一，浏览器不能提交任意完整素材 JSON |
+| `team_asset_folders` | 保存团队内的素材目录 | 目录读取、重命名和删除均按 `team_id` 限定；删除目录只把素材移回根目录 |
+| `team_asset_resources` | 保存团队素材引用的资源 | 只向仍为活跃成员的请求者扩展资源读取权限，不扩展上传、删除或管理权限 |
+| `team_audit_events` | 保存团队关键操作的只增审计事件 | 按 `team_id` 隔离且仅 owner/admin 可查询；只记录动作、有限摘要和目标 ID，不保存素材正文、资源 URL、Cookie 或密钥 |
+| `team_invitations` | 保存待接受的团队邀请 | 仅保存 SHA-256 Token 哈希、角色、邀请人、到期/消费/撤销时间；完整 Token 只在创建响应中返回一次，不进入数据库或审计摘要 |
+
+团队成员由 `GET/POST /api/teams/:teamId/members` 与 `PATCH/DELETE /api/teams/:teamId/members/:userId` 管理。所有活跃成员可查看成员列表；所有者可任命或移除管理员，管理员只能管理编辑者和查看者。所有者不能被降级、移除或自行退出，避免形成无所有者团队。
+
+团队邀请由 `GET/POST /api/teams/:teamId/invitations` 与 `DELETE /api/teams/:teamId/invitations/:id` 管理；owner/admin 可创建限时邀请，管理员不能邀请管理员。`GET /api/team-invitations/:token` 只返回团队名、角色、到期时间和可用状态；登录用户通过 `POST /api/team-invitations/:token/accept` 在单一事务中消费邀请、激活成员关系并写入审计事件，过期、撤销、已消费和重复成员均拒绝。
+
+共享流程只接受当前用户个人 `assetIds`，后端校验素材归属和资源归属后创建团队快照。活跃成员（包括 `viewer`）可调用“复制到我的素材”：文本内容创建新的个人素材记录，媒体资源同时复制为当前用户拥有的新对象和 Resource 记录，并重写素材中的 `resource:` storage key 与 `/api/resources/:id/file` URL。同批素材引用同一资源时只复制一次。
+
+团队详情提供活跃成员数、素材数和存储量。存储量按团队素材引用的唯一 `resource_id` 汇总 `resources.size`，多个素材重复引用同一资源只计费一次。所有活跃成员可查看使用量，只有 `owner` 可修改名称、描述和配额；配额不能低于当前用量。批量共享在锁定团队行的单一事务中写入全部快照和资源引用，并在提交前检查最终用量，任一配额超限时整批回滚。
+
+团队设置、成员、素材和目录写操作与对应 `team_audit_events` 在同一事务提交。`GET /api/teams/:teamId/audit-events` 使用 `created_at DESC, id DESC` 稳定分页，非管理角色与非成员统一拒绝，避免通过审计记录推断其他团队内容。
+
+复制会在写入前检查个人素材数量、结构化数据、每日上传量和文件总容量；个人素材事务失败时回收本次创建的资源记录和物理对象。取消共享、移除成员或归档团队不删除原个人素材，也不影响已经物化的个人副本。
 
 ## 账号认证与密码找回
 
@@ -124,8 +148,10 @@ description: 影策后端核心持久化表与状态边界
 
 | 表 | 用途 | 关键边界 |
 | --- | --- | --- |
-| `resources` | 保存资源元数据和实际存储位置引用 | S3 资源必须通过 `storage_setting_id` 固定绑定创建时的位置；浏览器默认经同源接口读取 |
+| `resources` | 保存资源元数据和实际存储位置引用 | S3 资源必须通过 `storage_setting_id` 固定绑定创建时的位置；`upload_key` 保存客户端上传身份的摘要，并与 `user_id` 组成唯一索引；浏览器默认经同源接口读取 |
 | `storage_locations` | 保存平台或个人 S3 位置版本、加密凭据和连接测试摘要 | Endpoint、Bucket、Region、PathStyle、PathPrefix、Provider 组成不可变位置；同位置只轮换凭据，位置变化创建新记录 |
 | `resource_deletion_jobs` | 在业务记录删除后可靠清理物理对象 | 固化资源的存储位置与对象键；删除失败保留任务并重试，S3 404 按幂等成功处理 |
 
 `storage_locations.value_json` 中的 Secret Key 和 Session Token 使用后端设置密钥加密。启用 S3 前，关键位置字段和凭据摘要必须与最近一次 Put、Range Get、Delete 连接测试结果一致；历史资源继续按绑定的位置读取和删除，不随当前配置切换。
+
+资源上传和 URL 导入可携带 `X-Idempotency-Key`。后端只保存该值的 SHA-256 摘要：同一账号重复提交已完成上传时返回原资源，上传中返回可重试冲突，失败记录允许原子抢占后沿用原 `object_key` 重试；不同账号可复用同一客户端身份。

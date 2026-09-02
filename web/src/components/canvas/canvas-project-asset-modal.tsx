@@ -12,11 +12,11 @@ import { useAssetStore, type Asset } from "@/stores/use-asset-store";
 const categoryLabels: Record<string, string> = { all: "全部资产", character: "角色", environment: "场景", wardrobe: "服饰", prop: "道具", weapon: "武器", style: "画风", other: "其他" };
 type ProjectPickerItem = { id: string; category: string; folderId?: string; project?: ProjectAsset; character?: ProjectAsset; media?: Asset };
 
-export function CanvasProjectAssetModal({ open, detail, initialCategory = "all", initialFolderId = "all", onClose, onInsert, onInsertFolder }: { open: boolean; detail?: ProjectDetail; initialCategory?: string; initialFolderId?: string; onClose: () => void; onInsert: (payloads: InsertAssetPayload[]) => Promise<void> | void; onInsertFolder?: (folderId: string) => Promise<void> | void }) {
+export function CanvasProjectAssetModal({ open, detail, initialCategory = "all", initialFolderId = "all", teamAssetKinds, onClose, onInsert, onInsertFolder }: { open: boolean; detail?: ProjectDetail; initialCategory?: string; initialFolderId?: string; teamAssetKinds?: Array<"text" | "image" | "video" | "audio">; onClose: () => void; onInsert: (payloads: InsertAssetPayload[]) => Promise<void> | void; onInsertFolder?: (folderId: string) => Promise<void> | void }) {
     const mediaAssets = useAssetStore((state) => state.assets);
     const externalAssetSources = useExternalAssetSources(open);
     const items = useMemo<ProjectPickerItem[]>(() => {
-        const mediaById = new Map(mediaAssets.map((asset) => [asset.id, asset]));
+        const mediaById = new Map(mediaAssets.filter((asset) => asset.status !== "archived").map((asset) => [asset.id, asset]));
         const projectItems = (detail?.assets || []).flatMap((asset): ProjectPickerItem[] => {
             if (asset.category === "character" && asset.character) return [{ id: asset.id, category: "character", folderId: asset.folderId, project: asset, character: asset }];
             const media = mediaById.get(asset.id);
@@ -25,7 +25,7 @@ export function CanvasProjectAssetModal({ open, detail, initialCategory = "all",
         if (detail) return projectItems;
         // 自由画布未关联项目时回退到个人素材库。
         return mediaAssets
-            .filter((asset) => asset.kind !== "model" && asset.kind !== "entity")
+            .filter((asset) => asset.status !== "archived" && asset.kind !== "model" && asset.kind !== "entity")
             .map((media): ProjectPickerItem => ({ id: media.id, category: media.category || "other", media }));
     }, [detail?.assets, mediaAssets]);
     const localPickerItems = useMemo<AssetLibraryPickerItem[]>(() => items.map((item) => {
@@ -63,6 +63,7 @@ export function CanvasProjectAssetModal({ open, detail, initialCategory = "all",
             initialFolderId={initialFolderId}
             folders={externalAssetSources.folders}
             folderActionSource="local"
+            teamAssetKinds={teamAssetKinds}
             title="项目资产"
             confirmLabel={(count) => `引入已选资产${count ? `（${count}）` : ""}`}
             emptyTitle="此分类没有可引用资产"
@@ -70,10 +71,13 @@ export function CanvasProjectAssetModal({ open, detail, initialCategory = "all",
             footerNote={externalAssetSources.error || "角色引用会在生成时解析当前角色版本"}
             onFolderAction={onInsertFolder ? async (folderId) => { await onInsertFolder(folderId); onClose(); } : undefined}
             onClose={onClose}
-            onConfirm={async (ids) => {
+            onConfirm={async (ids, { materializedAssets }) => {
+                const materializedById = new Map(materializedAssets.map((asset) => [asset.id, asset]));
                 const payloads = await Promise.all(ids.map(async (id) => {
                     const external = externalAssetSources.items.find((item) => item.id === id)?.external;
                     if (external) return externalAssetToInsertPayload(external);
+                    const imported = materializedById.get(id);
+                    if (imported) return toInsertPayload({ id: imported.id, category: imported.category || "other", media: imported });
                     const item = items.find((candidate) => candidate.id === id);
                     if (!item) throw new Error("所选资产已不存在，请重新选择");
                     if (item.media || item.character || !item.project) return toInsertPayload(item);

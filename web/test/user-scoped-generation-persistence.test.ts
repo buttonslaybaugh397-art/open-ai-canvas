@@ -14,7 +14,7 @@ import { ASSET_STORE_KEY, flushAssetStorePersistence, useAssetStore, type Asset,
 import { withGenerationAssetStorageLock } from "../src/services/generation-asset-repository";
 import { CANVAS_STORE_KEY, flushCanvasStorePersistence, useCanvasStore, withCanvasStorePersistenceLock, withCanvasStorePersistenceSuppressed, type CanvasProject } from "../src/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasAssistantSession, type CanvasConnection, type CanvasNodeData } from "../src/types/canvas";
-import { deleteAssetWithRemoteSync, deleteCanvasProjectsWithRemoteSync, installRemoteUserDataAutoSync, resetRemoteUserDataSync, saveRemoteUserDataNow, syncRemoteUserData, withRemoteUserDataSyncExclusive } from "../src/services/user-data-sync";
+import { deleteAssetWithRemoteSync, deleteCanvasProjectsWithRemoteSync, installRemoteUserDataAutoSync, mergeRemoteHydrationEntities, resetRemoteUserDataSync, saveRemoteUserDataNow, syncRemoteUserData, withRemoteUserDataSyncExclusive } from "../src/services/user-data-sync";
 import { apiClient } from "../src/services/api/request";
 import { useUserStore } from "../src/stores/use-user-store";
 
@@ -4235,6 +4235,121 @@ test("login replaces stale local entities instead of resurrecting remote deletio
     } finally {
         resetRemoteUserDataSync();
         useCanvasStore.setState({ projects: previousProjects });
+        localforage.getItem = originalGetItem;
+        localforage.setItem = originalSetItem;
+        apiClient.defaults.adapter = previousAdapter;
+        if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
+        else Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+    }
+});
+
+test("remote hydration preserves only entities changed while the snapshot request is in flight", () => {
+    const unchangedAtStart = storedCanvasProject("canvas-remote-deleted", "服务端已删除");
+    const localAtStart = storedCanvasProject("canvas-editing", "远端旧标题");
+    const remote = { ...localAtStart, title: "远端快照" };
+    const localNode: CanvasNodeData = {
+        id: "node-added-during-hydration",
+        type: CanvasNodeType.Text,
+        title: "请求期间新增",
+        position: { x: 20, y: 30 },
+        width: 320,
+        height: 180,
+        metadata: { content: "不能被旧快照覆盖" },
+    };
+    const currentLocal = { ...localAtStart, nodes: [localNode], updatedAt: "2026-08-14T00:00:01.000Z" };
+
+    expect(mergeRemoteHydrationEntities([remote], [localAtStart, unchangedAtStart], [currentLocal, unchangedAtStart])).toEqual([currentLocal]);
+});
+
+test("remote hydration keeps a newer durable local revision without reviving a remote deletion", () => {
+    const remote = storedCanvasProject("canvas-refresh-window", "远端旧版本");
+    const newerLocal = {
+        ...remote,
+        title: "刷新前已落本地缓存",
+        updatedAt: "2026-08-14T00:00:02.000Z",
+    };
+    const remotelyDeleted = {
+        ...storedCanvasProject("canvas-remotely-deleted", "不能复活"),
+        updatedAt: "2026-08-14T00:00:03.000Z",
+    };
+
+    expect(mergeRemoteHydrationEntities([remote], [newerLocal, remotelyDeleted], [newerLocal, remotelyDeleted])).toEqual([newerLocal]);
+});
+
+test("canvas edits made during remote hydration survive and remain eligible for upload", async () => {
+    const originalWindow = (globalThis as { window?: unknown }).window;
+    const originalGetItem = localforage.getItem.bind(localforage);
+    const originalSetItem = localforage.setItem.bind(localforage);
+    const previousAdapter = apiClient.defaults.adapter;
+    const previousProjects = useCanvasStore.getState().projects;
+    const indexedValues = new Map<string, string>();
+    const remoteProject = storedCanvasProject("canvas-hydration-edit", "远端版本");
+    const remoteWrites: CanvasProject[] = [];
+    let releaseSnapshot!: () => void;
+    const snapshotReleased = new Promise<void>((resolve) => {
+        releaseSnapshot = resolve;
+    });
+    let snapshotStartedResolve!: () => void;
+    const snapshotStarted = new Promise<void>((resolve) => {
+        snapshotStartedResolve = resolve;
+    });
+
+    Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: {
+            setTimeout: () => 1,
+            clearTimeout: () => undefined,
+            localStorage: { getItem: () => null, setItem: () => undefined, removeItem: () => undefined },
+        },
+    });
+    localforage.getItem = (async (key: string) => indexedValues.get(key) ?? null) as typeof localforage.getItem;
+    localforage.setItem = (async (key: string, value: string) => {
+        indexedValues.set(key, value);
+        return value;
+    }) as typeof localforage.setItem;
+    apiClient.defaults.adapter = async (config) => {
+        const url = String(config.url || "");
+        const method = String(config.method || "get").toLowerCase();
+        if (url.includes("user-data/snapshot")) {
+            snapshotStartedResolve();
+            await snapshotReleased;
+            return { data: { code: 0, data: { projects: [remoteProject], assets: [] }, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
+        }
+        if (method === "put" && url === `/canvas-projects/${remoteProject.id}`) {
+            const body = typeof config.data === "string" ? JSON.parse(config.data) : config.data;
+            remoteWrites.push(body.project as CanvasProject);
+            return { data: { code: 0, data: { project: body.project }, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
+        }
+        throw new Error(`unexpected request: ${method} ${url}`);
+    };
+
+    try {
+        resetRemoteUserDataSync();
+        useCanvasStore.getState().replaceProjects([remoteProject]);
+        const hydration = syncRemoteUserData("account-hydration-edit");
+        await snapshotStarted;
+        const localNode: CanvasNodeData = {
+            id: "node-kept-after-hydration",
+            type: CanvasNodeType.Text,
+            title: "刚添加的节点",
+            position: { x: 10, y: 10 },
+            width: 320,
+            height: 180,
+            metadata: { content: "本地新内容" },
+        };
+        useCanvasStore.getState().updateProject(remoteProject.id, { nodes: [localNode] });
+        releaseSnapshot();
+        await hydration;
+
+        expect(useCanvasStore.getState().openProject(remoteProject.id)?.nodes).toEqual([localNode]);
+        await saveRemoteUserDataNow();
+        expect(remoteWrites).toHaveLength(1);
+        expect(remoteWrites[0]?.nodes).toEqual([localNode]);
+    } finally {
+        releaseSnapshot();
+        resetRemoteUserDataSync();
+        useCanvasStore.getState().replaceProjects(previousProjects);
+        await flushCanvasStorePersistence();
         localforage.getItem = originalGetItem;
         localforage.setItem = originalSetItem;
         apiClient.defaults.adapter = previousAdapter;

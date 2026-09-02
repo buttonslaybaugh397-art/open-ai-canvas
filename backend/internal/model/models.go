@@ -25,6 +25,8 @@ type ProjectUnitKind string
 type ProjectUnitStatus string
 type AssetCategory string
 type AssetVersionStatus string
+type TeamMemberRole string
+type TeamMemberStatus string
 type WorkflowStatus string
 type WorkflowStepStatus string
 
@@ -83,6 +85,7 @@ const (
 	ChannelInterfaceHuiQuYunVideo         ChannelInterfaceType = "huiquyun-video"
 	ChannelInterfaceAIStarsLabImage       ChannelInterfaceType = "aistarslab-image"
 	ChannelInterfaceAIStarsLabVideo       ChannelInterfaceType = "aistarslab-video"
+	ChannelInterfaceWeijinVideo           ChannelInterfaceType = "weijin-video"
 	ChannelInterfaceXAIVideo              ChannelInterfaceType = "xai-video"
 	ChannelInterfaceVolcengineArkVideo    ChannelInterfaceType = "volcengine-ark-video"
 	ChannelInterfaceVolcengineJiMengVideo ChannelInterfaceType = "volcengine-jimeng-video"
@@ -165,6 +168,14 @@ const (
 	AssetVersionStatusReview    AssetVersionStatus = "review"
 	AssetVersionStatusConfirmed AssetVersionStatus = "confirmed"
 	AssetVersionStatusArchived  AssetVersionStatus = "archived"
+
+	TeamMemberRoleOwner  TeamMemberRole = "owner"
+	TeamMemberRoleAdmin  TeamMemberRole = "admin"
+	TeamMemberRoleEditor TeamMemberRole = "editor"
+	TeamMemberRoleViewer TeamMemberRole = "viewer"
+
+	TeamMemberStatusActive  TeamMemberStatus = "active"
+	TeamMemberStatusRemoved TeamMemberStatus = "removed"
 
 	WorkflowStatusActive    WorkflowStatus = "active"
 	WorkflowStatusCompleted WorkflowStatus = "completed"

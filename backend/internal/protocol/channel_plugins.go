@@ -37,6 +37,14 @@ func BundledHostManifests() []Manifest {
 			"https://api.video.aistarslab.com/openapi",
 			[]string{"aistarslab-image", "aistarslab-video"},
 		),
+		bundledChannelManifest(
+			"weijin-channel",
+			"维今 ONE API 渠道",
+			"维今 ONE API",
+			"维今 ONE 视频生成渠道，支持动态模型能力、全模态参考素材和严格任务状态。",
+			"https://www.weijinapi.top",
+			[]string{"weijin-video"},
+		),
 	}
 }
 
@@ -53,14 +61,119 @@ func BundledHostProviderIDs() map[string]struct{} {
 func customChannelAdapters() []Adapter {
 	items := customChannelMetadata()
 	result := make([]Adapter, 0, len(items))
-	result = append(result, aiStarsLabImageAdapter(), aiStarsLabVideoAdapter())
+	result = append(result, aiStarsLabImageAdapter(), aiStarsLabVideoAdapter(), weijinVideoAdapter())
 	for _, info := range items {
-		if info.ID == "aistarslab-image" || info.ID == "aistarslab-video" {
+		if info.ID == "aistarslab-image" || info.ID == "aistarslab-video" || info.ID == "weijin-video" {
 			continue
 		}
 		result = append(result, builtinAdapter{info: info})
 	}
 	return result
+}
+
+func weijinVideoAdapter() Adapter {
+	info := customChannelMetadataByIDMust("weijin-video")
+	return builtinAdapter{
+		info: info,
+		create: func(request GenerationRequest) (RequestSpec, error) {
+			body := map[string]any{
+				"model":        strings.TrimSpace(request.Model),
+				"prompt":       strings.TrimSpace(request.Prompt),
+				"seconds":      request.Duration,
+				"aspect_ratio": strings.TrimSpace(request.AspectRatio),
+			}
+			if resolution := weijinRequestResolution(request.Model, defaultValue(request.Resolution, request.Quality)); resolution != "" {
+				body["resolution"] = resolution
+			}
+			if values := mediaValues(request.Images); len(values) > 0 {
+				body["images"] = values
+			}
+			if values := mediaValues(request.Videos); len(values) > 0 {
+				body["videos"] = values
+			}
+			if values := mediaValues(request.Audios); len(values) > 0 {
+				body["audios"] = values
+			}
+			return jsonSpec(http.MethodPost, "/v1/videos", compactMap(body)), nil
+		},
+		parseCreate: weijinCreateResult,
+		poll: func(c PollContext) (RequestSpec, error) {
+			return RequestSpec{Method: http.MethodGet, Path: "/v1/videos/" + url.PathEscape(c.TaskID)}, nil
+		},
+		parsePoll: weijinPollResult,
+	}
+}
+
+func weijinRequestResolution(modelID, resolution string) string {
+	resolution = strings.TrimSpace(resolution)
+	if resolution == "" || strings.EqualFold(resolution, "auto") {
+		return ""
+	}
+	normalizedModel := strings.ToLower(strings.TrimSpace(modelID))
+	for _, marker := range []string{"480p", "720p", "1080p", "2160p", "4k"} {
+		if strings.Contains(normalizedModel, marker) {
+			return ""
+		}
+	}
+	return resolution
+}
+
+func weijinStatus(payload map[string]any) (Status, error) {
+	raw := strings.ToLower(strings.TrimSpace(firstString(payload, "status")))
+	switch raw {
+	case "queued":
+		return StatusPending, nil
+	case "in_progress":
+		return StatusProcessing, nil
+	case "completed":
+		return StatusSucceeded, nil
+	case "failed":
+		return StatusFailed, nil
+	default:
+		return "", fmt.Errorf("Weijin response has unknown status %q", raw)
+	}
+}
+
+func weijinTaskID(payload map[string]any) string {
+	return firstString(payload, "task_id", "id")
+}
+
+func weijinFailureMessage(payload map[string]any) string {
+	if failure := object(payload["error"]); failure != nil {
+		return firstString(failure, "message", "code")
+	}
+	return firstString(payload, "message", "error")
+}
+
+func weijinCreateResult(payload map[string]any) (CreateResult, error) {
+	id := weijinTaskID(payload)
+	if id == "" {
+		return CreateResult{}, fmt.Errorf("Weijin response has no task id")
+	}
+	status, err := weijinStatus(payload)
+	if err != nil {
+		return CreateResult{}, err
+	}
+	return CreateResult{TaskID: id, Status: status, Message: weijinFailureMessage(payload)}, nil
+}
+
+func weijinPollResult(c PollContext, payload map[string]any) (PollResult, error) {
+	status, err := weijinStatus(payload)
+	if err != nil {
+		return PollResult{}, err
+	}
+	id := defaultValue(weijinTaskID(payload), c.TaskID)
+	if status == StatusFailed {
+		return PollResult{TaskID: id, Status: status, Message: weijinFailureMessage(payload)}, nil
+	}
+	if status != StatusSucceeded {
+		return PollResult{TaskID: id, Status: status}, nil
+	}
+	resultURL := firstString(payload, "result_url", "video_url", "url", "content")
+	if resultURL == "" {
+		return PollResult{}, fmt.Errorf("Weijin task %s completed without a result URL", id)
+	}
+	return PollResult{TaskID: id, Status: status, Result: &Result{Videos: []MediaReference{{URL: resultURL, Kind: string(CapabilityVideo), Ephemeral: true}}}}, nil
 }
 
 func aiStarsLabImageAdapter() Adapter {
@@ -225,6 +338,9 @@ func aiStarsLabCreate(payload map[string]any) (CreateResult, error) {
 }
 
 func aiStarsLabPollResult(c PollContext, payload map[string]any) (PollResult, error) {
+	if message := aiStarsLabResponseFailure(payload); message != "" {
+		return PollResult{TaskID: defaultValue(aiStarsLabTaskIDFromPayload(payload), c.TaskID), Status: StatusFailed, Message: message}, nil
+	}
 	status, message := aiStarsLabStatus(payload)
 	id := defaultValue(aiStarsLabTaskIDFromPayload(payload), c.TaskID)
 	if status == StatusFailed {
@@ -280,12 +396,25 @@ func customChannelMetadata() []Metadata {
 	aiStarsLabVideo := metadata("aistarslab-video", "AIStarsLab 视频", "AIStarsLab", CapabilityVideo, "POST /generation/create/video", "GET /generation/status?taskId={task_id}", "application/json")
 	aiStarsLabVideo.Parameters = videoParams()
 	aiStarsLabVideo.RequiresPublicMediaURLs = true
+	weijinVideo := metadata("weijin-video", "维今 ONE 视频", "维今 ONE API", CapabilityVideo, "POST /v1/videos", "GET /v1/videos/{task_id}", "application/json")
+	weijinVideo.Parameters = []Parameter{
+		{Name: "model", Type: "string", Required: true, Mapping: "model"},
+		{Name: "prompt", Type: "string", Required: true, Mapping: "prompt"},
+		{Name: "duration", Type: "integer", Mapping: "seconds"},
+		{Name: "aspectRatio", Type: "string", Mapping: "aspect_ratio"},
+		{Name: "resolution", Type: "string", Mapping: "resolution"},
+		{Name: "images", Type: "media[]", Mapping: "images"},
+		{Name: "videos", Type: "media[]", Mapping: "videos"},
+		{Name: "audios", Type: "media[]", Mapping: "audios"},
+	}
+	weijinVideo.RequiresPublicMediaURLs = true
 	return []Metadata{
 		globalImage,
 		globalVideo,
 		huiQuYunVideo,
 		aiStarsLabImage,
 		aiStarsLabVideo,
+		weijinVideo,
 	}
 }
 
@@ -307,7 +436,7 @@ func bundledChannelManifest(id, name, vendor, description, baseURL string, provi
 			Parameters:              info.Parameters,
 			Create:                  manifestOperation(info.Create),
 			Poll:                    manifestOperationPtr(info.Poll),
-			Response:                aiStarsLabManifestResponse(info.ID),
+			Response:                bundledChannelManifestResponse(info.ID),
 		}
 		if info.ID == "aistarslab-image" {
 			provider.Create.Fields = map[string]string{
@@ -332,6 +461,17 @@ func bundledChannelManifest(id, name, vendor, description, baseURL string, provi
 				"inputVideos": "request.videos|media_urls",
 				"inputAudios": "request.audios|media_urls",
 			}
+		} else if info.ID == "weijin-video" {
+			provider.Create.Fields = map[string]string{
+				"model":        "request.model",
+				"prompt":       "request.prompt",
+				"seconds":      "request.duration|int",
+				"aspect_ratio": "request.aspectRatio|omit_empty",
+				"resolution":   "request.resolution|omit_auto",
+				"images":       "request.images|media_urls",
+				"videos":       "request.videos|media_urls",
+				"audios":       "request.audios|media_urls",
+			}
 		}
 		providers = append(providers, provider)
 	}
@@ -353,7 +493,14 @@ func bundledChannelManifest(id, name, vendor, description, baseURL string, provi
 	}
 }
 
-func aiStarsLabManifestResponse(providerID string) ManifestResponse {
+func bundledChannelManifestResponse(providerID string) ManifestResponse {
+	if providerID == "weijin-video" {
+		return ManifestResponse{
+			TaskIDPaths: []string{"task_id", "id"}, StatusPaths: []string{"status"},
+			MessagePaths:   []string{"error.message", "error.code", "message"},
+			ResultURLPaths: []string{"result_url", "video_url", "url", "content"}, ResultKind: "video", ResultEphemeral: true,
+		}
+	}
 	response := ManifestResponse{
 		TaskIDPaths:  []string{"data.taskId", "data.task_id", "taskId", "task_id", "id"},
 		StatusPaths:  []string{"data.status", "status"},

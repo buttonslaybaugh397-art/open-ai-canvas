@@ -394,6 +394,38 @@ func TestDeclarativeManifestMapsFieldsAndResponses(t *testing.T) {
 	}
 }
 
+func TestDeclarativeManifestPreservesProcessingAndFailureStates(t *testing.T) {
+	manifest := []byte(`{
+		"apiVersion":"yingce.plugin/v1",
+		"id":"stateful-video","version":"1.0.0","name":"Stateful Video","author":"Test","documentation":"# Stateful Video",
+		"contributes":{"providers":[{"id":"stateful-video","label":"Stateful Video","capabilities":["video"],"scopes":["canvas"],"create":{"method":"POST","path":"/tasks"},"poll":{"method":"GET","path":"/tasks/{{taskId}}"},"response":{"taskIdPaths":["data.id"],"statusPaths":["data.status"],"errorPaths":["code"],"messagePaths":["data.message"],"resultPaths":["data.results"],"resultKind":"video"}}]}
+	}`)
+	adapter, err := LoadManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processing, err := adapter.ParsePoll(context.Background(), PollContext{TaskID: "task-1"}, []byte(`{"code":0,"data":{"id":"task-1","status":"GENERATING","results":[{"url":"https://cdn.example/partial.mp4"}]}}`))
+	if err != nil || processing.Status != StatusProcessing {
+		t.Fatalf("processing = %#v, err = %v", processing, err)
+	}
+	numericProcessing, err := adapter.ParsePoll(context.Background(), PollContext{TaskID: "task-1"}, []byte(`{"code":0,"data":{"id":"task-1","status":2,"results":[{"url":"https://cdn.example/partial.mp4"}]}}`))
+	if err != nil || numericProcessing.Status != StatusProcessing {
+		t.Fatalf("numeric processing = %#v, err = %v", numericProcessing, err)
+	}
+	failed, err := adapter.ParsePoll(context.Background(), PollContext{TaskID: "task-1"}, []byte(`{"code":0,"data":{"id":"task-1","status":"FAIL","message":"provider rejected the task","results":[{"url":"https://cdn.example/stale.mp4"}]}}`))
+	if err != nil || failed.Status != StatusFailed || failed.Message != "provider rejected the task" {
+		t.Fatalf("failed = %#v, err = %v", failed, err)
+	}
+	unknown, err := adapter.ParsePoll(context.Background(), PollContext{TaskID: "task-1"}, []byte(`{"code":0,"data":{"id":"task-1","status":"PROVIDER_CUSTOM_STATE","results":[{"url":"https://cdn.example/stale.mp4"}]}}`))
+	if err != nil || unknown.Status == StatusSucceeded {
+		t.Fatalf("unknown state must not become successful: %#v, err = %v", unknown, err)
+	}
+	numericFailed, err := adapter.ParsePoll(context.Background(), PollContext{TaskID: "task-1"}, []byte(`{"code":0,"data":{"id":"task-1","status":4,"message":"provider failed","results":[{"url":"https://cdn.example/stale.mp4"}]}}`))
+	if err != nil || numericFailed.Status != StatusFailed {
+		t.Fatalf("numeric failure with stale output = %#v, err = %v", numericFailed, err)
+	}
+}
+
 func TestDeclarativeManifestSupportsMediaPathsTransformsAndErrors(t *testing.T) {
 	manifest := []byte(`{
 		"apiVersion":"yingce.plugin/v1",

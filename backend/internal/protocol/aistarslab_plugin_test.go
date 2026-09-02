@@ -61,6 +61,10 @@ func TestAIStarsLabAdapterParsesNumericStatusAndOutputs(t *testing.T) {
 	if err != nil || failed.Status != StatusFailed || failed.Message != "quota exceeded" {
 		t.Fatalf("failed = %#v, err = %v", failed, err)
 	}
+	failedCode, err := video.ParsePoll(context.Background(), PollContext{TaskID: created.TaskID}, []byte(`{"code":"UPSTREAM_FAILED","msg":"content rejected","data":{"taskId":"task-1","status":3,"outputs":["https://cdn.example/stale.mp4"]}}`))
+	if err != nil || failedCode.Status != StatusFailed || failedCode.Message != "content rejected" {
+		t.Fatalf("failed code = %#v, err = %v", failedCode, err)
+	}
 }
 
 func TestAIStarsLabBundledManifestContainsResponseMapping(t *testing.T) {

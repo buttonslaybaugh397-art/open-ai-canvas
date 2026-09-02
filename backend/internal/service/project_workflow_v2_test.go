@@ -72,8 +72,8 @@ func TestRegisterTaskOutputFromTaskPersistsMediaAssetAndArtifactIdempotently(t *
 		t.Fatal(err)
 	}
 	for table, query := range map[string]string{
-		"assets":                "id = 'workflow-asset-workflow-video-task-1'",
-		"project_asset_links":   "asset_id = 'workflow-asset-workflow-video-task-1'",
+		"assets":                "id = '" + workflowGeneratedEntityID("asset", task.ID) + "'",
+		"project_asset_links":   "asset_id = '" + workflowGeneratedEntityID("asset", task.ID) + "'",
 		"asset_representations": "task_id = 'workflow-video-task-1' AND role = 'output'",
 		"shot_artifacts":        "task_id = 'workflow-video-task-1' AND type = 'video'",
 	} {

@@ -124,7 +124,7 @@ export default function CreditConsumptionPage() {
     const periodDays = Math.max(1, range[1].startOf("day").diff(range[0].startOf("day"), "day") + 1);
     const trend = useMemo(() => (data?.trend || []).map((item) => ({ ...item, credits: item.totalMicrocredits / creditScale })), [data?.trend]);
     const activeDays = trend.filter((item) => item.totalMicrocredits > 0).length;
-    const peakDay = trend.reduce<(typeof trend)[number] | null>((peak, item) => (!peak || item.totalMicrocredits > peak.totalMicrocredits ? item : peak), null);
+    const peakDay = trend.reduce<(typeof trend)[number] | null>((peak, item) => item.totalMicrocredits <= 0 ? peak : (!peak || item.totalMicrocredits > peak.totalMicrocredits ? item : peak), null);
     const dailyAverage = safeDivide(periodTotal, periodDays);
     const orderAverage = safeDivide(periodTotal, summary?.settledOrders || 0);
     const userAverage = safeDivide(periodTotal, summary?.consumingUsers || 0);

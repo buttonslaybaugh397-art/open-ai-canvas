@@ -15,6 +15,7 @@ const PAGE_TITLES: Record<string, string> = {
     canvas: "画布",
     tasks: "任务",
     assets: "素材",
+    teams: "团队",
     skills: "技能库",
     wallet: "积分中心",
     settings: "设置",

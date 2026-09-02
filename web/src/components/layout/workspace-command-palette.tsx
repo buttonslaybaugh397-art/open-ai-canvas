@@ -33,6 +33,7 @@ export function WorkspaceCommandPalette({ open, onClose }: { open: boolean; onCl
             toolEntry("canvas", "/canvas"),
             ...(features.taskCenterEnabled ? [toolEntry("tasks", "/tasks")] : []),
             toolEntry("assets", "/assets"),
+            toolEntry("teams", "/teams"),
             toolEntry("skills", "/skills"),
             ...(features.creditsEnabled ? [toolEntry("wallet", "/wallet")] : []),
             toolEntry("settings", "/settings"),

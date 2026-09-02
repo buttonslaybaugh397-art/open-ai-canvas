@@ -511,6 +511,14 @@ func (r *Repository) UpdateTaskProviderProgress(id string, progress int) error {
 	}).Error
 }
 
+// UpdateTaskProviderStage records queue/processing state without replacing a
+// real percentage already reported by the provider.
+func (r *Repository) UpdateTaskProviderStage(id string, stage string) error {
+	return r.db.Model(&model.Task{}).Where("id = ? AND status = ?", id, model.TaskStatusRunning).Updates(map[string]any{
+		"stage": stage, "updated_at": time.Now(),
+	}).Error
+}
+
 func (r *Repository) SaveTaskCompletion(task *model.Task, expected model.TaskStatus, session *model.Session, message *model.Message, results []model.Result) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		updated := tx.Model(&model.Task{}).
@@ -1009,6 +1017,21 @@ func (r *Repository) SaveResource(resource *model.Resource) error {
 	return r.db.Save(resource).Error
 }
 
+func (r *Repository) ResourceByUploadKey(userID string, uploadKey string) (*model.Resource, error) {
+	var resource model.Resource
+	if err := r.db.First(&resource, "user_id = ? AND upload_key = ?", userID, uploadKey).Error; err != nil {
+		return nil, err
+	}
+	return &resource, nil
+}
+
+func (r *Repository) ClaimFailedResourceUpload(userID string, id string) (bool, error) {
+	result := r.db.Model(&model.Resource{}).
+		Where("id = ? AND user_id = ? AND status = ?", id, userID, model.ResourceStatusFailed).
+		Updates(map[string]any{"status": model.ResourceStatusPending, "error": "", "updated_at": time.Now()})
+	return result.RowsAffected == 1, result.Error
+}
+
 func (r *Repository) MarkResourceCloudSyncPending(id string, lastError string, nextAttemptAt time.Time) error {
 	return r.db.Model(&model.Resource{}).
 		Where("id = ? AND provider <> ? AND local_backup_key <> ''", id, "local").
@@ -1085,6 +1108,18 @@ func (r *Repository) DeleteAsset(userID string, id string) error {
 	return r.DeleteAssetAndResources(userID, id, nil, nil)
 }
 
+func (r *Repository) FindExpiredArchivedAssets(cutoff time.Time, limit int) ([]model.Asset, error) {
+	var assets []model.Asset
+	if limit <= 0 {
+		limit = 100
+	}
+	err := r.db.Where("status = ? AND updated_at <= ?", model.AssetVersionStatusArchived, cutoff).
+		Order("updated_at asc, id asc").
+		Limit(limit).
+		Find(&assets).Error
+	return assets, err
+}
+
 func (r *Repository) ReplaceAssets(userID string, assets []model.Asset) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Delete(&model.Asset{}, "user_id = ?", userID).Error; err != nil {
@@ -1117,14 +1152,31 @@ func (r *Repository) CanvasProjectForUser(userID string, id string) (*model.Canv
 	return &project, nil
 }
 
-func (r *Repository) UpsertCanvasProject(project *model.CanvasProject) error {
+// UpsertCanvasProject only accepts snapshots that are not older than the
+// currently persisted document. This prevents delayed clients or tabs from
+// replacing a newer canvas after it has already reached the server.
+func (r *Repository) UpsertCanvasProject(project *model.CanvasProject) (bool, error) {
 	result := r.db.Model(&model.CanvasProject{}).
-		Where("id = ? AND user_id = ?", project.ID, project.UserID).
+		Where("id = ? AND user_id = ? AND updated_at < ?", project.ID, project.UserID, project.UpdatedAt).
 		Updates(map[string]any{"project_id": project.ProjectID, "title": project.Title, "payload_json": project.PayloadJSON, "updated_at": project.UpdatedAt})
-	if result.Error != nil || result.RowsAffected > 0 {
-		return result.Error
+	if result.Error != nil {
+		return false, result.Error
 	}
-	return r.db.Create(project).Error
+	if result.RowsAffected > 0 {
+		return true, nil
+	}
+	existing, err := r.CanvasProjectForUser(project.UserID, project.ID)
+	if err == nil {
+		idempotent := existing.UpdatedAt.Equal(project.UpdatedAt) && existing.ProjectID == project.ProjectID && existing.Title == project.Title && existing.PayloadJSON == project.PayloadJSON
+		return idempotent, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, err
+	}
+	if err := r.db.Create(project).Error; err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (r *Repository) DeleteCanvasProject(userID string, id string) error {
