@@ -464,12 +464,12 @@ func (r *Repository) DeferRunningTaskForProviderPoll(id string, owner string, st
 	return nil
 }
 
-// 人工恢复仅锁定失败任务；旧 worker 的租约可覆盖，但未过期的人工恢复租约不能并发抢占。
-func (r *Repository) ClaimFailedTaskProviderRecovery(id string, userID string, owner string, leaseDuration time.Duration) error {
+// 人工查询支持失败任务恢复和成功任务重新获取结果；未过期的人工恢复租约不能并发抢占。
+func (r *Repository) ClaimTaskProviderRecovery(id string, userID string, owner string, leaseDuration time.Duration) error {
 	now := time.Now()
 	query := r.db.Model(&model.Task{}).Where(
-		"id = ? AND status = ? AND (lease_owner = '' OR lease_owner NOT LIKE ? OR lease_expires_at IS NULL OR lease_expires_at <= ?)",
-		id, model.TaskStatusFailed, "manual-recovery:%", now,
+		"id = ? AND status IN ? AND (lease_owner = '' OR lease_owner NOT LIKE ? OR lease_expires_at IS NULL OR lease_expires_at <= ?)",
+		id, []model.TaskStatus{model.TaskStatusFailed, model.TaskStatusSucceeded}, "manual-recovery:%", now,
 	)
 	if strings.TrimSpace(userID) != "" {
 		query = query.Where("user_id = ?", userID)
@@ -484,6 +484,22 @@ func (r *Repository) ClaimFailedTaskProviderRecovery(id string, userID string, o
 	}
 	if result.RowsAffected != 1 {
 		return ErrTaskProviderRecoveryConflict
+	}
+	return nil
+}
+
+func (r *Repository) ReplaceSucceededTaskResult(id string, owner string, resultJSON string, pollStage string, now time.Time) error {
+	result := r.db.Model(&model.Task{}).
+		Where("id = ? AND status = ? AND lease_owner = ?", id, model.TaskStatusSucceeded, owner).
+		Updates(map[string]any{
+			"result_json": resultJSON, "stage": "任务完成", "progress": 100, "error": "",
+			"poll_stage": pollStage, "next_poll_at": nil, "updated_at": now,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return ErrTaskStateConflict
 	}
 	return nil
 }
@@ -508,6 +524,14 @@ func (r *Repository) UpdateTaskProviderProgress(id string, progress int) error {
 		"stage":      "上游生成中",
 		"progress":   gorm.Expr("CASE WHEN progress < ? THEN ? ELSE progress END", progress, progress),
 		"updated_at": time.Now(),
+	}).Error
+}
+
+// UpdateTaskProviderStage records queue/processing state without replacing a
+// real percentage already reported by the provider.
+func (r *Repository) UpdateTaskProviderStage(id string, stage string) error {
+	return r.db.Model(&model.Task{}).Where("id = ? AND status = ?", id, model.TaskStatusRunning).Updates(map[string]any{
+		"stage": stage, "updated_at": time.Now(),
 	}).Error
 }
 
@@ -1022,6 +1046,19 @@ func (r *Repository) ClaimFailedResourceUpload(userID string, id string) (bool, 
 		Where("id = ? AND user_id = ? AND status = ?", id, userID, model.ResourceStatusFailed).
 		Updates(map[string]any{"status": model.ResourceStatusPending, "error": "", "updated_at": time.Now()})
 	return result.RowsAffected == 1, result.Error
+}
+
+func (r *Repository) MarkResourceCloudSyncPending(id string, lastError string, nextAttemptAt time.Time) error {
+	return r.db.Model(&model.Resource{}).
+		Where("id = ? AND provider <> ? AND local_backup_key <> ''", id, "local").
+		Updates(map[string]any{
+			"cloud_sync_status":           model.ResourceCloudSyncStatusPending,
+			"cloud_sync_error":            lastError,
+			"cloud_sync_next_attempt_at":  nextAttemptAt,
+			"cloud_sync_lease_owner":      "",
+			"cloud_sync_lease_expires_at": nil,
+			"updated_at":                  time.Now(),
+		}).Error
 }
 
 func (r *Repository) DeleteResource(userID string, id string) error {
@@ -2236,6 +2273,11 @@ func (r *Repository) RegisterWorkflowTaskOutput(step *model.WorkflowStepInstance
 				}
 			} else if err != nil {
 				return err
+			} else if err := tx.Model(&existingRepresentation).Updates(map[string]any{
+				"asset_version_id": representation.AssetVersionID, "resource_id": representation.ResourceID,
+				"media_type": representation.MediaType, "metadata_json": representation.MetadataJSON,
+			}).Error; err != nil {
+				return err
 			}
 		}
 		if productionLink != nil {
@@ -2257,6 +2299,12 @@ func (r *Repository) RegisterWorkflowTaskOutput(step *model.WorkflowStepInstance
 		if artifact != nil {
 			var existing model.ShotArtifact
 			if err := tx.Where("task_id = ? AND shot_id = ? AND type = ?", artifact.TaskID, artifact.ShotID, artifact.Type).First(&existing).Error; err == nil {
+				if err := tx.Model(&existing).Updates(map[string]any{
+					"resource_id": artifact.ResourceID, "status": artifact.Status, "selected": artifact.Selected,
+					"metadata_json": artifact.MetadataJSON, "updated_at": artifact.UpdatedAt,
+				}).Error; err != nil {
+					return err
+				}
 				artifact = nil
 			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err

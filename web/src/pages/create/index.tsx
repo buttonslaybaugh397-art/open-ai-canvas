@@ -431,7 +431,8 @@ export default function CreatePage() {
         return assetIds;
     };
 
-    const handleLibrarySelect = (selectedIds: string[]) => {
+    const handleLibrarySelect = (selectedIds: string[], { materializedAssets = [] }: { materializedAssets?: Asset[] } = {}) => {
+        const materializedById = new Map(materializedAssets.map((asset) => [asset.id, asset]));
         const next = selectedIds.flatMap((id): CreationAttachment[] => {
             const asset = materializedById.get(id) || assets.find((item) => item.id === id);
             if (asset?.kind === "image") return [creationAttachmentFromAsset(asset)];

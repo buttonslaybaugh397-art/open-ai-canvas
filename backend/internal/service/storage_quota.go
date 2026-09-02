@@ -175,3 +175,31 @@ func (s *Service) saveTaskCompletionWithinStorageQuota(task *model.Task, resultJ
 	*task = completed
 	return nil
 }
+
+func (s *Service) replaceSucceededTaskResultWithinStorageQuota(task *model.Task, resultJSON []byte, owner string) error {
+	policy, err := s.RuntimePolicy()
+	if err != nil {
+		return err
+	}
+	s.storageMu.Lock()
+	defer s.storageMu.Unlock()
+
+	usage, err := s.repo.UserStorageUsage(task.UserID)
+	if err != nil {
+		return err
+	}
+	delta := int64(len(resultJSON) - len(task.ResultJSON))
+	if err := validateTaskDataGrowthQuotaWithPolicy(usage, delta, policy.Resource); err != nil {
+		return err
+	}
+	now := time.Now()
+	if err := s.repo.ReplaceSucceededTaskResult(task.ID, owner, string(resultJSON), task.PollStage, now); err != nil {
+		return err
+	}
+	task.ResultJSON = string(resultJSON)
+	task.Stage = "任务完成"
+	task.Progress = 100
+	task.Error = ""
+	task.UpdatedAt = now
+	return nil
+}

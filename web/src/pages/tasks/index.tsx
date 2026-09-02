@@ -12,7 +12,7 @@ import { formatTaskKind, isGenerationTaskSubmissionUncertain, operationOptions, 
 import { backendProviderConfig, logicalModelIDForConfig } from "@/services/api/generation-task";
 
 import { createAgentSession, createGenerationTask, deleteGenerationTask, formatTaskLog, listGenerationTasks, listTaskLogs, queryFailedVideoProviderTask, queryGenerationTask, refreshGenerationTaskStatus, retryGenerationTask, type CreateTaskInput, type GenerationTask, type TaskLog } from "@/services/api/task-center";
-import { syncGenerationTaskToCanvasStore } from "@/lib/canvas/canvas-generation-task-sync";
+import { syncRecoveredGenerationTaskToCanvas } from "@/services/canvas-generation-consumer";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { resolveModelRequestConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -220,7 +220,7 @@ export default function TasksPage() {
                 syncedCanvasTaskIdsRef.current.add(task.id);
                 try {
                     const detail = task.resultJson ? task : await queryGenerationTask(task.id);
-                    await syncGenerationTaskToCanvasStore(detail);
+                    await syncRecoveredGenerationTaskToCanvas(detail);
                 } catch {
                     syncedCanvasTaskIdsRef.current.delete(task.id);
                 }
@@ -253,7 +253,7 @@ export default function TasksPage() {
                 const [detail, logs] = await Promise.all([queryGenerationTask(task.id), listTaskLogs(task.id)]);
                 setDetailTask(detail);
                 setTaskLogs(logs);
-                if (await syncGenerationTaskToCanvasStore(detail)) message.success("已同步到画布");
+                if (await syncRecoveredGenerationTaskToCanvas(detail)) message.success("已同步到画布");
             } catch (error) {
                 message.error(error instanceof Error ? error.message : "任务详情加载失败");
             } finally {
@@ -366,10 +366,11 @@ export default function TasksPage() {
             setDetailTask(result.task);
             setTasks((items) => items.map((item) => (item.id === task.id ? { ...item, ...result.task } : item)));
             setTaskLogs(await listTaskLogs(task.id));
-            await syncGenerationTaskToCanvasStore(result.task);
+            const canvasSynced = await syncRecoveredGenerationTaskToCanvas(result.task, { force: result.refetched });
             window.dispatchEvent(new CustomEvent("wallet:updated"));
             void loadTasks(false);
-            if (result.billingSettled) message.success("已获取上游视频，任务已恢复并完成结算");
+            if (result.refetched) message.success(`已重新获取上游视频并更新任务结果，积分未变${canvasSynced ? "，已同步到画布" : ""}`);
+            else if (result.billingSettled) message.success(`已获取上游视频，任务已恢复并完成结算${canvasSynced ? "，已同步到画布" : ""}`);
             else message.warning("已获取上游视频，任务已恢复，计费状态待管理员核对");
         } catch (error) {
             message.error(error instanceof Error ? error.message : "查询上游任务失败");
@@ -541,7 +542,7 @@ export default function TasksPage() {
                                     删除本机记录
                                 </Button>
                             ) : null}
-                            {canQueryProviderTask(detailTask) ? <Button icon={<RefreshCw className="size-4" />} loading={actingId === detailTask.id} onClick={() => void queryProviderTask(detailTask)}>手动查询任务</Button> : null}
+                            {canQueryProviderTask(detailTask) ? <Button icon={<RefreshCw className="size-4" />} loading={actingId === detailTask.id} onClick={() => void queryProviderTask(detailTask)}>{detailTask.status === "succeeded" ? "重新获取视频" : "手动查询任务"}</Button> : null}
                             {isTaskFailed(detailTask) ? <Button icon={<Bug className="size-4" />} onClick={() => navigate(`/settings?section=diagnostics&taskId=${encodeURIComponent(detailTask.id)}${detailTask.projectId ? `&projectId=${encodeURIComponent(detailTask.projectId)}` : ""}`)}>导出诊断包</Button> : null}
                         </div>
                         {detailTask.error ? <pre className="task-detail-error max-h-28 overflow-auto whitespace-pre-wrap px-3 py-2 text-xs">{generationErrorMessage(detailTask.error)}</pre> : null}
@@ -585,7 +586,7 @@ export default function TasksPage() {
 }
 
 function canQueryProviderTask(task: GenerationTask) {
-    return task.status === "failed" && (task.type.startsWith("canvas_video") || task.type.startsWith("video_")) && Boolean(task.providerRequestId);
+    return (task.status === "failed" || task.status === "succeeded") && (task.type.startsWith("canvas_video") || task.type.startsWith("video_")) && Boolean(task.providerRequestId);
 }
 
 function reconcileTaskSummaries(current: GenerationTask[], next: GenerationTask[]) {

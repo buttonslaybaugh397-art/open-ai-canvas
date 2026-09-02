@@ -10,8 +10,8 @@ type InsertableAsset = Extract<Asset, { kind: "text" | "image" | "video" | "audi
 
 export type InsertAssetPayload =
     | { kind: "text"; content: string; title: string; assetId?: string }
-    | { kind: "image"; dataUrl: string; title: string; url?: string; storageKey?: string; width?: number; height?: number; bytes?: number; mimeType?: string; assetId?: string }
-    | { kind: "video"; url: string; title: string; storageKey?: string; width?: number; height?: number; durationMs?: number; hasAudio?: boolean; bytes?: number; mimeType?: string; assetId?: string }
+    | { kind: "image"; dataUrl: string; title: string; url?: string; storageKey?: string; volcengineAssetUri?: string; width?: number; height?: number; bytes?: number; mimeType?: string; assetId?: string }
+    | { kind: "video"; url: string; title: string; storageKey?: string; volcengineAssetUri?: string; width?: number; height?: number; durationMs?: number; hasAudio?: boolean; bytes?: number; mimeType?: string; assetId?: string }
     | { kind: "audio"; url: string; title: string; storageKey?: string; durationMs?: number; bytes?: number; mimeType?: string; assetId?: string }
     | {
           kind: "character";

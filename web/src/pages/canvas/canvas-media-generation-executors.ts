@@ -1,7 +1,7 @@
 import { nanoid } from "nanoid";
 
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
-import { canGenerateMediaInPlace } from "@/lib/canvas/canvas-generation-layout";
+import { canGenerateMediaInPlace, findAvailableGenerationGroupPosition } from "@/lib/canvas/canvas-generation-layout";
 import { nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
 import { nextCanvasVersionLabel } from "@/lib/canvas/canvas-layout";
 import { buildAudioGenerationMetadata, buildVideoGenerationMetadata, generationReferenceUrls, runCanvasGenerationTaskToConsumer } from "@/lib/canvas/canvas-project-generation";
@@ -22,6 +22,7 @@ export async function executeVideoGeneration({
     generationContext,
     controller,
     projectId,
+    canvasNodes,
     canvasConnections,
     setNodes,
     setConnections,
@@ -143,6 +144,7 @@ export async function executeAudioGeneration({
     generationContext,
     controller,
     projectId,
+    canvasNodes,
     setNodes,
     setConnections,
     startGenerationRequest,

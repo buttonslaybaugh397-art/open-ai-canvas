@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ func TestVideoTaskTimeoutHasFiveMinuteSafetyFloor(t *testing.T) {
 	}
 }
 
-func TestOnlyResumableNewAPIChannel2VideoDeadlinesStayRunning(t *testing.T) {
+func TestOnlyResumableNewAPIChannel2VideoTransientFailuresStayRunning(t *testing.T) {
 	svc := &Service{}
 	input, err := json.Marshal(canvasGenerationInput{Mode: "video", Config: providerConfig{BaseURL: "https://example.com", InterfaceType: string(model.ChannelInterfaceNewAPIChannel2)}})
 	if err != nil {
@@ -40,6 +41,19 @@ func TestOnlyResumableNewAPIChannel2VideoDeadlinesStayRunning(t *testing.T) {
 	}
 	if svc.shouldDeferVideoProviderTask(base, string(input), context.Canceled) {
 		t.Fatal("explicit cancellation must not be deferred")
+	}
+	for _, transient := range []error{
+		providerHTTPError{StatusCode: http.StatusBadGateway},
+		providerHTTPError{StatusCode: http.StatusServiceUnavailable},
+		providerHTTPError{StatusCode: http.StatusGatewayTimeout},
+		providerHTTPError{StatusCode: http.StatusTooManyRequests},
+	} {
+		if !svc.shouldDeferVideoProviderTask(base, string(input), transient) {
+			t.Fatalf("transient query error %v should remain running", transient)
+		}
+	}
+	if svc.shouldDeferVideoProviderTask(base, string(input), providerHTTPError{StatusCode: http.StatusUnauthorized}) {
+		t.Fatal("terminal authentication failure must not be deferred")
 	}
 	other, err := json.Marshal(canvasGenerationInput{Mode: "video", Config: providerConfig{BaseURL: "https://example.com", InterfaceType: string(model.ChannelInterfaceNewAPIVideo)}})
 	if err != nil {

@@ -2388,6 +2388,32 @@ func runProtocolAdapterTask(ctx context.Context, input canvasGenerationInput, ad
 	return nil, fmt.Errorf("声明式协议任务超时（任务 %s）", taskID)
 }
 
+func protocolPollInterval(interfaceType string) time.Duration {
+	if interfaceType == string(model.ChannelInterfaceWeijinVideo) {
+		return 10 * time.Second
+	}
+	return 2500 * time.Millisecond
+}
+
+func syncProtocolTaskState(ctx context.Context, status protocol.Status) {
+	metadata, ok := ctx.Value(providerAnalyticsKey{}).(providerAnalyticsContext)
+	if !ok || metadata.Service == nil || metadata.Service.repo == nil || strings.TrimSpace(metadata.TaskID) == "" {
+		return
+	}
+	stage := ""
+	switch status {
+	case protocol.StatusPending:
+		stage = "上游排队中"
+	case protocol.StatusProcessing:
+		stage = "上游生成中"
+	default:
+		return
+	}
+	if err := metadata.Service.repo.UpdateTaskProviderStage(metadata.TaskID, stage); err != nil {
+		log.Printf("provider status sync failed: task_id=%s status=%s error=%v", metadata.TaskID, status, err)
+	}
+}
+
 // queryProtocolAdapterVideoTask performs exactly one read of an existing
 // declarative provider task. Manual recovery uses this path so it can never
 // create a second billable generation while checking a failed local task.
@@ -3893,24 +3919,20 @@ func findProviderMediaURL(value interface{}) string {
 }
 
 func newAPIVideoResultURL(state map[string]interface{}) string {
-	return nestedNewAPIVideoResultURL(state, false, 0)
+	return nestedNewAPIVideoResultURL(state, 0)
 }
 
-func nestedNewAPIVideoResultURL(payload map[string]interface{}, allowResultURL bool, depth int) string {
-	if depth < 2 {
-		for _, key := range []string{"data", "result", "video"} {
+func nestedNewAPIVideoResultURL(payload map[string]interface{}, depth int) string {
+	if depth < 4 {
+		for _, key := range []string{"data", "result", "video", "output", "metadata"} {
 			if nested, ok := payload[key].(map[string]interface{}); ok {
-				if videoURL := nestedNewAPIVideoResultURL(nested, true, depth+1); videoURL != "" {
+				if videoURL := nestedNewAPIVideoResultURL(nested, depth+1); videoURL != "" {
 					return videoURL
 				}
 			}
 		}
 	}
-	keys := []string{"video_url", "videoUrl", "url"}
-	if allowResultURL {
-		keys = append(keys, "result_url", "resultUrl")
-	}
-	for _, key := range keys {
+	for _, key := range []string{"video_url", "videoUrl", "output_url", "outputUrl", "result_url", "resultUrl", "url", "uri"} {
 		if videoURL := strings.TrimSpace(stringField(payload, key)); isPublicMediaURL(videoURL) {
 			return videoURL
 		}
@@ -3924,6 +3946,7 @@ const (
 	newAPIChannel2VideoPollInterval    = 10 * time.Second
 	newAPIChannel2VideoRetryInterval   = time.Minute
 	newAPIChannel2VideoMaxQueryRetries = 3
+	newAPIChannel2PropagationRetries   = 12
 )
 
 type newAPIChannel2ResponseError struct {
@@ -3956,17 +3979,28 @@ func runNewAPIChannel2VideoTask(ctx context.Context, input canvasGenerationInput
 	if id == "" {
 		return nil, errors.New("NewAPI Video Generations 没有返回任务 ID")
 	}
+	if created != nil {
+		result, _, err := resolveNewAPIChannel2VideoPayload(ctx, input, id, created)
+		if err != nil {
+			return nil, err
+		}
+		if result != nil {
+			return result, nil
+		}
+	}
 
 	consecutiveQueryFailures := 0
 	for deadline := providerPollingDeadline(ctx); time.Now().Before(deadline); {
 		result, _, err := queryNewAPIChannel2VideoTask(ctx, input, id)
 		if err != nil {
-			if !isTransientNewAPIChannel2QueryError(err) || consecutiveQueryFailures >= newAPIChannel2VideoMaxQueryRetries {
+			maxRetries := newAPIChannel2QueryMaxRetries(err)
+			if !isTransientNewAPIChannel2QueryError(err) || consecutiveQueryFailures >= maxRetries {
 				return nil, err
 			}
 			consecutiveQueryFailures++
-			logNewAPIChannel2QueryRetry(ctx, id, consecutiveQueryFailures, err)
-			if err := sleepContext(ctx, newAPIChannel2VideoRetryInterval); err != nil {
+			retryDelay := newAPIChannel2QueryRetryDelay(err)
+			logNewAPIChannel2QueryRetry(ctx, id, consecutiveQueryFailures, maxRetries, retryDelay, err)
+			if err := sleepContext(ctx, retryDelay); err != nil {
 				return nil, err
 			}
 			continue
@@ -3991,6 +4025,10 @@ func queryNewAPIChannel2VideoTask(ctx context.Context, input canvasGenerationInp
 	if err := getJSON(ctx, input.Config, "/video/generations/"+id, &payload); err != nil {
 		return nil, "", err
 	}
+	return resolveNewAPIChannel2VideoPayload(ctx, input, id, payload)
+}
+
+func resolveNewAPIChannel2VideoPayload(ctx context.Context, input canvasGenerationInput, id string, payload map[string]interface{}) (map[string]interface{}, string, error) {
 	if err := newAPIChannel2PayloadError(payload); err != nil {
 		return nil, "", err
 	}
@@ -4000,8 +4038,8 @@ func queryNewAPIChannel2VideoTask(ctx context.Context, input canvasGenerationInp
 	}
 	status := strings.ToUpper(strings.TrimSpace(stringField(state, "status")))
 	switch status {
-	case "SUCCESS":
-		videoURL := strings.TrimSpace(stringField(state, "result_url"))
+	case "SUCCESS", "SUCCEEDED", "COMPLETED":
+		videoURL := newAPIVideoResultURL(state)
 		if videoURL == "" {
 			return nil, status, fmt.Errorf("NewAPI Video Generations 任务 %s 已成功但没有返回视频地址", id)
 		}
@@ -4010,8 +4048,11 @@ func queryNewAPIChannel2VideoTask(ctx context.Context, input canvasGenerationInp
 			return nil, status, fmt.Errorf("NewAPI Video Generations 视频结果下载失败（任务 %s）：%w", id, err)
 		}
 		mimeType = normalizedMediaMimeType(mimeType, data)
+		if !strings.HasPrefix(strings.ToLower(mimeType), "video/") {
+			return nil, status, fmt.Errorf("NewAPI Video Generations 任务 %s 返回的结果不是视频（%s）", id, defaultString(mimeType, "unknown"))
+		}
 		return videoResult(videoURL, mimeType, data), status, nil
-	case "FAILURE":
+	case "FAILURE", "FAILED":
 		reason := strings.TrimSpace(stringField(state, "fail_reason"))
 		return nil, status, fmt.Errorf("NewAPI Video Generations 视频生成失败（任务 %s）：%s", id, defaultString(reason, "上游返回失败"))
 	case "SUBMITTED", "QUEUED", "IN_PROGRESS", "NOT_START", "":
@@ -4040,7 +4081,11 @@ func isTransientNewAPIChannel2QueryError(err error) bool {
 	var httpErr providerHTTPError
 	if errors.As(err, &httpErr) {
 		body := strings.ToLower(httpErr.Body)
-		return httpErr.StatusCode == http.StatusRequestTimeout || httpErr.StatusCode == http.StatusTooManyRequests || httpErr.StatusCode >= http.StatusInternalServerError || strings.Contains(body, "do_request_failed") || strings.Contains(body, "do request failed")
+		// Some NewAPI deployments briefly return 400/422 immediately after a
+		// successful submission while the task is propagating to the query
+		// endpoint. At this point we already own a provider task ID, so retrying
+		// only queries that task and cannot create another billable request.
+		return httpErr.StatusCode == http.StatusBadRequest || httpErr.StatusCode == http.StatusUnprocessableEntity || httpErr.StatusCode == http.StatusRequestTimeout || httpErr.StatusCode == http.StatusTooManyRequests || httpErr.StatusCode >= http.StatusInternalServerError || strings.Contains(body, "do_request_failed") || strings.Contains(body, "do request failed")
 	}
 	if errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
@@ -4053,13 +4098,29 @@ func isTransientNewAPIChannel2QueryError(err error) bool {
 	return strings.Contains(message, "do_request_failed") || strings.Contains(message, "do request failed")
 }
 
-func logNewAPIChannel2QueryRetry(ctx context.Context, providerTaskID string, retry int, err error) {
+func newAPIChannel2QueryRetryDelay(err error) time.Duration {
+	var httpErr providerHTTPError
+	if errors.As(err, &httpErr) && (httpErr.StatusCode == http.StatusBadRequest || httpErr.StatusCode == http.StatusUnprocessableEntity) {
+		return newAPIChannel2VideoPollInterval
+	}
+	return newAPIChannel2VideoRetryInterval
+}
+
+func newAPIChannel2QueryMaxRetries(err error) int {
+	var httpErr providerHTTPError
+	if errors.As(err, &httpErr) && (httpErr.StatusCode == http.StatusBadRequest || httpErr.StatusCode == http.StatusUnprocessableEntity) {
+		return newAPIChannel2PropagationRetries
+	}
+	return newAPIChannel2VideoMaxQueryRetries
+}
+
+func logNewAPIChannel2QueryRetry(ctx context.Context, providerTaskID string, retry int, maxRetries int, retryDelay time.Duration, err error) {
 	metadata, ok := ctx.Value(providerAnalyticsKey{}).(providerAnalyticsContext)
 	if !ok || metadata.Service == nil || metadata.TaskID == "" {
 		return
 	}
-	payload := fmt.Sprintf("供应商任务 %s，第 %d/%d 次重试：%s", providerTaskID, retry, newAPIChannel2VideoMaxQueryRetries, safeProviderLogError(err))
-	_ = metadata.Service.log(metadata.UserID, metadata.TaskID, "warn", "上游任务查询失败，1 分钟后重试", payload)
+	payload := fmt.Sprintf("供应商任务 %s，第 %d/%d 次重试：%s", providerTaskID, retry, maxRetries, safeProviderLogError(err))
+	_ = metadata.Service.log(metadata.UserID, metadata.TaskID, "warn", fmt.Sprintf("上游任务查询失败，%s后重试", retryDelay), payload)
 }
 
 func newAPIChannel2VideoRequestBody(input canvasGenerationInput) (newAPIVideoRequest, error) {

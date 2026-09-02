@@ -59,7 +59,6 @@ func (a builtinAdapter) BuildCancel(_ context.Context, c PollContext) (RequestSp
 	}
 	return a.cancel(c)
 }
-
 var builtinRegistry *Registry
 var builtinRegistryMu sync.Mutex
 
@@ -1099,7 +1098,7 @@ func normalizeStatus(raw string) Status {
 		return StatusSucceeded
 	case "cancelled", "canceled", "aborted":
 		return StatusCancelled
-	case "failed", "failure", "error", "expired":
+	case "fail", "failed", "failure", "error", "expired":
 		return StatusFailed
 	default:
 		return ""

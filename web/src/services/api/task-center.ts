@@ -93,6 +93,7 @@ export type ProviderTaskQueryResult = {
     task: GenerationTask;
     providerStatus: string;
     recovered: boolean;
+    refetched: boolean;
     billingSettled: boolean;
 };
 

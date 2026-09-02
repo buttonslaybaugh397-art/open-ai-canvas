@@ -1,7 +1,7 @@
 import { App, Button, Dropdown, Modal, Popconfirm } from "antd";
 import type { MenuProps } from "antd";
 import { Check, ChevronDown, FileText, FolderOpen, HardDrive, Image as ImageIcon, LoaderCircle, Music2, Puzzle, RotateCcw, Search, Trash2, Upload, UserRound, Video } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { AssetMediaPreview } from "@/components/asset-media-preview";
 import { AssetLibraryCard } from "@/components/assets/asset-library-card";
@@ -125,12 +125,32 @@ export function AssetLibraryPickerModal({
     const localItems = useMemo(() => allItems.filter((item) => !item.external), [allItems]);
     const pluginItems = useMemo(() => allItems.filter((item) => Boolean(item.external)), [allItems]);
     const hasPluginSource = useMemo(() => Object.keys(categoryLabels).some((value) => value.startsWith("external:")) || pluginItems.some((item) => item.category.startsWith("external:")), [categoryLabels, pluginItems]);
-    const sourceItems = source === "plugin" ? pluginItems : localItems;
+    const requestedTeamKind = category === "all"
+        ? teamAssetKinds.length === 1 ? teamAssetKinds[0] : undefined
+        : teamAssetKinds.includes(category as TeamAssetPickerKind) ? category as TeamAssetPickerKind : undefined;
+    const teamSource = useTeamAssetPickerSource({
+        open,
+        active: source === "team",
+        teamId,
+        page: teamPage,
+        pageSize: teamPageSize,
+        keyword: deferredKeyword,
+        kind: requestedTeamKind,
+        folderId: folderId === "all" ? undefined : folderId,
+        allowedKinds: teamAssetKinds,
+    });
+    const sourceItems = source === "plugin" ? pluginItems : source === "team" ? teamSource.items : localItems;
     const activeSourceItems = useMemo(() => sourceItems.filter((item) => !item.archived), [sourceItems]);
     const archivedItems = useMemo(() => sourceItems.filter((item) => item.archived), [sourceItems]);
-    const sourceFolders = source === "plugin" ? folders : [];
-    const showCategories = source === "local" || !sourceFolders.length;
+    const sourceFolders = source === "plugin" ? folders : source === "team" ? teamSource.folders : [];
+    const showCategories = source === "local" || source === "team" || !sourceFolders.length;
     const normalCategories = useMemo(() => ["all", ...Array.from(new Set(activeSourceItems.map((item) => item.category || "other"))).filter((value) => value !== "all")], [activeSourceItems]);
+    const categories = useMemo(
+        () => source === "team"
+            ? teamAssetKinds.length === 1 || teamAssetKinds.length >= 4 ? ["all", ...teamAssetKinds] : [...teamAssetKinds]
+            : normalCategories,
+        [normalCategories, source, teamAssetKinds],
+    );
     const archivedCount = archivedItems.length;
     const isRecycleBin = category === "archived";
 
@@ -177,6 +197,13 @@ export function AssetLibraryPickerModal({
         if (category === "all" || category === "archived" || normalCategories.includes(category)) return;
         setCategory("all");
     }, [normalCategories, category]);
+
+    useEffect(() => {
+        if (teamId && teamSource.teams.some((team) => team.id === teamId)) return;
+        setTeamId(teamSource.teams[0]?.id || "");
+    }, [teamId, teamSource.teams]);
+
+    useEffect(() => setTeamPage(1), [category, deferredKeyword, folderId, teamId]);
 
     useEffect(() => {
         if (source !== "team" || categories.includes(category)) return;
@@ -311,7 +338,7 @@ export function AssetLibraryPickerModal({
     };
 
     const countFor = (value: string) => (value === "all" ? activeSourceItems.length : activeSourceItems.filter((item) => item.category === value).length);
-    const sourceLabel = source === "plugin" ? "插件来源" : "本地素材";
+    const sourceLabel = source === "plugin" ? "插件来源" : source === "team" ? teamSource.teams.find((team) => team.id === teamId)?.name || "团队素材" : "本地素材";
     const sourceMenuItems: MenuProps["items"] = [
         {
             key: "local",
@@ -336,6 +363,13 @@ export function AssetLibraryPickerModal({
                       ),
                   },
               ]
+            : []),
+        ...(enableTeamSource && teamSource.teams.length
+            ? teamSource.teams.map((team) => ({
+                  key: `team:${team.id}`,
+                  icon: <UserRound aria-hidden="true" />,
+                  label: <span className="asset-picker-source-menu-label"><span>{team.name}</span><em>团队</em></span>,
+              }))
             : []),
     ];
     const activeUpload = isRecycleBin ? undefined : source === "plugin" ? upload?.external : upload;
@@ -387,7 +421,7 @@ export function AssetLibraryPickerModal({
                         <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索素材名称或标签" aria-label="搜索素材" />
                     </label>
                     <span className="asset-picker-count">
-                        已选 {selectedIds.length} · {pagination ? pagination.total : visibleItems.length} 个素材
+                        已选 {selectedIds.length} · {source === "team" ? teamSource.total : pagination ? pagination.total : visibleItems.length} 个素材
                     </span>
                 </header>
                 <div className="asset-picker-body">
@@ -405,10 +439,10 @@ export function AssetLibraryPickerModal({
                         {showCategories ? (
                             <>
                                 <span className="asset-picker-nav-label">分类</span>
-                                {normalCategories.map((value) => (
+                                {categories.map((value) => (
                                     <button key={value} type="button" className={cn("assets-filter-item", category === value && "is-active")} aria-pressed={category === value} onClick={() => setCategory(value)}>
-                                        <span className="assets-filter-item-label">{categoryLabels[value] || (value === "all" ? "全部素材" : "其他")}</span>
-                                        <span className="assets-filter-count">{countFor(value)}</span>
+                                        <span className="assets-filter-item-label">{source === "team" ? teamCategoryLabel(value) : categoryLabels[value] || (value === "all" ? "全部素材" : "其他")}</span>
+                                        <span className="assets-filter-count">{source === "team" ? "" : countFor(value)}</span>
                                     </button>
                                 ))}
                                 {archivedCount > 0 ? (
@@ -432,7 +466,7 @@ export function AssetLibraryPickerModal({
                     </nav>
                     <div className="asset-picker-grid-wrap">
                         <div className="asset-picker-grid">
-                            {loading ? (
+                            {loading || (source === "team" && teamSource.loading) ? (
                                 <div className="asset-picker-empty">
                                     <LoaderCircle className="animate-spin" />
                                     <strong>正在读取素材</strong>
@@ -448,7 +482,7 @@ export function AssetLibraryPickerModal({
                                 </div>
                             )}
                         </div>
-                        {pagination ? <PaginationBar alwaysShow current={pagination.current} pageSize={pagination.pageSize} total={pagination.total} itemLabel="项" pageSizeOptions={[20, 40, 80]} onChange={pagination.onChange} /> : null}
+                        {source === "team" ? <PaginationBar alwaysShow current={teamPage} pageSize={teamPageSize} total={teamSource.total} itemLabel="项" pageSizeOptions={[20, 40, 80]} onChange={(nextPage, nextPageSize) => { setTeamPage(nextPageSize !== teamPageSize ? 1 : nextPage); setTeamPageSize(nextPageSize); }} /> : pagination ? <PaginationBar alwaysShow current={pagination.current} pageSize={pagination.pageSize} total={pagination.total} itemLabel="项" pageSizeOptions={[20, 40, 80]} onChange={pagination.onChange} /> : null}
                     </div>
                 </div>
                 <footer className={cn("asset-picker-footer", !activeUpload && "is-compact")}>

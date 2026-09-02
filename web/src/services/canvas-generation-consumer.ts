@@ -1,11 +1,11 @@
 import type { Dispatch, SetStateAction } from "react";
 
-import { applyMaterializedGenerationTaskResultToNodes } from "@/lib/canvas/canvas-generation-task-sync";
+import { applyGenerationTaskResultToNodes, applyMaterializedGenerationTaskResultToNodes, generationTaskNodeId } from "@/lib/canvas/canvas-generation-task-sync";
 import { parseCanvasStorageDocument, rebaseCanvasProjects, serializeCanvasStorageDocument } from "@/lib/canvas/canvas-storage-revision";
 import { localForageStorageForScope } from "@/lib/localforage-storage";
 import { getActiveUserScope } from "@/lib/user-scope";
 import type { GenerationTask, GenerationTaskOutput } from "@/services/api/task-center";
-import { generationEffectApplied } from "@/services/generation-consumer-dedupe";
+import { applyGenerationConsumerEffect, generationEffectApplied } from "@/services/generation-consumer-dedupe";
 import {
     CANVAS_STORE_KEY,
     canvasStoreStorageRevision,
@@ -84,6 +84,35 @@ export function registerCanvasGenerationLiveProject(input: { scope: string; proj
     return () => {
         if (canvasGenerationLiveAdapters.get(key) === input.adapter) canvasGenerationLiveAdapters.delete(key);
     };
+}
+
+export async function syncRecoveredGenerationTaskToCanvas(task: GenerationTask, options: { force?: boolean } = {}) {
+    if (task.status !== "succeeded" || !task.projectId) return false;
+    const scope = getActiveUserScope();
+    const project = useCanvasStore.getState().projects.find((candidate) => candidate.id === task.projectId);
+    if (!project) return false;
+    const targetNodeId = generationTaskNodeId(task);
+    const currentNode = project.nodes.find((node) => node.id === targetNodeId || node.metadata?.taskId === task.id);
+    if (!currentNode) return false;
+    if (!options.force && currentNode.metadata?.taskId === task.id && currentNode.metadata.status === "success" && currentNode.metadata.content) return false;
+
+    const applied = await applyGenerationTaskResultToNodes(project.nodes, task, currentNode.id);
+    if (!applied.updated || !applied.node) return false;
+    const resultVersion = task.updatedAt || task.completedAt || task.resultJson?.length || "result";
+    const effectKey = `provider-result-sync:${task.id}:${resultVersion}`;
+    const syncedNode = {
+        ...applied.node,
+        metadata: applyGenerationConsumerEffect(applied.node.metadata || {}, effectKey, (metadata) => metadata).value,
+    };
+    const syncedNodes = applied.nodes.map((node) => (node.id === syncedNode.id ? syncedNode : node));
+    const persisted = await persistCanvasGenerationEffect({ projectId: project.id, effectKey, previousNodes: project.nodes, nodes: syncedNodes });
+
+    const liveAdapter = canvasGenerationLiveAdapters.get(canvasGenerationLiveAdapterKey(scope, project.id));
+    if (liveAdapter) {
+        const live = liveAdapter.read();
+        liveAdapter.write({ ...live, nodes: persisted.nodes, connections: persisted.connections, chatSessions: persisted.chatSessions, activeChatId: persisted.activeChatId });
+    }
+    return true;
 }
 
 function reconcileCanvasGenerationLiveProject(scope: string, durableDocument: ReturnType<typeof parseCanvasStorageDocument>, baseProject: CanvasProject, attemptedProject: CanvasProject) {

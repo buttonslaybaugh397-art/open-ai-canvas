@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -169,6 +170,38 @@ func (c *pluginRuntime) bootstrapOfficialPlugins() error {
 		record.PackagePath, record.PackageSHA256, record.UpdatedAt = packageName, hash, now
 		byID[id] = record
 	}
+	for _, manifest := range protocol.BundledHostManifests() {
+		id := strings.TrimSpace(manifest.Metadata.ID)
+		if id == "" {
+			return errors.New("内置渠道插件缺少 ID")
+		}
+		officialIDs[id] = struct{}{}
+		record := byID[id]
+		if len(record.Raw) > 0 {
+			var previous protocol.Manifest
+			if err := json.Unmarshal(record.Raw, &previous); err != nil {
+				return fmt.Errorf("解析内置渠道插件 %s：%w", id, err)
+			}
+			if previous.Runtime.Backend != manifest.Runtime.Backend {
+				return fmt.Errorf("插件 ID %q 已被其他运行时占用", id)
+			}
+			manifest.Metadata.Enabled = previous.Metadata.Enabled
+		}
+		manifest.Metadata.Installable = true
+		data, err := json.Marshal(manifest)
+		if err != nil {
+			return fmt.Errorf("编码内置渠道插件 %s：%w", id, err)
+		}
+		now := time.Now().UTC()
+		if record.InstalledAt.IsZero() {
+			record.InstalledAt = now
+		}
+		if !bytes.Equal(record.Raw, data) {
+			record.UpdatedAt = now
+		}
+		record.ID, record.Raw, record.Source, record.PackagePath = id, data, PluginOriginOfficial, ""
+		byID[id] = record
+	}
 	for _, workflow := range bundledWorkflowPluginManifests() {
 		officialIDs[workflow.Metadata.ID] = struct{}{}
 		data, err := json.Marshal(workflow)
@@ -275,7 +308,9 @@ func (c *pluginRuntime) reload() error {
 		return err
 	}
 	for id, record := range plugins {
-		adapters, loadErr := protocol.LoadInstalledProviders(record.Raw, nil)
+		adapters, loadErr := protocol.LoadInstalledProviders(record.Raw, func(execution string) (protocol.Adapter, bool) {
+			return protocol.Builtins().Resolve(execution)
+		})
 		if loadErr != nil {
 			record.Metadata.Enabled = false
 			record.Metadata.UnavailableReason = loadErr.Error()
@@ -410,30 +445,7 @@ func (c *pluginRuntime) install(data []byte, fileName string) (PluginView, error
 func (c *pluginRuntime) setEnabled(id string, enabled bool) (PluginView, error) {
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
-	ids := []string{strings.TrimSpace(id)}
-	for _, manifest := range protocol.BundledHostManifests() {
-		if manifest.Metadata.ID != strings.TrimSpace(id) {
-			continue
-		}
-		ids = ids[:0]
-		for _, provider := range manifest.Contributes.Providers {
-			ids = append(ids, provider.ID)
-		}
-		break
-	}
-	var result PluginView
-	for _, providerID := range ids {
-		view, err := c.setProviderEnabled(providerID, enabled)
-		if err != nil {
-			return PluginView{}, err
-		}
-		result = view
-	}
-	if len(ids) > 1 {
-		result.Manifest.ID = strings.TrimSpace(id)
-		result.Manifest.Name = strings.TrimSpace(id)
-	}
-	return result, nil
+	return c.setProviderEnabled(strings.TrimSpace(id), enabled)
 }
 
 func (c *pluginRuntime) setProviderEnabled(id string, enabled bool) (PluginView, error) {

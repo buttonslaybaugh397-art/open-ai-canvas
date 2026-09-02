@@ -38,18 +38,22 @@ type AnalyticsOverview struct {
 }
 
 type AnalyticsKPI struct {
-	ActiveUsers         int     `json:"activeUsers"`
-	DAU                 int     `json:"dau"`
-	WAU                 int     `json:"wau"`
-	MAU                 int     `json:"mau"`
-	GenerationTasks     int     `json:"generationTasks"`
-	UpstreamRequests    int     `json:"upstreamRequests"`
-	SuccessRate         float64 `json:"successRate"`
-	P95DurationMs       int64   `json:"p95DurationMs"`
-	CurrentQueuedTasks  int64   `json:"currentQueuedTasks"`
-	EstimatedCostMicros int64   `json:"estimatedCostMicros"`
-	CostAvailable       bool    `json:"costAvailable"`
-	Currency            string  `json:"currency"`
+	ActiveUsers                 int     `json:"activeUsers"`
+	DAU                         int     `json:"dau"`
+	WAU                         int     `json:"wau"`
+	MAU                         int     `json:"mau"`
+	GenerationTasks             int     `json:"generationTasks"`
+	UpstreamRequests            int     `json:"upstreamRequests"`
+	SuccessRate                 float64 `json:"successRate"`
+	P95DurationMs               int64   `json:"p95DurationMs"`
+	CurrentQueuedTasks          int64   `json:"currentQueuedTasks"`
+	EstimatedCostMicros         int64   `json:"estimatedCostMicros"`
+	TotalVideoSeconds           int     `json:"totalVideoSeconds"`
+	AvgCostPerVideoSecondMicros int64   `json:"avgCostPerVideoSecondMicros"`
+	CostAvailable               bool    `json:"costAvailable"`
+	VideoCostAvailable          bool    `json:"videoCostAvailable"`
+	Currency                    string  `json:"currency"`
+	VideoCurrency               string  `json:"videoCurrency"`
 }
 
 type AnalyticsTrendPoint struct {
@@ -584,8 +588,22 @@ func buildAnalyticsOverview(filter repository.AnalyticsFilter, tasks []model.Tas
 	result.KPI.WAU = rollingActiveUsers(rollingActivities, rollingTasks, rollingLogs, filter.To.AddDate(0, 0, -7), filter.To)
 	result.KPI.MAU = rollingActiveUsers(rollingActivities, rollingTasks, rollingLogs, filter.To.AddDate(0, 0, -30), filter.To)
 	currency := ""
+	videoCurrency := ""
+	videoCostMicros := int64(0)
+	videoLogs := 0
+	videoCostsComplete := true
 	for _, log := range logs {
 		durations = append(durations, log.DurationMs)
+		if strings.EqualFold(log.Capability, "video") && log.Status == model.ApiCallStatusSucceeded && log.VideoSeconds > 0 {
+			result.KPI.TotalVideoSeconds += log.VideoSeconds
+			videoLogs++
+			if log.CostAvailable {
+				videoCostMicros += log.EstimatedCostMicros
+				videoCurrency = mergeCurrency(videoCurrency, log.Currency)
+			} else {
+				videoCostsComplete = false
+			}
+		}
 		if log.CostAvailable {
 			result.KPI.CostAvailable = true
 			result.KPI.EstimatedCostMicros += log.EstimatedCostMicros
@@ -593,6 +611,11 @@ func buildAnalyticsOverview(filter repository.AnalyticsFilter, tasks []model.Tas
 		}
 	}
 	result.KPI.Currency = currency
+	result.KPI.VideoCurrency = videoCurrency
+	if result.KPI.TotalVideoSeconds > 0 && videoLogs > 0 && videoCostsComplete && videoCurrency != "MIXED" {
+		result.KPI.AvgCostPerVideoSecondMicros = videoCostMicros / int64(result.KPI.TotalVideoSeconds)
+		result.KPI.VideoCostAvailable = true
+	}
 	result.KPI.P95DurationMs = percentile(durations, 0.95)
 	result.Trend = buildAnalyticsTrend(filter, tasks, logs, activities)
 	result.Models = buildAnalyticsModels(tasks, logs)

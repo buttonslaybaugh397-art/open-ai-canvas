@@ -1,7 +1,7 @@
-import { AlertTriangle, AudioLines, Box, CheckCheck, Clapperboard, Copy, Download, FileText, FileUp, FolderOpen, Image as ImageIcon, Link2, MoreHorizontal, PencilLine, Play, Plus, RotateCcw, Search, Trash2, Upload, type LucideIcon } from "lucide-react";
+import { AlertTriangle, AudioLines, Box, CheckCheck, Clapperboard, Copy, Download, FileText, FileUp, FolderOpen, Image as ImageIcon, Link2, MoreHorizontal, PencilLine, Play, Plus, RotateCcw, Search, Share2, Trash2, Upload, Users, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { App, Button, Drawer, Dropdown, Form, Input, Modal, Popconfirm, Progress, Select, Space, Tag, Typography } from "antd";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { App, Button, Drawer, Dropdown, Form, Input, Modal, Popconfirm, Progress, Segmented, Select, Space, Tag, Typography } from "antd";
 import type { MenuProps } from "antd";
 import { useNavigate, useSearchParams } from "react-router";
 
@@ -25,6 +25,7 @@ import { exportAssets, readAssetPackage } from "./asset-transfer";
 import { AssetStorageUsage, assetStorageUsageQueryKey } from "./asset-storage-usage";
 import { deleteAssetWithRemoteSync, saveRemoteUserDataNow } from "@/services/user-data-sync";
 import { useUserStore } from "@/stores/use-user-store";
+import { canWriteTeamAssets, createTeam, listTeams, shareTeamAssets } from "@/services/api/team-assets";
 
 type LibraryAsset = Exclude<Asset, { kind: "entity" }>;
 
@@ -78,7 +79,12 @@ export default function AssetsPage() {
 
     const updateAsset = useAssetStore((state) => state.updateAsset);
     const retentionDays = useUserStore((state) => state.runtimeLimits.recycleBinRetentionDays ?? 30);
+    const [assetScope, setAssetScope] = useState<AssetScope>(() => searchParams.get("scope") === "team" ? "team" : "personal");
     const [viewMode, setViewMode] = useState<"library" | "trash">("library");
+    const [activeTeamId, setActiveTeamId] = useState(() => searchParams.get("teamId") || "");
+    const [createTeamOpen, setCreateTeamOpen] = useState(false);
+    const [teamMembersOpen, setTeamMembersOpen] = useState(false);
+    const [teamName, setTeamName] = useState("");
     const [keyword, setKeyword] = useState("");
     const [kindFilter, setKindFilter] = useState<AssetKind | "all">("all");
     const [categoryFilter, setCategoryFilter] = useState<AssetCategory | "all">("all");
@@ -92,6 +98,14 @@ export default function AssetsPage() {
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
     const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
     const [batchArchiveOpen, setBatchArchiveOpen] = useState(false);
+    const teamsQuery = useQuery({
+        queryKey: ["teams"],
+        queryFn: ({ signal }) => listTeams(signal),
+        staleTime: 30_000,
+    });
+    const teams = teamsQuery.data?.teams || [];
+    const activeTeam = teams.find((team) => team.id === activeTeamId) || teams[0];
+    const canShareToTeam = canWriteTeamAssets(activeTeam?.role);
 
     const [formKind, setFormKind] = useState<AssetKind>("text");
     const [imageDraft, setImageDraft] = useState<ImageDraft>(null);
@@ -395,7 +409,7 @@ export default function AssetsPage() {
 
     const confirmDelete = async () => {
         if (!deletingAsset) return;
-        if (personalView === "library") {
+        if (viewMode === "library") {
             updateAsset(deletingAsset.id, { status: "archived" });
             await flushAssetStorePersistence();
             try {
@@ -423,7 +437,7 @@ export default function AssetsPage() {
 
     const confirmBatchDelete = async () => {
         if (!selectedAssets.length) return;
-        if (personalView === "library") {
+        if (viewMode === "library") {
             for (const asset of selectedAssets) updateAsset(asset.id, { status: "archived" });
             await flushAssetStorePersistence();
             try {
@@ -451,13 +465,18 @@ export default function AssetsPage() {
             <WorkspacePage grid className="library-page assets-library-page canvas-library-page">
                 <div className="studio-band">
                     <PageHeader
-                        title={viewMode === "trash" ? "素材库 / 回收站" : "素材库"}
-                        description={viewMode === "trash" ? "已删除画布或手动归档的临时素材，可随时还原或彻底清理。" : "管理文本、图片、视频、音频和 3D 模型素材。"}
-                        meta={<span className="app-projects-header-meta assets-header-meta">{validAssets.length} 个素材</span>}
+                        title={assetScope === "team" ? "团队素材" : viewMode === "trash" ? "素材库 / 回收站" : "素材库"}
+                        description={assetScope === "team" ? "浏览、共享和管理团队可复用素材。" : viewMode === "trash" ? "已删除画布或手动归档的临时素材，可随时还原或彻底清理。" : "管理文本、图片、视频、音频和 3D 模型素材。"}
+                        meta={<span className="app-projects-header-meta assets-header-meta">{assetScope === "team" ? activeTeam?.name || "未选择团队" : `${validAssets.length} 个素材`}</span>}
                         actions={
                             <div className="assets-header-actions">
                                 <div className="assets-header-action-buttons">
-                                    {viewMode === "trash" ? (
+                                    {assetScope === "team" ? (
+                                        <>
+                                            {activeTeam ? <Button icon={<Users className="size-4" />} onClick={() => setTeamMembersOpen(true)}>成员管理</Button> : null}
+                                            <Button type="primary" icon={<Plus className="size-4" />} onClick={() => setCreateTeamOpen(true)}>创建团队</Button>
+                                        </>
+                                    ) : viewMode === "trash" ? (
                                         <>
                                             {trashAssets.length > 0 ? (
                                                 <Popconfirm
@@ -511,7 +530,11 @@ export default function AssetsPage() {
                             </div>
                         }
                     />
-                    <ListToolbar
+                    <div className="flex flex-wrap items-center justify-between gap-3 py-3">
+                        <Segmented<AssetScope> value={assetScope} options={[{ label: "我的素材", value: "personal" }, { label: "团队素材", value: "team" }]} onChange={(value) => { setAssetScope(value); setSelectedIds([]); }} />
+                        {assetScope === "team" && teams.length ? <Select className="min-w-48" value={activeTeam?.id} options={teams.map((team) => ({ value: team.id, label: team.name }))} onChange={setActiveTeamId} /> : null}
+                    </div>
+                    {assetScope === "personal" ? <ListToolbar
                         className="library-toolbar"
                         active={Boolean(keyword || kindFilter !== "all" || categoryFilter !== "all")}
                         onReset={() => {
@@ -532,11 +555,11 @@ export default function AssetsPage() {
                                 setKeyword(event.target.value);
                             }}
                         />
-                    </ListToolbar>
+                    </ListToolbar> : null}
                 </div>
 
                 <div className="canvas-library-frame assets-library-frame">
-                    <div className="grid min-h-0 gap-4 lg:grid-cols-[176px_minmax(0,1fr)]">
+                    {assetScope === "personal" ? <div className="grid min-h-0 gap-4 lg:grid-cols-[176px_minmax(0,1fr)]">
                         <aside className="thin-scrollbar flex gap-2 overflow-x-auto py-3 lg:sticky lg:top-0 lg:block lg:max-h-[calc(100vh-150px)] lg:overflow-y-auto lg:pr-3">
                             <AssetFilterGroup
                                 title="素材类型"
@@ -610,6 +633,10 @@ export default function AssetsPage() {
                                     onRestore={() => void batchRestore()}
                                     onArchive={() => setBatchArchiveOpen(true)}
                                     onDelete={() => setBatchDeleteOpen(true)}
+                                    shareLabel={activeTeam ? `分享到 ${activeTeam.name}` : "分享到团队"}
+                                    canShare={Boolean(activeTeam && canShareToTeam)}
+                                    sharing={shareMutation.isPending}
+                                    onShare={() => shareMutation.mutate()}
                                 />
                             ) : null}
                             {validAssets.length === 0 ? (
@@ -665,7 +692,15 @@ export default function AssetsPage() {
                                 </>
                             )}
                         </section>
-                    </div>
+                    </div> : teamsQuery.isLoading ? (
+                        <WorkspaceState icon="assets" compact title="正在加载团队" description="正在读取你的团队和素材权限。" />
+                    ) : teamsQuery.isError ? (
+                        <WorkspaceState icon="assets" compact title="团队加载失败" description={readAssetsError(teamsQuery.error, "请稍后重试。")} action={<Button onClick={() => void teamsQuery.refetch()}>重新加载</Button>} />
+                    ) : activeTeam ? (
+                        <TeamAssetBrowser teamId={activeTeam.id} role={activeTeam.role} manageable pageSize={35} />
+                    ) : (
+                        <WorkspaceState icon="assets" compact title="还没有团队" description="创建团队后，就可以把个人素材共享给团队成员统一使用。" action={<Button type="primary" icon={<Users className="size-4" />} onClick={() => setCreateTeamOpen(true)}>创建第一个团队</Button>} />
+                    )}
                 </div>
             </WorkspacePage>
 
@@ -1067,6 +1102,10 @@ function AssetsBatchBar({
     onRestore,
     onArchive,
     onDelete,
+    shareLabel,
+    canShare,
+    sharing,
+    onShare,
 }: {
     count: number;
     isTrash?: boolean;
@@ -1077,6 +1116,10 @@ function AssetsBatchBar({
     onRestore?: () => void;
     onArchive?: () => void;
     onDelete: () => void;
+    shareLabel?: string;
+    canShare?: boolean;
+    sharing?: boolean;
+    onShare?: () => void;
 }) {
     return (
         <div className="assets-batch-bar" role="toolbar" aria-label="批量操作">
@@ -1101,6 +1144,7 @@ function AssetsBatchBar({
                     </>
                 ) : (
                     <>
+                        {onShare ? <Button size="small" icon={<Share2 className="size-3.5" />} disabled={!canShare} loading={sharing} onClick={onShare}>{shareLabel}</Button> : null}
                         <Button size="small" icon={<Download className="size-3.5" />} onClick={onExport}>
                             导出
                         </Button>

@@ -10,6 +10,7 @@ import (
 	"io"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
@@ -17,6 +18,11 @@ import (
 
 	"gorm.io/gorm"
 )
+
+var teamAuditClock struct {
+	sync.Mutex
+	last time.Time
+}
 
 type TeamItem struct {
 	ID          string               `json:"id"`
@@ -920,7 +926,13 @@ func (s *Service) DeleteTeamAsset(actor *model.User, teamID string, id string) e
 }
 
 func newTeamAuditEvent(actor *model.User, teamID string, action string, targetType string, targetID string, summary string) *model.TeamAuditEvent {
+	teamAuditClock.Lock()
 	now := time.Now().UTC()
+	if !now.After(teamAuditClock.last) {
+		now = teamAuditClock.last.Add(time.Nanosecond)
+	}
+	teamAuditClock.last = now
+	teamAuditClock.Unlock()
 	return &model.TeamAuditEvent{ID: newID(), TeamID: strings.TrimSpace(teamID), ActorUserID: actor.ID, Action: action, TargetType: targetType, TargetID: strings.TrimSpace(targetID), Summary: summary, CreatedAt: now}
 }
 

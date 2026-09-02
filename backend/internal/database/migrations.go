@@ -10,12 +10,16 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 4
+const CurrentSchemaVersion int64 = 8
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
-const assetTaxonomyCandidateIdentityChecksum = "sha256:asset-taxonomy-candidate-identity-v3-20260831-r1"
-const resourceUploadKeyChecksum = "sha256:resource-upload-key-v4-20260901"
+const teamAssetIsolationChecksum = "sha256:team-asset-isolation-v3-20260901"
+const teamSettingsQuotaChecksum = "sha256:team-settings-quota-v4-20260901"
+const teamAuditEventsChecksum = "sha256:team-audit-events-v5-20260901"
+const teamInvitationsChecksum = "sha256:team-invitations-v6-20260901"
+const resourceUploadKeyChecksum = "sha256:resource-upload-key-v7-20260901"
+const assetTaxonomyCandidateIdentityChecksum = "sha256:asset-taxonomy-candidate-identity-v8-20260902-r1"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -44,8 +48,12 @@ type migration struct {
 var schemaMigrations = []migration{
 	{version: 1, name: "baseline_gorm_schema", checksum: baselineSchemaChecksum, apply: migrateSchemaV1},
 	{version: 2, name: "schema_migrations_applied_at_index", checksum: schemaMigrationAppliedAtIndexChecksum, apply: migrateSchemaV2},
-	{version: 3, name: "asset_taxonomy_candidate_identity", checksum: assetTaxonomyCandidateIdentityChecksum, apply: migrateSchemaV3},
-	{version: 4, name: "resource_upload_key", checksum: resourceUploadKeyChecksum, apply: migrateSchemaV4},
+	{version: 3, name: "team_asset_isolation", checksum: teamAssetIsolationChecksum, apply: migrateTeamAssetIsolation},
+	{version: 4, name: "team_settings_quota", checksum: teamSettingsQuotaChecksum, apply: migrateTeamSettingsQuota},
+	{version: 5, name: "team_audit_events", checksum: teamAuditEventsChecksum, apply: migrateTeamAuditEvents},
+	{version: 6, name: "team_invitations", checksum: teamInvitationsChecksum, apply: migrateTeamInvitations},
+	{version: 7, name: "resource_upload_key", checksum: resourceUploadKeyChecksum, apply: migrateSchemaV4},
+	{version: 8, name: "asset_taxonomy_candidate_identity", checksum: assetTaxonomyCandidateIdentityChecksum, apply: migrateSchemaV3},
 }
 
 func migrateSchemaV2(tx *gorm.DB) error {

@@ -578,7 +578,7 @@ func (a manifestAdapter) parse(payload map[string]any, c PollContext) CreateResu
 	}
 	// Only status-less synchronous responses may infer completion from a result.
 	// Async providers can include partial or stale result fields before success.
-	if rawStatus == "" && status == StatusPending && !manifestError(payload, a.manifest.Response.ErrorPaths...) && (result.Text != "" || len(result.Images) > 0 || len(result.Videos) > 0 || len(result.Audios) > 0) {
+	if statusText == "" && status == StatusPending && !manifestError(payload, a.manifest.Response.ErrorPaths...) && (result.Text != "" || len(result.Images) > 0 || len(result.Videos) > 0 || len(result.Audios) > 0) {
 		status = StatusSucceeded
 	}
 	if result.Text == "" && result.Reasoning == "" && len(result.Images) == 0 && len(result.Videos) == 0 && len(result.Audios) == 0 {
@@ -1017,14 +1017,6 @@ func requestAsManifestValue(value any) (any, error) {
 		return nil, err
 	}
 	return result, nil
-}
-
-func manifestModelID(request GenerationRequest) string {
-	modelID := strings.TrimSpace(request.Model)
-	if separator := strings.LastIndex(modelID, "::"); separator >= 0 {
-		modelID = modelID[separator+2:]
-	}
-	return strings.ToLower(modelID)
 }
 
 func manifestModelID(request GenerationRequest) string {

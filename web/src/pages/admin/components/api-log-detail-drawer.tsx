@@ -36,7 +36,8 @@ export function ApiLogDetailDrawer({ logId, onClose, onLogUpdated }: { logId: st
             onLogUpdated?.(refreshed.log);
             if (result.recovered) {
                 window.dispatchEvent(new CustomEvent("wallet:updated"));
-                if (result.billingSettled) message.success("已获取上游视频，任务已恢复并完成结算");
+                if (result.refetched) message.success("已重新获取上游视频并更新任务结果，积分未变");
+                else if (result.billingSettled) message.success("已获取上游视频，任务已恢复并完成结算");
                 else message.warning("已获取上游视频，任务已恢复，计费状态待核对");
             } else {
                 message.info(`上游任务仍在处理中${result.providerStatus ? `（${result.providerStatus}）` : ""}`);
@@ -59,7 +60,7 @@ function LogDetail({ log, querying, onQueryProviderTask }: { log: ApiCallLog; qu
     const displayStatus = apiLogDisplayStatus(log);
     const items = [
         ["时间", new Date(log.startedAt || log.createdAt).toLocaleString("zh-CN", { hour12: false })],
-        ["状态", <AdminStatusBadge label={failed ? "失败" : processing ? "处理中" : "成功"} tone={failed ? "error" : processing ? "warning" : "success"} />],
+        ["状态", <AdminStatusBadge label={displayStatus.label} tone={displayStatus.tone} />],
         [
             "用户",
             <span>
@@ -85,14 +86,14 @@ function LogDetail({ log, querying, onQueryProviderTask }: { log: ApiCallLog; qu
         ["上游地址", log.upstreamUrl || "--"],
     ].map(([label, children], index) => ({ key: String(index), label, children }));
 
-    const canQueryProviderTask = log.capability === "video" && log.taskStatus === "failed" && Boolean(log.taskId && log.providerRequestId);
+    const canQueryProviderTask = log.capability === "video" && (log.taskStatus === "failed" || log.taskStatus === "succeeded") && Boolean(log.taskId && log.providerRequestId);
 
     return (
         <div className="space-y-6">
             {canQueryProviderTask ? (
                 <div className="flex justify-end">
                     <Button icon={<RefreshCw className="size-4" />} loading={querying} onClick={onQueryProviderTask}>
-                        {querying ? "正在下载并入库" : "手动查询任务"}
+                        {querying ? "正在下载并入库" : log.taskStatus === "succeeded" ? "重新获取视频" : "手动查询任务"}
                     </Button>
                 </div>
             ) : null}

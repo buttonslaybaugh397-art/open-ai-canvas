@@ -106,6 +106,7 @@ export type AdminProviderTaskQueryResult = {
     task: GenerationTask;
     providerStatus: string;
     recovered: boolean;
+    refetched: boolean;
     billingSettled: boolean;
 };
 
@@ -180,8 +181,12 @@ export type AdminAnalytics = {
         p95DurationMs: number;
         currentQueuedTasks: number;
         estimatedCostMicros: number;
+        totalVideoSeconds: number;
+        avgCostPerVideoSecondMicros: number;
         costAvailable: boolean;
+        videoCostAvailable: boolean;
         currency?: string;
+        videoCurrency?: string;
     };
     trend: Array<{ day: string; tasks: number; requests: number; activeUsers: number; requestSuccessRate: number }>;
     models: Array<{

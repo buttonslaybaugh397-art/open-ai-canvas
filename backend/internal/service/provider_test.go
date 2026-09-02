@@ -2172,6 +2172,67 @@ func TestRunNewAPIChannel2VideoTaskDownloadsTemporaryResult(t *testing.T) {
 	}
 }
 
+func TestRunNewAPIChannel2VideoTaskUsesCompletedCreateResponseWithoutPolling(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	paths := make([]string, 0, 2)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/video/generations":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("{\"code\":\"success\",\"data\":{\"task_id\":\"completed-on-create\",\"status\":\"SUCCESS\",\"data\":{\"status\":\"completed\",\"output_url\":\"" + server.URL + "/v/result-token\"}}}"))
+		case "GET /v/result-token":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("video"))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	result, err := runNewAPIChannel2VideoTask(context.Background(), canvasGenerationInput{
+		Prompt: "make it move",
+		Config: providerConfig{BaseURL: server.URL, APIKey: "test-key", Model: "video-model", InterfaceType: string(model.ChannelInterfaceNewAPIChannel2)},
+	})
+	if err != nil {
+		t.Fatalf("runNewAPIChannel2VideoTask() error = %v", err)
+	}
+	video := result["video"].(map[string]interface{})
+	if video["dataUrl"] != "data:video/mp4;base64,dmlkZW8=" {
+		t.Fatalf("video = %#v", video)
+	}
+	want := "POST /v1/video/generations,GET /v/result-token"
+	if got := strings.Join(paths, ","); got != want {
+		t.Fatalf("paths = %q, want %q", got, want)
+	}
+}
+
+func TestQueryNewAPIChannel2VideoTaskRejectsNonVideoResult(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/video/generations/provider-task":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("{\"code\":\"success\",\"data\":{\"task_id\":\"provider-task\",\"status\":\"SUCCESS\",\"video_url\":\"" + server.URL + "/result\"}}"))
+		case "/result":
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte("<html>not a video</html>"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	_, _, err := queryNewAPIChannel2VideoTask(context.Background(), canvasGenerationInput{
+		Config: providerConfig{BaseURL: server.URL, APIKey: "test-key"},
+	}, "provider-task")
+	if err == nil || !strings.Contains(err.Error(), "不是视频") {
+		t.Fatalf("queryNewAPIChannel2VideoTask() error = %v, want non-video result error", err)
+	}
+}
+
 func TestRunNewAPIChannel2VideoTaskResumesOriginalProviderTaskWithoutAnotherPost(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
 	paths := make([]string, 0, 2)
@@ -2222,6 +2283,28 @@ func TestRunNewAPIChannel2VideoTaskReturnsTypedDeadlineWhenPollingWindowEnds(t *
 	_, err := runNewAPIChannel2VideoTask(ctx, canvasGenerationInput{})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("runNewAPIChannel2VideoTask() error = %v, want context deadline exceeded", err)
+	}
+}
+
+func TestNewAPIChannel2QueryTreatsPostSubmissionValidationResponsesAsTransient(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusUnprocessableEntity} {
+		err := providerHTTPError{StatusCode: status, Body: "{\"message\":\"task is still propagating\"}"}
+		if !isTransientNewAPIChannel2QueryError(err) {
+			t.Fatalf("status %d should be transient after a provider task ID was accepted", status)
+		}
+		if delay := newAPIChannel2QueryRetryDelay(err); delay != newAPIChannel2VideoPollInterval {
+			t.Fatalf("status %d retry delay = %s, want %s", status, delay, newAPIChannel2VideoPollInterval)
+		}
+		if retries := newAPIChannel2QueryMaxRetries(err); retries != newAPIChannel2PropagationRetries {
+			t.Fatalf("status %d retries = %d, want %d", status, retries, newAPIChannel2PropagationRetries)
+		}
+	}
+	terminal := newAPIChannel2ResponseError{Code: "invalid_parameter", Message: "invalid request"}
+	if isTransientNewAPIChannel2QueryError(terminal) {
+		t.Fatal("explicit NewAPI business validation failure must remain terminal")
+	}
+	if retries := newAPIChannel2QueryMaxRetries(terminal); retries != newAPIChannel2VideoMaxQueryRetries {
+		t.Fatalf("normal transient retry budget = %d, want %d", retries, newAPIChannel2VideoMaxQueryRetries)
 	}
 }
 

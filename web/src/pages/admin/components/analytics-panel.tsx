@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { App, Button, DatePicker, Drawer, Form, Input, Modal, Select, Tabs, Tag, Tooltip } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
-import { AlertTriangle, BarChart3, CircleDollarSign, Clock3, Gauge, Pencil, Plus, RefreshCw, Settings2, Trash2, UsersRound, Workflow } from "lucide-react";
+import { AlertTriangle, BarChart3, CircleDollarSign, Clock3, Gauge, Pencil, Plus, RefreshCw, Settings2, Timer, Trash2, UsersRound, Workflow } from "lucide-react";
 import { Area, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
 import { useSearchParams } from "react-router";
 
@@ -470,6 +470,19 @@ export default function AnalyticsPanel({ users, channels }: Props) {
                     value={data ? (data.kpi.costAvailable ? formatCost(data.kpi.estimatedCostMicros, data.kpi.currency, true) : "待配置") : "--"}
                     detail={data ? (data.kpi.costAvailable ? `${pricedModelCount}/${modelRows.length} 个模型可估算` : "价格未完整配置，暂不能汇总") : undefined}
                     tone={data?.kpi.costAvailable ? "neutral" : "warning"}
+                />
+                <AnalyticsHealthCard
+                    icon={<Timer className="size-4" />}
+                    label="视频总秒数"
+                    value={data ? `${formatNumber(data.kpi.totalVideoSeconds ?? 0)} 秒` : "--"}
+                    detail={data && data.kpi.totalVideoSeconds > 0 ? "按视频请求时长累计" : "当前范围暂无视频数据"}
+                />
+                <AnalyticsHealthCard
+                    icon={<Clock3 className="size-4" />}
+                    label="每秒平均价格"
+                    value={data ? ((data.kpi.totalVideoSeconds ?? 0) <= 0 ? "暂无数据" : data.kpi.videoCostAvailable ? formatCost(data.kpi.avgCostPerVideoSecondMicros, data.kpi.videoCurrency || data.kpi.currency, true) : "待配置") : "--"}
+                    detail={data && (data.kpi.totalVideoSeconds ?? 0) > 0 ? (data.kpi.videoCostAvailable ? "视频费用 / 视频总秒数" : "视频价格未完整配置") : "配置视频价格后显示"}
+                    tone={data && (data.kpi.totalVideoSeconds ?? 0) > 0 && !data.kpi.videoCostAvailable ? "warning" : "neutral"}
                 />
             </section>
 

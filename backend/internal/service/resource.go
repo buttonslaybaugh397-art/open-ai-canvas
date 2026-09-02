@@ -99,6 +99,29 @@ func (s *Service) DirectResourceDownloadURL(userID string, id string, fileName s
 	if resource.Status != model.ResourceStatusReady {
 		return "", BadAuthRequest("资源尚未上传完成")
 	}
+	if resource.Provider == "local" || (s.resourceCloudBackupAvailable(resource) && resourceNeedsCloudRecovery(resource)) {
+		return "", errors.New("云端直连暂不可用")
+	}
+	setting, err := s.ossSettingForResource(resource.UserID, resource)
+	if err != nil {
+		return "", err
+	}
+	setting.Provider = firstNonEmpty(resource.Provider, setting.Provider)
+	setting.Endpoint = firstNonEmpty(resource.Endpoint, setting.Endpoint)
+	setting.Bucket = firstNonEmpty(resource.Bucket, setting.Bucket)
+	if setting.Provider == s3Provider && !publicHTTPSStorageEndpoint(setting.Endpoint) {
+		return "", errors.New("当前 S3 存储不能提供浏览器直连下载")
+	}
+	return signedOSSObjectDownloadURL(setting, resource.ObjectKey, time.Now().Add(directResourceURLTTL), SafeResourceDownloadFileName(fileName))
+}
+
+func (s *Service) directResourceURL(resource *model.Resource, expiresAt time.Time) (string, error) {
+	if resource == nil {
+		return "", errors.New("资源不存在")
+	}
+	if resource.Status != model.ResourceStatusReady {
+		return "", BadAuthRequest("资源尚未上传完成")
+	}
 	if resource.Provider == "local" {
 		return s.signedPublicResourceURL(resource, expiresAt)
 	}
@@ -302,7 +325,7 @@ func (s *Service) UploadResource(userID string, header *multipart.FileHeader, ki
 	mimeType := strings.TrimSpace(header.Header.Get("Content-Type"))
 	mimeType = detectUploadedMimeType(file, header.Filename, mimeType)
 	if existing != nil {
-		return s.retryStoredResource(userID, existing, kind, mimeType, header.Size, file)
+		return s.retryStoredResource(userID, existing, kind, header.Filename, mimeType, header.Size, file)
 	}
 	day, err := s.reserveUserUploadQuota(userID, header.Size)
 	if err != nil {
@@ -365,7 +388,7 @@ func (s *Service) ImportResourceURL(userID string, rawURL string, kind string, w
 	}
 	size := int64(len(payload.data))
 	if existing != nil {
-		return s.retryStoredResource(userID, existing, kind, payload.mimeType, size, bytes.NewReader(payload.data))
+		return s.retryStoredResource(userID, existing, kind, payload.fileName, payload.mimeType, size, bytes.NewReader(payload.data))
 	}
 	day, err := s.reserveUserUploadQuota(userID, size)
 	if err != nil {
@@ -525,13 +548,6 @@ func (s *Service) storeResource(userID string, kind string, fileName string, mim
 		}
 		return nil, false, err
 	}
-	var etag string
-	if provider == "local" {
-		filePath := filepath.Join(s.dataDir, "resources", filepath.FromSlash(objectKey))
-		err = writeLocalResourceObject(filePath, body)
-	} else {
-		etag, err = putOSSObject(setting, objectKey, mimeType, size, body)
-	}
 	etag, err := s.writeStoredResourceBody(&resource, setting, fileName, body)
 	resource.UpdatedAt = time.Now()
 	if err != nil {
@@ -565,23 +581,58 @@ func (s *Service) storeResource(userID string, kind string, fileName string, mim
 	return &resource, true, nil
 }
 
-func writeLocalResourceObject(filePath string, body io.Reader) error {
-	if err := os.MkdirAll(filepath.Dir(filePath), 0o750); err != nil {
-		return err
+func (s *Service) writeStoredResourceBody(resource *model.Resource, setting ossSettingValue, fileName string, body io.Reader) (string, error) {
+	if resource.Provider == "local" {
+		return "", s.writeLocalResourceObject(resource.ObjectKey, body)
 	}
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
-	if err != nil {
-		return err
+	if resource.Kind == "video" {
+		stagedPath, err := stageResourceBody(s.dataDir, body)
+		if err != nil {
+			return "", err
+		}
+		defer func() {
+			_ = os.Remove(stagedPath)
+			_ = os.Remove(filepath.Dir(stagedPath))
+		}()
+		etag, cloudErr := s.putOSSObjectFromFileWithRetry(setting, resource.ObjectKey, resource.MimeType, resource.Size, stagedPath)
+		if cloudErr == nil {
+			resource.CloudSyncStatus = model.ResourceCloudSyncStatusSynced
+			resource.LocalBackupKey = ""
+			resource.CloudSyncError = ""
+			resource.CloudSyncNextAttemptAt = nil
+			return etag, nil
+		}
+		if resource.LocalBackupKey == "" {
+			resource.LocalBackupKey = localObjectKey(resource.UserID, "backup", fileName, resource.MimeType, time.Now())
+		}
+		if err := copyResourceFileToLocal(s, stagedPath, resource.LocalBackupKey); err != nil {
+			return "", err
+		}
+		resource.CloudSyncStatus = model.ResourceCloudSyncStatusPending
+		resource.CloudSyncError = storageErrorText(cloudErr)
+		resource.CloudSyncNextAttemptAt = timePtr(time.Now().Add(resourceRecoveryInitialDelay))
+		return "", nil
 	}
-	_, copyErr := io.Copy(file, body)
-	closeErr := file.Close()
-	if copyErr != nil {
-		return copyErr
+	if resource.LocalBackupKey == "" {
+		resource.LocalBackupKey = localObjectKey(resource.UserID, "backup", fileName, resource.MimeType, time.Now())
 	}
-	return closeErr
+	if err := s.writeLocalResourceObject(resource.LocalBackupKey, body); err != nil {
+		return "", err
+	}
+	etag, cloudErr := s.putOSSObjectWithRetry(setting, resource.ObjectKey, resource.MimeType, resource.Size, resource.LocalBackupKey)
+	if cloudErr == nil {
+		resource.CloudSyncStatus = model.ResourceCloudSyncStatusSynced
+		resource.CloudSyncError = ""
+		resource.CloudSyncNextAttemptAt = nil
+		return etag, nil
+	}
+	resource.CloudSyncStatus = model.ResourceCloudSyncStatusPending
+	resource.CloudSyncError = storageErrorText(cloudErr)
+	resource.CloudSyncNextAttemptAt = timePtr(time.Now().Add(resourceRecoveryInitialDelay))
+	return "", nil
 }
 
-func (s *Service) retryStoredResource(userID string, resource *model.Resource, kind string, mimeType string, size int64, body io.Reader) (*model.Resource, error) {
+func (s *Service) retryStoredResource(userID string, resource *model.Resource, kind string, fileName string, mimeType string, size int64, body io.Reader) (*model.Resource, error) {
 	if resource == nil {
 		return nil, errors.New("资源不存在")
 	}
@@ -611,47 +662,39 @@ func (s *Service) retryStoredResource(userID string, resource *model.Resource, k
 	resource.UpdatedAt = time.Now()
 	day, err := s.reserveRetryUploadQuota(userID, size)
 	if err != nil {
-		resource.Status = model.ResourceStatusFailed
-		resource.Error = err.Error()
-		resource.UpdatedAt = time.Now()
-		if saveErr := s.repo.SaveResource(resource); saveErr != nil {
-			return nil, errors.Join(err, fmt.Errorf("恢复资源重试失败状态失败：%w", saveErr))
-		}
-		return nil, err
+		return nil, s.restoreFailedResourceUpload(resource, err, "恢复资源重试失败状态失败")
+	}
+	setting := ossSettingValue{}
+	if resource.Provider != "local" {
+		setting, err = s.ossSettingForResource(userID, resource)
 	}
 	var etag string
-	if resource.Provider == "local" {
-		err = writeLocalResourceObject(filepath.Join(s.dataDir, "resources", filepath.FromSlash(resource.ObjectKey)), body)
-	} else {
-		var setting ossSettingValue
-		setting, err = s.ossSettingForResource(userID, resource)
-		if err == nil {
-			etag, err = putOSSObject(setting, resource.ObjectKey, resource.MimeType, resource.Size, body)
-		}
+	if err == nil {
+		etag, err = s.writeStoredResourceBody(resource, setting, fileName, body)
 	}
 	resource.UpdatedAt = time.Now()
 	if err != nil {
 		s.releaseRetryUploadQuota(userID, day, size)
-		resource.Status = model.ResourceStatusFailed
-		resource.Error = err.Error()
-		if saveErr := s.repo.SaveResource(resource); saveErr != nil {
-			return nil, errors.Join(err, fmt.Errorf("记录资源重试失败状态失败：%w", saveErr))
-		}
-		return nil, err
+		return nil, s.restoreFailedResourceUpload(resource, err, "记录资源重试失败状态失败")
 	}
 	resource.Status = model.ResourceStatusReady
 	resource.ETag = etag
 	if err := s.repo.SaveResource(resource); err != nil {
 		s.releaseRetryUploadQuota(userID, day, size)
-		resource.Status = model.ResourceStatusFailed
-		resource.Error = "保存资源重试就绪状态失败"
-		if saveErr := s.repo.SaveResource(resource); saveErr != nil {
-			return nil, errors.Join(err, fmt.Errorf("记录资源重试失败状态失败：%w", saveErr))
-		}
-		return nil, fmt.Errorf("保存资源重试就绪状态失败：%w", err)
+		return nil, s.restoreFailedResourceUpload(resource, fmt.Errorf("保存资源重试就绪状态失败：%w", err), "记录资源重试失败状态失败")
 	}
 	s.recordActivity(userID, "resource", 1)
 	return resource, nil
+}
+
+func (s *Service) restoreFailedResourceUpload(resource *model.Resource, cause error, context string) error {
+	resource.Status = model.ResourceStatusFailed
+	resource.Error = cause.Error()
+	resource.UpdatedAt = time.Now()
+	if saveErr := s.repo.SaveResource(resource); saveErr != nil {
+		return errors.Join(cause, fmt.Errorf("%s：%w", context, saveErr))
+	}
+	return cause
 }
 
 func localObjectKey(userID string, kind string, fileName string, mimeType string, now time.Time) string {

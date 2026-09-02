@@ -167,7 +167,7 @@ export function VideoPlayer({ src, mimeType, title = "视频", className, brandC
         }
         if (dataCanvasNoZoom) event.stopPropagation();
     };
-    const type = mimeType && supportedVideoMimeTypes.has(mimeType as VideoMimeType) ? (mimeType as VideoMimeType) : "video/mp4";
+    const type = videoMimeType(mimeType, src);
     const mediaSource = useMemo(() => ({ src, type }), [src, type]);
     const handleCanPlay = (detail: Parameters<NonNullable<MediaPlayerProps["onCanPlay"]>>[0], event: Parameters<NonNullable<MediaPlayerProps["onCanPlay"]>>[1]) => {
         const provider = event.target.provider;

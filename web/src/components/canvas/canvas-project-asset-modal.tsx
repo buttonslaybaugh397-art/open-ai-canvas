@@ -18,6 +18,7 @@ export function CanvasProjectAssetModal({
     detail,
     initialCategory = "all",
     initialFolderId = "all",
+    teamAssetKinds,
     onClose,
     onInsert,
     onInsertFolder,
@@ -26,6 +27,7 @@ export function CanvasProjectAssetModal({
     detail?: ProjectDetail;
     initialCategory?: string;
     initialFolderId?: string;
+    teamAssetKinds?: Array<"text" | "image" | "video" | "audio">;
     onClose: () => void;
     onInsert: (payloads: InsertAssetPayload[]) => Promise<void> | void;
     onInsertFolder?: (folderId: string) => Promise<void> | void;

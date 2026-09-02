@@ -206,12 +206,6 @@ export function useCanvasGenerationExecutor({
                     if (!effectivePrompt && (mode === "text" || mode === "audio")) {
                         return;
                     }
-                    const promptLengthError = mode === "video" ? modelPromptLengthError(generationConfig, generationConfig.model, mode, effectivePrompt) : "";
-                    if (promptLengthError) {
-                        message.error(promptLengthError);
-                        return;
-                    }
-
                     const requestFingerprint = canvasGenerationRequestFingerprint({
                         nodeId,
                         mode,

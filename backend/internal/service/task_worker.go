@@ -171,15 +171,15 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task) error {
 			return leaseErr
 		default:
 		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			decryptedInput, decryptErr := s.decryptTaskInputJSON(task.InputJSON)
-			if decryptErr == nil && s.shouldDeferVideoProviderTask(*task, decryptedInput, err) {
-				if deferErr := s.repo.DeferRunningTaskForProviderPoll(task.ID, task.LeaseOwner, "后台仍在生成", 15*time.Second); deferErr != nil {
-					return deferErr
-				}
-				_ = s.log(task.UserID, task.ID, "info", "前台等待结束，上游视频仍在生成，将继续回查原任务", task.PollStage)
-				return nil
+		decryptedInput, decryptErr := s.decryptTaskInputJSON(task.InputJSON)
+		if decryptErr == nil && s.shouldDeferVideoProviderTask(*task, decryptedInput, err) {
+			if deferErr := s.repo.DeferRunningTaskForProviderPoll(task.ID, task.LeaseOwner, "上游状态待确认，后台继续查询", 15*time.Second); deferErr != nil {
+				return deferErr
 			}
+			_ = s.log(task.UserID, task.ID, "warn", "上游查询遇到网络波动，保留原任务并继续后台回查", safeProviderLogError(err))
+			return nil
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
 			err = errors.New(taskTimeoutMessage(task.Type))
 		}
 		return terminal.handleExecutionFailure(task, err, providerSucceeded, channelSlotFailedBeforeRequest)
@@ -237,7 +237,7 @@ func taskExecutionTimeoutWithPolicy(taskType string, policy RuntimeTaskPolicy) t
 }
 
 func (s *Service) shouldDeferVideoProviderTask(task model.Task, decryptedInput string, err error) bool {
-	if !errors.Is(err, context.DeadlineExceeded) || strings.TrimSpace(task.ProviderRequestID) == "" || (!strings.HasPrefix(task.Type, "canvas_video") && !strings.HasPrefix(task.Type, "video_")) {
+	if err == nil || errors.Is(err, context.Canceled) || strings.TrimSpace(task.ProviderRequestID) == "" || (!strings.HasPrefix(task.Type, "canvas_video") && !strings.HasPrefix(task.Type, "video_")) {
 		return false
 	}
 	var input canvasGenerationInput
@@ -245,7 +245,7 @@ func (s *Service) shouldDeferVideoProviderTask(task model.Task, decryptedInput s
 		return false
 	}
 	resolved, resolveErr := s.resolveProviderConfig(input.Config)
-	return resolveErr == nil && resolved.InterfaceType == string(model.ChannelInterfaceNewAPIChannel2)
+	return resolveErr == nil && resolved.InterfaceType == string(model.ChannelInterfaceNewAPIChannel2) && (errors.Is(err, context.DeadlineExceeded) || isTransientNewAPIChannel2QueryError(err))
 }
 
 func taskTimeoutMessage(taskType string) string {

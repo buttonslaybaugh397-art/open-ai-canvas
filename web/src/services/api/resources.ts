@@ -140,6 +140,25 @@ export function isResourceUrl(url?: string) {
     return path.startsWith(`${basePath}/resources/`) && path.endsWith("/file");
 }
 
+export function resourceIdFromUrl(url?: string) {
+    const value = String(url || "");
+    if (!isResourceUrl(value)) return "";
+    const base = String(apiBaseURL).replace(/\/+$/, "");
+    const prefix = `${base.startsWith("http") ? new URL(base).pathname : base}/resources/`;
+    let path = value.split(/[?#]/, 1)[0];
+    try {
+        path = new URL(value, window.location.origin).pathname;
+    } catch {
+        // Keep relative paths usable in non-browser callers and tests.
+    }
+    if (!path.startsWith(prefix) || !path.endsWith("/file")) return "";
+    try {
+        return decodeURIComponent(path.slice(prefix.length, -"/file".length));
+    } catch {
+        return "";
+    }
+}
+
 export async function uploadResourceFile(file: Blob, kind: "image" | "video" | "audio" | "file", meta?: ResourceUploadMeta) {
     const formData = new FormData();
     const name = meta?.fileName || (file instanceof File ? file.name : `${kind}.${extensionFromMime(file.type, kind)}`);
@@ -202,11 +221,6 @@ export async function getResourceOSSUrl(storageKey?: string) {
         .finally(() => directResourceURLRequests.delete(cacheKey));
     directResourceURLRequests.set(cacheKey, requestTask);
     return requestTask;
-}
-
-function uploadRequestConfig(idempotencyKey?: string) {
-    const value = idempotencyKey?.trim();
-    return value ? { headers: { "X-Idempotency-Key": value } } : undefined;
 }
 
 export async function getResourceDirectDownloadUrl(storageKey: string, fileName: string) {

@@ -9,8 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -974,7 +972,7 @@ func TestRetryStoredResourceKeepsOriginalObjectKey(t *testing.T) {
 	if err := svc.repo.CreateResource(failed); err != nil {
 		t.Fatal(err)
 	}
-	retried, err := svc.retryStoredResource("user-1", failed, "image", "image/png", 7, bytes.NewReader([]byte("payload")))
+	retried, err := svc.retryStoredResource("user-1", failed, "image", "fixed.png", "image/png", 7, bytes.NewReader([]byte("payload")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1009,7 +1007,7 @@ func TestRetryStoredResourceReleasesDailyQuotaAfterFailure(t *testing.T) {
 	if err := svc.repo.CreateResource(failed); err != nil {
 		t.Fatal(err)
 	}
-	_, err := svc.retryStoredResource("user-1", failed, "image", "image/png", 7, iotest.ErrReader(errors.New("write failed")))
+	_, err := svc.retryStoredResource("user-1", failed, "image", "failed.png", "image/png", 7, iotest.ErrReader(errors.New("write failed")))
 	if err == nil || !strings.Contains(err.Error(), "write failed") {
 		t.Fatalf("retryStoredResource() error = %v", err)
 	}

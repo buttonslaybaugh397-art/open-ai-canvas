@@ -585,7 +585,10 @@ func setEnvValue(path, key, value string) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryName, path)
+	if err := os.Rename(temporaryName, path); err != nil {
+		return err
+	}
+	return os.Chmod(path, stat.Mode().Perm())
 }
 
 func replaceFile(source, target string, mode os.FileMode) error {

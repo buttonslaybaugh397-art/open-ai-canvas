@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -174,6 +175,19 @@ func loadOfficialFallbackRegistry() *protocol.Registry {
 				return
 			}
 			providers, err := protocol.LoadInstalledProviders(pkg.ManifestRaw, nil)
+			if err != nil {
+				return
+			}
+			adapters = append(adapters, providers...)
+		}
+		for _, manifest := range protocol.BundledHostManifests() {
+			data, err := json.Marshal(manifest)
+			if err != nil {
+				return
+			}
+			providers, err := protocol.LoadInstalledProviders(data, func(execution string) (protocol.Adapter, bool) {
+				return protocol.Builtins().Resolve(execution)
+			})
 			if err != nil {
 				return
 			}

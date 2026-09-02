@@ -30,7 +30,7 @@ func TestMigrateSchemaRecordsAndValidatesVersion(t *testing.T) {
 		t.Fatal("schema migration v2 did not create the applied_at index")
 	}
 	if !db.Migrator().HasIndex(&model.ProjectAssetCandidate{}, "idx_project_asset_candidates_pending_identity") {
-		t.Fatal("schema migration v3 did not create candidate identity index")
+		t.Fatal("schema migration v8 did not create candidate identity index")
 	}
 	if err := MigrateSchema(db); err != nil {
 		t.Fatalf("migration should be idempotent: %v", err)
@@ -56,7 +56,7 @@ func TestMigrateSchemaRejectsChecksumMismatch(t *testing.T) {
 	}
 }
 
-func TestMigrateSchemaV3NormalizesLegacyAccessoryCategory(t *testing.T) {
+func TestMigrateSchemaV8NormalizesLegacyAccessoryCategory(t *testing.T) {
 	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-asset-taxonomy?mode=memory&cache=shared"})
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +89,7 @@ func TestMigrateSchemaV3NormalizesLegacyAccessoryCategory(t *testing.T) {
 	}
 }
 
-func TestMigrateSchemaV4AddsResourceUploadKeyToExistingSchema(t *testing.T) {
+func TestMigrateSchemaV7AddsResourceUploadKeyToExistingSchema(t *testing.T) {
 	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-resource-upload-key?mode=memory&cache=shared"})
 	if err != nil {
 		t.Fatal(err)
@@ -97,10 +97,13 @@ func TestMigrateSchemaV4AddsResourceUploadKeyToExistingSchema(t *testing.T) {
 	if err := db.Exec(`CREATE TABLE resources (id TEXT PRIMARY KEY, user_id TEXT NOT NULL)`).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := db.AutoMigrate(&model.Asset{}, &model.ProjectAssetCandidate{}); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.AutoMigrate(&schemaMigration{}); err != nil {
 		t.Fatal(err)
 	}
-	for _, item := range schemaMigrations[:3] {
+	for _, item := range schemaMigrations[:6] {
 		if err := db.Create(&schemaMigration{Version: item.version, Name: item.name, Checksum: item.checksum, AppliedAt: time.Now().UTC()}).Error; err != nil {
 			t.Fatal(err)
 		}
@@ -120,7 +123,7 @@ func TestMigrateSchemaV4AddsResourceUploadKeyToExistingSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !status.Ready || status.Current != 4 {
+	if !status.Ready || status.Current != CurrentSchemaVersion {
 		t.Fatalf("unexpected schema status: %#v", status)
 	}
 

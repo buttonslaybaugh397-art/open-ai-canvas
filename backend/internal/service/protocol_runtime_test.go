@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/protocol"
 )
 
@@ -29,8 +30,9 @@ func TestPluginViewIncludesDocumentationForEveryOfficialProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plugins) != len(packages)+2 {
-		t.Fatalf("plugin views = %d, official packages plus workflow plugins = %d", len(plugins), len(packages)+2)
+	wantPlugins := len(packages) + len(protocol.BundledHostManifests()) + len(bundledWorkflowPluginManifests())
+	if len(plugins) != wantPlugins {
+		t.Fatalf("plugin views = %d, official packages plus bundled plugins = %d", len(plugins), wantPlugins)
 	}
 	for _, packagePath := range packages {
 		data, err := os.ReadFile(packagePath)
@@ -343,6 +345,58 @@ func TestDeclarativeProtocolRecoveryQueriesExistingTaskWithoutCreating(t *testin
 	}
 	if status != string(protocol.StatusSucceeded) || result["mode"] != "video" || createCalls != 0 || pollCalls != 1 || downloadCalls != 1 {
 		t.Fatalf("recovery result=%#v status=%q calls=create:%d poll:%d download:%d", result, status, createCalls, pollCalls, downloadCalls)
+	}
+}
+
+func TestExistingNewAPIChannel2TaskUsesHostParserWhenDeclarativePluginIsRegistered(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	manifest := []byte(`{
+		"apiVersion":"yingce.plugin/v1",
+		"id":"test-newapi-channel-2-shadow","version":"1.0.0","name":"Test NewAPI Shadow","author":"Test","documentation":"# Test",
+		"contributes":{"providers":[{"id":"newapi-channel-2","label":"NewAPI Shadow","capabilities":["video"],"scopes":["canvas"],"create":{"method":"POST","path":"/wrong-create"},"poll":{"method":"GET","path":"/wrong-poll/{{taskId}}"},"response":{"taskId":{"$ref":"response.id"},"status":{"$ref":"response.status"}}}]}
+	}`)
+	providers, err := protocol.LoadInstalledProviders(manifest, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := protocol.NewRegistry(providers...)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requests := make([]string, 0, 2)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/video/generations/existing-task":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"code":"success","data":{"status":"SUCCESS","result":{"output_url":"` + server.URL + `/video"}}}`))
+		case "/video":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("video"))
+		default:
+			http.Error(w, "declarative plugin must not handle this task", http.StatusConflict)
+		}
+	}))
+	defer server.Close()
+
+	config := providerConfig{BaseURL: server.URL + "/v1", APIKey: "key", InterfaceType: string(model.ChannelInterfaceNewAPIChannel2), AllowLocalChannel: true}
+	ctx := withProtocolRegistry(context.Background(), registry)
+	ctx = withProviderOutboundPolicy(ctx, config)
+	adapter, declarative := declarativeProtocolAdapterForContext(ctx, config.InterfaceType)
+	if !declarative {
+		t.Fatal("test requires a same-ID declarative plugin")
+	}
+	result, status, err := queryExistingVideoTask(ctx, canvasGenerationInput{Mode: "video", Config: config}, adapter, declarative, "existing-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "SUCCESS" || result["mode"] != "video" {
+		t.Fatalf("result=%#v status=%q", result, status)
+	}
+	if got, want := strings.Join(requests, ","), "GET /v1/video/generations/existing-task,GET /video"; got != want {
+		t.Fatalf("requests=%q, want %q", got, want)
 	}
 }
 
