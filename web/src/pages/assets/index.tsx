@@ -13,6 +13,7 @@ import { TeamAssetBrowser } from "@/components/assets/team-asset-library";
 import { TeamMemberManager } from "@/components/assets/team-member-manager";
 import { saveAs } from "file-saver";
 import { cn } from "@/lib/utils";
+import { normalizeAssetRecord } from "@/lib/asset-storage-revision";
 
 import { useCopyText } from "@/hooks/use-copy-text";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
@@ -142,7 +143,7 @@ export default function AssetsPage() {
     });
     const folders = foldersQuery.data?.folders || [];
 
-    const allLibraryAssets = useMemo(() => assets.filter((asset): asset is LibraryAsset => asset.kind !== "entity"), [assets]);
+    const allLibraryAssets = useMemo(() => assets.map(normalizeAssetRecord).filter((asset): asset is LibraryAsset => asset.kind !== "entity"), [assets]);
     const activeAssets = useMemo(() => allLibraryAssets.filter((asset) => asset.status !== "archived"), [allLibraryAssets]);
     const trashAssets = useMemo(() => allLibraryAssets.filter((asset) => asset.status === "archived"), [allLibraryAssets]);
     const validAssets = viewMode === "trash" ? trashAssets : activeAssets;
@@ -181,7 +182,7 @@ export default function AssetsPage() {
         return filteredAssets.slice(start, start + pageSize);
     }, [filteredAssets, page, pageSize]);
     const visibleAssets = useMemo(
-        () => (assetPageQuery.data?.assets || localVisibleAssets).filter((asset): asset is LibraryAsset => asset.kind !== "entity"),
+        () => (assetPageQuery.data?.assets || localVisibleAssets).map(normalizeAssetRecord).filter((asset): asset is LibraryAsset => asset.kind !== "entity"),
         [assetPageQuery.data?.assets, localVisibleAssets],
     );
     const visibleAssetIds = useMemo(() => visibleAssets.map((asset) => asset.id), [visibleAssets]);
