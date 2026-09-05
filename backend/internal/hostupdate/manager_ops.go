@@ -1,6 +1,7 @@
 package hostupdate
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"bytes"
 	"context"
@@ -12,7 +13,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -286,7 +286,7 @@ func (m *Manager) verifyImages(targetVersion string) error {
 
 func (m *Manager) createBackup(version string) (Backup, error) {
 	now := time.Now().UTC()
-	id := "backup-" + now.Format("20060102-150405")
+	id := "backup-" + now.Format("20060102-150405") + "-" + randomID()[:8]
 	path := filepath.Join(m.config.BackupDir, id+".zip")
 	temporary := path + ".partial"
 	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
@@ -302,9 +302,15 @@ func (m *Manager) createBackup(version string) (Backup, error) {
 	}()
 	hasher := sha256.New()
 	archive := zip.NewWriter(io.MultiWriter(file, hasher))
-	metadata, _ := json.MarshalIndent(map[string]any{"id": id, "version": version, "createdAt": now, "format": 1}, "", "  ")
+	metadata, _ := json.MarshalIndent(map[string]any{"id": id, "version": version, "createdAt": now, "format": 2}, "", "  ")
 	if err := writeZipBytes(archive, "metadata.json", metadata); err != nil {
 		return Backup{}, err
+	}
+	if err := writeZipBytesFromFile(archive, "service/.env", m.envPath()); err != nil {
+		return Backup{}, fmt.Errorf("备份部署环境：%w", err)
+	}
+	if err := writeZipBytesFromFile(archive, "service/compose.yml", m.composePath()); err != nil {
+		return Backup{}, fmt.Errorf("备份 Compose 配置：%w", err)
 	}
 	databaseEntry, err := archive.CreateHeader(&zip.FileHeader{Name: "database.dump", Method: zip.Store})
 	if err != nil {
@@ -323,8 +329,29 @@ func (m *Manager) createBackup(version string) (Backup, error) {
 	if err != nil {
 		return Backup{}, err
 	}
-	if err := m.compose(m.composePath(), version, m.config.StepTimeout, dataEntry, "exec", "-T", "--user", "root", "backend", "tar", "-C", "/data", "-cf", "-", "."); err != nil {
+	if err := m.compose(m.composePath(), version, m.config.StepTimeout, dataEntry, "run", "--rm", "--no-deps", "--entrypoint", "sh", "--user", "root", "backend", "-c", "tar -C /data -cf - ."); err != nil {
 		return Backup{}, fmt.Errorf("备份数据目录：%w", err)
+	}
+	if err := m.compose(m.composePath(), version, 2*time.Minute, nil, "exec", "-T", "redis", "redis-cli", "SAVE"); err != nil {
+		return Backup{}, fmt.Errorf("固化 Redis 数据：%w", err)
+	}
+	if err := m.compose(m.composePath(), version, 2*time.Minute, nil, "stop", "redis"); err != nil {
+		return Backup{}, fmt.Errorf("停止 Redis：%w", err)
+	}
+	redisEntry, err := archive.CreateHeader(&zip.FileHeader{Name: "redis-data.tar", Method: zip.Store})
+	if err != nil {
+		return Backup{}, err
+	}
+	if err := m.compose(m.composePath(), version, m.config.StepTimeout, redisEntry, "run", "--rm", "--no-deps", "--entrypoint", "sh", "--user", "root", "redis", "-c", "tar -C /data -cf - ."); err != nil {
+		return Backup{}, fmt.Errorf("备份 Redis 数据目录：%w", err)
+	}
+	secretsEntry, err := archive.CreateHeader(&zip.FileHeader{Name: "deployment-secrets.tar", Method: zip.Store})
+	if err != nil {
+		return Backup{}, err
+	}
+	secretsCommand := "if grep -qs ' /run/canvas-secrets ' /proc/self/mountinfo; then tar -C /run/canvas-secrets -cf - .; else mkdir -p /tmp/empty-secrets && tar -C /tmp/empty-secrets -cf - .; fi"
+	if err := m.compose(m.composePath(), version, m.config.StepTimeout, secretsEntry, "run", "--rm", "--no-deps", "--entrypoint", "sh", "--user", "root", "postgres", "-c", secretsCommand); err != nil {
+		return Backup{}, fmt.Errorf("备份部署密钥卷：%w", err)
 	}
 	if err := archive.Close(); err != nil {
 		return Backup{}, fmt.Errorf("完成 ZIP 备份：%w", err)
@@ -344,7 +371,7 @@ func (m *Manager) createBackup(version string) (Backup, error) {
 		return Backup{}, err
 	}
 	checksum := "sha256:" + hex.EncodeToString(hasher.Sum(nil))
-	if err := verifyZipBackup(path, checksum); err != nil {
+	if err := verifyZipBackup(path, checksum, backupArchiveLimit(m.config.MigrationMaxBytes)); err != nil {
 		return Backup{}, err
 	}
 	return Backup{ID: id, Path: path, Checksum: checksum, Size: stat.Size(), CreatedAt: now, Version: version}, nil
@@ -359,7 +386,15 @@ func writeZipBytes(writer *zip.Writer, name string, data []byte) error {
 	return err
 }
 
-func verifyZipBackup(path, expected string) error {
+func writeZipBytesFromFile(writer *zip.Writer, name, filePath string) error {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return err
+	}
+	return writeZipBytes(writer, name, data)
+}
+
+func verifyZipBackup(path, expected string, maxBytes int64) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -382,9 +417,47 @@ func verifyZipBackup(path, expected string) error {
 	}
 	defer archive.Close()
 	required := map[string]bool{"metadata.json": false, "database.dump": false, "backend-data.tar": false}
+	entries := make(map[string]*zip.File, len(archive.File))
 	for _, entry := range archive.File {
+		entries[entry.Name] = entry
 		if _, ok := required[entry.Name]; ok && entry.UncompressedSize64 > 0 {
 			required[entry.Name] = true
+		}
+	}
+	if metadataEntry := entries["metadata.json"]; metadataEntry != nil {
+		metadata, metadataErr := readZipFile(metadataEntry, 1<<20)
+		if metadataErr != nil {
+			return fmt.Errorf("读取备份元数据：%w", metadataErr)
+		}
+		var value struct {
+			Format int `json:"format"`
+		}
+		if err := json.Unmarshal(metadata, &value); err != nil {
+			return fmt.Errorf("解析备份元数据：%w", err)
+		}
+		if value.Format >= 2 {
+			required["service/.env"] = false
+			required["service/compose.yml"] = false
+			required["redis-data.tar"] = false
+			required["deployment-secrets.tar"] = false
+			for _, name := range []string{"service/.env", "service/compose.yml", "redis-data.tar", "deployment-secrets.tar"} {
+				if entry := entries[name]; entry != nil && entry.UncompressedSize64 > 0 {
+					required[name] = true
+				}
+			}
+			if dump := entries["database.dump"]; dump != nil {
+				prefix, prefixErr := readZipPrefix(dump, 5)
+				if prefixErr != nil || string(prefix) != "PGDMP" {
+					return errors.New("PostgreSQL 备份不是有效的 custom-format dump")
+				}
+			}
+			for _, name := range []string{"backend-data.tar", "redis-data.tar", "deployment-secrets.tar"} {
+				if entry := entries[name]; entry != nil {
+					if err := validateMigrationTar(entry, backupArchiveLimit(maxBytes)); err != nil {
+						return fmt.Errorf("备份文件 %s 无效：%w", name, err)
+					}
+				}
+			}
 		}
 	}
 	for name, present := range required {
@@ -395,8 +468,24 @@ func verifyZipBackup(path, expected string) error {
 	return nil
 }
 
+func backupArchiveLimit(limit int64) int64 {
+	if limit <= 0 {
+		return defaultArchiveMaxBytes
+	}
+	return limit
+}
+
+func readZipPrefix(entry *zip.File, size int64) ([]byte, error) {
+	reader, err := entry.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	return io.ReadAll(io.LimitReader(reader, size))
+}
+
 func (m *Manager) restoreDatabase(backup Backup) error {
-	if err := verifyZipBackup(backup.Path, backup.Checksum); err != nil {
+	if err := verifyZipBackup(backup.Path, backup.Checksum, backupArchiveLimit(m.config.MigrationMaxBytes)); err != nil {
 		return fmt.Errorf("拒绝恢复未通过校验的备份：%w", err)
 	}
 	archive, err := zip.OpenReader(backup.Path)
@@ -445,23 +534,146 @@ func (m *Manager) restoreDatabase(backup Backup) error {
 	return nil
 }
 
+func (m *Manager) restoreBackendData(backup Backup) error {
+	return m.restoreBackupDataEntry(backup, "backend-data.tar", "backend")
+}
+
+func (m *Manager) restoreRedisData(backup Backup) error {
+	present, err := zipContainsEntry(backup.Path, "redis-data.tar")
+	if err != nil {
+		return err
+	}
+	if !present {
+		return nil
+	}
+	if err := m.compose(m.composePath(), backup.Version, 2*time.Minute, nil, "stop", "redis"); err != nil {
+		return fmt.Errorf("停止 Redis：%w", err)
+	}
+	return m.restoreBackupDataEntry(backup, "redis-data.tar", "redis")
+}
+
+func (m *Manager) restoreDeploymentSecrets(backup Backup) error {
+	present, err := zipContainsEntry(backup.Path, "deployment-secrets.tar")
+	if err != nil || !present {
+		return err
+	}
+	archive, err := zip.OpenReader(backup.Path)
+	if err != nil {
+		return err
+	}
+	defer archive.Close()
+	for _, entry := range archive.File {
+		if entry.Name != "deployment-secrets.tar" {
+			continue
+		}
+		if err := validateMigrationTar(entry, backupArchiveLimit(m.config.MigrationMaxBytes)); err != nil {
+			return err
+		}
+		hasFiles, err := migrationTarHasFiles(entry)
+		if err != nil {
+			return err
+		}
+		if !hasFiles {
+			return nil
+		}
+		return m.restoreMigrationEntry(entry, func(reader io.Reader) error {
+			command := "grep -qs ' /run/canvas-secrets ' /proc/self/mountinfo || { echo 'deployment-secrets volume is not mounted' >&2; exit 1; }; find /run/canvas-secrets -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && tar -C /run/canvas-secrets -xf -"
+			return m.composeWithInput(m.composePath(), backup.Version, m.config.StepTimeout, reader, "run", "--rm", "--no-deps", "--entrypoint", "sh", "--user", "root", "postgres", "-c", command)
+		})
+	}
+	return nil
+}
+
+func migrationTarHasFiles(entry *zip.File) (bool, error) {
+	reader, err := entry.Open()
+	if err != nil {
+		return false, err
+	}
+	defer reader.Close()
+	archive := tar.NewReader(reader)
+	for {
+		header, nextErr := archive.Next()
+		if errors.Is(nextErr, io.EOF) {
+			return false, nil
+		}
+		if nextErr != nil {
+			return false, nextErr
+		}
+		if strings.TrimPrefix(header.Name, "./") != "" {
+			return true, nil
+		}
+	}
+}
+
+func zipContainsEntry(archivePath, entryName string) (bool, error) {
+	archive, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return false, err
+	}
+	defer archive.Close()
+	for _, entry := range archive.File {
+		if entry.Name == entryName {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (m *Manager) restoreBackupDataEntry(backup Backup, entryName, service string) error {
+	archive, err := zip.OpenReader(backup.Path)
+	if err != nil {
+		return err
+	}
+	defer archive.Close()
+	var dataEntry *zip.File
+	for _, entry := range archive.File {
+		if entry.Name == entryName {
+			dataEntry = entry
+			break
+		}
+	}
+	if dataEntry == nil {
+		return fmt.Errorf("备份中不存在 %s", entryName)
+	}
+	if err := validateMigrationTar(dataEntry, backupArchiveLimit(m.config.MigrationMaxBytes)); err != nil {
+		return fmt.Errorf("%s 校验失败：%w", entryName, err)
+	}
+	return m.restoreMigrationEntry(dataEntry, func(reader io.Reader) error {
+		command := "find /data -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && tar -C /data -xf -"
+		return m.composeWithInput(m.composePath(), backup.Version, m.config.StepTimeout, reader, "run", "--rm", "--no-deps", "--entrypoint", "sh", "--user", "root", service, "-c", command)
+	})
+}
+
+func restoreBackupServiceFile(backupPath, entryName, targetPath string) (bool, error) {
+	archive, err := zip.OpenReader(backupPath)
+	if err != nil {
+		return false, err
+	}
+	defer archive.Close()
+	for _, entry := range archive.File {
+		if entry.Name != entryName {
+			continue
+		}
+		data, readErr := readZipFile(entry, 8<<20)
+		if readErr != nil {
+			return false, readErr
+		}
+		return true, writeMigrationFile(targetPath, data)
+	}
+	return false, nil
+}
+
 type execCommandWithInput struct {
 	runner commandRunner
 	input  io.Reader
 }
 
 func (c execCommandWithInput) Run(ctx context.Context, name string, args, environment []string, stdout, stderr io.Writer) error {
-	runner, ok := c.runner.(execRunner)
+	runner, ok := c.runner.(commandInputRunner)
 	if !ok {
 		return errors.New("当前命令执行器不支持标准输入")
 	}
-	command := exec.CommandContext(ctx, name, args...)
-	command.Dir = runner.dir
-	command.Env = append(os.Environ(), environment...)
-	command.Stdin = c.input
-	command.Stdout = stdout
-	command.Stderr = stderr
-	return command.Run()
+	return runner.RunWithInput(ctx, name, args, environment, c.input, stdout, stderr)
 }
 
 func (m *Manager) verifyHealthy(targetVersion string) error {

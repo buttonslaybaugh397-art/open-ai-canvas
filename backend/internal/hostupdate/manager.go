@@ -19,7 +19,10 @@ import (
 	"time"
 )
 
-const maxReleaseResponseBytes = 4 << 20
+const (
+	maxReleaseResponseBytes = 4 << 20
+	defaultArchiveMaxBytes  = 20 << 30
+)
 
 type Config struct {
 	Repository        string
@@ -42,12 +45,26 @@ type commandRunner interface {
 	Run(context.Context, string, []string, []string, io.Writer, io.Writer) error
 }
 
+type commandInputRunner interface {
+	RunWithInput(context.Context, string, []string, []string, io.Reader, io.Writer, io.Writer) error
+}
+
 type execRunner struct{ dir string }
 
 func (r execRunner) Run(ctx context.Context, name string, args, environment []string, stdout, stderr io.Writer) error {
 	command := exec.CommandContext(ctx, name, args...)
 	command.Dir = r.dir
 	command.Env = append(os.Environ(), environment...)
+	command.Stdout = stdout
+	command.Stderr = stderr
+	return command.Run()
+}
+
+func (r execRunner) RunWithInput(ctx context.Context, name string, args, environment []string, input io.Reader, stdout, stderr io.Writer) error {
+	command := exec.CommandContext(ctx, name, args...)
+	command.Dir = r.dir
+	command.Env = append(os.Environ(), environment...)
+	command.Stdin = input
 	command.Stdout = stdout
 	command.Stderr = stderr
 	return command.Run()
@@ -97,7 +114,7 @@ func NewManager(config Config) (*Manager, error) {
 		config.StepTimeout = 20 * time.Minute
 	}
 	if config.MigrationMaxBytes <= 0 {
-		config.MigrationMaxBytes = 20 << 30
+		config.MigrationMaxBytes = defaultArchiveMaxBytes
 	}
 	if err := os.MkdirAll(config.StateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("创建更新器状态目录：%w", err)
@@ -267,17 +284,6 @@ func (m *Manager) runUpdate(fromVersion, targetVersion string) {
 		defer os.Remove(updaterBinary)
 	}
 
-	m.setPhase(PhaseBackingUp, "创建 PostgreSQL 与数据目录 ZIP 备份")
-	backup, err := m.createBackup(fromVersion)
-	if err != nil {
-		m.failWithoutRollback(PhaseFailed, err)
-		return
-	}
-	m.mu.Lock()
-	m.state.LastBackup = &backup
-	m.state.RollbackVersion = fromVersion
-	_ = m.saveStateLocked()
-	m.mu.Unlock()
 	if err := replaceFile(m.composePath(), m.previousComposePath(), 0o600); err != nil {
 		m.failWithoutRollback(PhaseFailed, fmt.Errorf("保存旧 Compose 配置：%w", err))
 		return
@@ -295,10 +301,21 @@ func (m *Manager) runUpdate(fromVersion, targetVersion string) {
 
 	m.setPhase(PhaseDraining, "停止 Web 与 Backend，等待后台任务优雅退出")
 	if err := m.compose(m.composePath(), fromVersion, m.config.StepTimeout, nil, "stop", "web", "backend"); err != nil {
-		m.failWithRollback(err, fromVersion, backup)
+		m.failAfterStop(err, fromVersion)
 		return
 	}
 
+	m.setPhase(PhaseBackingUp, "创建数据库、文件、缓存与部署配置恢复包")
+	backup, err := m.createBackup(fromVersion)
+	if err != nil {
+		m.failAfterStop(err, fromVersion)
+		return
+	}
+	m.mu.Lock()
+	m.state.LastBackup = &backup
+	m.state.RollbackVersion = fromVersion
+	_ = m.saveStateLocked()
+	m.mu.Unlock()
 	m.setPhase(PhaseMigrating, "执行目标版本数据库迁移")
 	if err := m.compose(nextCompose, targetVersion, m.config.StepTimeout, nil, "run", "--rm", "migrate"); err != nil {
 		m.failWithRollback(err, fromVersion, backup)
@@ -365,12 +382,34 @@ func (m *Manager) failWithoutRollback(phase Phase, err error) {
 	_ = m.saveStateLocked()
 }
 
+func (m *Manager) failAfterStop(cause error, version string) {
+	recoveryErr := m.startRollbackServices(version)
+	if recoveryErr == nil {
+		recoveryErr = m.verifyHealthy(version)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	m.state.Operation.FinishedAt = &now
+	m.state.Operation.Error = safeOperationError(cause)
+	if recoveryErr == nil {
+		m.state.Operation.Phase = PhaseFailed
+		m.state.Operation.RollbackError = ""
+		m.appendLogLocked(PhaseFailed, "备份失败，已恢复并验证更新前服务")
+	} else {
+		m.state.Operation.Phase = PhaseManualIntervention
+		m.state.Operation.RollbackError = safeOperationError(recoveryErr)
+		m.appendLogLocked(PhaseManualIntervention, "备份失败且更新前服务恢复失败，需要人工介入")
+	}
+	_ = m.saveStateLocked()
+}
+
 func (m *Manager) failWithRollback(cause error, targetVersion string, backup Backup) {
 	m.mu.Lock()
 	m.state.Operation.Error = safeOperationError(cause)
 	m.state.Operation.AutomaticRollback = true
 	m.state.Operation.Phase = PhaseRollingBack
-	m.appendLogLocked(PhaseRollingBack, "更新失败，正在自动恢复旧版本和数据库备份")
+	m.appendLogLocked(PhaseRollingBack, "更新失败，正在自动恢复旧版本和完整数据备份")
 	_ = m.saveStateLocked()
 	m.mu.Unlock()
 	m.runRollback(targetVersion, backup, true)
@@ -378,24 +417,69 @@ func (m *Manager) failWithRollback(cause error, targetVersion string, backup Bac
 
 func (m *Manager) runRollback(targetVersion string, backup Backup, automatic bool) {
 	var failures []error
-	if err := m.compose(m.composePath(), targetVersion, 5*time.Minute, nil, "stop", "web", "backend"); err != nil {
-		failures = append(failures, err)
+	if strings.TrimSpace(backup.Path) == "" {
+		failures = append(failures, errors.New("恢复包路径为空"))
+	} else if err := verifyZipBackup(backup.Path, backup.Checksum, backupArchiveLimit(m.config.MigrationMaxBytes)); err != nil {
+		failures = append(failures, fmt.Errorf("恢复包校验失败：%w", err))
 	}
-	if _, err := os.Stat(m.previousComposePath()); err == nil {
-		if err := replaceFile(m.previousComposePath(), m.composePath(), 0o600); err != nil {
-			failures = append(failures, fmt.Errorf("恢复旧 Compose 配置：%w", err))
+	if len(failures) == 0 {
+		if err := m.compose(m.composePath(), targetVersion, 5*time.Minute, nil, "stop", "web", "backend"); err != nil {
+			failures = append(failures, err)
 		}
 	}
-	if err := m.restoreDatabase(backup); err != nil {
-		failures = append(failures, err)
+	if len(failures) == 0 && backup.Path != "" {
+		if _, err := restoreBackupServiceFile(backup.Path, "service/.env", m.envPath()); err != nil {
+			failures = append(failures, fmt.Errorf("恢复部署环境：%w", err))
+		}
 	}
-	if err := setEnvValue(m.envPath(), "CANVAS_IMAGE_TAG", strings.TrimPrefix(targetVersion, "v")); err != nil {
-		failures = append(failures, err)
+	if len(failures) == 0 && backup.Path != "" {
+		restored, err := restoreBackupServiceFile(backup.Path, "service/compose.yml", m.composePath())
+		if err != nil {
+			failures = append(failures, fmt.Errorf("恢复 Compose 配置：%w", err))
+		} else if !restored {
+			// Backups created before format 2 use the updater's Compose snapshot.
+			if previousErr := replaceFile(m.previousComposePath(), m.composePath(), 0o600); previousErr != nil {
+				failures = append(failures, fmt.Errorf("恢复旧 Compose 配置：%w", previousErr))
+			}
+		}
 	}
-	started := true
-	if err := m.compose(m.composePath(), targetVersion, m.config.StepTimeout, nil, "up", "-d", "--remove-orphans", "--wait", "--wait-timeout", "600"); err != nil {
-		started = false
-		failures = append(failures, err)
+	if len(failures) == 0 && backup.Path != "" {
+		if err := m.compose(m.composePath(), targetVersion, 2*time.Minute, nil, "config", "--quiet"); err != nil {
+			failures = append(failures, fmt.Errorf("恢复后的 Compose 配置无效：%w", err))
+		}
+	}
+	if len(failures) == 0 && backup.Path != "" {
+		if err := m.restoreDeploymentSecrets(backup); err != nil {
+			failures = append(failures, fmt.Errorf("恢复部署密钥卷：%w", err))
+		}
+	}
+	if len(failures) == 0 && backup.Path != "" {
+		if err := m.restoreDatabase(backup); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	if len(failures) == 0 && backup.Path != "" {
+		if err := m.restoreBackendData(backup); err != nil {
+			failures = append(failures, fmt.Errorf("恢复后端数据目录：%w", err))
+		}
+	}
+	if len(failures) == 0 && backup.Path != "" {
+		if err := m.restoreRedisData(backup); err != nil {
+			failures = append(failures, fmt.Errorf("恢复 Redis 数据目录：%w", err))
+		}
+	}
+	if len(failures) == 0 {
+		if err := setEnvValue(m.envPath(), "CANVAS_IMAGE_TAG", strings.TrimPrefix(targetVersion, "v")); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	started := false
+	if len(failures) == 0 {
+		started = true
+		if err := m.startRollbackServices(targetVersion); err != nil {
+			started = false
+			failures = append(failures, err)
+		}
 	}
 	if started {
 		if err := m.verifyHealthy(targetVersion); err != nil {
@@ -418,6 +502,24 @@ func (m *Manager) runRollback(targetVersion string, backup Backup, automatic boo
 		m.appendLogLocked(PhaseRolledBack, fmt.Sprintf("已恢复到 %s", targetVersion))
 	}
 	_ = m.saveStateLocked()
+}
+
+func (m *Manager) startRollbackServices(version string) error {
+	primaryErr := m.compose(m.composePath(), version, m.config.StepTimeout, nil, "up", "-d", "--remove-orphans", "--wait", "--wait-timeout", "600")
+	if primaryErr == nil {
+		return nil
+	}
+	m.setPhase(PhaseRollingBack, "标准启动失败，正在兼容旧版 Compose 健康依赖")
+	if err := m.compose(m.composePath(), version, m.config.StepTimeout, nil, "up", "-d", "postgres", "redis"); err != nil {
+		return errors.Join(primaryErr, err)
+	}
+	if err := m.compose(m.composePath(), version, m.config.StepTimeout, nil, "up", "-d", "--no-deps", "backend"); err != nil {
+		return errors.Join(primaryErr, err)
+	}
+	if err := m.compose(m.composePath(), version, m.config.StepTimeout, nil, "up", "-d", "--no-deps", "web"); err != nil {
+		return errors.Join(primaryErr, err)
+	}
+	return nil
 }
 
 func (m *Manager) snapshotLocked() Status {
@@ -452,7 +554,7 @@ func (m *Manager) checks(current string, currentErr error) []Check {
 	items := []Check{
 		{Key: "updater", Label: "Host Updater", Status: "passed", Detail: runtime.GOOS + "/" + runtime.GOARCH, Blocking: true},
 		{Key: "version", Label: "当前版本", Status: "passed", Detail: current, Blocking: true},
-		{Key: "backup", Label: "数据库备份 ZIP", Status: "pending", Detail: "开始更新后自动创建并校验", Blocking: true},
+		{Key: "backup", Label: "完整恢复包", Status: "pending", Detail: "停写后自动创建并校验数据库、文件、缓存与部署配置", Blocking: true},
 		{Key: "images", Label: "目标镜像", Status: "pending", Detail: "拉取后校验仓库摘要", Blocking: true},
 		{Key: "migration", Label: "数据库迁移", Status: "pending", Detail: "在旧服务完全停止后执行", Blocking: true},
 	}

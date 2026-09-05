@@ -68,6 +68,8 @@ description: 影策已实现功能的手工验证清单与未确认边界
 - 完整架构、状态机、Release 清单、备份和回退边界见 `docs/design/dynamic-update.md`。
 - [x] 后端新增权威 BuildInfo、`schema_migrations`、独立 `migrate-schema` 命令、分层健康检查以及可停止 Worker；专项 Go 测试通过。
 - [x] 生产 Compose 在 Backend 前运行一次性迁移服务，并使用 `CANVAS_AUTO_MIGRATE=false` 阻止业务进程隐式修改 Schema；Backend 收到 SIGTERM 后进入 drain、停止领取任务并等待活动任务。
+- [x] Host Updater 会在每次更新停写后创建并校验包含 PostgreSQL、后端数据、Redis、1Panel 部署密钥卷、`.env` 和 Compose 的完整恢复包；迁移、启动或健康验证失败时按恢复包自动回滚，恢复未完成时不启动半恢复服务。后端全量测试通过。
+- [ ] 在 1Panel PostgreSQL 部署中执行一次成功升级，并分别模拟迁移失败、目标 Backend 启动失败和健康检查超时，确认均恢复更新前数据库、上传文件、Redis、`.env`、Compose 和版本；旧 Compose 缺少 Backend healthcheck 时确认兼容启动后仍通过真实健康接口验收。
 - [ ] 使用 PostgreSQL 部署执行一次无迁移启动和一次跨版本迁移，确认 migrate 成功后 Backend 才启动，checksum 漂移和高版本 Schema 均会阻止旧 Backend 就绪。
 - [ ] 在存在图片、视频和文本长任务时发送 SIGTERM，确认 readiness 立即返回 503、新任务被拒绝、已领取任务在宽限期内完成，超时后租约可由重启实例恢复。
 - [ ] 构建带版本参数的前后端镜像，确认 `/api/system/version`、管理后台版本、OCI Commit 和 Release Tag 一致。

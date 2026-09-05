@@ -219,7 +219,7 @@ curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canv
 
 容器包不可匿名拉取时，先通过 `GHCR_USERNAME` 和 `GHCR_TOKEN` 登录 GHCR。生产环境应在 `/opt/open-ai-canvas/.env` 中把 `CANVAS_IMAGE_TAG` 固定为具体 Release（不要使用 `latest`），端口由 `CANVAS_HTTP_PORT` 配置。
 
-固定版本的 GHCR 部署可安装宿主机在线更新器；安装后管理后台会出现“系统配置 → 系统更新”，更新器会在切换前强制生成并校验 PostgreSQL 与数据目录 ZIP 备份：
+固定版本的 GHCR 部署可安装宿主机在线更新器；安装后管理后台会出现“系统配置 → 系统更新”，更新器会在停写后强制生成并校验包含 PostgreSQL、后端数据、Redis、1Panel 部署密钥卷、环境变量与 Compose 的完整恢复包：
 
 ```bash
 cd /opt/open-ai-canvas

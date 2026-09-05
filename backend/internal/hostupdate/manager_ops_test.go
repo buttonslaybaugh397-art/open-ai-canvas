@@ -1,6 +1,7 @@
 package hostupdate
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"context"
 	"crypto/sha256"
@@ -14,15 +15,34 @@ import (
 )
 
 type recordingRunner struct {
-	calls [][]string
+	calls      [][]string
+	inputBytes int64
 }
 
 func (r *recordingRunner) Run(_ context.Context, _ string, args, _ []string, stdout, _ io.Writer) error {
 	r.calls = append(r.calls, append([]string(nil), args...))
-	if stdout != nil {
-		_, _ = io.WriteString(stdout, "backup-fixture")
+	if stdout == nil {
+		return nil
+	}
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, " pg_dump ") {
+		_, _ = io.WriteString(stdout, "PGDMPfixture")
+		return nil
+	}
+	if strings.Contains(joined, "tar -C ") {
+		archive := tar.NewWriter(stdout)
+		_ = archive.WriteHeader(&tar.Header{Name: "fixture", Mode: 0o600, Size: 1})
+		_, _ = archive.Write([]byte("x"))
+		_ = archive.Close()
 	}
 	return nil
+}
+
+func (r *recordingRunner) RunWithInput(_ context.Context, _ string, args, _ []string, input io.Reader, _, _ io.Writer) error {
+	r.calls = append(r.calls, append([]string(nil), args...))
+	written, err := io.Copy(io.Discard, input)
+	r.inputBytes += written
+	return err
 }
 
 func TestSetEnvValuePreservesOtherSettings(t *testing.T) {
@@ -83,13 +103,13 @@ func TestVerifyZipBackupRejectsCorruption(t *testing.T) {
 	}
 	hash := sha256.Sum256(data)
 	checksum := "sha256:" + hex.EncodeToString(hash[:])
-	if err := verifyZipBackup(path, checksum); err != nil {
+	if err := verifyZipBackup(path, checksum, defaultArchiveMaxBytes); err != nil {
 		t.Fatalf("valid backup rejected: %v", err)
 	}
 	if err := os.WriteFile(path, append(data, byte(1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := verifyZipBackup(path, checksum); err == nil {
+	if err := verifyZipBackup(path, checksum, defaultArchiveMaxBytes); err == nil {
 		t.Fatal("corrupted backup was accepted")
 	}
 }
@@ -114,21 +134,121 @@ func TestCreateBackupReadsBackendDataAsRoot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(installDir, ".env"), []byte("POSTGRES_USER=canvas\nPOSTGRES_DB=canvas\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(installDir, "docker-compose.deploy.yml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	runner := &recordingRunner{}
 	manager := &Manager{
 		config: Config{InstallDir: installDir, ComposeFile: "docker-compose.deploy.yml", EnvFile: ".env", BackupDir: backupDir},
 		runner: runner,
 	}
-	if _, err := manager.createBackup("v1.2.2-preview.2"); err != nil {
+	backup, err := manager.createBackup("v1.2.2-preview.2")
+	if err != nil {
 		t.Fatal(err)
 	}
+	wanted := []string{
+		"run --rm --no-deps --entrypoint sh --user root backend -c tar -C /data -cf - .",
+		"exec -T redis redis-cli SAVE",
+		"run --rm --no-deps --entrypoint sh --user root redis -c tar -C /data -cf - .",
+		"run --rm --no-deps --entrypoint sh --user root postgres -c if grep -qs ' /run/canvas-secrets '",
+	}
+	found := make([]bool, len(wanted))
 	for _, call := range runner.calls {
 		joined := strings.Join(call, " ")
-		if strings.Contains(joined, "exec -T --user root backend tar -C /data -cf - .") {
-			return
+		for index, expected := range wanted {
+			if strings.Contains(joined, expected) {
+				found[index] = true
+			}
 		}
 	}
-	t.Fatalf("backend data backup did not use root: %#v", runner.calls)
+	for index, present := range found {
+		if !present {
+			t.Fatalf("backup did not run %q: %#v", wanted[index], runner.calls)
+		}
+	}
+	if err := manager.restoreDeploymentSecrets(backup); err != nil {
+		t.Fatal(err)
+	}
+	if runner.inputBytes == 0 {
+		t.Fatal("deployment secrets archive was not streamed to the restore container")
+	}
+	restoreCommandFound := false
+	for _, call := range runner.calls {
+		joined := strings.Join(call, " ")
+		if strings.Contains(joined, "deployment-secrets volume is not mounted") {
+			restoreCommandFound = true
+			break
+		}
+	}
+	if !restoreCommandFound {
+		t.Fatalf("deployment secrets restore did not enforce the volume mount: %#v", runner.calls)
+	}
+}
+
+func TestRollbackRejectsInvalidBackupBeforeStoppingServices(t *testing.T) {
+	stateDir := t.TempDir()
+	backupPath := filepath.Join(stateDir, "corrupt.zip")
+	data := []byte("not-a-zip")
+	if err := os.WriteFile(backupPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.Sum256(data)
+	runner := &recordingRunner{}
+	manager := &Manager{
+		config: Config{
+			InstallDir:        stateDir,
+			ComposeFile:       "docker-compose.deploy.yml",
+			EnvFile:           ".env",
+			StateDir:          stateDir,
+			MigrationMaxBytes: defaultArchiveMaxBytes,
+		},
+		runner: runner,
+		state:  persistedState{Operation: Operation{Phase: PhaseRollingBack}},
+	}
+	manager.runRollback("v1.2.5", Backup{Path: backupPath, Checksum: "sha256:" + hex.EncodeToString(hash[:])}, true)
+	if manager.state.Operation.Phase != PhaseManualIntervention {
+		t.Fatalf("phase=%s, want %s", manager.state.Operation.Phase, PhaseManualIntervention)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("invalid backup changed service state: %#v", runner.calls)
+	}
+}
+
+func TestVerifyZipBackupRequiresServiceSnapshotForFormatTwo(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "backup-v2.zip")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := zip.NewWriter(file)
+	for name, content := range map[string]string{
+		"metadata.json":    "{\"format\":2}",
+		"database.dump":    "database",
+		"backend-data.tar": "data",
+	} {
+		entry, createErr := archive.Create(name)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if _, writeErr := io.WriteString(entry, content); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.Sum256(data)
+	checksum := "sha256:" + hex.EncodeToString(hash[:])
+	if err := verifyZipBackup(path, checksum, defaultArchiveMaxBytes); err == nil {
+		t.Fatal("format 2 backup without service snapshots was accepted")
+	}
 }
 
 func TestCheckWritableDirectory(t *testing.T) {

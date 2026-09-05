@@ -118,8 +118,8 @@ export default function SystemUpdatePage() {
             width: 560,
             content: (
                 <div className="space-y-3 text-sm text-foreground/70">
-                    <p>系统会先创建并校验数据库 ZIP 与数据目录备份，再停止旧服务、执行迁移并切换镜像。</p>
-                    <p>更新期间站点会短暂不可用。任何前置检查失败都不会切换服务；切换后验证失败会自动恢复旧版本和数据库。</p>
+                    <p>系统会先停止写入并创建、校验包含数据库、数据目录、环境变量和 Compose 配置的恢复包，再执行迁移并切换镜像。</p>
+                    <p>更新期间站点会短暂不可用。任何前置检查失败都不会切换服务；迁移、启动或验证失败会自动恢复旧版本和更新前数据。</p>
                 </div>
             ),
             okText: "确认并开始更新",
@@ -148,7 +148,7 @@ export default function SystemUpdatePage() {
             width: 520,
             content: (
                 <div className="space-y-3">
-                    <p className="text-sm text-foreground/65">回退会停止当前服务、恢复最近一次已校验数据库备份并重新启动旧镜像。请先确认备份时间与业务影响。</p>
+                    <p className="text-sm text-foreground/65">回退会停止当前服务、恢复最近一次已校验的完整恢复包并重新启动旧镜像。请先确认备份时间与业务影响。</p>
                     <Input.TextArea rows={3} maxLength={300} showCount placeholder="填写回退原因（必填）" onChange={(event) => (reason = event.target.value)} />
                 </div>
             ),
@@ -288,7 +288,7 @@ export default function SystemUpdatePage() {
                         status={<PhaseBadge phase={status?.operation.phase ?? "idle"} />}
                         footer={
                             <>
-                                <span className="text-xs leading-5 text-foreground/50">每次在线更新都会重新备份数据库，并校验镜像摘要、迁移结果和服务健康状态。</span>
+                                <span className="text-xs leading-5 text-foreground/50">每次在线更新都会创建完整恢复包；迁移、启动或健康检查失败时自动恢复旧版本和更新前数据。</span>
                                 <Button type="primary" loading={starting} disabled={!status?.connected || !status.updateAvailable || operationActive || blockingCheckFailed} onClick={requestStart}>
                                     开始更新
                                 </Button>
@@ -405,13 +405,13 @@ export default function SystemUpdatePage() {
                     status={{ label: status?.lastBackup ? "备份已校验" : "暂无备份", color: status?.lastBackup ? "success" : "warning" }}
                     footer={
                         <>
-                            <span className="text-xs text-foreground/50">人工回退同样会执行停服、数据库恢复、旧镜像启动和健康验证。</span>
+                            <span className="text-xs text-foreground/50">人工回退同样会执行停服、完整数据恢复、旧镜像启动和健康验证。</span>
                             <Button danger icon={<RotateCcw className="size-4" />} disabled={!status?.rollbackVersion || operationActive || !status?.connected} onClick={requestRollback}>回退到上一版本</Button>
                         </>
                     }
                 >
                     <div className="admin-system-update-backup">
-                        {status?.lastBackup ? <dl><dt>备份编号</dt><dd>{status.lastBackup.id}</dd><dt>来源版本</dt><dd>{status.lastBackup.version}</dd><dt>创建时间</dt><dd>{formatDate(status.lastBackup.createdAt)}</dd><dt>文件大小</dt><dd>{formatBytes(status.lastBackup.size)}</dd><dt>SHA-256</dt><dd className="admin-monospace">{status.lastBackup.checksum}</dd></dl> : <p>首次开始更新时会自动创建数据库与数据目录 ZIP；备份失败将直接中止更新。</p>}
+                        {status?.lastBackup ? <dl><dt>备份编号</dt><dd>{status.lastBackup.id}</dd><dt>来源版本</dt><dd>{status.lastBackup.version}</dd><dt>创建时间</dt><dd>{formatDate(status.lastBackup.createdAt)}</dd><dt>文件大小</dt><dd>{formatBytes(status.lastBackup.size)}</dd><dt>内容</dt><dd>PostgreSQL、数据目录、Redis、部署密钥与配置</dd><dt>SHA-256</dt><dd className="admin-monospace">{status.lastBackup.checksum}</dd></dl> : <p>首次开始更新时会先停止 Web 与 Backend 并创建完整恢复包；备份失败会自动恢复更新前服务。</p>}
                     </div>
                 </SettingsSectionCard>
             </div>

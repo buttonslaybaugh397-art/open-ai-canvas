@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+
+## v1.2.6
+
+- 在线更新改为在停写后创建包含 PostgreSQL、后端数据、Redis、1Panel 部署密钥卷、`.env` 和 Compose 的完整恢复包；迁移、启动或健康检查失败时自动恢复旧版本和全部更新前数据，恢复未完成时拒绝启动半恢复服务，并兼容旧 Compose 缺少 Backend healthcheck 的回退启动。
 - 修复微信支付与支付宝插件被宿主平台二进制污染的问题，按 Docker 目标平台确定性生成并重打包 Linux amd64/arm64 provider，增加内容寻址的原子运行时缓存、可执行文件诊断和 CI 架构冒烟校验。
 
 ## v1.2.5
