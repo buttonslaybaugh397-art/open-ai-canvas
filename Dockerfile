@@ -36,7 +36,7 @@ COPY --from=comfy-bridge-build /out/OpenAICanvas-ComfyBridge-linux-arm64 /app/we
 RUN CANVAS_PREBUILT_BRIDGE=1 node ./node_modules/vite/bin/vite.js build
 
 # 运行镜像：nginx 托管静态前端，并在 Compose 中把 /api 转发到后端服务。
-FROM nginx:1.27-alpine
+FROM nginx:1.27-alpine AS web
 
 COPY --from=web-build /app/web/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf

@@ -22,8 +22,10 @@ jobs:
         include:
           - image: open-ai-canvas-web
             dockerfile: Dockerfile
+            target: web
           - image: open-ai-canvas-backend
             dockerfile: backend/Dockerfile
+            target: backend
 
     steps:
       - name: Checkout repository
@@ -76,6 +78,7 @@ jobs:
         with:
           context: .
           file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |

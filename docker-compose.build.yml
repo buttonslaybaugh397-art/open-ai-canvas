@@ -4,6 +4,7 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      target: backend
       args:
         GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
 
@@ -12,6 +13,7 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      target: backend
       args:
         GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
 
