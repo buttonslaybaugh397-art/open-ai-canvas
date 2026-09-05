@@ -112,6 +112,37 @@ func (m *Manager) prepareTargetCompose(targetVersion string) (string, error) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return "", fmt.Errorf("保存目标 Compose：%w", err)
 	}
+	if m.config.ManagedCompose {
+		prepared := false
+		defer func() {
+			if !prepared {
+				_ = os.Remove(path)
+			}
+		}()
+		local, err := m.readCompose(ctx, m.composePath(), "")
+		if err != nil {
+			return "", err
+		}
+		environment, err := composeTemplateEnvironment(local, m.config.Repository)
+		if err != nil {
+			return "", err
+		}
+		target, err := m.readCompose(ctx, path, targetVersion, environment...)
+		if err != nil {
+			return "", err
+		}
+		preserveComposeDeployment(target, local)
+		if err := pinComposeImages(target, targetVersion); err != nil {
+			return "", err
+		}
+		if _, err := describeDeployment(target, m.config.Repository); err != nil {
+			return "", err
+		}
+		if err := m.writeCompose(ctx, target, path, false); err != nil {
+			return "", err
+		}
+		prepared = true
+	}
 	return path, nil
 }
 
@@ -246,7 +277,7 @@ func (m *Manager) restartSelf() {
 func (m *Manager) compose(composePath, imageTag string, timeout time.Duration, stdout io.Writer, arguments ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	args := []string{"compose", "--env-file", m.envPath(), "-f", composePath}
+	args := m.composeArguments(composePath)
 	args = append(args, arguments...)
 	var stderr bytes.Buffer
 	if stdout == nil {
@@ -678,6 +709,17 @@ func (c execCommandWithInput) Run(ctx context.Context, name string, args, enviro
 
 func (m *Manager) verifyHealthy(targetVersion string) error {
 	healthURL := m.healthURL()
+	if m.config.ManagedCompose {
+		document, err := m.readCompose(context.Background(), m.composePath(), "")
+		if err != nil {
+			return err
+		}
+		info, err := describeDeployment(document, m.config.Repository)
+		if err != nil {
+			return err
+		}
+		healthURL = info.HealthURL
+	}
 	deadline := time.Now().Add(10 * time.Minute)
 	stableSince := time.Time{}
 	for time.Now().Before(deadline) {
@@ -694,6 +736,12 @@ func (m *Manager) verifyHealthy(targetVersion string) error {
 }
 
 func (m *Manager) healthURL() string {
+	if m.config.ManagedCompose {
+		values, err := readEnvFile(m.envPath())
+		if err == nil && values["CANVAS_UPDATER_HEALTH_URL"] != "" {
+			return values["CANVAS_UPDATER_HEALTH_URL"]
+		}
+	}
 	if configured := strings.TrimSpace(m.config.HealthURL); configured != "" {
 		return configured
 	}

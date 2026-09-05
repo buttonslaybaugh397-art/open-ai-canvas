@@ -1,12 +1,46 @@
 package main
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestCORSAutomaticOriginThroughWebProxy(t *testing.T) {
+	t.Setenv("CANVAS_CORS_ORIGINS", "")
+	middleware, err := cors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	router.Use(middleware)
+	router.POST("/api/auth/register", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	for _, tc := range []struct {
+		host, origin string
+		status       int
+	}{
+		{"192.0.2.20:6868", "http://192.0.2.20:6868", http.StatusNoContent},
+		{"canvas.example.com", "https://canvas.example.com", http.StatusNoContent},
+		{"192.0.2.20:6868", "https://other.example.com", http.StatusForbidden},
+		{"192.0.2.20:6868", "http://192.0.2.20:7000", http.StatusForbidden},
+		{"192.0.2.20:6868", "null", http.StatusForbidden},
+	} {
+		r := httptest.NewRequest(http.MethodPost, "http://backend:8080/api/auth/register", nil)
+		r.Header.Set("X-Forwarded-Host", tc.host)
+		r.Header.Set("Origin", tc.origin)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, r)
+		if w.Code != tc.status {
+			t.Fatalf("origin=%s host=%s status=%d want=%d", tc.origin, tc.host, w.Code, tc.status)
+		}
+		if w.Code == http.StatusForbidden && w.Header().Get("Access-Control-Allow-Origin") != "" {
+			t.Fatal("rejected origin received CORS credentials")
+		}
+	}
+}
 
 func TestAllowedOriginWildcard(t *testing.T) {
 	t.Setenv("CANVAS_CORS_ORIGINS", "*")

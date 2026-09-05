@@ -27,10 +27,23 @@ func main() {
 }
 
 func run(ctx context.Context) error {
+	if len(os.Args) == 2 && os.Args[1] == "capabilities" {
+		fmt.Println("compose-config-v1")
+		return nil
+	}
+	configure := len(os.Args) == 2 && os.Args[1] == "configure"
+	checkInstall := len(os.Args) == 2 && os.Args[1] == "check-install"
+	if len(os.Args) > 1 && !configure && !checkInstall {
+		return errors.New("用法：open-ai-canvas-host-updater [configure]")
+	}
 	socketPath := env("CANVAS_UPDATER_SOCKET", "/run/open-ai-canvas-updater/updater.sock")
 	installDir := env("CANVAS_UPDATER_INSTALL_DIR", "/opt/open-ai-canvas")
 	token := strings.TrimSpace(os.Getenv("CANVAS_UPDATER_TOKEN"))
-	manager, err := hostupdate.NewManager(hostupdate.Config{
+	constructor := hostupdate.NewManager
+	if configure || checkInstall {
+		constructor = hostupdate.NewConfigurator
+	}
+	manager, err := constructor(hostupdate.Config{
 		Repository:         env("CANVAS_UPDATER_REPOSITORY", "buttonslaybaugh397-art/open-ai-canvas"),
 		InstallDir:         installDir,
 		ComposeFile:        env("CANVAS_UPDATER_COMPOSE_FILE", "docker-compose.deploy.yml"),
@@ -46,9 +59,21 @@ func run(ctx context.Context) error {
 		ServiceName:        env("CANVAS_UPDATER_SERVICE_NAME", "open-ai-canvas-updater.service"),
 		SelfUpdate:         envBool("CANVAS_UPDATER_SELF_UPDATE", true),
 		MigrationMaxBytes:  envBytes("CANVAS_UPDATER_MIGRATION_MAX_BYTES", 20<<30),
+		ManagedCompose:     !configure && os.Getenv("CANVAS_UPDATER_CONFIG_SOURCE") == "compose",
 	})
 	if err != nil {
 		return err
+	}
+	if checkInstall {
+		return nil
+	}
+	if configure {
+		info, err := manager.ConfigureDeployment(ctx, os.Getenv("CANVAS_UPDATER_IMAGE_TAG"), os.Getenv("CANVAS_UPDATER_SOCKET_DIR"))
+		if err != nil {
+			return err
+		}
+		fmt.Printf("SOCKET_DIR=%s\n", info.SocketDir)
+		return nil
 	}
 	server, err := hostupdate.NewServer(manager, token)
 	if err != nil {

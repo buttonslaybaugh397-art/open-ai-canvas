@@ -217,24 +217,23 @@ sudo docker compose --env-file .env \
 curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canvas/main/scripts/install-server-image.sh | sudo bash
 ```
 
-容器包不可匿名拉取时，先通过 `GHCR_USERNAME` 和 `GHCR_TOKEN` 登录 GHCR。生产环境应在 `/opt/open-ai-canvas/.env` 中把 `CANVAS_IMAGE_TAG` 固定为具体 Release（不要使用 `latest`），端口由 `CANVAS_HTTP_PORT` 配置。
+容器包不可匿名拉取时，先通过 `GHCR_USERNAME` 和 `GHCR_TOKEN` 登录 GHCR。生产镜像应固定为具体 Release（不要使用 `latest`）。镜像脚本使用 `.env`；1Panel 可直接在原编排中填写镜像标签、端口和环境变量，不需要单独维护 `.env`。
 
 固定版本的 GHCR 部署可安装宿主机在线更新器；安装后管理后台会出现“系统配置 → 系统更新”，更新器会在停写后强制生成并校验包含 PostgreSQL、后端数据、Redis、1Panel 部署密钥卷、环境变量与 Compose 的完整恢复包：
 
 ```bash
 cd /opt/open-ai-canvas
 curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canvas/main/scripts/install-host-updater.sh | sudo bash
-sudo docker compose --env-file .env -f docker-compose.deploy.yml up -d --force-recreate backend web --wait
 ```
 
-安装脚本会在 `/run/open-ai-canvas-updater` 中同时创建 Token 文件和 Unix Socket；Compose 会将该目录挂载到 backend，避免 1Panel 环境变量编辑器漏掉 `CANVAS_UPDATER_TOKEN`。1Panel 使用 `docker-compose.1panel.yml` 时，请在 Compose 文件所在目录执行安装，并显式设置 `CANVAS_UPDATER_COMPOSE_FILE=docker-compose.1panel.yml`。
+在 1Panel 实际编排目录执行上面的安装命令即可。脚本自动识别唯一编排、下载并校验 Linux 更新器、设置 systemd 开机自启、添加 backend 只读 Socket 挂载并重建 backend/web，无需手工下载或挂载二进制。存在多个编排文件时需用 `CANVAS_UPDATER_COMPOSE_FILE` 指明原文件，不要复制或改名。安装会备份并规范化编排，保留项目名、数据卷、端口和内联配置；该配置备份不是完整数据备份，首次安装前仍需保留可恢复的业务备份。
 
 更新流程、数据库迁移、健康验证和异常回退说明见 [`docs/content/docs/backend/system-update.mdx`](docs/content/docs/backend/system-update.mdx)。
 
 ### 公网必做事项
 
 - 先在受控网络注册首个管理员，再开放公网入口；保持 `CANVAS_REGISTRATION_ENABLED=false`。
-- 设置准确的 `CANVAS_CORS_ORIGINS`，不要在公网使用 `*`。
+- 经内置 Web 代理访问时，`CANVAS_CORS_ORIGINS` 可留空，使用现有 Host/转发 Host（含端口）来源校验；独立跨域前端必须设置准确的 Origin，不要使用 `*`。
 - 使用 HTTPS，并保留反向代理的 `Host`、`X-Forwarded-For`、`X-Forwarded-Proto`。
 - 只对 `/api/tasks/:id/text-events` 和系统模型事件流路径关闭缓冲、缓存和 gzip；不要把 SSE 配置复制给所有 `/api/` 请求。
 - 限制 `.env`、数据库、PostgreSQL/Redis 数据卷、上传目录、备份和 `.settings-key` 的权限；数据卷不等于备份。

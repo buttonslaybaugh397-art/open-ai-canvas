@@ -40,6 +40,7 @@ type Config struct {
 	ServiceName        string
 	SelfUpdate         bool
 	MigrationMaxBytes  int64
+	ManagedCompose     bool
 }
 
 type commandRunner interface {
@@ -89,6 +90,16 @@ type Manager struct {
 }
 
 func NewManager(config Config) (*Manager, error) {
+	return newManager(config, false)
+}
+
+// NewConfigurator only reads operation state. Installing the helper must never
+// mark a running update interrupted or overwrite its recovery information.
+func NewConfigurator(config Config) (*Manager, error) {
+	return newManager(config, true)
+}
+
+func newManager(config Config, configurationOnly bool) (*Manager, error) {
 	config.Repository = strings.TrimSpace(config.Repository)
 	if config.Repository == "" {
 		config.Repository = "buttonslaybaugh397-art/open-ai-canvas"
@@ -123,6 +134,16 @@ func NewManager(config Config) (*Manager, error) {
 	if config.MigrationMaxBytes <= 0 {
 		config.MigrationMaxBytes = defaultArchiveMaxBytes
 	}
+	if configurationOnly {
+		manager := &Manager{config: config, runner: execRunner{dir: config.InstallDir}}
+		if err := manager.loadState(); err != nil {
+			return nil, err
+		}
+		if manager.state.Operation.Phase.Active() || manager.state.Migration.Phase.Active() || manager.state.Operation.Phase == PhaseManualIntervention || manager.state.Migration.Phase == MigrationPhaseManualAction {
+			return nil, errors.New("已有更新或迁移正在进行，或存在未处理的恢复状态，拒绝重新安装更新器")
+		}
+		return manager, nil
+	}
 	if err := os.MkdirAll(config.StateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("创建更新器状态目录：%w", err)
 	}
@@ -150,6 +171,11 @@ func NewManager(config Config) (*Manager, error) {
 		manager.appendMigrationLogLocked(MigrationPhaseManualAction, manager.state.Migration.Error)
 		_ = manager.saveStateLocked()
 	}
+	if config.ManagedCompose && manager.state.Operation.Phase != PhaseManualIntervention && manager.state.Migration.Phase != MigrationPhaseManualAction {
+		if err := manager.syncComposeConfig(context.Background()); err != nil {
+			return nil, err
+		}
+	}
 	return manager, nil
 }
 
@@ -165,10 +191,15 @@ func (m *Manager) migrationLimit() int64 {
 
 func (m *Manager) Check(ctx context.Context) (Status, error) {
 	m.mu.Lock()
-	if m.state.Operation.Phase.Active() {
+	if m.state.Operation.Phase.Active() || m.state.Migration.Phase.Active() {
 		status := m.snapshotLocked()
 		m.mu.Unlock()
 		return status, errors.New("更新操作正在进行，暂时不能检查新版本")
+	}
+	if err := m.syncComposeConfig(ctx); err != nil {
+		status := m.snapshotLocked()
+		m.mu.Unlock()
+		return status, err
 	}
 	m.state.Operation.Phase = PhaseChecking
 	m.state.Operation.Error = ""
@@ -218,6 +249,9 @@ func (m *Manager) StartUpdate(targetVersion string) (Status, error) {
 	if m.state.LatestRelease == nil || m.state.LatestRelease.Version != targetVersion {
 		return m.snapshotLocked(), errors.New("目标版本与最近一次检查结果不一致，请重新检查更新")
 	}
+	if err := m.syncComposeConfig(context.Background()); err != nil {
+		return m.snapshotLocked(), err
+	}
 	current, err := m.currentVersion()
 	if err != nil {
 		return m.snapshotLocked(), err
@@ -250,6 +284,9 @@ func (m *Manager) StartRollback(reason string) (Status, error) {
 	}
 	if m.state.RollbackVersion == "" || m.state.LastBackup == nil {
 		return m.snapshotLocked(), errors.New("没有可用的回退版本或已校验备份")
+	}
+	if err := m.syncComposeConfig(context.Background()); err != nil {
+		return m.snapshotLocked(), err
 	}
 	current, err := m.currentVersion()
 	if err != nil {

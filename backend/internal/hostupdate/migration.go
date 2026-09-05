@@ -40,6 +40,10 @@ var migrationProtectedEnvKeys = []string{
 	"CANVAS_UPDATER_BACKUP_DIR",
 	"CANVAS_UPDATER_COMPOSE_FILE",
 	"CANVAS_UPDATER_RELEASE_COMPOSE_FILE",
+	"CANVAS_UPDATER_CONFIG_SOURCE",
+	"CANVAS_UPDATER_REPOSITORY",
+	"CANVAS_UPDATER_HEALTH_URL",
+	"COMPOSE_PROJECT_NAME",
 }
 
 type migrationManifestFile struct {
@@ -391,6 +395,13 @@ func (m *Manager) restoreMigrationArchive(archivePath string, preserveTargetInfr
 	if err != nil {
 		return err
 	}
+	var localCompose composeDocument
+	if preserveTargetInfrastructure && m.config.ManagedCompose {
+		localCompose, err = m.readCompose(context.Background(), m.composePath(), "")
+		if err != nil {
+			return err
+		}
+	}
 	// Redis must stop before its append-only files are replaced, otherwise it can
 	// flush the pre-import in-memory state back over the restored files.
 	m.setMigrationPhase(MigrationPhaseStopping, "正在停止 Redis，防止旧缓存覆盖恢复数据")
@@ -414,6 +425,25 @@ func (m *Manager) restoreMigrationArchive(archivePath string, preserveTargetInfr
 	}
 	if err := writeMigrationFile(m.composePath(), composeData); err != nil {
 		return fmt.Errorf("恢复 Compose 配置：%w", err)
+	}
+	if localCompose != nil {
+		restoredCompose, err := m.readCompose(context.Background(), m.composePath(), loaded.metadata.Version)
+		if err != nil {
+			return err
+		}
+		restoredCompose = preserveMigrationDeployment(restoredCompose, localCompose)
+		if err := pinComposeImages(restoredCompose, loaded.metadata.Version); err != nil {
+			return err
+		}
+		if _, err := describeDeployment(restoredCompose, m.config.Repository); err != nil {
+			return err
+		}
+		if err := m.writeCompose(context.Background(), restoredCompose, m.composePath(), false); err != nil {
+			return err
+		}
+	}
+	if err := m.syncComposeConfig(context.Background()); err != nil {
+		return err
 	}
 	if err := m.compose(m.composePath(), loaded.metadata.Version, 2*time.Minute, nil, "config", "--quiet"); err != nil {
 		return fmt.Errorf("恢复后的 Compose 配置无效：%w", err)
@@ -747,6 +777,9 @@ func validateMigrationTar(entry *zip.File, limit int64) error {
 }
 
 func (m *Manager) requireMigrationSupportLocked() (string, error) {
+	if err := m.syncComposeConfig(context.Background()); err != nil {
+		return "", err
+	}
 	values, err := readEnvFile(m.envPath())
 	if err != nil {
 		return "", err
@@ -867,7 +900,7 @@ func (m *Manager) dockerWithInput(timeout time.Duration, input io.Reader, argume
 func (m *Manager) composeWithInput(composePath, imageTag string, timeout time.Duration, input io.Reader, arguments ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	args := []string{"compose", "--env-file", m.envPath(), "-f", composePath}
+	args := m.composeArguments(composePath)
 	args = append(args, arguments...)
 	var stderr bytes.Buffer
 	command := execCommandWithInput{runner: m.runner, input: input}

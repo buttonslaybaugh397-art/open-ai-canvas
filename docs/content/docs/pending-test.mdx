@@ -1,5 +1,7 @@
 # 待测试
 
+自动配置与挂载验收统一见 `progress/pending-test.mdx` 的“1Panel 自动配置与挂载”。
+
 ## Host Updater 连接恢复
 
 - 在 Linux/systemd 和 1Panel 实例验证冷启动：运行目录被清空后，启动前辅助脚本恢复 Token，更新器创建 Socket，backend 无需修改数据库即可连接。
@@ -64,8 +66,8 @@
 - 验证 `POSTGRES_PASSWORD` 留空时，PostgreSQL 容器启动脚本会生成 48 位字母数字密码，后端与 Web 正常启动，编排不再依赖独立的 `alpine:3.22` 服务。
 - 验证手动填写少于 32 位或包含非字母数字字符的 `POSTGRES_PASSWORD` 时，PostgreSQL 容器明确失败。
 - 验证重新创建编排时继续复用 `deployment-secrets` 数据卷中的密码，不覆盖现有数据库和登录账号。
-- 验证 1Panel 未导入环境变量时，编排默认使用 `http://192.204.35.56:6868` 作为 CORS Origin 并成功创建。
-- 验证服务器通过 `0.0.0.0:6868` 暴露 Web，并可从 `http://192.204.35.56:6868` 正常访问和调用同源 API。
+- 验证 1Panel 未导入环境变量时，编排默认留空 CORS Origins，通过保留端口的 Host/转发 Host 校验正常访问同站点 API。
+- 验证服务器通过配置的 Web 端口暴露服务，IP/域名与端口访问正常，错误主机或端口的 Origin 被拒绝。
 
 ## GlobalAiOpc 独立渠道预设
 
