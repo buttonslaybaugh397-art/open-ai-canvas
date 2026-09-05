@@ -1,8 +1,8 @@
 import { App, Button, DatePicker, Input, Select, Tag } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
-import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, CalendarDays, CircleDollarSign, Clock3, Coins, Layers3, RefreshCw, RotateCcw, Sparkles, Target, UsersRound } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, CalendarDays, CircleDollarSign, Clock3, Coins, Film, Layers3, RefreshCw, RotateCcw, Sparkles, Target, UsersRound } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Area, Bar, CartesianGrid, ComposedChart, Legend, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
 import { useSearchParams } from "react-router";
 
@@ -10,6 +10,7 @@ import { formatCredits } from "@/constant/credits";
 import { AdminDataTable, AdminStatusBadge, AdminTableEmpty } from "@/pages/admin/components/admin-ui";
 import { AdminPageFrame } from "@/pages/admin/components/admin-shell";
 import { getAdminCreditConsumption, type AdminCreditConsumptionOverview } from "@/services/api/wallet";
+import "./credit-consumption-page.css";
 
 const { RangePicker } = DatePicker;
 const pageSize = 20;
@@ -44,6 +45,7 @@ export default function CreditConsumptionPage() {
     const [data, setData] = useState<AdminCreditConsumptionOverview | null>(null);
     const [loading, setLoading] = useState(false);
     const [updatedAt, setUpdatedAt] = useState<Dayjs | null>(null);
+    const requestID = useRef(0);
 
     const filters = useMemo(
         () => ({
@@ -61,14 +63,22 @@ export default function CreditConsumptionPage() {
     );
 
     const reload = useCallback(async () => {
+        const id = ++requestID.current;
         setLoading(true);
         try {
-            setData(await getAdminCreditConsumption(filters));
-            setUpdatedAt(dayjs());
+            const overview = await getAdminCreditConsumption(filters);
+            if (id === requestID.current) {
+                setData(overview);
+                setUpdatedAt(dayjs());
+            }
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "读取积分消耗统计失败");
+            if (id === requestID.current) {
+                message.error(error instanceof Error ? error.message : "读取积分消耗统计失败");
+            }
         } finally {
-            setLoading(false);
+            if (id === requestID.current) {
+                setLoading(false);
+            }
         }
     }, [filters, message]);
 
@@ -102,6 +112,17 @@ export default function CreditConsumptionPage() {
         resetPages();
     };
 
+    const applyDateRange = (nextRange: [Dayjs, Dayjs]) => {
+        const [from, to] = nextRange;
+        if (to.startOf("day").diff(from.startOf("day"), "day") > 365) {
+            message.warning("统计范围最长为 366 天，已自动调整为最近 366 天");
+            setRange([to.subtract(365, "day"), to]);
+        } else {
+            setRange(nextRange);
+        }
+        resetPages();
+    };
+
     const applyModelFilter = () => {
         setModel(modelDraft.trim());
         resetPages();
@@ -128,6 +149,7 @@ export default function CreditConsumptionPage() {
     const dailyAverage = safeDivide(periodTotal, periodDays);
     const orderAverage = safeDivide(periodTotal, summary?.settledOrders || 0);
     const userAverage = safeDivide(periodTotal, summary?.consumingUsers || 0);
+    const hasVideoDuration = Boolean(summary && summary.videoSeconds > 0);
     const filtered = Boolean(userId || model || capability);
 
     const userColumns: ColumnsType<ConsumptionUser> = [
@@ -176,7 +198,7 @@ export default function CreditConsumptionPage() {
                         </div>
                     </div>
                     <div className="admin-credit-filter-controls">
-                        <label><span>统计日期</span><RangePicker value={range} allowClear={false} onChange={(value) => { if (!value?.[0] || !value[1]) return; setRange([value[0], value[1]]); resetPages(); }} /></label>
+                        <label><span>统计日期</span><RangePicker value={range} allowClear={false} onChange={(value) => { if (!value?.[0] || !value[1]) return; applyDateRange([value[0], value[1]]); }} /></label>
                         <label><span>能力类型</span><Select allowClear placeholder="全部能力" value={capability || undefined} options={capabilityOptions} onChange={(value) => { setCapability(value || ""); resetPages(); }} /></label>
                         <label className="admin-credit-model-filter"><span>模型标识</span><Input.Search allowClear placeholder="输入完整模型标识" value={modelDraft} enterButton="应用" onChange={(event) => setModelDraft(event.target.value)} onSearch={applyModelFilter} /></label>
                     </div>
@@ -197,6 +219,8 @@ export default function CreditConsumptionPage() {
                     <MetricCard icon={<UsersRound />} label="消耗用户" value={formatNumber(summary?.consumingUsers)} detail="区间去重用户" comparison={<Comparison current={summary?.consumingUsers || 0} previous={summary?.previousConsumingUsers || 0} compact />} />
                     <MetricCard icon={<Layers3 />} label="使用模型" value={formatNumber(summary?.usedModels)} detail="区间去重模型" comparison={<Comparison current={summary?.usedModels || 0} previous={summary?.previousUsedModels || 0} compact />} />
                     <MetricCard icon={<Target />} label="任务均耗" value={summary ? formatCredits(orderAverage, 6) : "--"} detail="每个已结算任务" />
+                    <MetricCard icon={<Film />} label="视频时长" value={hasVideoDuration ? `${formatNumber(summary?.videoSeconds)} 秒` : "--"} detail={hasVideoDuration ? `${formatNumber(summary?.videoOrders)} 笔已扣款且有时长订单` : "暂无已扣款视频时长"} />
+                    <MetricCard icon={<CircleDollarSign />} label="视频每秒均价" value={hasVideoDuration ? `${formatCredits(summary?.avgVideoMicrocreditsPerSecond || 0, 8)} 积分` : "--"} detail={hasVideoDuration ? `${formatCredits(summary?.videoMicrocredits || 0, 6)} 积分 / ${formatNumber(summary?.videoSeconds)} 秒` : "仅统计实际扣款且有时长的视频"} />
                 </section>
 
                 <section className="admin-credit-insight-strip">

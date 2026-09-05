@@ -7,7 +7,8 @@ ARG TARGETARCH
 ARG GOPROXY=https://proxy.golang.org,direct
 ENV GOPROXY=$GOPROXY
 
-RUN apk add --no-cache nodejs unzip zip
+RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.aliyun.com#' /etc/apk/repositories \
+    && apk add --no-cache nodejs unzip zip
 
 WORKDIR /src
 COPY backend/go.mod backend/go.sum ./backend/
@@ -27,7 +28,8 @@ FROM alpine:3.22 AS payment-package-smoke
 
 ARG TARGETOS
 ARG TARGETARCH
-RUN apk add --no-cache unzip
+RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.aliyun.com#' /etc/apk/repositories \
+    && apk add --no-cache unzip
 COPY --from=payment-package-build /src/plugin-packages /app/plugin-packages
 RUN PAYMENT_PLUGIN_SMOKE_TEST=1 \
     sh /app/plugin-packages/verify-payment-packages.sh "$TARGETOS" "$TARGETARCH"
@@ -40,7 +42,8 @@ ARG BUILD_COMMIT=unknown
 ARG BUILD_TIME=unknown
 ENV GOPROXY=$GOPROXY
 
-RUN apk add --no-cache build-base
+RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.aliyun.com#' /etc/apk/repositories \
+    && apk add --no-cache build-base
 
 WORKDIR /src/backend
 COPY VERSION /src/VERSION
@@ -54,9 +57,10 @@ RUN --mount=type=cache,target=/root/.cache/go-build set -eu; \
     CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="$ldflags" -o /out/migrate-schema ./cmd/migrate-schema; \
     CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="$ldflags" -o /out/migrate-sqlite-postgres ./cmd/migrate-sqlite-postgres
 
-FROM alpine:3.22
+FROM alpine:3.22 AS backend
 
-RUN apk add --no-cache ca-certificates tzdata wget \
+RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.aliyun.com#' /etc/apk/repositories \
+    && apk add --no-cache ca-certificates tzdata wget \
     && addgroup -S app \
     && adduser -S app -G app
 
@@ -75,3 +79,27 @@ USER app
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 CMD wget -qO- http://127.0.0.1:8080/api/health/ready >/dev/null || exit 1
 CMD ["infinite-canvas-backend"]
+
+FROM golang:1.25-alpine AS local-migration-helper-build
+
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=$GOPROXY
+
+WORKDIR /src/backend
+COPY backend/go.mod backend/go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY backend ./
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
+    -o /out/open-ai-canvas-local-migration-helper ./cmd/local-migration-helper
+
+FROM docker:cli AS local-migration-helper
+
+RUN apk add --no-cache bash coreutils python3 zip unzip
+
+WORKDIR /workspace
+COPY --from=local-migration-helper-build /out/open-ai-canvas-local-migration-helper /usr/local/bin/open-ai-canvas-local-migration-helper
+COPY scripts/local-migration-helper-entrypoint.sh /usr/local/bin/local-migration-helper-entrypoint
+RUN chmod +x /usr/local/bin/local-migration-helper-entrypoint
+
+ENTRYPOINT ["/usr/local/bin/local-migration-helper-entrypoint"]

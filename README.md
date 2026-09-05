@@ -115,6 +115,7 @@ git clone https://github.com/ddcat-ai/open-ai-canvas.git
 cd open-ai-canvas
 
 # 开发数据必须使用 Git 忽略的目录，不要直接使用 backend/data
+# Windows 一键脚本默认把构建/依赖缓存放到 D:\open-ai-canvas-cache。
 mkdir -p .local/project-workbench-debug .local/cache/go-build .local/cache/go-mod
 
 # 终端一：后端
@@ -133,7 +134,7 @@ Windows PowerShell 用户也可以在仓库根目录执行一键启动脚本：
 .\scripts\start-local.ps1
 ```
 
-脚本会使用 `.local/project-workbench-debug` 作为后端开发数据目录，并分别打开前后端窗口。缺少 `web/node_modules` 时会自动执行 `bun install --frozen-lockfile`。详细说明见 [`本地开发`](docs/content/docs/backend/local-development.mdx)。
+脚本会使用 `.local/project-workbench-debug` 作为后端开发数据目录，并将 Go/Bun 缓存放到 `CANVAS_PROJECT_CACHE_DIR`；Windows 未设置时默认为 `D:\open-ai-canvas-cache`。脚本会分别打开前后端窗口，缺少 `web/node_modules` 时自动执行 `bun install --frozen-lockfile`。详细说明见 [`本地开发`](docs/content/docs/backend/local-development.mdx)。
 
 打开 <http://localhost:3000>，注册第一个管理员账号，再在设置中配置模型渠道。前端的 Vite 配置会把 `/api` 代理到本机 `8080`。
 
@@ -148,11 +149,33 @@ LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) \
   docker compose -f docker-compose.dev.yml up --build
 ```
 
-本地构建前后端 release 镜像：
+本地构建前后端 release 镜像，并自动启动迁移助手容器：
 
 ```bash
-docker compose -f docker-compose.local.yml up -d --build
+bash ./scripts/start-local.sh
 ```
+
+Windows PowerShell：
+
+```powershell
+.\scripts\start-local-compose.ps1
+```
+
+迁移助手作为 `docker-compose.local.yml` 的常驻服务运行，由 backend 通过 Compose 内网调用。Docker Desktop 启动这套编排时会自动拉起迁移助手，不需要再手工启动 PowerShell 进程。
+
+如需迁移当前本地服务，可将 SQLite 数据、上传资源、服务配置和已构建镜像打包，目标机器无需重新拉取镜像。Linux/macOS 使用 Bash 脚本；Windows 使用 PowerShell：
+
+    bash ./scripts/migrate-local.sh export /tmp/open-ai-canvas-migration.zip
+    bash ./scripts/migrate-local.sh import /tmp/open-ai-canvas-migration.zip
+
+Windows：
+
+```powershell
+.\scripts\migrate-local.ps1 export -ArchivePath D:\open-ai-canvas-migration.zip
+.\scripts\migrate-local.ps1 import -ArchivePath D:\open-ai-canvas-migration.zip
+```
+
+恢复前会校验 SHA-256 并自动备份目标现有数据；迁移包含 `.env` 和 Docker 镜像，必须按敏感备份管理。详细说明见 [`本地开发`](docs/content/docs/backend/local-development.mdx)。
 
 两种方式都使用容器内的数据卷；源码热更新编排额外绑定 `.local/project-workbench-debug`，避免 Compose 静默创建另一套开发账号数据。端口冲突时可通过 `CANVAS_WEB_HOST_PORT`、`CANVAS_BACKEND_HOST_PORT` 覆盖开发端口。
 

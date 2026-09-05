@@ -97,7 +97,6 @@ export async function executeImageGeneration({
             batchFailedCount: count > 1 ? 0 : undefined,
             batchUsesReferenceImages: referenceImages.length > 0,
             primaryImageId: undefined,
-            content: reuseSourceNode ? "" : undefined,
             ...generationMetadata,
             ...styleMetadata,
             ...skillMetadata,

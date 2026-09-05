@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -29,19 +30,20 @@ func run(ctx context.Context) error {
 	socketPath := env("CANVAS_UPDATER_SOCKET", "/run/open-ai-canvas-updater/updater.sock")
 	token := strings.TrimSpace(os.Getenv("CANVAS_UPDATER_TOKEN"))
 	manager, err := hostupdate.NewManager(hostupdate.Config{
-		Repository:   env("CANVAS_UPDATER_REPOSITORY", "buttonslaybaugh397-art/open-ai-canvas"),
-		InstallDir:   env("CANVAS_UPDATER_INSTALL_DIR", "/opt/open-ai-canvas"),
-		ComposeFile:  env("CANVAS_UPDATER_COMPOSE_FILE", "docker-compose.deploy.yml"),
-		EnvFile:      env("CANVAS_UPDATER_ENV_FILE", ".env"),
-		StateDir:     env("CANVAS_UPDATER_STATE_DIR", "/var/lib/open-ai-canvas-updater"),
-		BackupDir:    env("CANVAS_UPDATER_BACKUP_DIR", "/opt/open-ai-canvas/backups"),
-		HealthURL:    strings.TrimSpace(os.Getenv("CANVAS_UPDATER_HEALTH_URL")),
-		GitHubToken:  strings.TrimSpace(os.Getenv("CANVAS_UPDATER_GITHUB_TOKEN")),
-		StableWindow: envDuration("CANVAS_UPDATER_STABLE_WINDOW", 30*time.Second),
-		StepTimeout:  envDuration("CANVAS_UPDATER_STEP_TIMEOUT", 20*time.Minute),
-		BinaryPath:   env("CANVAS_UPDATER_BINARY_PATH", "/usr/local/bin/open-ai-canvas-host-updater"),
-		ServiceName:  env("CANVAS_UPDATER_SERVICE_NAME", "open-ai-canvas-updater.service"),
-		SelfUpdate:   envBool("CANVAS_UPDATER_SELF_UPDATE", true),
+		Repository:        env("CANVAS_UPDATER_REPOSITORY", "buttonslaybaugh397-art/open-ai-canvas"),
+		InstallDir:        env("CANVAS_UPDATER_INSTALL_DIR", "/opt/open-ai-canvas"),
+		ComposeFile:       env("CANVAS_UPDATER_COMPOSE_FILE", "docker-compose.deploy.yml"),
+		EnvFile:           env("CANVAS_UPDATER_ENV_FILE", ".env"),
+		StateDir:          env("CANVAS_UPDATER_STATE_DIR", "/var/lib/open-ai-canvas-updater"),
+		BackupDir:         env("CANVAS_UPDATER_BACKUP_DIR", "/opt/open-ai-canvas/backups"),
+		HealthURL:         strings.TrimSpace(os.Getenv("CANVAS_UPDATER_HEALTH_URL")),
+		GitHubToken:       strings.TrimSpace(os.Getenv("CANVAS_UPDATER_GITHUB_TOKEN")),
+		StableWindow:      envDuration("CANVAS_UPDATER_STABLE_WINDOW", 30*time.Second),
+		StepTimeout:       envDuration("CANVAS_UPDATER_STEP_TIMEOUT", 20*time.Minute),
+		BinaryPath:        env("CANVAS_UPDATER_BINARY_PATH", "/usr/local/bin/open-ai-canvas-host-updater"),
+		ServiceName:       env("CANVAS_UPDATER_SERVICE_NAME", "open-ai-canvas-updater.service"),
+		SelfUpdate:        envBool("CANVAS_UPDATER_SELF_UPDATE", true),
+		MigrationMaxBytes: envBytes("CANVAS_UPDATER_MIGRATION_MAX_BYTES", 20<<30),
 	})
 	if err != nil {
 		return err
@@ -128,4 +130,16 @@ func envBool(key string, fallback bool) bool {
 	}
 	log.Fatalf("%s 必须是 true 或 false", key)
 	return fallback
+}
+
+func envBytes(key string, fallback int64) int64 {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed <= 0 {
+		log.Fatalf("%s 必须是正整数字节数", key)
+	}
+	return parsed
 }

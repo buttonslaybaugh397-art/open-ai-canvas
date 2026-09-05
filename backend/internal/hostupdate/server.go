@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -61,7 +62,56 @@ func (s *Server) Handler() http.Handler {
 		}
 		writeJSON(w, http.StatusAccepted, status)
 	})
+	mux.HandleFunc("POST /v1/migration/export", func(w http.ResponseWriter, r *http.Request) {
+		status, err := s.manager.StartMigrationExport()
+		if err != nil {
+			writeError(w, http.StatusConflict, err, status)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, status)
+	})
+	mux.HandleFunc("POST /v1/migration/import", func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength <= 0 {
+			writeError(w, http.StatusBadRequest, errors.New("迁移包必须使用固定 Content-Length"), nil)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, s.manager.migrationLimit()+1)
+		status, err := s.manager.AcceptMigrationImport(r.ContentLength, r.Body)
+		if err != nil {
+			writeError(w, http.StatusConflict, err, status)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, status)
+	})
+	mux.HandleFunc("GET /v1/migration/download", func(w http.ResponseWriter, _ *http.Request) {
+		archive, stream, err := s.manager.OpenMigrationExport()
+		if err != nil {
+			writeError(w, http.StatusNotFound, err, nil)
+			return
+		}
+		defer stream.Close()
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", archive.Size))
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.zip\"", safeMigrationDownloadName(archive.ID)))
+		w.Header().Set("X-Migration-ID", archive.ID)
+		w.Header().Set("X-Migration-SHA256", archive.Checksum)
+		w.Header().Set("X-Migration-Version", archive.Version)
+		_, _ = io.Copy(w, stream)
+	})
 	return s.authorize(mux)
+}
+
+func safeMigrationDownloadName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "open-ai-canvas-migration"
+	}
+	for _, character := range value {
+		if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '-' || character == '_') {
+			return "open-ai-canvas-migration"
+		}
+	}
+	return value
 }
 
 func (s *Server) authorize(next http.Handler) http.Handler {

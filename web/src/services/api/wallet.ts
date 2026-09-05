@@ -238,6 +238,10 @@ export type AdminCreditConsumptionOverview = {
         settledOrders: number;
         consumingUsers: number;
         usedModels: number;
+        videoSeconds: number;
+        videoOrders: number;
+        videoMicrocredits: number;
+        avgVideoMicrocreditsPerSecond: number;
         previousPeriodMicrocredits: number;
         previousSettledOrders: number;
         previousConsumingUsers: number;

@@ -125,7 +125,7 @@ func (s *Service) UpdateAnnouncement(actor *model.User, id string, req UpdateAnn
 			}
 			return nil, err
 		}
-		if err := s.ensureResourceHasNoBusinessReferences(oldResource); err != nil {
+		if err := s.ensureResourceHasNoBusinessReferences(oldResource, announcement.ID); err != nil {
 			return nil, err
 		}
 		sharedCount, countErr := s.repo.ResourceStorageReferenceCount(oldResource, []string{oldResource.ID})
@@ -316,7 +316,7 @@ func (s *Service) discardAnnouncementImageDraft(userID string, resourceID string
 		}
 		return err
 	}
-	if err := s.ensureResourceHasNoBusinessReferences(resource); err != nil {
+	if err := s.ensureResourceHasNoBusinessReferences(resource, ""); err != nil {
 		return err
 	}
 	sharedCount, err := s.repo.ResourceStorageReferenceCount(resource, []string{resource.ID})
@@ -340,7 +340,7 @@ func (s *Service) discardAnnouncementImageDraft(userID string, resourceID string
 	return nil
 }
 
-func (s *Service) ensureResourceHasNoBusinessReferences(resource *model.Resource) error {
+func (s *Service) ensureResourceHasNoBusinessReferences(resource *model.Resource, excludedAnnouncementID string) error {
 	if resource == nil {
 		return NotFound("资源不存在")
 	}
@@ -349,7 +349,17 @@ func (s *Service) ensureResourceHasNoBusinessReferences(resource *model.Resource
 		return err
 	}
 	if len(snapshot.Direct) > 0 {
-		return BadAuthRequest("公告配图仍被其他业务数据引用，已停止删除")
+		for _, reference := range snapshot.Direct {
+			// The current announcement is replaced in the same transaction, and the
+			// draft is consumed by the same operation. Neither is an external use.
+			if reference.Kind == "公告草稿" && reference.ResourceID == resource.ID {
+				continue
+			}
+			if reference.Kind == "公告" && reference.ID == excludedAnnouncementID {
+				continue
+			}
+			return BadAuthRequest("公告配图仍被其他业务数据引用，已停止删除")
+		}
 	}
 	resourceIDs := map[string]struct{}{resource.ID: {}}
 	for _, document := range snapshot.Documents {

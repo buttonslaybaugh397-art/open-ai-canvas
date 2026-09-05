@@ -22,19 +22,20 @@ import (
 const maxReleaseResponseBytes = 4 << 20
 
 type Config struct {
-	Repository   string
-	InstallDir   string
-	ComposeFile  string
-	EnvFile      string
-	StateDir     string
-	BackupDir    string
-	HealthURL    string
-	GitHubToken  string
-	StableWindow time.Duration
-	StepTimeout  time.Duration
-	BinaryPath   string
-	ServiceName  string
-	SelfUpdate   bool
+	Repository        string
+	InstallDir        string
+	ComposeFile       string
+	EnvFile           string
+	StateDir          string
+	BackupDir         string
+	HealthURL         string
+	GitHubToken       string
+	StableWindow      time.Duration
+	StepTimeout       time.Duration
+	BinaryPath        string
+	ServiceName       string
+	SelfUpdate        bool
+	MigrationMaxBytes int64
 }
 
 type commandRunner interface {
@@ -53,10 +54,12 @@ func (r execRunner) Run(ctx context.Context, name string, args, environment []st
 }
 
 type persistedState struct {
-	LatestRelease   *Release  `json:"latestRelease,omitempty"`
-	LastBackup      *Backup   `json:"lastBackup,omitempty"`
-	RollbackVersion string    `json:"rollbackVersion,omitempty"`
-	Operation       Operation `json:"operation"`
+	LatestRelease       *Release           `json:"latestRelease,omitempty"`
+	LastBackup          *Backup            `json:"lastBackup,omitempty"`
+	LastMigrationExport *MigrationArchive  `json:"lastMigrationExport,omitempty"`
+	RollbackVersion     string             `json:"rollbackVersion,omitempty"`
+	Operation           Operation          `json:"operation"`
+	Migration           MigrationOperation `json:"migration"`
 }
 
 type Manager struct {
@@ -93,6 +96,9 @@ func NewManager(config Config) (*Manager, error) {
 	if config.StepTimeout <= 0 {
 		config.StepTimeout = 20 * time.Minute
 	}
+	if config.MigrationMaxBytes <= 0 {
+		config.MigrationMaxBytes = 20 << 30
+	}
 	if err := os.MkdirAll(config.StateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("创建更新器状态目录：%w", err)
 	}
@@ -103,7 +109,7 @@ func NewManager(config Config) (*Manager, error) {
 		config:     config,
 		runner:     execRunner{dir: config.InstallDir},
 		httpClient: &http.Client{Timeout: 30 * time.Second},
-		state:      persistedState{Operation: Operation{Phase: PhaseIdle, Logs: []LogEntry{}}},
+		state:      persistedState{Operation: Operation{Phase: PhaseIdle, Logs: []LogEntry{}}, Migration: MigrationOperation{Phase: MigrationPhaseIdle, Logs: []MigrationLog{}}},
 	}
 	if err := manager.loadState(); err != nil {
 		return nil, err
@@ -114,6 +120,12 @@ func NewManager(config Config) (*Manager, error) {
 		manager.appendLogLocked(PhaseManualIntervention, manager.state.Operation.Error)
 		_ = manager.saveStateLocked()
 	}
+	if manager.state.Migration.Phase.Active() {
+		manager.state.Migration.Phase = MigrationPhaseManualAction
+		manager.state.Migration.Error = "更新器进程在迁移期间退出，请检查容器与数据状态后手动处理"
+		manager.appendMigrationLogLocked(MigrationPhaseManualAction, manager.state.Migration.Error)
+		_ = manager.saveStateLocked()
+	}
 	return manager, nil
 }
 
@@ -121,6 +133,10 @@ func (m *Manager) Snapshot() Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.snapshotLocked()
+}
+
+func (m *Manager) migrationLimit() int64 {
+	return m.config.MigrationMaxBytes
 }
 
 func (m *Manager) Check(ctx context.Context) (Status, error) {
@@ -172,6 +188,9 @@ func (m *Manager) StartUpdate(targetVersion string) (Status, error) {
 	if m.state.Operation.Phase.Active() {
 		return m.snapshotLocked(), errors.New("已有更新操作正在进行")
 	}
+	if m.state.Migration.Phase.Active() {
+		return m.snapshotLocked(), errors.New("数据迁移正在进行，暂时不能开始更新")
+	}
 	if m.state.LatestRelease == nil || m.state.LatestRelease.Version != targetVersion {
 		return m.snapshotLocked(), errors.New("目标版本与最近一次检查结果不一致，请重新检查更新")
 	}
@@ -201,6 +220,9 @@ func (m *Manager) StartRollback(reason string) (Status, error) {
 	defer m.mu.Unlock()
 	if m.state.Operation.Phase.Active() {
 		return m.snapshotLocked(), errors.New("已有更新操作正在进行")
+	}
+	if m.state.Migration.Phase.Active() {
+		return m.snapshotLocked(), errors.New("数据迁移正在进行，暂时不能开始回退")
 	}
 	if m.state.RollbackVersion == "" || m.state.LastBackup == nil {
 		return m.snapshotLocked(), errors.New("没有可用的回退版本或已校验备份")
@@ -412,6 +434,13 @@ func (m *Manager) snapshotLocked() Status {
 		LastBackup:      cloneBackup(m.state.LastBackup),
 		RollbackVersion: m.state.RollbackVersion,
 		Operation:       cloneOperation(m.state.Operation),
+		Migration: MigrationStatus{
+			Supported:      m.migrationSupported(),
+			Reason:         m.migrationSupportReason(),
+			MaxArchiveSize: m.config.MigrationMaxBytes,
+			LastExport:     cloneMigrationArchive(m.state.LastMigrationExport),
+			Operation:      cloneMigrationOperation(m.state.Migration),
+		},
 	}
 	if status.LatestRelease != nil && err == nil {
 		status.UpdateAvailable = CompareVersions(current, status.LatestRelease.Version) < 0
@@ -466,6 +495,9 @@ func (m *Manager) loadState() error {
 	}
 	if m.state.Operation.Phase == "" {
 		m.state.Operation.Phase = PhaseIdle
+	}
+	if m.state.Migration.Phase == "" {
+		m.state.Migration.Phase = MigrationPhaseIdle
 	}
 	return nil
 }
@@ -546,5 +578,20 @@ func cloneBackup(value *Backup) *Backup {
 
 func cloneOperation(value Operation) Operation {
 	value.Logs = append([]LogEntry(nil), value.Logs...)
+	return value
+}
+
+func cloneMigrationArchive(value *MigrationArchive) *MigrationArchive {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	cloned.Path = ""
+	return &cloned
+}
+
+func cloneMigrationOperation(value MigrationOperation) MigrationOperation {
+	value.Archive = cloneMigrationArchive(value.Archive)
+	value.Logs = append([]MigrationLog(nil), value.Logs...)
 	return value
 }

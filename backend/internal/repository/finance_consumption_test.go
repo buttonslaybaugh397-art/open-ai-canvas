@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -58,7 +59,7 @@ func TestAdminCreditConsumptionAggregatesUsersModelsAndTrend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.User{}, &model.BillingOrder{}); err != nil {
+	if err := db.AutoMigrate(&model.User{}, &model.BillingOrder{}, &model.ApiCallLog{}, &model.CreditLedgerEntry{}); err != nil {
 		t.Fatal(err)
 	}
 	users := []model.User{
@@ -158,6 +159,67 @@ func TestAdminCreditConsumptionTrendUsesBeijingDaysAndExcludesEndBoundary(t *tes
 	}
 	if len(trend) != 3 || trend[0].Day != "2026-08-01" || trend[0].TotalMicrocredits != 100 || trend[1].Day != "2026-08-02" || trend[1].TotalMicrocredits != 200 || trend[2].Day != "2026-08-03" || trend[2].TotalMicrocredits != 0 {
 		t.Fatalf("unexpected boundary trend: %#v", trend)
+	}
+}
+
+func TestAdminCreditConsumptionVideoSummaryUsesOneDurationPerSettledOrder(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:admin-credit-consumption-video?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.BillingOrder{}, &model.ApiCallLog{}, &model.CreditLedgerEntry{}); err != nil {
+		t.Fatal(err)
+	}
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	settledAt := time.Date(2026, time.August, 21, 10, 0, 0, 0, location)
+	orders := []model.BillingOrder{
+		{ID: "per-second", UserID: "user-1", IdempotencyKey: "per-second", Capability: "video", BillingMode: "per_second", Quantity: 6, AmountMicrocredits: 600, ActualAmountMicrocredits: 600, Status: model.BillingStatusSettled, SettledAt: timePointer(settledAt)},
+		{ID: "fixed", UserID: "user-1", IdempotencyKey: "fixed", Capability: "video", BillingMode: "fixed_request", Quantity: 1, AmountMicrocredits: 1_200, ActualAmountMicrocredits: 1_200, Status: model.BillingStatusSettled, SettledAt: timePointer(settledAt)},
+		// Token order refunded part of its reservation: only the final actual debit is counted.
+		{ID: "token-refund", UserID: "user-1", IdempotencyKey: "token-refund", Capability: "video", BillingMode: "token", Quantity: 96_030, AmountMicrocredits: 1_000, ReservedAmountMicrocredits: 1_000, ActualAmountMicrocredits: 700, RefundedAmountMicrocredits: 300, UsageAvailable: true, Status: model.BillingStatusSettled, SettledAt: timePointer(settledAt)},
+		// Token order exceeded its reservation: the supplemental debit is included.
+		{ID: "token-supplement", UserID: "user-1", IdempotencyKey: "token-supplement", Capability: "video", BillingMode: "token", Quantity: 96_030, AmountMicrocredits: 1_000, ReservedAmountMicrocredits: 1_000, ActualAmountMicrocredits: 1_300, UsageAvailable: true, Status: model.BillingStatusSettled, SettledAt: timePointer(settledAt)},
+		{ID: "no-duration", UserID: "user-1", IdempotencyKey: "no-duration", Capability: "video", BillingMode: "fixed_request", Quantity: 1, AmountMicrocredits: 500, ActualAmountMicrocredits: 500, Status: model.BillingStatusSettled, SettledAt: timePointer(settledAt)},
+		{ID: "zero-charge", UserID: "user-1", IdempotencyKey: "zero-charge", Capability: "video", BillingMode: "per_second", Quantity: 8, AmountMicrocredits: 100, UsageAvailable: true, Status: model.BillingStatusSettled, SettledAt: timePointer(settledAt)},
+		{ID: "refunded", UserID: "user-1", IdempotencyKey: "refunded", Capability: "video", BillingMode: "per_second", Quantity: 20, AmountMicrocredits: 9_000, Status: model.BillingStatusRefunded, SettledAt: timePointer(settledAt)},
+	}
+	if err := db.Create(&orders).Error; err != nil {
+		t.Fatal(err)
+	}
+	logs := []model.ApiCallLog{
+		{ID: "fixed-create", BillingOrderID: "fixed", Capability: "video", Status: model.ApiCallStatusSucceeded, VideoSeconds: 10},
+		{ID: "fixed-retry", BillingOrderID: "fixed", Capability: "video", Status: model.ApiCallStatusSucceeded, VideoSeconds: 5},
+		{ID: "token-refund-create", BillingOrderID: "token-refund", Capability: "video", Status: model.ApiCallStatusSucceeded, VideoSeconds: 4},
+		{ID: "token-refund-poll", BillingOrderID: "token-refund", Capability: "video", Status: model.ApiCallStatusSucceeded, VideoSeconds: 4},
+		{ID: "token-supplement-create", BillingOrderID: "token-supplement", Capability: "video", Status: model.ApiCallStatusSucceeded, VideoSeconds: 6},
+		{ID: "refunded-create", BillingOrderID: "refunded", Capability: "video", Status: model.ApiCallStatusSucceeded, VideoSeconds: 20},
+	}
+	if err := db.Create(&logs).Error; err != nil {
+		t.Fatal(err)
+	}
+	ledgers := []model.CreditLedgerEntry{
+		{ID: "per-second-consume", UserID: "user-1", Type: model.CreditLedgerConsume, AmountMicrocredits: -600, BillingOrderID: "per-second"},
+		{ID: "fixed-consume", UserID: "user-1", Type: model.CreditLedgerConsume, AmountMicrocredits: -1_200, BillingOrderID: "fixed"},
+		{ID: "token-refund-consume", UserID: "user-1", Type: model.CreditLedgerConsume, AmountMicrocredits: -700, BillingOrderID: "token-refund"},
+		{ID: "token-refund-return", UserID: "user-1", Type: model.CreditLedgerRefund, AmountMicrocredits: 300, BillingOrderID: "token-refund"},
+		{ID: "token-supplement-consume", UserID: "user-1", Type: model.CreditLedgerConsume, AmountMicrocredits: -1_300, BillingOrderID: "token-supplement"},
+		{ID: "no-duration-consume", UserID: "user-1", Type: model.CreditLedgerConsume, AmountMicrocredits: -500, BillingOrderID: "no-duration"},
+		{ID: "zero-charge-consume", UserID: "user-1", Type: model.CreditLedgerConsume, AmountMicrocredits: 0, BillingOrderID: "zero-charge"},
+		{ID: "refunded-consume", UserID: "user-1", Type: model.CreditLedgerConsume, AmountMicrocredits: -9_000, BillingOrderID: "refunded"},
+	}
+	if err := db.Create(&ledgers).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := (&Repository{db: db}).AdminCreditConsumptionSummary(CreditConsumptionFilter{
+		From: settledAt.Add(-time.Hour),
+		To:   settledAt.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.VideoSeconds != 26 || summary.VideoOrders != 4 || summary.VideoMicrocredits != 3_800 || math.Abs(summary.AvgVideoMicrocreditsPerSecond-146.15384615384616) > 0.000001 {
+		t.Fatalf("unexpected video summary: %#v", summary)
 	}
 }
 

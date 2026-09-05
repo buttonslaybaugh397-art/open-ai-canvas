@@ -69,13 +69,17 @@ export function reconcileImageBatchRoot(root: CanvasNodeData, nodes: CanvasNodeD
         delete metadata.generationErrorCode;
         delete metadata.failedPromptFingerprint;
     } else {
-        delete metadata.content;
-        delete metadata.storageKey;
-        delete metadata.mimeType;
-        delete metadata.bytes;
-        delete metadata.naturalWidth;
-        delete metadata.naturalHeight;
-        delete metadata.primaryImageId;
+        // A failed retry must not destroy the last usable image shown by the root.
+        // Only an empty root may transition to an empty error state.
+        if (!root.metadata?.content) {
+            delete metadata.content;
+            delete metadata.storageKey;
+            delete metadata.mimeType;
+            delete metadata.bytes;
+            delete metadata.naturalWidth;
+            delete metadata.naturalHeight;
+            delete metadata.primaryImageId;
+        }
         metadata.status = loading ? "loading" : failed ? "error" : "idle";
         metadata.errorDetails = failed?.metadata?.errorDetails;
         metadata.generationErrorCode = failed?.metadata?.generationErrorCode;

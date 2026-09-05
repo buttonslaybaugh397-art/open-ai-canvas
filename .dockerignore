@@ -26,3 +26,7 @@ canvas-agent/pnpm-lock.yaml
 .settings-key
 .env*
 !.env.example
+
+# Local caches and host-built binaries are not part of the container build context.
+web/.local
+backend/*.exe

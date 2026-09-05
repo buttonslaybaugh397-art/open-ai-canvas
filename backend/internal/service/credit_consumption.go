@@ -31,15 +31,19 @@ type AdminCreditConsumptionOverview struct {
 }
 
 type AdminCreditConsumptionSummary struct {
-	AllTimeMicrocredits        int64 `json:"allTimeMicrocredits"`
-	PeriodMicrocredits         int64 `json:"periodMicrocredits"`
-	SettledOrders              int64 `json:"settledOrders"`
-	ConsumingUsers             int64 `json:"consumingUsers"`
-	UsedModels                 int64 `json:"usedModels"`
-	PreviousPeriodMicrocredits int64 `json:"previousPeriodMicrocredits"`
-	PreviousSettledOrders      int64 `json:"previousSettledOrders"`
-	PreviousConsumingUsers     int64 `json:"previousConsumingUsers"`
-	PreviousUsedModels         int64 `json:"previousUsedModels"`
+	AllTimeMicrocredits           int64   `json:"allTimeMicrocredits"`
+	PeriodMicrocredits            int64   `json:"periodMicrocredits"`
+	SettledOrders                 int64   `json:"settledOrders"`
+	ConsumingUsers                int64   `json:"consumingUsers"`
+	UsedModels                    int64   `json:"usedModels"`
+	VideoSeconds                  int64   `json:"videoSeconds"`
+	VideoOrders                   int64   `json:"videoOrders"`
+	VideoMicrocredits             int64   `json:"videoMicrocredits"`
+	AvgVideoMicrocreditsPerSecond float64 `json:"avgVideoMicrocreditsPerSecond"`
+	PreviousPeriodMicrocredits    int64   `json:"previousPeriodMicrocredits"`
+	PreviousSettledOrders         int64   `json:"previousSettledOrders"`
+	PreviousConsumingUsers        int64   `json:"previousConsumingUsers"`
+	PreviousUsedModels            int64   `json:"previousUsedModels"`
 }
 
 type AdminCreditConsumptionTrend struct {
@@ -125,7 +129,9 @@ func (s *Service) AdminCreditConsumption(actor *model.User, query AdminCreditCon
 		Summary: AdminCreditConsumptionSummary{
 			AllTimeMicrocredits: summary.AllTimeMicrocredits, PeriodMicrocredits: summary.PeriodMicrocredits,
 			SettledOrders: summary.SettledOrders, ConsumingUsers: summary.ConsumingUsers, UsedModels: summary.UsedModels,
-			PreviousPeriodMicrocredits: summary.PreviousPeriodMicrocredits, PreviousSettledOrders: summary.PreviousSettledOrders,
+			VideoSeconds: summary.VideoSeconds, VideoOrders: summary.VideoOrders, VideoMicrocredits: summary.VideoMicrocredits,
+			AvgVideoMicrocreditsPerSecond: summary.AvgVideoMicrocreditsPerSecond,
+			PreviousPeriodMicrocredits:    summary.PreviousPeriodMicrocredits, PreviousSettledOrders: summary.PreviousSettledOrders,
 			PreviousConsumingUsers: summary.PreviousConsumingUsers, PreviousUsedModels: summary.PreviousUsedModels,
 		},
 		Trend: make([]AdminCreditConsumptionTrend, 0, len(trendRows)), Capabilities: make([]AdminCreditConsumptionCapability, 0, len(capabilityRows)),

@@ -64,6 +64,35 @@ describe("canvas image batch retry", () => {
         expect(next.metadata.primaryImageId).toBeUndefined();
     });
 
+    test("重新生成全部失败时保留根节点已有图片", () => {
+        const root = imageNode("root", "loading", {
+            isBatchRoot: true,
+            batchChildIds: ["failed-1", "failed-2"],
+            content: "image:old",
+            storageKey: "resource:old",
+            mimeType: "image/png",
+            bytes: 1234,
+            naturalWidth: 1024,
+            naturalHeight: 768,
+            primaryImageId: "old-primary",
+        });
+        const failed1 = imageNode("failed-1", "error", { batchRootId: root.id, errorDetails: "失败 1" });
+        const failed2 = imageNode("failed-2", "error", { batchRootId: root.id, errorDetails: "失败 2" });
+
+        const next = reconcileImageBatchRoot(root, [root, failed1, failed2]);
+
+        expect(next.metadata).toMatchObject({
+            status: "error",
+            content: "image:old",
+            storageKey: "resource:old",
+            mimeType: "image/png",
+            bytes: 1234,
+            naturalWidth: 1024,
+            naturalHeight: 768,
+            primaryImageId: "old-primary",
+        });
+    });
+
     test("开始批量重试时根节点和全部失败子图同步进入生成中", () => {
         const root = imageNode("root", "error", { isBatchRoot: true, batchChildIds: ["failed-1", "success", "failed-2"], batchFailedCount: 2, errorDetails: "全部失败" });
         const failed1 = imageNode("failed-1", "error", { batchRootId: root.id, errorDetails: "失败 1" });

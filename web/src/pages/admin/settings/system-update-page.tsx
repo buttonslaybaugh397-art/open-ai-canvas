@@ -1,12 +1,13 @@
 import { App, Button, Input, Skeleton } from "antd";
-import { AlertTriangle, Archive, BadgeCheck, Circle, ExternalLink, History, RefreshCw, RotateCcw, ServerCog, ShieldCheck } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertTriangle, Archive, BadgeCheck, Circle, Download, ExternalLink, FileUp, History, RefreshCw, RotateCcw, ServerCog, ShieldCheck } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 
-import { checkSystemUpdate, getSystemUpdateStatus, rollbackSystemUpdate, startSystemUpdate, type SystemUpdateStatus, type UpdatePhase } from "@/services/api/system-update";
+import { checkSystemUpdate, downloadMigrationArchive, getSystemUpdateStatus, importMigrationArchive, rollbackSystemUpdate, startMigrationExport, startSystemUpdate, type MigrationPhase, type SystemUpdateStatus, type UpdatePhase } from "@/services/api/system-update";
 import { AdminPageFrame } from "../components/admin-shell";
 import { AdminStatusBadge, SettingsSectionCard } from "../components/admin-ui";
 
 const activePhases = new Set<UpdatePhase>(["checking", "preflight", "backing_up", "pulling", "draining", "migrating", "switching", "verifying", "rolling_back"]);
+const activeMigrationPhases = new Set<MigrationPhase>(["validating", "backing_up", "stopping", "packaging", "uploading", "restoring", "starting", "verifying"]);
 
 const phaseLabels: Record<UpdatePhase, string> = {
     idle: "等待检查",
@@ -27,15 +28,33 @@ const phaseLabels: Record<UpdatePhase, string> = {
     manual_intervention: "需人工介入",
 };
 
+const migrationPhaseLabels: Record<MigrationPhase, string> = {
+    idle: "等待操作",
+    validating: "校验迁移包",
+    backing_up: "创建恢复前备份",
+    stopping: "停止服务",
+    packaging: "打包数据与服务",
+    uploading: "接收迁移包",
+    restoring: "恢复数据与服务",
+    starting: "启动恢复后的服务",
+    verifying: "健康验证",
+    succeeded: "迁移成功",
+    failed: "迁移失败",
+    manual_intervention: "需人工介入",
+};
+
 export default function SystemUpdatePage() {
     const { message, modal } = App.useApp();
     const [status, setStatus] = useState<SystemUpdateStatus | null>(null);
     const [loading, setLoading] = useState(true);
     const [checking, setChecking] = useState(false);
     const [starting, setStarting] = useState(false);
+    const [exporting, setExporting] = useState(false);
+    const [importing, setImporting] = useState(false);
     const [reconnecting, setReconnecting] = useState(false);
     const [loadError, setLoadError] = useState("");
     const mountedRef = useRef(true);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
     const load = useCallback(async (initial = false) => {
         if (initial) setLoading(true);
@@ -49,7 +68,7 @@ export default function SystemUpdatePage() {
             if (!mountedRef.current) return;
             const errorMessage = error instanceof Error ? error.message : "读取系统更新状态失败";
             setLoadError(errorMessage);
-            if (status && activePhases.has(status.operation.phase)) setReconnecting(true);
+            if (status && (activePhases.has(status.operation.phase) || activeMigrationPhases.has(status.migration?.operation.phase ?? "idle"))) setReconnecting(true);
         } finally {
             if (mountedRef.current && initial) setLoading(false);
         }
@@ -64,12 +83,17 @@ export default function SystemUpdatePage() {
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
-        if (!status || !activePhases.has(status.operation.phase)) return;
+        if (!status || (!activePhases.has(status.operation.phase) && !activeMigrationPhases.has(status.migration?.operation.phase ?? "idle"))) return;
         const timer = window.setInterval(() => void load(false), 2500);
         return () => window.clearInterval(timer);
     }, [load, status]);
 
-    const operationActive = Boolean(status && activePhases.has(status.operation.phase));
+    const migration = status?.migration;
+    const migrationPhase = migration?.operation.phase ?? "idle";
+    const migrationOperationActive = activeMigrationPhases.has(migrationPhase);
+    const operationActive = Boolean(status && (activePhases.has(status.operation.phase) || migrationOperationActive));
+    const migrationArchive = migration?.operation.archive ?? migration?.lastExport;
+    const downloadableMigrationArchive = migration?.lastExport;
     const blockingCheckFailed = status?.checks.some((check) => check.blocking && check.status === "failed") ?? true;
 
     const requestCheck = async () => {
@@ -143,6 +167,84 @@ export default function SystemUpdatePage() {
         });
     };
 
+    const requestMigrationExport = async () => {
+        setExporting(true);
+        try {
+            const next = await startMigrationExport();
+            setStatus(next);
+            message.success("迁移包导出已开始，页面会显示打包进度");
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "无法开始导出迁移包");
+            await load(false);
+        } finally {
+            setExporting(false);
+        }
+    };
+
+    const requestMigrationDownload = async () => {
+        if (!downloadableMigrationArchive) {
+            message.warning("请先完成迁移包导出");
+            return;
+        }
+        try {
+            const result = await downloadMigrationArchive();
+            const url = URL.createObjectURL(result.blob);
+            const anchor = document.createElement("a");
+            anchor.href = url;
+            anchor.download = result.filename;
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+            message.success("迁移包下载已开始");
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "下载迁移包失败");
+        }
+    };
+
+    const requestMigrationImport = (event: ChangeEvent<HTMLInputElement>) => {
+        const archive = event.target.files?.[0];
+        event.target.value = "";
+        if (!archive) return;
+        const maxBytes = migration?.maxArchiveSize || 20 * 1024 * 1024 * 1024;
+        if (archive.size <= 0 || archive.size > maxBytes) {
+            message.error("迁移包必须大于 0 且不超过 " + formatBytes(maxBytes));
+            return;
+        }
+        if (!archive.name.toLowerCase().endsWith(".zip")) {
+            message.error("请选择 ZIP 迁移包");
+            return;
+        }
+        modal.confirm({
+            title: "导入这份迁移包？",
+            width: 560,
+            content: (
+                <div className="space-y-3 text-sm text-foreground/70">
+                    <p>导入会替换当前数据、配置和 Docker 服务镜像，站点会短暂不可用。</p>
+                    <p>系统会先创建导入前恢复包。迁移包包含敏感环境配置，请确认文件来源可信；导入失败会自动尝试恢复原状态。</p>
+                    <p className="admin-monospace">{archive.name} · {formatBytes(archive.size)}</p>
+                </div>
+            ),
+            okText: "确认并导入",
+            okButtonProps: { danger: true },
+            cancelText: "取消",
+            onOk: async () => {
+                setImporting(true);
+                try {
+                    const next = await importMigrationArchive(archive);
+                    setStatus(next);
+                    message.success("迁移包已接收，页面会显示恢复进度");
+                } catch (error) {
+                    message.error(error instanceof Error ? error.message : "导入迁移包失败");
+                    await load(false);
+                    throw error;
+                } finally {
+                    setImporting(false);
+                }
+            },
+        });
+    };
+
     if (loading) {
         return (
             <AdminPageFrame title="系统更新" description="检查发布版本，并在备份、迁移和健康验证保护下完成在线更新。" scroll>
@@ -164,7 +266,11 @@ export default function SystemUpdatePage() {
         >
             <div className="admin-settings-stack admin-system-update">
                 {loadError && !status ? <UpdateAlert tone="error" title="无法读取更新状态" detail={loadError} /> : null}
-                {!status?.supported ? <UpdateAlert tone="warning" title="当前部署不支持后台在线更新" detail="请先在服务器安装 Host Updater，并重建 backend 容器挂载 Unix Socket。此状态下不会执行任何更新操作。" /> : null}
+                {!status?.supported ? <UpdateAlert
+                    tone="warning"
+                    title="当前部署不支持后台在线更新"
+                    detail={status?.migration?.supported ? "当前为本地 SQLite 部署，在线版本切换不可用；下方的数据与服务迁移仍然可用。" : "请先在服务器安装 Host Updater，并重建 backend 容器挂载 Unix Socket。"}
+                /> : null}
                 {reconnecting ? <UpdateAlert tone="warning" title="服务正在切换，等待重新连接" detail="更新器运行在宿主机，后台页面暂时断线不会中止更新。连接恢复后会继续显示最终结果。" /> : null}
                 {status?.operation.phase === "manual_intervention" ? <UpdateAlert
                     tone="error"
@@ -230,6 +336,68 @@ export default function SystemUpdatePage() {
                 </SettingsSectionCard>
 
                 <SettingsSectionCard
+                    className="admin-system-migration"
+                    layout="stacked"
+                    icon={<Archive className="size-4" />}
+                    title="数据与服务迁移"
+                    description={migration?.supported ? "打包或恢复业务数据、配置和当前已构建的服务镜像。" : "当前部署未提供可用的数据迁移助手。"}
+                    status={<MigrationPhaseBadge phase={migrationPhase} />}
+                    footer={
+                        <>
+                            <span className="text-xs leading-5 text-foreground/50">迁移包包含业务数据、密钥和部署配置；操作会短暂停止服务，导入前会创建恢复点，失败时自动尝试恢复。</span>
+                            <Button type="primary" icon={<Archive className="size-4" />} loading={exporting} disabled={!migration?.supported || operationActive} onClick={() => void requestMigrationExport()}>
+                                导出迁移包
+                            </Button>
+                        </>
+                    }
+                >
+                    {!migration?.supported ? (
+                        <div className="admin-system-migration-unavailable">
+                            <p>{migration?.reason || "请检查本地迁移助手或服务器 Host Updater 的连接状态。"}</p>
+                        </div>
+                    ) : (
+                        <>
+                            <div className="admin-system-migration-toolbar">
+                                <div>
+                                    <strong>{migration.operation.kind === "import" ? "导入迁移包" : migration.operation.kind === "export" ? "导出迁移包" : "迁移包管理"}</strong>
+                                    <p>{migrationArchive ? "最近一次有效迁移包已通过结构和 SHA-256 校验。" : "单个迁移包上限：" + formatBytes(migration.maxArchiveSize)}</p>
+                                </div>
+                                <div className="admin-system-migration-actions">
+                                    <input ref={fileInputRef} type="file" accept=".zip,application/zip" onChange={requestMigrationImport} />
+                                    <Button icon={<Download className="size-4" />} disabled={!downloadableMigrationArchive || operationActive} onClick={() => void requestMigrationDownload()}>
+                                        下载迁移包
+                                    </Button>
+                                    <Button icon={<FileUp className="size-4" />} loading={importing} disabled={operationActive} onClick={() => fileInputRef.current?.click()}>
+                                        导入迁移包
+                                    </Button>
+                                </div>
+                            </div>
+                            {migrationArchive ? (
+                                <dl className="admin-system-migration-facts">
+                                    <dt>迁移包编号</dt><dd>{migrationArchive.id}</dd>
+                                    <dt>来源版本</dt><dd>{migrationArchive.version || "未记录"}</dd>
+                                    <dt>数据库</dt><dd>{migrationArchive.databaseDriver === "sqlite" ? "SQLite" : migrationArchive.databaseDriver === "postgres" ? "PostgreSQL" : migrationArchive.databaseDriver || "未记录"}</dd>
+                                    <dt>文件大小</dt><dd>{formatBytes(migrationArchive.size)}</dd>
+                                    <dt>生成时间</dt><dd>{formatDate(migrationArchive.createdAt)}</dd>
+                                    <dt>SHA-256</dt><dd className="admin-monospace">{migrationArchive.checksum || "未返回"}</dd>
+                                </dl>
+                            ) : null}
+                            {migration.operation.error ? <UpdateAlert tone="error" title="本次迁移失败" detail={migration.operation.error} compact /> : null}
+                            {(migration.operation.logs || []).length ? (
+                                <div className="admin-system-migration-log">
+                                    <h3>迁移日志</h3>
+                                    <ol>
+                                        {migration.operation.logs.map((entry, index) => (
+                                            <li key={entry.at + "-" + index}><span className="admin-system-update-dot" data-active={index === migration.operation.logs.length - 1} /><div><strong>{migrationPhaseLabels[entry.phase]}</strong><p>{entry.message}</p></div><time>{formatTime(entry.at)}</time></li>
+                                        ))}
+                                    </ol>
+                                </div>
+                            ) : <p className="admin-system-update-empty">导出或导入迁移包后，这里会显示完整操作记录。</p>}
+                        </>
+                    )}
+                </SettingsSectionCard>
+
+                <SettingsSectionCard
                     layout="stacked"
                     icon={<Archive className="size-4" />}
                     title="备份与回退"
@@ -254,6 +422,11 @@ export default function SystemUpdatePage() {
 function PhaseBadge({ phase }: { phase: UpdatePhase }) {
     const tone = phase === "succeeded" || phase === "ready" ? "success" : phase === "failed" || phase === "manual_intervention" ? "error" : phase === "rolling_back" || phase === "rolled_back" ? "warning" : activePhases.has(phase) ? "info" : "neutral";
     return <AdminStatusBadge label={phaseLabels[phase]} tone={tone} />;
+}
+
+function MigrationPhaseBadge({ phase }: { phase: MigrationPhase }) {
+    const tone = phase === "succeeded" ? "success" : phase === "failed" || phase === "manual_intervention" ? "error" : activeMigrationPhases.has(phase) ? "info" : "neutral";
+    return <AdminStatusBadge label={migrationPhaseLabels[phase]} tone={tone} />;
 }
 
 function UpdateCheckRow({ check }: { check: SystemUpdateStatus["checks"][number] }) {

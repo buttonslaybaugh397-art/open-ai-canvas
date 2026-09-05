@@ -16,8 +16,8 @@ description: 在宿主机启动影策前后端开发服务
 脚本会：
 
 - 使用 `.local/project-workbench-debug` 作为后端 SQLite 开发数据目录；
-- 创建 `.local/cache/go-build` 和 `.local/cache/go-mod` 缓存目录；
-- 首次启动时，如果 `web/node_modules` 不存在，执行 `bun install --frozen-lockfile`；
+- 将 Go 构建缓存、Go 模块缓存、Bun 下载缓存和前端 `node_modules` 放到 `CANVAS_PROJECT_CACHE_DIR`；Windows 未设置时默认为 `D:\open-ai-canvas-cache`；
+- 首次启动时，如果 `web/node_modules` 不存在，执行带有外置缓存目录的 `bun install --frozen-lockfile`；
 - 打开两个 PowerShell 窗口，分别运行后端和前端；
 - 将前端 `/api` 请求代理到 `http://127.0.0.1:8080`。
 
@@ -33,6 +33,14 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```
 
 ## 手工启动
+
+Windows 一键脚本默认使用 `D:\open-ai-canvas-cache`。Docker Compose 会读取仓库根目录 `.env` 中的 `CANVAS_PROJECT_CACHE_DIR`；本机可设置为：
+
+```dotenv
+CANVAS_PROJECT_CACHE_DIR=D:/open-ai-canvas-cache
+```
+
+Linux/macOS 可将它设置为仓库外的绝对路径，或保留为 `./.local/cache`。
 
 后端：
 
@@ -65,4 +73,50 @@ LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) \
   docker compose -f docker-compose.dev.yml up --build
 ```
 
-Docker 开发编排也使用 `.local/project-workbench-debug`，并默认暴露前端 `3000` 和后端 `8080`。端口冲突时，可通过 `CANVAS_WEB_HOST_PORT` 和 `CANVAS_BACKEND_HOST_PORT` 调整宿主机端口。
+Docker 开发编排也使用 `.local/project-workbench-debug`，并通过 `CANVAS_PROJECT_CACHE_DIR` 挂载 Go 和 Bun 缓存；默认暴露前端 `3000` 和后端 `8080`。端口冲突时，可通过 `CANVAS_WEB_HOST_PORT` 和 `CANVAS_BACKEND_HOST_PORT` 调整宿主机端口。
+
+## Docker 本地构建
+
+本地构建运行使用 `docker-compose.local.yml`。迁移助手已经作为 Compose 常驻服务编排，Docker Desktop 启动这套项目时会自动拉起：
+
+Linux/macOS：
+
+    bash ./scripts/start-local.sh
+
+Windows PowerShell：
+
+```powershell
+.\scripts\start-local-compose.ps1
+```
+
+脚本会执行 `docker compose -f docker-compose.local.yml up -d --build`，同时启动 `migration-helper`、`backend` 和 `web`。迁移助手只加入 Compose 内网，不发布宿主机端口；backend 会等待助手健康后再启动。
+
+## 本地服务迁移
+
+本地 Docker 编排支持把 SQLite 数据、上传资源、.env、Compose 配置和当前已构建的前后端镜像打成一个迁移包。迁移包包含敏感配置，请只保存到受控磁盘或加密存储。迁移助手支持 Windows、Linux 和 macOS；它随 Compose 服务自动启动，并通过 Docker socket 执行本地镜像导入、导出和服务恢复。
+
+导出当前服务（脚本会在复制 SQLite 数据前短暂停止 `backend` 和 `web`，完成后恢复原运行状态）：
+
+Linux/macOS：
+
+    bash ./scripts/migrate-local.sh export /tmp/open-ai-canvas-migration.zip
+
+Windows PowerShell：
+
+```powershell
+.\scripts\migrate-local.ps1 export -ArchivePath D:\open-ai-canvas-migration.zip
+```
+
+在目标仓库目录恢复：
+
+Linux/macOS：
+
+    bash ./scripts/migrate-local.sh import /tmp/open-ai-canvas-migration.zip
+
+Windows PowerShell：
+
+```powershell
+.\scripts\migrate-local.ps1 import -ArchivePath D:\open-ai-canvas-migration.zip
+```
+
+恢复前会先校验归档内所有文件的 SHA-256，备份目标现有 `.local/project-workbench-debug` 和服务配置到 `.local/migrations/before-import-*`，再导入 Docker 镜像并启动本地服务。该脚本面向当前 `docker-compose.local.yml` 的 SQLite 本地部署；PostgreSQL/Redis 生产部署请使用生产备份与更新流程。

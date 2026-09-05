@@ -17,15 +17,25 @@ type CreditConsumptionFilter struct {
 }
 
 type AdminCreditConsumptionSummary struct {
-	AllTimeMicrocredits        int64
-	PeriodMicrocredits         int64
-	SettledOrders              int64
-	ConsumingUsers             int64
-	UsedModels                 int64
-	PreviousPeriodMicrocredits int64
-	PreviousSettledOrders      int64
-	PreviousConsumingUsers     int64
-	PreviousUsedModels         int64
+	AllTimeMicrocredits           int64
+	PeriodMicrocredits            int64
+	SettledOrders                 int64
+	ConsumingUsers                int64
+	UsedModels                    int64
+	VideoSeconds                  int64
+	VideoOrders                   int64
+	VideoMicrocredits             int64
+	AvgVideoMicrocreditsPerSecond float64
+	PreviousPeriodMicrocredits    int64
+	PreviousSettledOrders         int64
+	PreviousConsumingUsers        int64
+	PreviousUsedModels            int64
+}
+
+type adminCreditConsumptionVideoSummary struct {
+	VideoSeconds      int64 `gorm:"column:video_seconds"`
+	VideoOrders       int64 `gorm:"column:video_orders"`
+	VideoMicrocredits int64 `gorm:"column:video_microcredits"`
 }
 
 type AdminCreditConsumptionTrendRow struct {
@@ -74,6 +84,16 @@ func (r *Repository) AdminCreditConsumptionSummary(filter CreditConsumptionFilte
 	if err := r.creditConsumptionQuery(filter, true).Select(periodSelect).Scan(&summary).Error; err != nil {
 		return summary, err
 	}
+	videoSummary, err := r.adminCreditConsumptionVideoSummary(filter)
+	if err != nil {
+		return summary, err
+	}
+	summary.VideoSeconds = videoSummary.VideoSeconds
+	summary.VideoOrders = videoSummary.VideoOrders
+	summary.VideoMicrocredits = videoSummary.VideoMicrocredits
+	if summary.VideoSeconds > 0 {
+		summary.AvgVideoMicrocreditsPerSecond = float64(summary.VideoMicrocredits) / float64(summary.VideoSeconds)
+	}
 	previousFilter := filter
 	previousFilter.To = filter.From
 	previousFilter.From = filter.From.Add(-filter.To.Sub(filter.From))
@@ -100,6 +120,31 @@ func (r *Repository) AdminCreditConsumptionSummary(filter CreditConsumptionFilte
 	}
 	summary.AllTimeMicrocredits = allTime.Total
 	return summary, nil
+}
+
+func (r *Repository) adminCreditConsumptionVideoSummary(filter CreditConsumptionFilter) (adminCreditConsumptionVideoSummary, error) {
+	var summary adminCreditConsumptionVideoSummary
+	videoUsage := r.db.Model(&model.ApiCallLog{}).
+		Select("billing_order_id, MAX(video_seconds) AS video_seconds").
+		Where("capability = ? AND status = ? AND video_seconds > 0 AND billing_order_id <> ''", "video", model.ApiCallStatusSucceeded).
+		Group("billing_order_id")
+	videoSecondsExpression := "CASE WHEN billing_orders.billing_mode = 'per_second' AND billing_orders.quantity > 0 THEN billing_orders.quantity ELSE COALESCE(video_usage.video_seconds, 0) END"
+	// Settled only means the billing workflow has finished. Require a negative consume
+	// ledger entry so free or fully refunded settlement does not inflate video usage.
+	successfulDebitExpression := "EXISTS (SELECT 1 FROM credit_ledger_entries AS video_consume_ledger WHERE video_consume_ledger.billing_order_id = billing_orders.id AND video_consume_ledger.type = 'consume' AND video_consume_ledger.amount_microcredits < 0)"
+	err := r.creditConsumptionQuery(filter, true).
+		Joins("LEFT JOIN (?) AS video_usage ON video_usage.billing_order_id = billing_orders.id", videoUsage).
+		Where("billing_orders.capability = ?", "video").
+		Where(successfulDebitExpression).
+		Where("(" + billingConsumptionAmountExpression() + ") > 0").
+		Where(videoSecondsExpression + " > 0").
+		Select(
+			"COALESCE(SUM(" + videoSecondsExpression + "), 0) AS video_seconds, " +
+				"COUNT(*) AS video_orders, " +
+				"COALESCE(SUM(" + billingConsumptionAmountExpression() + "), 0) AS video_microcredits",
+		).
+		Scan(&summary).Error
+	return summary, err
 }
 
 func (r *Repository) AdminCreditConsumptionCapabilities(filter CreditConsumptionFilter) ([]AdminCreditConsumptionCapabilityRow, error) {

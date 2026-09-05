@@ -58,3 +58,16 @@ sudo sha256sum /opt/open-ai-canvas/backups/*.zip
 ```
 
 备份文件包含业务数据，应限制为 root 访问并纳入异机备份策略。数据卷本身不是备份。
+
+## 本地 SQLite 迁移
+
+本地 Docker 编排不使用 PostgreSQL Host Updater，而是由独立运行的本地迁移助手调用固定的 scripts/migrate-local.ps1（Windows）或 scripts/migrate-local.sh（Linux/macOS）。管理后台会在“数据与服务迁移”区块中单独显示本地迁移能力；在线版本更新仍保持不可用。
+
+本地迁移包包含 SQLite 数据目录、上传文件、.env、Compose/Docker 配置和当前已构建的前后端镜像。导入前会校验 ZIP 清单和 SHA-256，备份目标数据与配置；迁移失败会尝试恢复原状态。迁移助手只接受带 Token 的固定导出、导入和下载请求，不提供任意 PowerShell 或 Docker 执行接口。
+
+```text
+管理员浏览器 → Backend 管理 API → Token HTTP → host.docker.internal:9714
+                                              → 固定本地迁移脚本 → Docker Compose
+```
+
+Windows 启动本地服务时，scripts/start-local.ps1 会构建并启动迁移助手；Linux/macOS 请运行 scripts/start-local-migration-helper.sh。两者都会将只读 Token 文件挂载到 Backend。若 Docker 或助手未运行，业务服务仍可启动，后台仅显示本地迁移不可用；请先检查 .local/migration-helper/helper.stderr.log 和端口 9714。

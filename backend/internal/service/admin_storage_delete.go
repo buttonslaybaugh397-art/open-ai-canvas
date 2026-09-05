@@ -199,6 +199,11 @@ func adminResourceReferences(snapshot repository.ResourceReferenceSnapshot, reso
 	result := make(map[string][]AdminResourceReferenceView)
 	seen := make(map[string]map[string]struct{})
 	for _, reference := range snapshot.Direct {
+		// A draft is deleted atomically with its resource, so it is not an
+		// external business reference for administrator resource deletion.
+		if reference.Kind == "公告草稿" && reference.ResourceID == reference.ID {
+			continue
+		}
 		appendAdminResourceReference(result, seen, reference.ResourceID, AdminResourceReferenceView{Kind: reference.Kind, ID: reference.ID, Title: reference.Title})
 	}
 	for _, resource := range resources {

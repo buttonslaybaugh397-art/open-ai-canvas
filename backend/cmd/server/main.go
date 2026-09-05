@@ -70,8 +70,20 @@ func run(ctx context.Context) error {
 	addr := env("CANVAS_BACKEND_ADDR", ":8080")
 	capabilities := service.RuntimeCapabilitiesForDeployment(addr, os.Getenv("CANVAS_DESKTOP_LOCAL_CHANNELS_ENABLED"))
 	svc := service.NewWithRuntimeCapabilities(repo, dataDir, capabilities)
-	if updaterToken := strings.TrimSpace(os.Getenv("CANVAS_UPDATER_TOKEN")); updaterToken != "" {
-		svc.ConfigureUpdateManager(updaterclient.New(env("CANVAS_UPDATER_SOCKET", "/run/open-ai-canvas-updater/updater.sock"), updaterToken))
+	updaterURL := strings.TrimSpace(os.Getenv("CANVAS_UPDATER_URL"))
+	updaterTokenFile := strings.TrimSpace(os.Getenv("CANVAS_UPDATER_TOKEN_FILE"))
+	updaterToken, err := updaterTokenFromEnvironment()
+	if err != nil {
+		return err
+	}
+	if updaterURL != "" && updaterToken == "" && updaterTokenFile != "" {
+		svc.ConfigureUpdateManager(updaterclient.NewTokenFileHTTP(updaterURL, updaterTokenFile))
+	} else if updaterToken != "" {
+		if updaterURL != "" {
+			svc.ConfigureUpdateManager(updaterclient.NewHTTP(updaterURL, updaterToken))
+		} else {
+			svc.ConfigureUpdateManager(updaterclient.New(env("CANVAS_UPDATER_SOCKET", "/run/open-ai-canvas-updater/updater.sock"), updaterToken))
+		}
 	}
 	defer svc.Close()
 	if err := svc.ValidateRuntime(); err != nil {
@@ -212,6 +224,24 @@ func env(key string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func updaterTokenFromEnvironment() (string, error) {
+	if token := strings.TrimSpace(os.Getenv("CANVAS_UPDATER_TOKEN")); token != "" {
+		return token, nil
+	}
+	path := strings.TrimSpace(os.Getenv("CANVAS_UPDATER_TOKEN_FILE"))
+	if path == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("读取 CANVAS_UPDATER_TOKEN_FILE：%w", err)
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
 func envBool(key string, fallback bool) (bool, error) {

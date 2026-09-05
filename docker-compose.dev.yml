@@ -39,15 +39,15 @@ services:
           create_host_path: false
       # 持久化首次下载和 CGO 编译结果，容器重建后继续复用开发缓存。
       - type: bind
-        source: ./.local/cache/go-build
+        source: ${CANVAS_PROJECT_CACHE_DIR:-.local/cache}/go-build
         target: /tmp/go-build
         bind:
-          create_host_path: false
+          create_host_path: true
       - type: bind
-        source: ./.local/cache/go-mod
+        source: ${CANVAS_PROJECT_CACHE_DIR:-.local/cache}/go-mod
         target: /tmp/go-mod
         bind:
-          create_host_path: false
+          create_host_path: true
     ports:
       - "127.0.0.1:${CANVAS_BACKEND_HOST_PORT:-8080}:8080"
     init: true
@@ -63,14 +63,18 @@ services:
       - type: bind
         source: .
         target: /workspace
-      - web-node-modules:/workspace/web/node_modules
-      - web-bun-cache:/root/.bun/install/cache
+      - type: bind
+        source: ${CANVAS_PROJECT_CACHE_DIR:-.local/cache}/web-node-modules
+        target: /workspace/web/node_modules
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${CANVAS_PROJECT_CACHE_DIR:-.local/cache}/bun-cache
+        target: /root/.bun/install/cache
+        bind:
+          create_host_path: true
     ports:
       - "${CANVAS_WEB_HOST_PORT:-3000}:3000"
     depends_on:
       - backend
     init: true
-
-volumes:
-  web-node-modules:
-  web-bun-cache:

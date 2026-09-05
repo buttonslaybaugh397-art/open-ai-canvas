@@ -69,6 +69,16 @@ export function CanvasNodeContent(props: CanvasNodeContentProps) {
     if (props.node.type === PORTRAIT_CLEARANCE_NODE_TYPE) return <PortraitClearanceNodeContent node={props.node} />;
     if (props.node.type === ART_CRITIQUE_NODE_TYPE) return <ArtCritiqueNodeContent node={props.node} />;
     if (props.isBatchRoot) return <ImageNodeContent {...props} />;
+    if (props.node.type === CanvasNodeType.Image && props.node.metadata?.content && props.node.metadata.status === "error") {
+        return (
+            <div className="relative size-full">
+                <ImageNodeContent {...props} />
+                <div className="absolute inset-0 z-[var(--node-z-overlay)] flex items-center justify-center bg-black/45 backdrop-blur-[1px]">
+                    <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} onReloadResource={props.onReloadResource} />
+                </div>
+            </div>
+        );
+    }
     if (props.node.metadata?.status === "loading") return <LoadingContent node={props.node} theme={props.theme} onOpenTaskDetails={props.onOpenTaskDetails} />;
     if (props.node.metadata?.status === "error") return <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} onReloadResource={props.onReloadResource} />;
 

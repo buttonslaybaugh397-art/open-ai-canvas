@@ -1,9 +1,45 @@
 services:
-  backend:
-    image: open-ai-canvas-backend:local
+  migration-helper:
+    image: open-ai-canvas-local-migration-helper:local
     build:
       context: .
       dockerfile: backend/Dockerfile
+      target: local-migration-helper
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    environment:
+      CANVAS_LOCAL_REPOSITORY_ROOT: /workspace
+      CANVAS_LOCAL_SERVICE_URL: http://web:3000
+    volumes:
+      # The helper runs the platform-specific migration script against the host checkout.
+      - type: bind
+        source: "${CANVAS_HOST_REPOSITORY_ROOT:-.}"
+        target: /workspace
+        bind:
+          create_host_path: false
+      # Docker socket access is required to save/load images and restart local services.
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        bind:
+          create_host_path: false
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9714/healthz"]
+      interval: 5s
+      timeout: 3s
+      start_period: 2s
+      retries: 12
+
+  backend:
+    image: open-ai-canvas-backend:local
+    depends_on:
+      migration-helper:
+        condition: service_healthy
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: backend
       args:
         GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
     environment:
@@ -20,9 +56,22 @@ services:
       CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS: ${CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS:-}
       CANVAS_CORS_ORIGINS: ${CANVAS_CORS_ORIGINS:-http://localhost:3000}
       ENABLE_PROVIDER_PLUGINS: ${ENABLE_PROVIDER_PLUGINS:-false}
+      CANVAS_UPDATER_URL: http://migration-helper:9714
+      CANVAS_UPDATER_TOKEN_FILE: /run/open-ai-canvas-local-migration/token
       GIN_MODE: release
     volumes:
-      - backend-data:/data
+      # Reuse the existing local development database instead of creating a new empty volume.
+      - type: bind
+        source: "${CANVAS_HOST_REPOSITORY_ROOT:-.}/.local/project-workbench-debug"
+        target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${CANVAS_HOST_REPOSITORY_ROOT:-.}/.local/migration-helper"
+        target: /run/open-ai-canvas-local-migration
+        bind:
+          create_host_path: true
+        read_only: true
     restart: unless-stopped
     stop_grace_period: ${CANVAS_SHUTDOWN_TIMEOUT:-10m}
     develop:
@@ -40,6 +89,8 @@ services:
     ports:
       - "3000:3000"
     depends_on:
+      migration-helper:
+        condition: service_started
       backend:
         condition: service_healthy
     restart: unless-stopped
@@ -59,6 +110,3 @@ services:
           path: ./VERSION
         - action: rebuild
           path: ./CHANGELOG.md
-
-volumes:
-  backend-data:

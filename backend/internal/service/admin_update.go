@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"strings"
 
@@ -14,6 +15,9 @@ type UpdateManager interface {
 	Check(context.Context) (hostupdate.Status, error)
 	Start(context.Context, string) (hostupdate.Status, error)
 	Rollback(context.Context, string) (hostupdate.Status, error)
+	MigrationExport(context.Context) (hostupdate.Status, error)
+	MigrationImport(context.Context, int64, io.Reader) (hostupdate.Status, error)
+	OpenMigrationExport(context.Context) (hostupdate.MigrationArchive, io.ReadCloser, error)
 }
 
 func (s *Service) ConfigureUpdateManager(manager UpdateManager) {
@@ -83,6 +87,65 @@ func (s *Service) AdminRollbackUpdate(ctx context.Context, actor *model.User, re
 	return status, nil
 }
 
+func (s *Service) AdminMigrationStatus(ctx context.Context, actor *model.User) (hostupdate.MigrationStatus, error) {
+	if err := s.RequireAdmin(actor); err != nil {
+		return hostupdate.MigrationStatus{}, err
+	}
+	if s.updateManager == nil {
+		return unsupportedMigrationStatus("当前部署未安装 Host Updater"), nil
+	}
+	status, err := s.updateManager.Status(ctx)
+	if err != nil {
+		return unsupportedMigrationStatus("Host Updater 当前不可连接"), nil
+	}
+	return status.Migration, nil
+}
+
+func (s *Service) AdminStartMigrationExport(ctx context.Context, actor *model.User) (hostupdate.Status, error) {
+	if err := s.RequireAdmin(actor); err != nil {
+		return hostupdate.Status{}, err
+	}
+	if s.updateManager == nil {
+		return hostupdate.Status{}, NewAppError(http.StatusServiceUnavailable, "当前部署未安装 Host Updater")
+	}
+	status, err := s.updateManager.MigrationExport(ctx)
+	if err != nil {
+		return status, WrapAppError(http.StatusConflict, "无法开始导出迁移包，请刷新状态后重试", err)
+	}
+	return status, nil
+}
+
+func (s *Service) AdminImportMigration(ctx context.Context, actor *model.User, contentLength int64, source io.Reader) (hostupdate.Status, error) {
+	if err := s.RequireAdmin(actor); err != nil {
+		return hostupdate.Status{}, err
+	}
+	if s.updateManager == nil {
+		return hostupdate.Status{}, NewAppError(http.StatusServiceUnavailable, "当前部署未安装 Host Updater")
+	}
+	if contentLength <= 0 {
+		return hostupdate.Status{}, NewAppError(http.StatusBadRequest, "迁移包大小无效")
+	}
+	status, err := s.updateManager.MigrationImport(ctx, contentLength, source)
+	if err != nil {
+		return status, WrapAppError(http.StatusConflict, "迁移包未能开始恢复，请检查文件和当前状态", err)
+	}
+	return status, nil
+}
+
+func (s *Service) AdminOpenMigrationExport(ctx context.Context, actor *model.User) (hostupdate.MigrationArchive, io.ReadCloser, error) {
+	if err := s.RequireAdmin(actor); err != nil {
+		return hostupdate.MigrationArchive{}, nil, err
+	}
+	if s.updateManager == nil {
+		return hostupdate.MigrationArchive{}, nil, NewAppError(http.StatusServiceUnavailable, "当前部署未安装 Host Updater")
+	}
+	archive, stream, err := s.updateManager.OpenMigrationExport(ctx)
+	if err != nil {
+		return archive, nil, WrapAppError(http.StatusNotFound, "没有可下载的迁移包，请先完成导出", err)
+	}
+	return archive, stream, nil
+}
+
 func unsupportedUpdateStatus(detail string) hostupdate.Status {
 	return hostupdate.Status{
 		Supported:  false,
@@ -90,5 +153,17 @@ func unsupportedUpdateStatus(detail string) hostupdate.Status {
 		Deployment: "unsupported",
 		Checks:     []hostupdate.Check{{Key: "updater", Label: "Host Updater", Status: "failed", Detail: detail, Blocking: true}},
 		Operation:  hostupdate.Operation{Phase: hostupdate.PhaseIdle, Logs: []hostupdate.LogEntry{}},
+		Migration:  unsupportedMigrationStatus(detail),
+	}
+}
+
+func unsupportedMigrationStatus(detail string) hostupdate.MigrationStatus {
+	return hostupdate.MigrationStatus{
+		Supported:      false,
+		MaxArchiveSize: 0,
+		Operation: hostupdate.MigrationOperation{
+			Phase: hostupdate.MigrationPhaseIdle,
+			Logs:  []hostupdate.MigrationLog{{Phase: hostupdate.MigrationPhaseFailed, Message: detail}},
+		},
 	}
 }

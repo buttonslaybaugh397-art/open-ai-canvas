@@ -43,6 +43,16 @@ func TestAllowedOriginUsesForwardedHost(t *testing.T) {
 	}
 }
 
+func TestAllowedOriginUsesForwardedHostWithPort(t *testing.T) {
+	t.Setenv("CANVAS_CORS_ORIGINS", "")
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest("GET", "http://backend/api/health", nil)
+	context.Request.Header.Set("X-Forwarded-Host", "192.168.1.20:3000")
+	if !allowedOrigin(context, "http://192.168.1.20:3000") {
+		t.Fatal("forwarded public host with port should be treated as same-origin")
+	}
+}
+
 func TestParseCORSPolicyNormalizesConfiguredOrigins(t *testing.T) {
 	policy, err := parseCORSPolicy(" https://Canvas.example.com/ , http://localhost:3000 ")
 	if err != nil {

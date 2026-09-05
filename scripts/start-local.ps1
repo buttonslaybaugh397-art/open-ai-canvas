@@ -7,8 +7,24 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $backendDir = Join-Path $repoRoot "backend"
 $webDir = Join-Path $repoRoot "web"
 $dataDir = Join-Path $repoRoot ".local\project-workbench-debug"
-$goBuildCache = Join-Path $repoRoot ".local\cache\go-build"
-$goModuleCache = Join-Path $repoRoot ".local\cache\go-mod"
+$configuredCacheDir = [string]$env:CANVAS_PROJECT_CACHE_DIR
+if ($null -eq $configuredCacheDir) {
+    $configuredCacheDir = ""
+}
+$configuredCacheDir = [Environment]::ExpandEnvironmentVariables($configuredCacheDir).Trim()
+$projectCacheDir = if ([string]::IsNullOrWhiteSpace($configuredCacheDir)) {
+    "D:\open-ai-canvas-cache"
+} elseif ([IO.Path]::IsPathRooted($configuredCacheDir)) {
+    $configuredCacheDir
+} else {
+    Join-Path $repoRoot $configuredCacheDir
+}
+$projectCacheDir = [IO.Path]::GetFullPath($projectCacheDir)
+$goBuildCache = Join-Path $projectCacheDir "go-build"
+$goModuleCache = Join-Path $projectCacheDir "go-mod"
+$bunCacheDir = Join-Path $projectCacheDir "bun-cache"
+$nodeModulesDir = Join-Path $webDir "node_modules"
+$nodeModulesCacheDir = Join-Path $projectCacheDir "web-node-modules"
 
 foreach ($commandName in @("go", "bun")) {
     if (-not (Get-Command $commandName -ErrorAction SilentlyContinue)) {
@@ -16,16 +32,38 @@ foreach ($commandName in @("go", "bun")) {
     }
 }
 
-foreach ($directory in @($dataDir, $goBuildCache, $goModuleCache)) {
+foreach ($directory in @($dataDir, $projectCacheDir, $goBuildCache, $goModuleCache, $bunCacheDir)) {
     New-Item -ItemType Directory -Force -Path $directory | Out-Null
 }
 
-$viteBinary = Join-Path $webDir "node_modules\.bin\vite"
-if (-not (Test-Path -LiteralPath $viteBinary)) {
+& (Join-Path $PSScriptRoot "start-local-migration-helper.ps1") -TargetRoot $repoRoot
+
+$nodeModulesItem = Get-Item -LiteralPath $nodeModulesDir -Force -ErrorAction SilentlyContinue
+if ($null -eq $nodeModulesItem) {
+    New-Item -ItemType Directory -Force -Path $nodeModulesCacheDir | Out-Null
+    New-Item -ItemType Junction -Path $nodeModulesDir -Target $nodeModulesCacheDir | Out-Null
+} elseif (($nodeModulesItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+    if (Test-Path -LiteralPath $nodeModulesCacheDir) {
+        $cacheEntries = @(Get-ChildItem -LiteralPath $nodeModulesCacheDir -Force -ErrorAction SilentlyContinue)
+        if ($cacheEntries.Count -gt 0) {
+            throw "外置 node_modules 缓存目录已有内容，但 web/node_modules 仍是本地目录，请先人工确认后再迁移：$nodeModulesCacheDir"
+        }
+        [IO.Directory]::Delete($nodeModulesCacheDir, $false)
+    }
+    Move-Item -LiteralPath $nodeModulesDir -Destination $nodeModulesCacheDir
+    New-Item -ItemType Junction -Path $nodeModulesDir -Target $nodeModulesCacheDir | Out-Null
+}
+
+$viteBinary = @(
+    (Join-Path $nodeModulesDir ".bin\vite"),
+    (Join-Path $nodeModulesDir ".bin\vite.exe"),
+    (Join-Path $nodeModulesDir ".bin\vite.bunx")
+) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if ($null -eq $viteBinary) {
     Write-Host "web/node_modules 不存在，正在执行 bun install --frozen-lockfile..." -ForegroundColor Yellow
     Push-Location $webDir
     try {
-        & bun install --frozen-lockfile
+        & bun install --frozen-lockfile --cache-dir $bunCacheDir
         if ($LASTEXITCODE -ne 0) {
             throw "bun install 失败，无法启动前端。"
         }

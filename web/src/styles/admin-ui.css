@@ -9272,6 +9272,121 @@ html[data-magicui-theme-vt="active"] .admin-shell * {
     padding: 16px;
 }
 
+.admin-system-migration {
+    overflow: hidden;
+}
+
+.admin-system-migration-toolbar {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 16px;
+    border-bottom: 1px solid var(--admin-divider);
+}
+
+.admin-system-migration-toolbar > div:first-child {
+    min-width: 0;
+}
+
+.admin-system-migration-toolbar strong {
+    display: block;
+    color: var(--admin-text-primary);
+    font-size: 13px;
+    font-weight: 650;
+}
+
+.admin-system-migration-toolbar p,
+.admin-system-migration-unavailable p {
+    margin: 4px 0 0;
+    color: var(--admin-text-muted);
+    font-size: 11px;
+    line-height: 1.6;
+}
+
+.admin-system-migration-actions {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.admin-system-migration-actions input {
+    display: none;
+}
+
+.admin-system-migration-facts {
+    display: grid;
+    grid-template-columns: 104px minmax(0, 1fr);
+    gap: 8px 14px;
+    margin: 0;
+    padding: 16px;
+    border-bottom: 1px solid var(--admin-divider);
+    font-size: 12px;
+}
+
+.admin-system-migration-facts dt {
+    color: var(--admin-text-muted);
+}
+
+.admin-system-migration-facts dd {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.admin-system-migration-log {
+    padding: 16px;
+}
+
+.admin-system-migration-log h3 {
+    margin-bottom: 8px;
+    color: var(--admin-text-primary);
+    font-size: 12px;
+    font-weight: 650;
+}
+
+.admin-system-migration-log ol {
+    display: grid;
+    max-height: 320px;
+    gap: 0;
+    margin: 0;
+    overflow: auto;
+    padding: 0;
+    list-style: none;
+}
+
+.admin-system-migration-log li {
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr) auto;
+    gap: 9px;
+    padding: 9px 0;
+}
+
+.admin-system-migration-log li strong {
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.admin-system-migration-log li p {
+    margin: 2px 0 0;
+    color: color-mix(in srgb, var(--foreground) 55%, transparent);
+    font-size: 12px;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+}
+
+.admin-system-migration-log time {
+    color: color-mix(in srgb, var(--foreground) 40%, transparent);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    font-size: 10px;
+}
+
+.admin-system-migration-unavailable {
+    padding: 16px;
+}
+
 .admin-system-update-version-row {
     display: flex;
     align-items: center;
@@ -9487,6 +9602,29 @@ html[data-magicui-theme-vt="active"] .admin-shell * {
 @media (max-width: 980px) {
     .admin-system-update-grid {
         grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 639px) {
+    .admin-system-migration-toolbar {
+        flex-direction: column;
+    }
+
+    .admin-system-migration-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .admin-system-migration-actions .ant-btn {
+        flex: 1 1 auto;
+    }
+
+    .admin-system-migration-log li {
+        grid-template-columns: 14px minmax(0, 1fr);
+    }
+
+    .admin-system-migration-log time {
+        grid-column: 2;
     }
 }
 
