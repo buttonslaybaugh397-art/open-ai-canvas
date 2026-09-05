@@ -30,12 +30,40 @@ type channelSlotError struct {
 	err   error
 }
 
+type runtimeCoordinationError struct{ err error }
+
+func (e runtimeCoordinationError) Error() string { return e.err.Error() }
+
+func (e runtimeCoordinationError) Unwrap() error { return e.err }
+
+func isRuntimeCoordinationError(err error) bool {
+	var coordinationErr runtimeCoordinationError
+	return errors.As(err, &coordinationErr)
+}
+
+func isRedisPersistenceUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "no space left on device") && (strings.Contains(message, "aof") || strings.Contains(message, "redis")) {
+		return true
+	}
+	return strings.Contains(message, "misconf") && (strings.Contains(message, "aof") || strings.Contains(message, "append-only"))
+}
+
 func (e channelSlotError) Error() string {
 	if errors.Is(e.err, context.DeadlineExceeded) {
 		return fmt.Sprintf("等待渠道并发槽位超时（渠道 %s，并发上限 %d）", e.scope, e.limit)
 	}
 	if errors.Is(e.err, context.Canceled) {
 		return fmt.Sprintf("等待渠道并发槽位已取消（渠道 %s，并发上限 %d）", e.scope, e.limit)
+	}
+	if isRedisPersistenceUnavailable(e.err) {
+		return fmt.Sprintf("Redis 持久化不可用，无法分配渠道并发槽位（渠道 %s）：%v", e.scope, e.err)
+	}
+	if isRuntimeCoordinationError(e.err) {
+		return fmt.Sprintf("运行时协调器不可用，无法分配渠道并发槽位（渠道 %s）：%v", e.scope, e.err)
 	}
 	return fmt.Sprintf("获取渠道并发配额失败（渠道 %s，并发上限 %d）：%v", e.scope, e.limit, e.err)
 }
@@ -52,6 +80,12 @@ func ChannelSlotFailureDetails(err error) (string, string) {
 	}
 	if errors.Is(slotErr, context.Canceled) {
 		return "channel_concurrency_wait_cancelled", slotErr.Error()
+	}
+	if isRedisPersistenceUnavailable(slotErr.err) {
+		return "redis_persistence_unavailable", slotErr.Error()
+	}
+	if isRuntimeCoordinationError(slotErr.err) {
+		return "runtime_coordination_unavailable", slotErr.Error()
 	}
 	return "channel_concurrency_unavailable", slotErr.Error()
 }
@@ -154,7 +188,10 @@ func (c *runtimeCoordinator) acquire(ctx context.Context, scope string, limit in
 	now := time.Now()
 	ok, err := acquireSlotScript.Run(ctx, c.redis, []string{key}, now.UnixMilli(), now.Add(ttl).UnixMilli(), limit, token, (ttl + time.Minute).Milliseconds()).Int()
 	if err != nil || ok != 1 {
-		return nil, false, err
+		if err != nil {
+			return nil, false, runtimeCoordinationError{err: err}
+		}
+		return nil, false, nil
 	}
 	return func() { _ = c.redis.ZRem(context.Background(), key, token).Err() }, true, nil
 }

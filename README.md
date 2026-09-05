@@ -227,6 +227,8 @@ curl -fsSL https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/main/script
 sudo docker compose --env-file .env -f docker-compose.deploy.yml up -d --force-recreate backend web --wait
 ```
 
+安装脚本会在 `/run/open-ai-canvas-updater` 中同时创建 Token 文件和 Unix Socket；Compose 会将该目录挂载到 backend，避免 1Panel 环境变量编辑器漏掉 `CANVAS_UPDATER_TOKEN`。1Panel 使用 `docker-compose.1panel.yml` 时，请在 Compose 文件所在目录执行安装，并显式设置 `CANVAS_UPDATER_COMPOSE_FILE=docker-compose.1panel.yml`。
+
 更新流程、数据库迁移、健康验证和异常回退说明见 [`docs/content/docs/backend/system-update.mdx`](docs/content/docs/backend/system-update.mdx)。
 
 ### 公网必做事项

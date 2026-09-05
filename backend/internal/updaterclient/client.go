@@ -25,8 +25,10 @@ type Client struct {
 }
 
 type tokenFileClient struct {
-	baseURL   string
-	tokenFile string
+	socketPath    string
+	baseURL       string
+	tokenFile     string
+	fallbackToken string
 }
 
 func New(socketPath, token string) *Client {
@@ -56,6 +58,13 @@ func NewHTTP(rawURL, token string) *Client {
 // This lets Docker Desktop start before the Windows helper creates its token.
 func NewTokenFileHTTP(rawURL, tokenFile string) *tokenFileClient {
 	return &tokenFileClient{baseURL: rawURL, tokenFile: tokenFile}
+}
+
+// NewTokenFile connects to a Unix-socket updater and reads its token for each
+// request. This keeps backend startup independent from the updater service
+// startup order.
+func NewTokenFile(socketPath, tokenFile, fallbackToken string) *tokenFileClient {
+	return &tokenFileClient{socketPath: strings.TrimSpace(socketPath), tokenFile: tokenFile, fallbackToken: strings.TrimSpace(fallbackToken)}
 }
 
 func (c *tokenFileClient) Status(ctx context.Context) (hostupdate.Status, error) {
@@ -116,12 +125,21 @@ func (c *tokenFileClient) OpenMigrationExport(ctx context.Context) (hostupdate.M
 
 func (c *tokenFileClient) client() (*Client, error) {
 	data, err := os.ReadFile(c.tokenFile)
-	if err != nil {
-		return nil, fmt.Errorf("读取本地迁移助手 Token：%w", err)
-	}
 	token := strings.TrimSpace(string(data))
+	if err != nil || len(token) < 32 {
+		if c.fallbackToken == "" {
+			if err != nil {
+				return nil, fmt.Errorf("读取 Host Updater Token：%w", err)
+			}
+			return nil, errors.New("Host Updater Token 无效")
+		}
+		token = c.fallbackToken
+	}
 	if len(token) < 32 {
-		return nil, errors.New("本地迁移助手 Token 无效")
+		return nil, errors.New("Host Updater Token 无效")
+	}
+	if c.socketPath != "" {
+		return New(c.socketPath, token), nil
 	}
 	return NewHTTP(c.baseURL, token), nil
 }

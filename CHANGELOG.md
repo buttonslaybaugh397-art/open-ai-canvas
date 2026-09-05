@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.2.7
+
+- 修复 1Panel/PostgreSQL 部署在 Host Updater Token 或 Unix Socket 暂时缺失时被误判为“不支持后台在线更新”的问题；backend 会动态读取挂载的 Token 文件，并明确显示“更新器未连接”。Compose 同步挂载只读 Socket 目录，安装脚本会写入 Token 并重建 backend/web 容器。
+- 修复 Redis AOF 写入失败或磁盘空间耗尽时被误报为渠道并发达到上限的问题，返回独立的 Redis 持久化故障诊断。
+- 迁移包配置保留 Host Updater Token 文件路径，避免恢复后更新器接入信息丢失。
+- Host Updater 安装脚本支持从当前 1Panel Compose 目录识别安装位置，并在 `CANVAS_IMAGE_TAG=latest` 时自动固定到最新 Release。
 
 ## v1.2.6
 

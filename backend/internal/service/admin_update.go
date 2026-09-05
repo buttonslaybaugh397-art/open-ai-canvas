@@ -33,7 +33,7 @@ func (s *Service) AdminUpdateStatus(ctx context.Context, actor *model.User) (hos
 	}
 	status, err := s.updateManager.Status(ctx)
 	if err != nil {
-		return unsupportedUpdateStatus("Host Updater 当前不可连接"), nil
+		return disconnectedUpdateStatus("Host Updater 当前不可连接，请检查 systemd 服务、Unix Socket 挂载和 Token 配置"), nil
 	}
 	return status, nil
 }
@@ -96,7 +96,7 @@ func (s *Service) AdminMigrationStatus(ctx context.Context, actor *model.User) (
 	}
 	status, err := s.updateManager.Status(ctx)
 	if err != nil {
-		return unsupportedMigrationStatus("Host Updater 当前不可连接"), nil
+		return disconnectedMigrationStatus("Host Updater 当前不可连接，请检查 systemd 服务、Unix Socket 挂载和 Token 配置"), nil
 	}
 	return status.Migration, nil
 }
@@ -157,6 +157,17 @@ func unsupportedUpdateStatus(detail string) hostupdate.Status {
 	}
 }
 
+func disconnectedUpdateStatus(detail string) hostupdate.Status {
+	return hostupdate.Status{
+		Supported:  true,
+		Connected:  false,
+		Deployment: "docker-compose-host-updater",
+		Checks:     []hostupdate.Check{{Key: "updater", Label: "Host Updater", Status: "failed", Detail: detail, Blocking: true}},
+		Operation:  hostupdate.Operation{Phase: hostupdate.PhaseIdle, Logs: []hostupdate.LogEntry{}},
+		Migration:  disconnectedMigrationStatus(detail),
+	}
+}
+
 func unsupportedMigrationStatus(detail string) hostupdate.MigrationStatus {
 	return hostupdate.MigrationStatus{
 		Supported:      false,
@@ -164,6 +175,17 @@ func unsupportedMigrationStatus(detail string) hostupdate.MigrationStatus {
 		Operation: hostupdate.MigrationOperation{
 			Phase: hostupdate.MigrationPhaseIdle,
 			Logs:  []hostupdate.MigrationLog{{Phase: hostupdate.MigrationPhaseFailed, Message: detail}},
+		},
+	}
+}
+
+func disconnectedMigrationStatus(detail string) hostupdate.MigrationStatus {
+	return hostupdate.MigrationStatus{
+		Supported: true,
+		Reason:    detail,
+		Operation: hostupdate.MigrationOperation{
+			Phase: hostupdate.MigrationPhaseIdle,
+			Logs:  []hostupdate.MigrationLog{},
 		},
 	}
 }

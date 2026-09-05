@@ -43,6 +43,19 @@ func TestAllowedOriginUsesForwardedHost(t *testing.T) {
 	}
 }
 
+func TestIsPostgresDatabaseDriver(t *testing.T) {
+	for _, value := range []string{"postgres", " postgresql ", "POSTGRESQL"} {
+		if !isPostgresDatabaseDriver(value) {
+			t.Fatalf("isPostgresDatabaseDriver(%q) = false, want true", value)
+		}
+	}
+	for _, value := range []string{"sqlite", "", "mysql"} {
+		if isPostgresDatabaseDriver(value) {
+			t.Fatalf("isPostgresDatabaseDriver(%q) = true, want false", value)
+		}
+	}
+}
+
 func TestAllowedOriginUsesForwardedHostWithPort(t *testing.T) {
 	t.Setenv("CANVAS_CORS_ORIGINS", "")
 	context, _ := gin.CreateTestContext(httptest.NewRecorder())

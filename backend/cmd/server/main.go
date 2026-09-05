@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -37,8 +38,9 @@ func run(ctx context.Context) error {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return err
 	}
+	databaseDriver := strings.ToLower(strings.TrimSpace(env("CANVAS_DATABASE_DRIVER", "sqlite")))
 	db, err := database.Open(database.Config{
-		Driver:  env("CANVAS_DATABASE_DRIVER", "sqlite"),
+		Driver:  databaseDriver,
 		DSN:     os.Getenv("DATABASE_URL"),
 		DataDir: dataDir,
 	})
@@ -72,17 +74,27 @@ func run(ctx context.Context) error {
 	svc := service.NewWithRuntimeCapabilities(repo, dataDir, capabilities)
 	updaterURL := strings.TrimSpace(os.Getenv("CANVAS_UPDATER_URL"))
 	updaterTokenFile := strings.TrimSpace(os.Getenv("CANVAS_UPDATER_TOKEN_FILE"))
+	updaterSocketConfigured := strings.TrimSpace(os.Getenv("CANVAS_UPDATER_SOCKET")) != ""
+	updaterSocket := env("CANVAS_UPDATER_SOCKET", "/run/open-ai-canvas-updater/updater.sock")
 	updaterToken, err := updaterTokenFromEnvironment()
 	if err != nil {
 		return err
 	}
-	if updaterURL != "" && updaterToken == "" && updaterTokenFile != "" {
+	// Older production Compose files declared only the updater socket. Production
+	// PostgreSQL deployments also get the same default so incomplete 1Panel env
+	// entries do not turn a temporarily disconnected updater into "unsupported".
+	if updaterURL == "" && updaterTokenFile == "" && (updaterSocketConfigured || isPostgresDatabaseDriver(databaseDriver)) {
+		updaterTokenFile = filepath.Join(filepath.Dir(updaterSocket), "token")
+	}
+	if updaterURL != "" && updaterTokenFile != "" {
 		svc.ConfigureUpdateManager(updaterclient.NewTokenFileHTTP(updaterURL, updaterTokenFile))
+	} else if updaterURL == "" && updaterTokenFile != "" {
+		svc.ConfigureUpdateManager(updaterclient.NewTokenFile(updaterSocket, updaterTokenFile, updaterToken))
 	} else if updaterToken != "" {
 		if updaterURL != "" {
 			svc.ConfigureUpdateManager(updaterclient.NewHTTP(updaterURL, updaterToken))
 		} else {
-			svc.ConfigureUpdateManager(updaterclient.New(env("CANVAS_UPDATER_SOCKET", "/run/open-ai-canvas-updater/updater.sock"), updaterToken))
+			svc.ConfigureUpdateManager(updaterclient.New(updaterSocket, updaterToken))
 		}
 	}
 	defer svc.Close()
@@ -242,6 +254,15 @@ func updaterTokenFromEnvironment() (string, error) {
 		return "", fmt.Errorf("读取 CANVAS_UPDATER_TOKEN_FILE：%w", err)
 	}
 	return strings.TrimSpace(string(data)), nil
+}
+
+func isPostgresDatabaseDriver(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "postgres", "postgresql":
+		return true
+	default:
+		return false
+	}
 }
 
 func envBool(key string, fallback bool) (bool, error) {

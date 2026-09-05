@@ -2,7 +2,8 @@
 
 set -Eeuo pipefail
 
-INSTALL_DIR="${INSTALL_DIR:-/opt/open-ai-canvas}"
+REQUESTED_INSTALL_DIR="${INSTALL_DIR:-}"
+INSTALL_DIR="${REQUESTED_INSTALL_DIR:-/opt/open-ai-canvas}"
 REQUESTED_REPOSITORY="${CANVAS_UPDATER_REPOSITORY:-${REPOSITORY:-}}"
 REPOSITORY="${REQUESTED_REPOSITORY:-buttonslaybaugh397-art/open-ai-canvas}"
 REQUESTED_COMPOSE_FILE="${CANVAS_UPDATER_COMPOSE_FILE:-}"
@@ -25,7 +26,17 @@ require_root() {
     command -v curl >/dev/null 2>&1 || fail "缺少 curl"
     command -v sha256sum >/dev/null 2>&1 || fail "缺少 sha256sum"
     command -v openssl >/dev/null 2>&1 || fail "缺少 openssl"
-    [[ -f "${INSTALL_DIR}/.env" ]] || fail "未找到 ${INSTALL_DIR}/.env"
+    command -v docker >/dev/null 2>&1 || fail "缺少 Docker"
+    docker compose version >/dev/null 2>&1 || fail "缺少 Docker Compose"
+}
+
+resolve_install_dir() {
+    if [[ -n "$REQUESTED_INSTALL_DIR" ]]; then
+        return
+    fi
+    if [[ -f "${PWD}/.env" && ( -f "${PWD}/docker-compose.1panel.yml" || -f "${PWD}/docker-compose.deploy.yml" ) ]]; then
+        INSTALL_DIR="${PWD}"
+    fi
 }
 
 read_compose_file() {
@@ -50,11 +61,21 @@ read_socket_dir() {
 read_image_tag() {
     local configured
     configured="$(sed -n 's/^CANVAS_IMAGE_TAG=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
-    [[ -n "$configured" && "$configured" != "latest" ]] || fail "请先把 CANVAS_IMAGE_TAG 固定为已发布版本"
-    if [[ "$configured" == v* ]]; then
-        RELEASE_TAG="$configured"
-    else
-        RELEASE_TAG="v${configured}"
+    if [[ -z "$configured" || "$configured" == "latest" ]]; then
+        local release_url release_tag
+        release_url="$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/${REPOSITORY}/releases/latest" || true)"
+        release_tag="${release_url##*/}"
+        [[ "$release_tag" == v* && "${release_tag#v}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || fail "无法解析 ${REPOSITORY} 的最新 Release，请先将 CANVAS_IMAGE_TAG 固定为已发布版本"
+        RELEASE_TAG="$release_tag"
+        upsert_env_value CANVAS_IMAGE_TAG "${RELEASE_TAG#v}"
+        printf 'CANVAS_IMAGE_TAG=latest，已固定到最新 Release %s\n' "$RELEASE_TAG"
+        return
+    fi
+    configured="${configured#v}"
+    [[ "$configured" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || fail "CANVAS_IMAGE_TAG 不是有效的 Docker 镜像标签"
+    RELEASE_TAG="v${configured}"
+    if [[ "$(sed -n 's/^CANVAS_IMAGE_TAG=//p' "${INSTALL_DIR}/.env" | tail -n 1)" != "$configured" ]]; then
+        upsert_env_value CANVAS_IMAGE_TAG "$configured"
     fi
 }
 
@@ -100,7 +121,7 @@ install_binary() {
 }
 
 ensure_token() {
-    local token
+    local token temporary_token token_file
     token="$(sed -n 's/^CANVAS_UPDATER_TOKEN=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
     if [[ -z "$token" ]]; then
         token="$(openssl rand -hex 32)"
@@ -111,7 +132,14 @@ ensure_token() {
     upsert_env_value CANVAS_UPDATER_REPOSITORY "$REPOSITORY"
     upsert_env_value CANVAS_UPDATER_COMPOSE_FILE "$COMPOSE_FILE"
     upsert_env_value CANVAS_UPDATER_SOCKET_DIR "$SOCKET_DIR"
+    upsert_env_value CANVAS_UPDATER_TOKEN_FILE "/run/open-ai-canvas-updater/token"
+    install -d -m 0755 "$SOCKET_DIR"
+    token_file="${SOCKET_DIR}/token"
+    temporary_token="$(mktemp "${SOCKET_DIR}/.token.XXXXXX")"
     umask 077
+    printf '%s\n' "$token" > "$temporary_token"
+    chmod 0444 "$temporary_token"
+    mv -f "$temporary_token" "$token_file"
     printf 'CANVAS_UPDATER_TOKEN=%s\nCANVAS_UPDATER_REPOSITORY=%s\nCANVAS_UPDATER_INSTALL_DIR=%s\nCANVAS_UPDATER_COMPOSE_FILE=%s\nCANVAS_UPDATER_SOCKET=%s/updater.sock\n' "$token" "$REPOSITORY" "$INSTALL_DIR" "$COMPOSE_FILE" "$SOCKET_DIR" > "$UPDATER_ENV"
 }
 
@@ -148,16 +176,26 @@ install_service() {
     systemctl restart open-ai-canvas-updater.service
 }
 
+recreate_backend() {
+    printf '正在拉取 backend/web 镜像并重建容器，使更新器 Token 与 Socket 挂载生效...\n'
+    docker compose --env-file "${INSTALL_DIR}/.env" -f "${INSTALL_DIR}/${COMPOSE_FILE}" pull backend web || fail "backend/web 镜像拉取失败，请检查镜像仓库权限和 CANVAS_IMAGE_TAG"
+    docker compose --env-file "${INSTALL_DIR}/.env" -f "${INSTALL_DIR}/${COMPOSE_FILE}" up -d --force-recreate backend web || fail "backend/web 容器重建失败，请检查 1Panel 当前使用的 Compose 文件是否为 ${COMPOSE_FILE}"
+}
+
 main() {
     require_root
+    resolve_install_dir
+    [[ -f "${INSTALL_DIR}/.env" ]] || fail "未找到 ${INSTALL_DIR}/.env，请在 Compose 所在目录执行，或设置 INSTALL_DIR"
     read_compose_file
     read_socket_dir
-    read_image_tag
     read_repository
+    read_image_tag
     install_binary
     ensure_token
     install_service
+    recreate_backend
     printf 'Host Updater 已安装，更新仓库：%s，Compose：%s，Socket：%s/updater.sock\n' "$REPOSITORY" "$COMPOSE_FILE" "$SOCKET_DIR"
+    printf 'Token 文件：%s/token\n' "$SOCKET_DIR"
     printf '请重建 backend 容器，使 Token 与 Socket 挂载生效。\n'
 }
 

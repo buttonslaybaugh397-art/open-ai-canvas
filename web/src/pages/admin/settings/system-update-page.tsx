@@ -271,6 +271,11 @@ export default function SystemUpdatePage() {
                     title="当前部署不支持后台在线更新"
                     detail={status?.migration?.supported ? "当前为本地 SQLite 部署，在线版本切换不可用；下方的数据与服务迁移仍然可用。" : "请先在服务器安装 Host Updater，并重建 backend 容器挂载 Unix Socket。"}
                 /> : null}
+                {status?.supported && !status.connected ? <UpdateAlert
+                    tone="warning"
+                    title="Host Updater 当前未连接"
+                    detail={status.checks.find((check) => check.key === "updater")?.detail || "请检查更新器服务、Unix Socket 挂载和 Token 配置。"}
+                /> : null}
                 {reconnecting ? <UpdateAlert tone="warning" title="服务正在切换，等待重新连接" detail="更新器运行在宿主机，后台页面暂时断线不会中止更新。连接恢复后会继续显示最终结果。" /> : null}
                 {status?.operation.phase === "manual_intervention" ? <UpdateAlert
                     tone="error"

@@ -77,6 +77,9 @@ services:
       CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS: ${CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS:-}
       CANVAS_CORS_ORIGINS: ${CANVAS_CORS_ORIGINS:-http://192.204.35.56:6868}
       CANVAS_UPDATER_SOCKET: /run/open-ai-canvas-updater/updater.sock
+      # The installer writes this token beside the Unix socket so 1Panel does
+      # not need to expand a secret into the backend environment.
+      CANVAS_UPDATER_TOKEN_FILE: /run/open-ai-canvas-updater/token
       CANVAS_UPDATER_TOKEN: ${CANVAS_UPDATER_TOKEN:-}
       GIN_MODE: release
     command:
@@ -86,7 +89,7 @@ services:
     volumes:
       - backend-data:/data
       - deployment-secrets:/run/canvas-secrets:ro
-      - ${CANVAS_UPDATER_SOCKET_DIR:-/run/open-ai-canvas-updater}:/run/open-ai-canvas-updater
+      - ${CANVAS_UPDATER_SOCKET_DIR:-/run/open-ai-canvas-updater}:/run/open-ai-canvas-updater:ro
     depends_on:
       postgres:
         condition: service_healthy
