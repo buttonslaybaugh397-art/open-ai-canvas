@@ -556,6 +556,14 @@ func publicAppearanceSetting(setting *model.SystemSetting, value AppearanceSetti
 	return result
 }
 
+func (s *Service) appearanceBrandName() string {
+	_, value, err := s.readAppearance()
+	if err != nil || strings.TrimSpace(value.BrandName) == "" {
+		return defaultAppearanceBrandName
+	}
+	return value.BrandName
+}
+
 func appearanceAssetURL(slot string, revision string) string {
 	return "/api/public/appearance/assets/" + url.PathEscape(slot) + "?v=" + url.QueryEscape(revision)
 }
