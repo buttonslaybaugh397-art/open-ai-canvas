@@ -8,6 +8,7 @@ import (
 
 	"infinite-canvas/backend/internal/hostupdate"
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/updaterclient"
 )
 
 type UpdateManager interface {
@@ -33,7 +34,7 @@ func (s *Service) AdminUpdateStatus(ctx context.Context, actor *model.User) (hos
 	}
 	status, err := s.updateManager.Status(ctx)
 	if err != nil {
-		return disconnectedUpdateStatus("Host Updater 当前不可连接，请检查 systemd 服务、Unix Socket 挂载和 Token 配置"), nil
+		return disconnectedUpdateStatus(updaterConnectionDetail(err)), nil
 	}
 	return status, nil
 }
@@ -96,7 +97,7 @@ func (s *Service) AdminMigrationStatus(ctx context.Context, actor *model.User) (
 	}
 	status, err := s.updateManager.Status(ctx)
 	if err != nil {
-		return disconnectedMigrationStatus("Host Updater 当前不可连接，请检查 systemd 服务、Unix Socket 挂载和 Token 配置"), nil
+		return disconnectedMigrationStatus(updaterConnectionDetail(err)), nil
 	}
 	return status.Migration, nil
 }
@@ -166,6 +167,15 @@ func disconnectedUpdateStatus(detail string) hostupdate.Status {
 		Operation:  hostupdate.Operation{Phase: hostupdate.PhaseIdle, Logs: []hostupdate.LogEntry{}},
 		Migration:  disconnectedMigrationStatus(detail),
 	}
+}
+
+func updaterConnectionDetail(err error) string {
+	const hint = "请检查 systemd 服务、Unix Socket 挂载和 Token 配置"
+	if err == nil {
+		return "Host Updater 当前不可连接；" + hint
+	}
+	detail := updaterclient.ConnectionDetail(err)
+	return "Host Updater 当前不可连接：" + detail + "；" + hint
 }
 
 func unsupportedMigrationStatus(detail string) hostupdate.MigrationStatus {

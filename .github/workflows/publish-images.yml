@@ -109,12 +109,19 @@ jobs:
         working-directory: backend
         shell: bash
         run: |
+          go test ./cmd/host-updater ./internal/updaterclient ./internal/hostupdate
           mkdir -p ../dist
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "../dist/open-ai-canvas-host-updater-linux-$arch" ./cmd/host-updater
           done
           cd ../dist
           sha256sum open-ai-canvas-host-updater-linux-* > SHA256SUMS
+
+      - name: Verify installer recovery helper
+        shell: bash
+        run: |
+          bash -n scripts/install-host-updater.sh
+          bash scripts/tests/host-updater-token.sh
 
       - name: Prepare release notes
         shell: bash
@@ -141,6 +148,8 @@ jobs:
             dist/open-ai-canvas-host-updater-linux-arm64 \
             dist/SHA256SUMS \
             docker-compose.deploy.yml \
+            docker-compose.1panel.yml \
+            scripts/install-host-updater.sh \
             --verify-tag \
             --title "$GITHUB_REF_NAME" \
             --notes-file dist/RELEASE_NOTES.md \

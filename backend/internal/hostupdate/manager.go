@@ -25,20 +25,21 @@ const (
 )
 
 type Config struct {
-	Repository        string
-	InstallDir        string
-	ComposeFile       string
-	EnvFile           string
-	StateDir          string
-	BackupDir         string
-	HealthURL         string
-	GitHubToken       string
-	StableWindow      time.Duration
-	StepTimeout       time.Duration
-	BinaryPath        string
-	ServiceName       string
-	SelfUpdate        bool
-	MigrationMaxBytes int64
+	Repository         string
+	InstallDir         string
+	ComposeFile        string
+	ReleaseComposeFile string
+	EnvFile            string
+	StateDir           string
+	BackupDir          string
+	HealthURL          string
+	GitHubToken        string
+	StableWindow       time.Duration
+	StepTimeout        time.Duration
+	BinaryPath         string
+	ServiceName        string
+	SelfUpdate         bool
+	MigrationMaxBytes  int64
 }
 
 type commandRunner interface {
@@ -97,6 +98,12 @@ func NewManager(config Config) (*Manager, error) {
 	}
 	if config.ComposeFile == "" {
 		config.ComposeFile = "docker-compose.deploy.yml"
+	}
+	if config.ReleaseComposeFile == "" {
+		config.ReleaseComposeFile = config.ComposeFile
+	}
+	if filepath.Base(config.ReleaseComposeFile) != config.ReleaseComposeFile || strings.ContainsAny(config.ReleaseComposeFile, `/\?#`) || (filepath.Ext(config.ReleaseComposeFile) != ".yml" && filepath.Ext(config.ReleaseComposeFile) != ".yaml") {
+		return nil, errors.New("Release Compose 必须是仓库根目录中的 YAML 文件名")
 	}
 	if config.EnvFile == "" {
 		config.EnvFile = ".env"

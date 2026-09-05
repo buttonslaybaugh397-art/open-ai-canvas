@@ -223,7 +223,7 @@ curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canv
 
 ```bash
 cd /opt/open-ai-canvas
-curl -fsSL https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/main/scripts/install-host-updater.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canvas/main/scripts/install-host-updater.sh | sudo bash
 sudo docker compose --env-file .env -f docker-compose.deploy.yml up -d --force-recreate backend web --wait
 ```
 

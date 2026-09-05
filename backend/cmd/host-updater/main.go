@@ -28,28 +28,34 @@ func main() {
 
 func run(ctx context.Context) error {
 	socketPath := env("CANVAS_UPDATER_SOCKET", "/run/open-ai-canvas-updater/updater.sock")
+	installDir := env("CANVAS_UPDATER_INSTALL_DIR", "/opt/open-ai-canvas")
 	token := strings.TrimSpace(os.Getenv("CANVAS_UPDATER_TOKEN"))
 	manager, err := hostupdate.NewManager(hostupdate.Config{
-		Repository:        env("CANVAS_UPDATER_REPOSITORY", "buttonslaybaugh397-art/open-ai-canvas"),
-		InstallDir:        env("CANVAS_UPDATER_INSTALL_DIR", "/opt/open-ai-canvas"),
-		ComposeFile:       env("CANVAS_UPDATER_COMPOSE_FILE", "docker-compose.deploy.yml"),
-		EnvFile:           env("CANVAS_UPDATER_ENV_FILE", ".env"),
-		StateDir:          env("CANVAS_UPDATER_STATE_DIR", "/var/lib/open-ai-canvas-updater"),
-		BackupDir:         env("CANVAS_UPDATER_BACKUP_DIR", "/opt/open-ai-canvas/backups"),
-		HealthURL:         strings.TrimSpace(os.Getenv("CANVAS_UPDATER_HEALTH_URL")),
-		GitHubToken:       strings.TrimSpace(os.Getenv("CANVAS_UPDATER_GITHUB_TOKEN")),
-		StableWindow:      envDuration("CANVAS_UPDATER_STABLE_WINDOW", 30*time.Second),
-		StepTimeout:       envDuration("CANVAS_UPDATER_STEP_TIMEOUT", 20*time.Minute),
-		BinaryPath:        env("CANVAS_UPDATER_BINARY_PATH", "/usr/local/bin/open-ai-canvas-host-updater"),
-		ServiceName:       env("CANVAS_UPDATER_SERVICE_NAME", "open-ai-canvas-updater.service"),
-		SelfUpdate:        envBool("CANVAS_UPDATER_SELF_UPDATE", true),
-		MigrationMaxBytes: envBytes("CANVAS_UPDATER_MIGRATION_MAX_BYTES", 20<<30),
+		Repository:         env("CANVAS_UPDATER_REPOSITORY", "buttonslaybaugh397-art/open-ai-canvas"),
+		InstallDir:         installDir,
+		ComposeFile:        env("CANVAS_UPDATER_COMPOSE_FILE", "docker-compose.deploy.yml"),
+		ReleaseComposeFile: strings.TrimSpace(os.Getenv("CANVAS_UPDATER_RELEASE_COMPOSE_FILE")),
+		EnvFile:            env("CANVAS_UPDATER_ENV_FILE", ".env"),
+		StateDir:           env("CANVAS_UPDATER_STATE_DIR", "/var/lib/open-ai-canvas-updater"),
+		BackupDir:          env("CANVAS_UPDATER_BACKUP_DIR", filepath.Join(installDir, "backups")),
+		HealthURL:          strings.TrimSpace(os.Getenv("CANVAS_UPDATER_HEALTH_URL")),
+		GitHubToken:        strings.TrimSpace(os.Getenv("CANVAS_UPDATER_GITHUB_TOKEN")),
+		StableWindow:       envDuration("CANVAS_UPDATER_STABLE_WINDOW", 30*time.Second),
+		StepTimeout:        envDuration("CANVAS_UPDATER_STEP_TIMEOUT", 20*time.Minute),
+		BinaryPath:         env("CANVAS_UPDATER_BINARY_PATH", "/usr/local/bin/open-ai-canvas-host-updater"),
+		ServiceName:        env("CANVAS_UPDATER_SERVICE_NAME", "open-ai-canvas-updater.service"),
+		SelfUpdate:         envBool("CANVAS_UPDATER_SELF_UPDATE", true),
+		MigrationMaxBytes:  envBytes("CANVAS_UPDATER_MIGRATION_MAX_BYTES", 20<<30),
 	})
 	if err != nil {
 		return err
 	}
 	server, err := hostupdate.NewServer(manager, token)
 	if err != nil {
+		return err
+	}
+	tokenFile := env("CANVAS_UPDATER_TOKEN_FILE", filepath.Join(filepath.Dir(socketPath), "token"))
+	if err := persistTokenFile(tokenFile, token); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
@@ -96,6 +102,45 @@ func removeStaleSocket(path string) error {
 		return fmt.Errorf("拒绝删除非 Socket 路径 %s", path)
 	}
 	return os.Remove(path)
+}
+
+func persistTokenFile(path, token string) error {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return errors.New("CANVAS_UPDATER_TOKEN 不能为空")
+	}
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return fmt.Errorf("创建 Host Updater Token 目录：%w", err)
+	}
+	temporary, err := os.CreateTemp(directory, ".token-*")
+	if err != nil {
+		return fmt.Errorf("创建 Host Updater Token 临时文件：%w", err)
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("设置 Host Updater Token 临时文件权限：%w", err)
+	}
+	if _, err := temporary.WriteString(token + "\n"); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("写入 Host Updater Token：%w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("同步 Host Updater Token：%w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("关闭 Host Updater Token 临时文件：%w", err)
+	}
+	if err := os.Chmod(temporaryName, 0o444); err != nil {
+		return fmt.Errorf("设置 Host Updater Token 权限：%w", err)
+	}
+	if err := os.Rename(temporaryName, path); err != nil {
+		return fmt.Errorf("保存 Host Updater Token：%w", err)
+	}
+	return nil
 }
 
 func env(key, fallback string) string {

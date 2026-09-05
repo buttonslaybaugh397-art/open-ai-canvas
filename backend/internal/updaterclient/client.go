@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"infinite-canvas/backend/internal/hostupdate"
@@ -47,7 +48,7 @@ func New(socketPath, token string) *Client {
 func NewHTTP(rawURL, token string) *Client {
 	baseURL := strings.TrimRight(strings.TrimSpace(rawURL), "/")
 	parsed, err := url.Parse(baseURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
 		baseURL = "http://127.0.0.1:0"
 	}
 	transport := &http.Transport{DisableKeepAlives: true}
@@ -129,9 +130,9 @@ func (c *tokenFileClient) client() (*Client, error) {
 	if err != nil || len(token) < 32 {
 		if c.fallbackToken == "" {
 			if err != nil {
-				return nil, fmt.Errorf("读取 Host Updater Token：%w", err)
+				return nil, fmt.Errorf("读取 Host Updater Token 文件：%w", err)
 			}
-			return nil, errors.New("Host Updater Token 无效")
+			return nil, errors.New("Host Updater Token 文件内容无效")
 		}
 		token = c.fallbackToken
 	}
@@ -231,6 +232,9 @@ func (c *Client) request(ctx context.Context, method, path string, payload any) 
 
 func decodeStatusResponse(response *http.Response) (hostupdate.Status, error) {
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		return hostupdate.Status{}, errAuthentication
+	}
 	limited := io.LimitReader(response.Body, 2<<20)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var failure struct {
@@ -247,4 +251,35 @@ func decodeStatusResponse(response *http.Response) (hostupdate.Status, error) {
 		return hostupdate.Status{}, fmt.Errorf("解析 Host Updater 响应：%w", err)
 	}
 	return status, nil
+}
+
+var errAuthentication = errors.New("Host Updater 认证失败，Token 不匹配或访问被拒绝")
+
+// ConnectionDetail exposes only known failure categories, never response bodies,
+// credentials, URLs, or arbitrary helper errors to the administration page.
+func ConnectionDetail(err error) string {
+	var pathErr *os.PathError
+	var networkErr net.Error
+	switch {
+	case errors.Is(err, errAuthentication):
+		return "Token 认证失败，请核对宿主机服务与 backend 使用的 Token"
+	case errors.As(err, &pathErr):
+		if errors.Is(err, os.ErrNotExist) {
+			return "Token 文件不存在，请检查安装是否完成、目录挂载，以及重启后 Token 是否恢复"
+		}
+		if errors.Is(err, os.ErrPermission) {
+			return "Token 文件不可读，请检查 backend 用户的文件和目录权限"
+		}
+		return "Token 文件读取失败，请检查文件类型与挂载配置"
+	case errors.Is(err, os.ErrNotExist):
+		return "Unix Socket 不存在，请检查更新器服务是否运行及 backend 目录挂载"
+	case errors.Is(err, os.ErrPermission):
+		return "Unix Socket 访问被拒绝，请检查目录、Socket 权限和安全策略"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "连接被拒绝，请检查更新器是否退出或 Socket 是否失效"
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &networkErr) && networkErr.Timeout():
+		return "更新器响应超时，请检查服务状态与宿主机负载"
+	default:
+		return "更新器请求失败，请检查 Token 内容、服务日志和连接配置"
+	}
 }

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v1.2.8
+
+- 修复 Host Updater 在服务器重启后 Token 和运行目录丢失导致无法连接的问题；systemd 启动前恢复认证文件，自定义安装目录使用对应的备份目录。
+- 安装脚本增加宿主机认证和 backend 挂载检查，后台明确区分 Token、Socket、权限、认证与超时故障，不再在断连时误显示上游仓库。
+- Release 同步提供前后端多架构镜像、Linux Host Updater、1Panel 编排及安装脚本，便于固定版本部署。
+- 区分 1Panel 本地编排文件名和 Release 编排来源，避免在线更新误下载仓库的本地开发编排；安装脚本支持显式指定镜像版本。
+- 选择性合并上游修复：助手会话剥离画布快照避免同步超限，修复首页生成状态并改善媒体预览，增加注册邮箱域名白名单并放宽公告正文限制。
+
 ## v1.2.7
 
 - 修复 1Panel/PostgreSQL 部署在 Host Updater Token 或 Unix Socket 暂时缺失时被误判为“不支持后台在线更新”的问题；backend 会动态读取挂载的 Token 文件，并明确显示“更新器未连接”。Compose 同步挂载只读 Socket 目录，安装脚本会写入 Token 并重建 backend/web 容器。

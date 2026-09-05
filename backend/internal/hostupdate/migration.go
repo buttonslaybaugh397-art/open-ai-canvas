@@ -39,6 +39,7 @@ var migrationProtectedEnvKeys = []string{
 	"CANVAS_UPDATER_STATE_DIR",
 	"CANVAS_UPDATER_BACKUP_DIR",
 	"CANVAS_UPDATER_COMPOSE_FILE",
+	"CANVAS_UPDATER_RELEASE_COMPOSE_FILE",
 }
 
 type migrationManifestFile struct {

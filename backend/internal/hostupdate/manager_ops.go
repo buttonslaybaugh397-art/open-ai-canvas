@@ -86,7 +86,7 @@ func (m *Manager) currentVersion() (string, error) {
 }
 
 func (m *Manager) prepareTargetCompose(targetVersion string) (string, error) {
-	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s", m.config.Repository, targetVersion, m.config.ComposeFile)
+	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s", m.config.Repository, targetVersion, m.config.ReleaseComposeFile)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

@@ -42,11 +42,29 @@ GHCR 镜像部署必须把 `CANVAS_IMAGE_TAG` 固定到具体 Release，不可�
 
 ```bash
 cd /opt/open-ai-canvas
-curl -fsSL https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/main/scripts/install-host-updater.sh | sudo bash
-sudo docker compose --env-file .env -f docker-compose.deploy.yml up -d --force-recreate backend web --wait
+curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canvas/main/scripts/install-host-updater.sh | sudo bash
 ```
 
-脚本会下载与当前 Release 匹配的 Linux amd64/arm64 二进制和 `SHA256SUMS`，生成随机 `CANVAS_UPDATER_TOKEN`，创建 systemd 服务、Socket 目录、状态目录和 `backups/`，并在 Socket 目录旁写入只读 Token 文件。Compose 会将该目录挂载到 backend，backend 通过 `CANVAS_UPDATER_TOKEN_FILE` 读取 Token；这样 1Panel 不需要把 Token 展开到容器环境变量中。Token 仍同时保存在服务器 `.env` 与 root-only 更新器环境文件中。
+脚本会下载与当前 Release 匹配的 Linux amd64/arm64 二进制和 `SHA256SUMS`，生成随机 `CANVAS_UPDATER_TOKEN`，创建 systemd 服务、Socket 目录、状态目录和 `backups/`，并在 Socket 目录旁写入只读 Token 文件。Host Updater 每次启动都会从 systemd 环境重建该文件，因为 `/run` 在服务器重启后会被清空。Compose 会将该目录挂载到 backend，backend 通过 `CANVAS_UPDATER_TOKEN_FILE` 读取 Token；这样 1Panel 不需要把 Token 展开到容器环境变量中。Token 仍同时保存在服务器 `.env` 与 root-only 更新器环境文件中。
+
+安装脚本会拉取镜像并重建 backend/web，并非只读诊断命令。若镜像标签为 `latest`，还会将其固定到仓库最新 Release；在已有部署运行前，应核对实际 Compose 文件、镜像版本及备份。systemd 的启动前辅助脚本也会恢复 Token，因此安装脚本中的此项修复不依赖新版更新器二进制。
+
+如果后台显示“Host Updater 当前未连接”，先执行以下只读检查，确认宿主机服务和 backend 挂载状态，不要直接重装或更新：
+
+```bash
+sudo systemctl status open-ai-canvas-updater --no-pager -l
+sudo journalctl -u open-ai-canvas-updater -n 60 --no-pager
+sudo test -s /run/open-ai-canvas-updater/token
+sudo test -S /run/open-ai-canvas-updater/updater.sock
+sudo docker compose --env-file .env -f docker-compose.deploy.yml exec -T backend \
+  sh -ec 'test -r /run/open-ai-canvas-updater/token && test -S /run/open-ai-canvas-updater/updater.sock'
+```
+
+1Panel 使用 `docker-compose.1panel.yml` 时，将命令中的 Compose 文件名替换为该文件，并设置 `CANVAS_UPDATER_COMPOSE_FILE=docker-compose.1panel.yml`。不要为了匹配示例复制或改名正在使用的编排文件。只修改 1Panel 编排不会启动宿主机更新器；确认尚未安装时，需运行安装脚本创建 systemd 服务、Token 和 Unix Socket，脚本随后会重建 backend/web。排查时不要公开 Token、环境文件或其他凭据。
+
+如果 1Panel 的实际文件名为 `docker-compose.yml`，将 `CANVAS_UPDATER_COMPOSE_FILE` 设置为这个本地文件名，同时设置 `CANVAS_UPDATER_RELEASE_COMPOSE_FILE=docker-compose.1panel.yml`。前者用于运行和备份服务器现有编排，后者指定在线更新从 Release 下载的生产编排，不能使用仓库的本地开发 `docker-compose.yml`。安装脚本支持通过 `CANVAS_IMAGE_TAG` 显式选择已发布版本，优先于 `.env` 中的版本。
+
+Release 附件包含 `docker-compose.1panel.yml` 和 `install-host-updater.sh`。测试新版本前先创建可恢复备份，在原有编排项目内更新镜像和 Socket 挂载，保留项目名与全部数据卷。首次安装脚本不是在线更新事务，不提供完整备份及失败自动回滚，不能代替更新器连接后的在线更新流程。
 
 ## 运维检查
 
