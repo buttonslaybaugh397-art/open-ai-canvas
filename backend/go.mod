@@ -1,6 +1,6 @@
 module infinite-canvas/backend
 
-go 1.25.0
+go 1.21
 
 require (
 	github.com/aws/aws-sdk-go v1.40.45
