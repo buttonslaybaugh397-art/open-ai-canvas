@@ -361,7 +361,7 @@ func (r *Repository) TaskForUser(userID string, id string) (*model.Task, error) 
 
 func (r *Repository) ActiveTaskCountForUser(userID string) (int64, error) {
 	var count int64
-	err := r.db.Model(&model.Task{}).Where("user_id = ? AND status IN ?", userID, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).Count(&count).Error
+	err := r.db.Model(&model.Task{}).Where("user_id = ? AND status IN ?", userID, []model.TaskStatus{model.TaskStatusPreparing, model.TaskStatusQueued, model.TaskStatusRunning}).Count(&count).Error
 	return count, err
 }
 
@@ -371,7 +371,7 @@ func (r *Repository) ActiveTaskCountForProjectIDs(userID string, projectIDs []st
 	}
 	var count int64
 	err := r.db.Model(&model.Task{}).
-		Where("user_id = ? AND project_id IN ? AND status IN ?", userID, projectIDs, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).
+		Where("user_id = ? AND project_id IN ? AND status IN ?", userID, projectIDs, []model.TaskStatus{model.TaskStatusPreparing, model.TaskStatusQueued, model.TaskStatusRunning}).
 		Count(&count).Error
 	return count, err
 }
@@ -561,6 +561,57 @@ func (r *Repository) CancelTaskIfStatus(userID string, id string, expected model
 	return result.RowsAffected == 1, result.Error
 }
 
+func (r *Repository) StalePreparingTasks(cutoff time.Time, limit int) ([]model.Task, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var tasks []model.Task
+	err := r.db.
+		Where("status = ? AND updated_at <= ?", model.TaskStatusPreparing, cutoff).
+		Order("updated_at asc, id asc").
+		Limit(limit).
+		Find(&tasks).Error
+	return tasks, err
+}
+
+// ExpirePreparingTaskIfStale only expires a task that has not moved beyond
+// preparation since it was selected for cleanup. This protects a concurrent
+// ready request from being cancelled after it has joined the queue.
+func (r *Repository) ExpirePreparingTaskIfStale(userID string, id string, cutoff time.Time, now time.Time) (bool, error) {
+	result := r.db.Model(&model.Task{}).
+		Where("id = ? AND user_id = ? AND status = ? AND updated_at <= ?", id, userID, model.TaskStatusPreparing, cutoff).
+		Updates(map[string]any{
+			"status": model.TaskStatusCancelled, "stage": "准备输入超时已取消", "error": "准备生成输入超时，任务已取消", "completed_at": &now,
+			"lease_owner": "", "lease_expires_at": nil, "updated_at": now,
+		})
+	return result.RowsAffected == 1, result.Error
+}
+
+// FinalizePreparingTask 只允许把同一用户的准备态任务切换为 queued。
+// worker 的 ClaimNextTask 不包含 preparing，因此输入补齐前不会被执行。
+func (r *Repository) FinalizePreparingTask(userID string, id string, inputJSON string, now time.Time) (*model.Task, error) {
+	var task model.Task
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		updated := tx.Model(&model.Task{}).
+			Where("id = ? AND user_id = ? AND status = ?", id, userID, model.TaskStatusPreparing).
+			Updates(map[string]any{
+				"status": model.TaskStatusQueued, "stage": "等待队列调度", "progress": 5,
+				"error": "", "input_json": inputJSON, "updated_at": now,
+			})
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected != 1 {
+			return ErrTaskStateConflict
+		}
+		return tx.First(&task, "id = ? AND user_id = ?", id, userID).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &task, nil
+}
+
 // 上游取消先落库再发请求；条件更新保证并发和重复取消只有一个调用方取得发送权。
 func (r *Repository) ClaimTaskProviderCancellation(userID string, id string, now time.Time) error {
 	result := r.db.Model(&model.Task{}).
@@ -652,7 +703,7 @@ func (r *Repository) Tasks(userID string, limit int, projectID string, activeOnl
 		query = query.Where("project_id = ?", strings.TrimSpace(projectID))
 	}
 	if activeOnly {
-		query = query.Where("status IN ?", []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning})
+		query = query.Where("status IN ?", []model.TaskStatus{model.TaskStatusPreparing, model.TaskStatusQueued, model.TaskStatusRunning})
 	}
 	err := query.Order("created_at desc").Limit(limit).Find(&tasks).Error
 	return tasks, err
@@ -1242,7 +1293,7 @@ func (r *Repository) DeleteProject(userID string, id string, canvasUpdates []mod
 		projectScopeIDs := append([]string{id}, canvasIDs...)
 		var activeTaskCount int64
 		if err := tx.Model(&model.Task{}).
-			Where("user_id = ? AND project_id IN ? AND status IN ?", userID, projectScopeIDs, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).
+			Where("user_id = ? AND project_id IN ? AND status IN ?", userID, projectScopeIDs, []model.TaskStatus{model.TaskStatusPreparing, model.TaskStatusQueued, model.TaskStatusRunning}).
 			Count(&activeTaskCount).Error; err != nil {
 			return err
 		}

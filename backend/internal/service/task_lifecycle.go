@@ -83,7 +83,7 @@ func (w *taskLifecycleCoordinator) retryTask(userID string, id string) (*model.T
 		return nil, BadAuthRequest("积分不足，请先使用兑换码充值")
 	}
 	if errors.Is(err, repository.ErrActiveTaskLimit) {
-		return nil, BadAuthRequest(fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))
+		return nil, BadAuthRequest(fmt.Sprintf("同时准备、排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))
 	}
 	if errors.Is(err, repository.ErrTaskNotRetryable) {
 		return nil, BadAuthRequest("任务已被其他请求重新入队，请勿重复重试")
@@ -112,7 +112,7 @@ func (w *taskLifecycleCoordinator) cancelTask(_ context.Context, userID string, 
 	if err != nil {
 		return nil, err
 	}
-	if task.Status != model.TaskStatusQueued && task.Status != model.TaskStatusRunning {
+	if task.Status != model.TaskStatusPreparing && task.Status != model.TaskStatusQueued && task.Status != model.TaskStatusRunning {
 		if task.Status == model.TaskStatusCancelled {
 			return taskForOutput(*task), nil
 		}
@@ -177,8 +177,8 @@ func (w *taskLifecycleCoordinator) cancelTask(_ context.Context, userID string, 
 		}
 	} else {
 		var billingErr error
-		if originalStatus == model.TaskStatusQueued {
-			billingErr = s.taskBilling().RefundBilling(task.BillingOrderID, "用户主动取消，且任务尚未开始执行")
+		if originalStatus == model.TaskStatusPreparing || originalStatus == model.TaskStatusQueued {
+			billingErr = s.taskBilling().RefundBilling(task.BillingOrderID, "用户主动取消，且任务尚未进入执行")
 		} else {
 			// running 任务可能已经发起上游调用但尚未把 request ID 写回，不能
 			// 直接退款后放任上游继续生成，先冻结为待核对更安全。

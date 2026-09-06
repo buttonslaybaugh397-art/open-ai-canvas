@@ -40,6 +40,7 @@ type AdminAuditEvent struct {
 }
 
 const (
+	TaskStatusPreparing TaskStatus = "preparing"
 	TaskStatusQueued    TaskStatus = "queued"
 	TaskStatusRunning   TaskStatus = "running"
 	TaskStatusSucceeded TaskStatus = "succeeded"

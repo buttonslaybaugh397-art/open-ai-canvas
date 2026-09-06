@@ -22,7 +22,7 @@ export function recoverCreationTextTask(message: RecoverableCreationTextMessage,
 
     const taskIds = new Set(message.taskIds || []);
     const matches = tasks.filter((task) => taskIds.has(task.id));
-    if (!matches.length || matches.some((task) => task.status === "queued" || task.status === "running")) return null;
+	if (!matches.length || matches.some((task) => task.status === "preparing" || task.status === "queued" || task.status === "running")) return null;
 
     const nextTaskIds = Array.from(new Set([...(message.taskIds || []), ...matches.map((task) => task.id)]));
     const succeeded = matches.find((task) => task.status === "succeeded");

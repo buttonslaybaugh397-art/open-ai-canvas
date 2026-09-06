@@ -99,7 +99,7 @@ export default function TasksPage() {
     const modelOptions = useMemo(() => Array.from(new Set(tasks.map((task) => formatModelName(effectiveConfig, task)).filter(Boolean))).sort((left, right) => left.localeCompare(right, "zh-CN")), [effectiveConfig, tasks]);
     const filteredTasks = useMemo(() => tasks.filter((task) => {
         if (statusFilter === "all") return true;
-        if (statusFilter === "active") return task.status === "queued" || task.status === "running";
+		if (statusFilter === "active") return task.status === "preparing" || task.status === "queued" || task.status === "running";
         if (statusFilter === "failed") return task.status === "failed" || task.status === "cancelled";
         if (statusFilter === "succeeded") return task.status === "succeeded";
         return false;
@@ -123,7 +123,7 @@ export default function TasksPage() {
                 const created = new Date(task.createdAt);
                 if (!Number.isNaN(created.getTime()) && created.getFullYear() === now.getFullYear() && created.getMonth() === now.getMonth() && created.getDate() === now.getDate()) today += 1;
             }
-            if (task.status === "queued" || task.status === "running") active += 1;
+			if (task.status === "preparing" || task.status === "queued" || task.status === "running") active += 1;
             else if (task.status === "succeeded") succeeded += 1;
             else if (task.status === "failed" || task.status === "cancelled") failed += 1;
         }
@@ -271,7 +271,7 @@ export default function TasksPage() {
             const next = await loadTasks(initial);
             if (stopped) return;
             const items = next || tasksRef.current;
-            const hasActiveTasks = items.some((task) => task.status === "queued" || task.status === "running");
+			const hasActiveTasks = items.some((task) => task.status === "preparing" || task.status === "queued" || task.status === "running");
             timer = window.setTimeout(() => void poll(false), document.hidden ? 60_000 : hasActiveTasks ? 10_000 : 60_000);
         };
         const handleVisibility = () => {
@@ -310,7 +310,7 @@ export default function TasksPage() {
     };
 
     const deleteLocalTask = (task: GenerationTask) => {
-        if (task.status === "queued" || task.status === "running") {
+		if (task.status === "preparing" || task.status === "queued" || task.status === "running") {
             message.warning("任务正在执行，不能删除本机记录；请等待任务完成");
             return;
         }
@@ -683,7 +683,7 @@ function formatDate(value?: string) {
 function formatTaskDuration(task: GenerationTask) {
     if (!task.createdAt) return "-";
     const start = new Date(task.startedAt || task.createdAt).getTime();
-    const end = task.completedAt ? new Date(task.completedAt).getTime() : task.status === "queued" || task.status === "running" ? Date.now() : Number.NaN;
+	const end = task.completedAt ? new Date(task.completedAt).getTime() : task.status === "preparing" || task.status === "queued" || task.status === "running" ? Date.now() : Number.NaN;
     if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return "-";
     const totalSeconds = Math.max(0, Math.floor((end - start) / 1000));
     const minutes = Math.floor(totalSeconds / 60);

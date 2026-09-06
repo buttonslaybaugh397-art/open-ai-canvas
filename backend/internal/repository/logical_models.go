@@ -444,7 +444,7 @@ func (r *Repository) ArchiveLogicalModel(id string, audit *model.AdminAuditEvent
 		}
 		var activeTasks int64
 		if err := tx.Model(&model.Task{}).
-			Where("logical_model_id = ? AND status IN ?", id, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).
+			Where("logical_model_id = ? AND status IN ?", id, []model.TaskStatus{model.TaskStatusPreparing, model.TaskStatusQueued, model.TaskStatusRunning}).
 			Count(&activeTasks).Error; err != nil {
 			return err
 		}

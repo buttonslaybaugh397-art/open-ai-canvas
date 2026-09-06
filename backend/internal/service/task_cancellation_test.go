@@ -81,6 +81,76 @@ func TestCancelTaskCancelsQueuedTask(t *testing.T) {
 	}
 }
 
+func TestCancelTaskCancelsPreparingTask(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+newID()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.Task{}); err != nil {
+		t.Fatal(err)
+	}
+	task := model.Task{ID: "preparing-task", UserID: "user-1", Status: model.TaskStatusPreparing, Stage: "正在准备生成输入"}
+	if err := db.Create(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	svc := &Service{repo: repository.New(db)}
+	cancelled, err := svc.CancelTask(context.Background(), task.UserID, task.ID)
+	if err != nil {
+		t.Fatalf("CancelTask() error = %v", err)
+	}
+	if cancelled.Status != model.TaskStatusCancelled {
+		t.Fatalf("CancelTask() status = %s, want cancelled", cancelled.Status)
+	}
+
+	storedTask, err := svc.repo.TaskForUser(task.UserID, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedTask.Status != model.TaskStatusCancelled || storedTask.CompletedAt == nil {
+		t.Fatalf("preparing task was not cancelled: status=%s completedAt=%v", storedTask.Status, storedTask.CompletedAt)
+	}
+}
+
+func TestCleanupExpiredPreparingTasksCancelsOnlyStalePreparingTasks(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+newID()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.Task{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	stale := model.Task{ID: "stale-preparing", UserID: "user-1", Status: model.TaskStatusPreparing, Stage: "正在准备生成输入", UpdatedAt: now.Add(-taskPreparationTimeout - time.Minute)}
+	fresh := model.Task{ID: "fresh-preparing", UserID: "user-1", Status: model.TaskStatusPreparing, Stage: "正在准备生成输入", UpdatedAt: now.Add(-taskPreparationTimeout + time.Minute)}
+	queued := model.Task{ID: "stale-queued", UserID: "user-1", Status: model.TaskStatusQueued, Stage: "等待队列调度", UpdatedAt: now.Add(-taskPreparationTimeout - time.Minute)}
+	if err := db.Create(&[]model.Task{stale, fresh, queued}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	svc := &Service{repo: repository.New(db)}
+	if err := svc.cleanupExpiredPreparingTasks(now); err != nil {
+		t.Fatalf("cleanupExpiredPreparingTasks() error = %v", err)
+	}
+
+	for _, test := range []struct {
+		id   string
+		want model.TaskStatus
+	}{
+		{id: stale.ID, want: model.TaskStatusCancelled},
+		{id: fresh.ID, want: model.TaskStatusPreparing},
+		{id: queued.ID, want: model.TaskStatusQueued},
+	} {
+		task, err := svc.repo.Task(test.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if task.Status != test.want {
+			t.Fatalf("task %s status = %s, want %s", test.id, task.Status, test.want)
+		}
+	}
+}
+
 func TestCancelTaskRejectsTaskWithProviderRequestID(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:"+newID()+"?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

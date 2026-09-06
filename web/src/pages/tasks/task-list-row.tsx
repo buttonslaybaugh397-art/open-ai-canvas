@@ -31,7 +31,7 @@ export function TaskListRow({
     onPreview: () => void;
 }) {
     const context = getTaskCanvasContext(task, canvasById, projectNameById);
-    const isActive = task.status === "queued" || task.status === "running";
+	const isActive = task.status === "preparing" || task.status === "queued" || task.status === "running";
     const isFailed = isTaskFailed(task);
     return (
         <article className={`task-record-row group${isFailed ? " is-attention" : ""}`}>

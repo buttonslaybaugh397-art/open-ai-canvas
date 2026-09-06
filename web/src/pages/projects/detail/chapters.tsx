@@ -124,7 +124,7 @@ export default function ProjectChaptersView({ detail, refreshProject }: ProjectD
         queryFn: () => listGenerationTasks(100, { projectId: detail.project.id }),
         refetchInterval: (query) => query.state.data?.some((task) => {
             const identity = chapterTaskIdentity(task);
-            return Boolean(identity && (task.status === "queued" || task.status === "running"));
+			return Boolean(identity && (task.status === "preparing" || task.status === "queued" || task.status === "running"));
         }) ? 2_000 : false,
         refetchOnWindowFocus: true,
     });
@@ -135,7 +135,7 @@ export default function ProjectChaptersView({ detail, refreshProject }: ProjectD
     const serverChapterOperations = useMemo(() => {
         const operations = new Map<string, ChapterOperation>();
         for (const task of chapterTasksQuery.data || []) {
-            if (task.status !== "queued" && task.status !== "running") continue;
+			if (task.status !== "preparing" && task.status !== "queued" && task.status !== "running") continue;
             const identity = chapterTaskIdentity(task);
             if (!identity) continue;
             const key = chapterOperationKey(identity.chapterId, identity.kind);

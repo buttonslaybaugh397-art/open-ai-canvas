@@ -52,6 +52,31 @@ func RegisterTaskRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, task)
 	})
+	r.POST("/tasks/prepare", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		policy, available := loadRuntimePolicy(c, svc)
+		if !available || !enforceRateLimit(c, "tasks:"+user.ID, policy.Request.TaskCreatePerMinute, time.Minute) {
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 16<<20)
+		var req service.CreateTaskRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		req.TraceID = TraceID(c)
+		req.RequestID = RequestID(c)
+		task, err := svc.PrepareTask(user.ID, req)
+		if err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		ok(c, task)
+	})
 	r.GET("/tasks", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {
@@ -79,6 +104,27 @@ func RegisterTaskRoutes(r *gin.RouterGroup, svc *service.Service) {
 		task, err := svc.Task(user.ID, c.Param("id"))
 		if err != nil {
 			fail(c, http.StatusNotFound, err)
+			return
+		}
+		ok(c, task)
+	})
+	r.POST("/tasks/:id/ready", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 16<<20)
+		var req struct {
+			Input map[string]any `json:"input"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		task, err := svc.FinalizePreparingTask(user.ID, c.Param("id"), req.Input)
+		if err != nil {
+			fail(c, http.StatusBadRequest, err)
 			return
 		}
 		ok(c, task)

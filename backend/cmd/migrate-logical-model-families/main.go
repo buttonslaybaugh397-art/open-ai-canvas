@@ -394,7 +394,7 @@ func ensureNoActiveTasks(db *gorm.DB, plans []familyPlan) error {
 	}
 	if err := db.Model(&model.Task{}).
 		Select("logical_model_id, status, count(*) AS count").
-		Where("logical_model_id IN ? AND status IN ?", ids, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).
+		Where("logical_model_id IN ? AND status IN ?", ids, []model.TaskStatus{model.TaskStatusPreparing, model.TaskStatusQueued, model.TaskStatusRunning}).
 		Group("logical_model_id, status").
 		Scan(&active).Error; err != nil {
 		return err

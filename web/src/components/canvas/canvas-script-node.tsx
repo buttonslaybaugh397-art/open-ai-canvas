@@ -153,7 +153,7 @@ export function CanvasScriptNodeContent({
     const hasWaitingBatchItems = Boolean(batch?.items.some((item) => item.status === "waiting" || item.status === "submitting"));
     const hasActiveBatchItems = Boolean(batch?.items.some((item) => item.status === "waiting" || item.status === "submitting" || item.status === "queued" || item.status === "running"));
     const taskStatus = node.metadata?.taskStatus;
-    const displayStatus: TaskStatus = taskStatus === "queued" || taskStatus === "succeeded" || taskStatus === "failed" || taskStatus === "cancelled" ? taskStatus : "running";
+	const displayStatus: TaskStatus = taskStatus === "preparing" || taskStatus === "queued" || taskStatus === "succeeded" || taskStatus === "failed" || taskStatus === "cancelled" ? taskStatus : "running";
     const displayTask = node.metadata?.taskId
         ? {
               provider: node.metadata.taskProvider,

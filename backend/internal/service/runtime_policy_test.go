@@ -25,7 +25,7 @@ func TestVideoTaskTimeoutHasFiveMinuteSafetyFloor(t *testing.T) {
 	}
 }
 
-func TestOnlyResumableNewAPIChannel2VideoDeadlinesStayRunning(t *testing.T) {
+func TestOnlyResumableNewAPIVideoDeadlinesStayRunning(t *testing.T) {
 	svc := &Service{}
 	input, err := json.Marshal(canvasGenerationInput{Mode: "video", Config: providerConfig{BaseURL: "https://example.com", InterfaceType: string(model.ChannelInterfaceNewAPIChannel2)}})
 	if err != nil {
@@ -34,6 +34,13 @@ func TestOnlyResumableNewAPIChannel2VideoDeadlinesStayRunning(t *testing.T) {
 	base := model.Task{ID: "task-1", Type: "canvas_video", ProviderRequestID: "provider-task-1"}
 	if !svc.shouldDeferVideoProviderTask(base, string(input), context.DeadlineExceeded) {
 		t.Fatal("resumable NewAPI Channel 2 deadline should remain running")
+	}
+	channel1Input, err := json.Marshal(canvasGenerationInput{Mode: "video", Config: providerConfig{BaseURL: "https://example.com", InterfaceType: string(model.ChannelInterfaceNewAPIChannel1)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !svc.shouldDeferVideoProviderTask(base, string(channel1Input), context.DeadlineExceeded) {
+		t.Fatal("resumable NewAPI Channel 1 deadline should remain running")
 	}
 	if svc.shouldDeferVideoProviderTask(model.Task{ID: "task-2", Type: "canvas_video"}, string(input), context.DeadlineExceeded) {
 		t.Fatal("missing provider task id must not be deferred")

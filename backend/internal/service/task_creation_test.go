@@ -101,3 +101,47 @@ func TestResolveTaskModelSelectionStillRequiresLogicalModelWithoutExplicitSystem
 		t.Fatalf("resolveTaskModelSelection() error = %v, want logicalModelId validation", err)
 	}
 }
+
+func TestMergePreparingTaskInputOnlyReplacesPreparedAttachments(t *testing.T) {
+	draft := map[string]any{
+		"mode":   "video",
+		"prompt": "原始提示词",
+		"config": map[string]any{
+			"channelId": "channel-original",
+			"model":     "video-original",
+			"seconds":   "5",
+		},
+		"metadata":        map[string]any{"videoEditOperation": "image_to_video"},
+		"referenceImages": []any{map[string]any{"storageKey": "resource:old-image"}},
+	}
+	prepared := map[string]any{
+		"mode":   "image",
+		"prompt": "被替换的提示词",
+		"config": map[string]any{
+			"channelId": "channel-replaced",
+			"model":     "image-replaced",
+			"seconds":   "10",
+		},
+		"metadata":        map[string]any{"videoEditOperation": "text_to_video"},
+		"referenceImages": []any{map[string]any{"storageKey": "resource:uploaded-image"}},
+		"referenceVideos": []any{map[string]any{"storageKey": "resource:uploaded-video"}},
+	}
+
+	merged := mergePreparingTaskInput(draft, prepared)
+	if merged["mode"] != "video" || merged["prompt"] != "原始提示词" {
+		t.Fatalf("generation settings changed during preparation: %#v", merged)
+	}
+	config, ok := merged["config"].(map[string]any)
+	if !ok || config["channelId"] != "channel-original" || config["model"] != "video-original" || config["seconds"] != "5" {
+		t.Fatalf("billing configuration changed during preparation: %#v", merged["config"])
+	}
+	if got := merged["metadata"].(map[string]any)["videoEditOperation"]; got != "image_to_video" {
+		t.Fatalf("metadata changed during preparation: %#v", merged["metadata"])
+	}
+	if got := merged["referenceImages"].([]any)[0].(map[string]any)["storageKey"]; got != "resource:uploaded-image" {
+		t.Fatalf("prepared image reference = %v", got)
+	}
+	if got := merged["referenceVideos"].([]any)[0].(map[string]any)["storageKey"]; got != "resource:uploaded-video" {
+		t.Fatalf("prepared video reference = %v", got)
+	}
+}

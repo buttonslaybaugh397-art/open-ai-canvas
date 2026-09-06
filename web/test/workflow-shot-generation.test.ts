@@ -145,3 +145,57 @@ test("background generation submission returns after task creation without waiti
     expect(submitted).toBe(task);
     expect(waitCalls).toBe(0);
 });
+
+test("registers a preparation task before finalizing uploaded references", async () => {
+    const events: string[] = [];
+    let draftInput: Parameters<NonNullable<GenerationTaskDependencies["prepareTask"]>>[0] | undefined;
+    let readyInput: Parameters<NonNullable<GenerationTaskDependencies["finalizeTask"]>>[1] | undefined;
+    const preparingTask = {
+        id: "preparing-task-1",
+        type: "canvas_video",
+        status: "preparing",
+        prompt: "角色表演",
+        attempts: 0,
+        createdAt: "2026-09-06T00:00:00.000Z",
+        updatedAt: "2026-09-06T00:00:00.000Z",
+    } satisfies GenerationTask;
+    const queuedTask = { ...preparingTask, status: "queued" as const };
+
+    const submitted = await submitBackendGenerationTask({
+        projectId: "project-1",
+        mode: "video",
+        prompt: "角色表演",
+        config: { ...defaultConfig, model: "MiniMax-H3", videoModel: "MiniMax-H3" },
+        referenceImages: [{ url: "", storageKey: "resource:character-image-1" }],
+    }, {
+        createTask: async () => {
+            throw new Error("two-phase submission must not use the legacy create endpoint");
+        },
+        prepareTask: async (input) => {
+            events.push("prepare");
+            draftInput = input;
+            return preparingTask;
+        },
+        finalizeTask: async (id, input) => {
+            events.push("ready");
+            expect(id).toBe(preparingTask.id);
+            readyInput = input;
+            return queuedTask;
+        },
+        cancelTask: async () => {
+            events.push("cancel");
+            return preparingTask;
+        },
+        waitTask: async () => {
+            throw new Error("submit must not wait for task completion");
+        },
+        runLocal: async () => ({ mode: "video" }),
+        createId: () => "id-1",
+        now: () => "2026-09-06T00:00:00.000Z",
+    });
+
+    expect(submitted).toBe(queuedTask);
+    expect(events).toEqual(["prepare", "ready"]);
+    expect(draftInput?.input.referenceImages[0]?.storageKey).toBe("resource:character-image-1");
+    expect(readyInput?.referenceImages[0]?.storageKey).toBe("resource:character-image-1");
+});

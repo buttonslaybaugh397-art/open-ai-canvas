@@ -3891,6 +3891,38 @@ func (e newAPIChannel2ResponseError) Error() string {
 	return fmt.Sprintf("NewAPI Video Generations 任务查询失败（%s）：%s", e.Code, defaultString(e.Message, "上游查询失败"))
 }
 
+// NewAPI-compatible providers use several spellings for the same lifecycle
+// state. Unknown states are intentionally treated as in-progress so a newly
+// introduced upstream state cannot turn a live generation into a local failure.
+func normalizeNewAPIVideoStatus(value string) string {
+	status := strings.ToUpper(strings.TrimSpace(value))
+	status = strings.ReplaceAll(status, "-", "_")
+	status = strings.Join(strings.Fields(status), "_")
+	return status
+}
+
+func isNewAPIVideoSuccessStatus(status string) bool {
+	switch normalizeNewAPIVideoStatus(status) {
+	case "SUCCESS", "SUCCEEDED", "COMPLETED", "DONE":
+		return true
+	default:
+		return false
+	}
+}
+
+func isNewAPIVideoFailureStatus(status string) bool {
+	normalized := normalizeNewAPIVideoStatus(status)
+	if strings.HasPrefix(normalized, "FAILED:") {
+		return true
+	}
+	switch normalized {
+	case "FAILURE", "FAILED", "ERROR", "CANCELLED", "CANCELED", "EXPIRED", "TASK_STATUS_FAILED", "TASK_FAILED":
+		return true
+	default:
+		return false
+	}
+}
+
 func runNewAPIChannel2VideoTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
 	id := resumedProviderRequestID(ctx)
 	var created map[string]interface{}
@@ -3911,6 +3943,18 @@ func runNewAPIChannel2VideoTask(ctx context.Context, input canvasGenerationInput
 	}
 	if id == "" {
 		return nil, errors.New("NewAPI Video Generations 没有返回任务 ID")
+	}
+	createdState := created
+	if data, ok := created["data"].(map[string]interface{}); ok {
+		createdState = data
+	}
+	createdStatus := normalizeNewAPIVideoStatus(stringField(createdState, "status"))
+	if isNewAPIVideoSuccessStatus(createdStatus) {
+		return newAPIChannel2VideoResult(ctx, input, createdState, id)
+	}
+	if isNewAPIVideoFailureStatus(createdStatus) {
+		reason := firstNonEmptyString(stringField(createdState, "fail_reason"), stringField(createdState, "error"), stringField(createdState, "message"))
+		return nil, fmt.Errorf("NewAPI Video Generations 视频生成失败（任务 %s）：%s", id, defaultString(reason, "上游返回失败"))
 	}
 
 	consecutiveQueryFailures := 0
@@ -3954,27 +3998,34 @@ func queryNewAPIChannel2VideoTask(ctx context.Context, input canvasGenerationInp
 	if data, ok := payload["data"].(map[string]interface{}); ok {
 		state = data
 	}
-	status := strings.ToUpper(strings.TrimSpace(stringField(state, "status")))
-	switch status {
-	case "SUCCESS":
-		videoURL := strings.TrimSpace(stringField(state, "result_url"))
-		if videoURL == "" {
-			return nil, status, fmt.Errorf("NewAPI Video Generations 任务 %s 已成功但没有返回视频地址", id)
-		}
-		data, mimeType, err := getProviderExternalBinary(withProviderRequestKind(ctx, "download"), input.Config, videoURL)
-		if err != nil {
-			return nil, status, fmt.Errorf("NewAPI Video Generations 视频结果下载失败（任务 %s）：%w", id, err)
-		}
-		mimeType = normalizedMediaMimeType(mimeType, data)
-		return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, status, nil
-	case "FAILURE":
+	status := normalizeNewAPIVideoStatus(stringField(state, "status"))
+	switch {
+	case isNewAPIVideoSuccessStatus(status):
+		result, err := newAPIChannel2VideoResult(ctx, input, state, id)
+		return result, status, err
+	case isNewAPIVideoFailureStatus(status):
 		reason := strings.TrimSpace(stringField(state, "fail_reason"))
 		return nil, status, fmt.Errorf("NewAPI Video Generations 视频生成失败（任务 %s）：%s", id, defaultString(reason, "上游返回失败"))
-	case "SUBMITTED", "QUEUED", "IN_PROGRESS", "NOT_START", "":
-		return nil, status, nil
 	default:
-		return nil, status, fmt.Errorf("NewAPI Video Generations 任务 %s 返回未知状态：%s", id, status)
+		// Keep polling for both known and future provider lifecycle states.
+		return nil, status, nil
 	}
+}
+
+func newAPIChannel2VideoResult(ctx context.Context, input canvasGenerationInput, state map[string]interface{}, id string) (map[string]interface{}, error) {
+	videoURL := newAPIVideoResultURL(state)
+	if videoURL == "" {
+		videoURL = strings.TrimSpace(stringField(state, "result_url"))
+	}
+	if videoURL == "" {
+		return nil, fmt.Errorf("NewAPI Video Generations 任务 %s 已成功但没有返回视频地址", id)
+	}
+	data, mimeType, err := getProviderExternalBinary(withProviderRequestKind(ctx, "download"), input.Config, videoURL)
+	if err != nil {
+		return nil, fmt.Errorf("NewAPI Video Generations 视频结果下载失败（任务 %s）：%w", id, err)
+	}
+	mimeType = normalizedMediaMimeType(mimeType, data)
+	return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
 }
 
 func newAPIChannel2PayloadError(payload map[string]interface{}) error {
@@ -4186,42 +4237,74 @@ func runNewAPIChannel1VideoTask(ctx context.Context, input canvasGenerationInput
 		}
 		id = firstNonEmptyString(stringField(created, "id"), stringField(created, "task_id"))
 	}
-	status := strings.ToUpper(strings.TrimSpace(stringField(created, "status")))
-	if strings.HasPrefix(status, "FAILED") {
+	status := normalizeNewAPIVideoStatus(stringField(created, "status"))
+	if isNewAPIVideoFailureStatus(status) {
 		return nil, fmt.Errorf("NewAPI 媒体任务视频生成失败（任务 %s）：%s", id, strings.TrimSpace(strings.TrimPrefix(status, "FAILED:")))
 	}
 	if id == "" {
 		return nil, errors.New("NewAPI 媒体任务没有返回任务 ID")
 	}
+	if isNewAPIVideoSuccessStatus(status) {
+		return newAPIChannel1VideoResult(ctx, input, created, id)
+	}
 	for deadline := providerPollingDeadline(ctx); time.Now().Before(deadline); {
-		var state map[string]interface{}
-		if err := getJSON(ctx, input.Config, "/videos/"+id, &state); err != nil {
+		result, _, err := queryNewAPIChannel1VideoTask(ctx, input, id)
+		if err != nil {
 			return nil, err
 		}
-		if data, ok := state["data"].(map[string]interface{}); ok {
-			state = data
-		}
-		status := strings.ToUpper(strings.TrimSpace(stringField(state, "status")))
-		switch {
-		case status == "SUCCEEDED":
-			videoURL := stringField(state, "object")
-			if videoURL == "" {
-				return nil, fmt.Errorf("NewAPI 媒体任务 %s 已完成但没有返回视频 URL", id)
-			}
-			data, mimeType, err := getExternalBinary(withProviderRequestKind(ctx, "download"), videoURL)
-			if err != nil {
-				return nil, fmt.Errorf("NewAPI 媒体任务视频结果下载失败（任务 %s）：%w", id, err)
-			}
-			return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
-		case strings.HasPrefix(status, "FAILED"):
-			message := strings.TrimSpace(strings.TrimPrefix(status, "FAILED:"))
-			return nil, fmt.Errorf("NewAPI 媒体任务视频生成失败（任务 %s）：%s", id, defaultString(message, "上游返回失败"))
+		if result != nil {
+			return result, nil
 		}
 		if err := sleepContext(ctx, newAPIChannel1VideoPollInterval); err != nil {
 			return nil, err
 		}
 	}
-	return nil, fmt.Errorf("NewAPI 媒体任务视频生成超时（任务 %s）", id)
+	return nil, context.DeadlineExceeded
+}
+
+// queryNewAPIChannel1VideoTask performs one read of an existing task. It is
+// shared by automatic timeout recovery and manual recovery so neither path
+// can submit a second billable generation.
+func queryNewAPIChannel1VideoTask(ctx context.Context, input canvasGenerationInput, id string) (map[string]interface{}, string, error) {
+	var state map[string]interface{}
+	if err := getJSON(ctx, input.Config, "/videos/"+id, &state); err != nil {
+		return nil, "", err
+	}
+	if data, ok := state["data"].(map[string]interface{}); ok {
+		state = data
+	}
+	status := normalizeNewAPIVideoStatus(stringField(state, "status"))
+	switch {
+	case isNewAPIVideoSuccessStatus(status):
+		result, err := newAPIChannel1VideoResult(ctx, input, state, id)
+		return result, status, err
+	case isNewAPIVideoFailureStatus(status):
+		reason := firstNonEmptyString(stringField(state, "fail_reason"), stringField(state, "error"), stringField(state, "message"))
+		return nil, status, fmt.Errorf("NewAPI 媒体任务视频生成失败（任务 %s）：%s", id, defaultString(reason, "上游返回失败"))
+	default:
+		// Unknown provider states are still in-flight until proven terminal.
+		return nil, status, nil
+	}
+}
+
+func newAPIChannel1VideoResult(ctx context.Context, input canvasGenerationInput, state map[string]interface{}, id string) (map[string]interface{}, error) {
+	videoURL := firstNonEmptyString(stringField(state, "object"), stringField(state, "video_url"), stringField(state, "videoUrl"), stringField(state, "url"))
+	if videoURL == "" {
+		if object, ok := state["object"]; ok {
+			videoURL = findProviderMediaURL(object)
+		}
+	}
+	if videoURL == "" {
+		videoURL = newAPIVideoResultURL(state)
+	}
+	if videoURL == "" {
+		return nil, fmt.Errorf("NewAPI 媒体任务 %s 已完成但没有返回视频 URL", id)
+	}
+	data, mimeType, err := getExternalBinary(withProviderRequestKind(ctx, "download"), videoURL)
+	if err != nil {
+		return nil, fmt.Errorf("NewAPI 媒体任务视频结果下载失败（任务 %s）：%w", id, err)
+	}
+	return map[string]interface{}{"mode": "video", "video": map[string]interface{}{"dataUrl": dataURL(mimeType, data), "mimeType": mimeType}}, nil
 }
 
 func newAPIChannel1VideoBody(input canvasGenerationInput) (map[string]interface{}, error) {

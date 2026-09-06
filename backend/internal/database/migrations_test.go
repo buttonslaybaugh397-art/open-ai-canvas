@@ -37,6 +37,67 @@ func TestMigrateSchemaRecordsAndValidatesVersion(t *testing.T) {
 	}
 }
 
+func TestMigrateSchemaAcceptsKnownTeamMigrationLineage(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-team-lineage?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&schemaMigration{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range compatibleTeamMigrationLineage {
+		if err := db.Create(&schemaMigration{
+			Version:   item.version,
+			Name:      item.name,
+			Checksum:  item.checksum,
+			AppliedAt: time.Now().UTC(),
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("known team migration lineage should be accepted: %v", err)
+	}
+	status, err := ReadSchemaStatus(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Ready || status.Current != compatibleTeamSchemaVersion {
+		t.Fatalf("unexpected compatible schema status: %#v", status)
+	}
+	if err := RequireSchemaVersion(db); err != nil {
+		t.Fatalf("compatible team migration lineage should satisfy schema requirement: %v", err)
+	}
+}
+
+func TestMigrateSchemaRejectsUnknownTeamMigrationLineage(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-team-lineage-invalid?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&schemaMigration{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range compatibleTeamMigrationLineage {
+		if err := db.Create(&schemaMigration{
+			Version:   item.version,
+			Name:      item.name,
+			Checksum:  item.checksum,
+			AppliedAt: time.Now().UTC(),
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Model(&schemaMigration{}).Where("version = ?", 8).Update("checksum", "changed").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MigrateSchema(db); err == nil || !strings.Contains(err.Error(), "校验和不一致") {
+		t.Fatalf("expected unknown team migration lineage to be rejected, got %v", err)
+	}
+}
+
 func TestMigrateSchemaRejectsChecksumMismatch(t *testing.T) {
 	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-checksum?mode=memory&cache=shared"})
 	if err != nil {

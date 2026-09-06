@@ -14,7 +14,7 @@ import { isLocalDreaminaTaskId, projectLocalDreaminaDiagnosticLog, projectLocalD
 
 export type { BackendEnvelope } from "@/services/api/request";
 
-export type TaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type TaskStatus = "preparing" | "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type TaskBillingStatus = "reserved" | "running" | "settled" | "refunded" | "uncertain";
 export type ProviderCancelStatus = "requested" | "confirmed" | "uncertain";
 export type AgentSessionStatus = "active" | "completed" | "failed";
@@ -239,6 +239,19 @@ export function createGenerationTask(input: CreateTaskInput) {
     });
 }
 
+export function prepareGenerationTask(input: CreateTaskInput) {
+    return request<GenerationTask>(api.post("/tasks/prepare", input)).then((task) => {
+        recordDiagnosticEvent({ level: "info", category: "task", message: "任务已登记，正在准备输入", taskId: task.id, projectId: task.projectId });
+        notifyCanvasTaskCreated(task);
+        window.dispatchEvent(new CustomEvent("wallet:updated"));
+        return task;
+    });
+}
+
+export function finalizeGenerationTask(id: string, input: Record<string, unknown>) {
+    return request<GenerationTask>(api.post(`/tasks/${encodeURIComponent(id)}/ready`, { input }));
+}
+
 export type GenerationTaskPageRequest = {
     limit: number;
     projectId?: string;
@@ -304,7 +317,7 @@ export async function listGenerationTasks(limit = 30, options?: { projectId?: st
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     return [...backendTasks, ...localTasks.map((task) => projectLocalDreaminaTask(task))]
         .filter((task) => !options?.projectId || task.projectId === options.projectId)
-        .filter((task) => !options?.activeOnly || task.status === "queued" || task.status === "running")
+        .filter((task) => !options?.activeOnly || task.status === "preparing" || task.status === "queued" || task.status === "running")
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.id.localeCompare(left.id))
         .slice(0, boundedLimit);
 }
@@ -669,7 +682,7 @@ function numberValue(value: unknown) {
 }
 
 function isTaskStatus(value: unknown): value is TaskStatus {
-    return value === "queued" || value === "running" || value === "succeeded" || value === "failed" || value === "cancelled";
+    return value === "preparing" || value === "queued" || value === "running" || value === "succeeded" || value === "failed" || value === "cancelled";
 }
 
 class TaskTextStreamFatalError extends Error {

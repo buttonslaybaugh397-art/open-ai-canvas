@@ -75,4 +75,37 @@ func TestUpdateTaskProviderProgressIsMonotonic(t *testing.T) {
 	}
 }
 
+func TestPreparingTaskIsNotClaimedUntilInputIsFinalized(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:preparing-task-claim?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.Task{}); err != nil {
+		t.Fatal(err)
+	}
+	task := model.Task{ID: "preparing-task", UserID: "user-1", Type: "canvas_video", Status: model.TaskStatusPreparing, Stage: "正在准备生成输入", InputJSON: `{"mode":"video"}`}
+	if err := db.Create(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	repo := New(db)
+	claimed, err := repo.ClaimNextTask("worker-1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed != nil {
+		t.Fatalf("preparing task was claimed before finalization: %#v", claimed)
+	}
+
+	if _, err := repo.FinalizePreparingTask(task.UserID, task.ID, `{"mode":"video","referenceImages":[{"storageKey":"resource:image-1"}]}`, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = repo.ClaimNextTask("worker-1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed == nil || claimed.ID != task.ID || claimed.Status != model.TaskStatusRunning {
+		t.Fatalf("finalized task was not claimed: %#v", claimed)
+	}
+}
+
 func ptrTime(value time.Time) *time.Time { return &value }

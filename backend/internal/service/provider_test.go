@@ -2107,6 +2107,65 @@ func TestNewAPIChannel1VideoBodyRejectsInlineMedia(t *testing.T) {
 	}
 }
 
+func TestNormalizeNewAPIVideoStatus(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    string
+		success bool
+		failure bool
+	}{
+		{input: " succeeded ", want: "SUCCEEDED", success: true},
+		{input: "task-status-failed", want: "TASK_STATUS_FAILED", failure: true},
+		{input: "FAILED: quota", want: "FAILED:_QUOTA", failure: true},
+		{input: "processing-now", want: "PROCESSING_NOW"},
+	}
+	for _, tt := range tests {
+		if got := normalizeNewAPIVideoStatus(tt.input); got != tt.want {
+			t.Errorf("normalizeNewAPIVideoStatus(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+		if got := isNewAPIVideoSuccessStatus(tt.input); got != tt.success {
+			t.Errorf("isNewAPIVideoSuccessStatus(%q) = %v, want %v", tt.input, got, tt.success)
+		}
+		if got := isNewAPIVideoFailureStatus(tt.input); got != tt.failure {
+			t.Errorf("isNewAPIVideoFailureStatus(%q) = %v, want %v", tt.input, got, tt.failure)
+		}
+	}
+}
+
+func TestRunNewAPIChannel1VideoTaskUsesTerminalCreateResponse(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	paths := make([]string, 0, 2)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/videos":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"channel-1-complete","status":"completed","object":"` + server.URL + `/video.mp4"}`))
+		case "GET /video.mp4":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("video"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	result, err := runNewAPIChannel1VideoTask(context.Background(), canvasGenerationInput{
+		Prompt: "make it move",
+		Config: providerConfig{BaseURL: server.URL + "/v1", APIKey: "test-key", Model: "seedance-2.0", InterfaceType: "newapi-channel-1"},
+	})
+	if err != nil {
+		t.Fatalf("runNewAPIChannel1VideoTask() error = %v", err)
+	}
+	if result["video"] == nil {
+		t.Fatalf("result = %#v", result)
+	}
+	if got := strings.Join(paths, ","); got != "POST /v1/videos,GET /video.mp4" {
+		t.Fatalf("paths = %q, want no status poll", got)
+	}
+}
+
 func TestRunNewAPIChannel1VideoTaskDownloadsSucceededObject(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
 	paths := make([]string, 0, 3)

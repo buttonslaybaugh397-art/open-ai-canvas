@@ -1817,7 +1817,7 @@ function reconcileCreationTaskMessages(conversations: CreationConversation[], ta
             }
             if (message.role !== "assistant" || message.status !== "pending") return message;
             const expectedTaskCount = Math.max(0, ...matches.map((task) => task.clientContext?.batchCount || 0));
-            if (!matches.length || (expectedTaskCount > 0 && matches.length < expectedTaskCount) || matches.some((task) => task.status === "queued" || task.status === "running")) return message;
+			if (!matches.length || (expectedTaskCount > 0 && matches.length < expectedTaskCount) || matches.some((task) => task.status === "preparing" || task.status === "queued" || task.status === "running")) return message;
 
             const resultUrls = Array.from(new Set(matches.filter((task) => task.status === "succeeded").flatMap(creationTaskResultUrls)));
             const failedCount = matches.filter((task) => task.status !== "succeeded" || Boolean(task.creationError)).length;

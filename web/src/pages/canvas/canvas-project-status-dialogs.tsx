@@ -50,7 +50,7 @@ export function CanvasProjectStatusDialogs({ theme, task, taskLogs, taskLoading,
                             </div>
                         </div>
                         <TaskGenerationParameters inputJson={task.inputJson} theme={theme} />
-                        {onCancelTask && (task.status === "queued" || task.status === "running") ? (
+						{onCancelTask && (task.status === "preparing" || task.status === "queued" || task.status === "running") ? (
                             <div className="flex justify-end">
                                 <Button danger icon={<XCircle className="size-4" />} onClick={() => onCancelTask(task)}>
                                     取消任务
@@ -196,7 +196,7 @@ function formatTaskTime(value?: string) {
 
 function formatTaskDuration(task: GenerationTask) {
     const start = Date.parse(task.startedAt || task.createdAt);
-    const end = task.completedAt ? Date.parse(task.completedAt) : task.status === "queued" || task.status === "running" ? Date.now() : Number.NaN;
+	const end = task.completedAt ? Date.parse(task.completedAt) : task.status === "preparing" || task.status === "queued" || task.status === "running" ? Date.now() : Number.NaN;
     if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return task.completedAt ? "未记录" : "未完成";
     const milliseconds = Math.max(0, end - start);
     const totalSeconds = Math.round(milliseconds / 1000);

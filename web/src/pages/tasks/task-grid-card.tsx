@@ -8,7 +8,7 @@ import type { GenerationTask } from "@/services/api/task-center";
 import { isTaskFailed, statusDotClassName, TaskDate } from "./task-shared";
 
 export function TaskGridCard({ task, actingId, onOpen, onRetry }: { task: GenerationTask; actingId: string; onOpen: () => void; onRetry: () => void }) {
-    const isActive = task.status === "queued" || task.status === "running";
+	const isActive = task.status === "preparing" || task.status === "queued" || task.status === "running";
     const isFailed = isTaskFailed(task);
     const isVideo = task.previewKind === "video";
     const fallbackVideo = task.type.includes("video");

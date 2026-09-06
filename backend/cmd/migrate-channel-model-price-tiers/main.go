@@ -309,13 +309,13 @@ func deleteLegacySKURecords(db *gorm.DB, plan familyPlan) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		var activeChannelTasks int64
 		if len(plan.legacyChannelModelIDs) > 0 {
-			if err := tx.Model(&model.Task{}).Where("channel_model_id IN ? AND status IN ?", plan.legacyChannelModelIDs, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).Count(&activeChannelTasks).Error; err != nil {
+			if err := tx.Model(&model.Task{}).Where("channel_model_id IN ? AND status IN ?", plan.legacyChannelModelIDs, []model.TaskStatus{model.TaskStatusPreparing, model.TaskStatusQueued, model.TaskStatusRunning}).Count(&activeChannelTasks).Error; err != nil {
 				return err
 			}
 		}
 		var activeLogicalTasks int64
 		if len(plan.legacyLogicalModelIDs) > 0 {
-			if err := tx.Model(&model.Task{}).Where("logical_model_id IN ? AND status IN ?", plan.legacyLogicalModelIDs, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).Count(&activeLogicalTasks).Error; err != nil {
+			if err := tx.Model(&model.Task{}).Where("logical_model_id IN ? AND status IN ?", plan.legacyLogicalModelIDs, []model.TaskStatus{model.TaskStatusPreparing, model.TaskStatusQueued, model.TaskStatusRunning}).Count(&activeLogicalTasks).Error; err != nil {
 				return err
 			}
 		}

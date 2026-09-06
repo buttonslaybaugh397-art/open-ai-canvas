@@ -11,6 +11,7 @@ import (
 )
 
 const CurrentSchemaVersion int64 = 6
+const compatibleTeamSchemaVersion int64 = 10
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -18,6 +19,18 @@ const assetTaxonomyCandidateIdentityChecksum = "sha256:asset-taxonomy-candidate-
 const resourceUploadKeyChecksum = "sha256:resource-upload-key-v4-20260901"
 const paymentTopupChecksum = "sha256:payment-topup-v5-20260902"
 const assetLibraryFoldersChecksum = "sha256:asset-library-folders-v6-20260902"
+
+// Some deployed databases were migrated by the team-enabled lineage before
+// this checkout was selected. The feature migrations used by this checkout
+// are present there, but their version numbers were shifted by team tables.
+const teamAssetIsolationChecksum = "sha256:team-asset-isolation-v3-20260901"
+const teamSettingsQuotaChecksum = "sha256:team-settings-quota-v4-20260901"
+const teamAuditEventsChecksum = "sha256:team-audit-events-v5-20260901"
+const teamInvitationsChecksum = "sha256:team-invitations-v6-20260901"
+const teamResourceUploadKeyChecksum = "sha256:resource-upload-key-v7-20260901"
+const teamAssetTaxonomyCandidateIdentityChecksum = "sha256:asset-taxonomy-candidate-identity-v8-20260902-r1"
+const teamPaymentTopupChecksum = "sha256:payment-topup-v9-20260902"
+const teamAssetLibraryFoldersChecksum = "sha256:asset-library-folders-v10-20260902"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -50,6 +63,53 @@ var schemaMigrations = []migration{
 	{version: 4, name: "resource_upload_key", checksum: resourceUploadKeyChecksum, apply: migrateSchemaV4},
 	{version: 5, name: "payment_topup", checksum: paymentTopupChecksum, apply: migrateSchemaV5},
 	{version: 6, name: "asset_library_folders", checksum: assetLibraryFoldersChecksum, apply: migrateSchemaV6},
+}
+
+var compatibleTeamMigrationLineage = []migration{
+	{version: 1, name: "baseline_gorm_schema", checksum: baselineSchemaChecksum},
+	{version: 2, name: "schema_migrations_applied_at_index", checksum: schemaMigrationAppliedAtIndexChecksum},
+	{version: 3, name: "team_asset_isolation", checksum: teamAssetIsolationChecksum},
+	{version: 4, name: "team_settings_quota", checksum: teamSettingsQuotaChecksum},
+	{version: 5, name: "team_audit_events", checksum: teamAuditEventsChecksum},
+	{version: 6, name: "team_invitations", checksum: teamInvitationsChecksum},
+	{version: 7, name: "resource_upload_key", checksum: teamResourceUploadKeyChecksum},
+	{version: 8, name: "asset_taxonomy_candidate_identity", checksum: teamAssetTaxonomyCandidateIdentityChecksum},
+	{version: 9, name: "payment_topup", checksum: teamPaymentTopupChecksum},
+	{version: 10, name: "asset_library_folders", checksum: teamAssetLibraryFoldersChecksum},
+}
+
+func detectCompatibleTeamMigrationLineage(db *gorm.DB) (bool, error) {
+	var marker schemaMigration
+	err := db.First(&marker, "version = ?", 3).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("读取数据库迁移 3：%w", err)
+	}
+	if marker.Name != "team_asset_isolation" {
+		return false, nil
+	}
+	for _, expected := range compatibleTeamMigrationLineage {
+		var applied schemaMigration
+		if err := db.First(&applied, "version = ?", expected.version).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return false, fmt.Errorf("数据库缺少团队迁移记录 %d（%s）", expected.version, expected.name)
+			}
+			return false, fmt.Errorf("读取团队迁移 %d：%w", expected.version, err)
+		}
+		if err := validateMigrationRecord(applied, expected); err != nil {
+			return false, err
+		}
+	}
+	var current int64
+	if err := db.Model(&schemaMigration{}).Select("COALESCE(MAX(version), 0)").Scan(&current).Error; err != nil {
+		return false, fmt.Errorf("读取团队数据库结构版本：%w", err)
+	}
+	if current != compatibleTeamSchemaVersion {
+		return false, fmt.Errorf("已识别团队迁移链，但数据库版本为 %d，程序只支持完整版本 %d", current, compatibleTeamSchemaVersion)
+	}
+	return true, nil
 }
 
 func migrateSchemaV2(tx *gorm.DB) error {
@@ -142,6 +202,13 @@ func MigrateSchema(db *gorm.DB) error {
 		if err := tx.AutoMigrate(&schemaMigration{}); err != nil {
 			return fmt.Errorf("初始化数据库迁移记录：%w", err)
 		}
+		compatible, err := detectCompatibleTeamMigrationLineage(tx)
+		if err != nil {
+			return err
+		}
+		if compatible {
+			return RequireSchemaVersion(tx)
+		}
 		for _, item := range schemaMigrations {
 			var applied schemaMigration
 			err := tx.First(&applied, "version = ?", item.version).Error
@@ -175,6 +242,15 @@ func ReadSchemaStatus(db *gorm.DB) (SchemaStatus, error) {
 		return status, fmt.Errorf("读取数据库结构版本：%w", err)
 	}
 	if status.Current != status.Expected {
+		if status.Current > status.Expected {
+			compatible, err := detectCompatibleTeamMigrationLineage(db)
+			if err != nil {
+				return status, err
+			}
+			if compatible {
+				status.Ready = true
+			}
+		}
 		return status, nil
 	}
 	if err := validateMigrationRecords(db); err != nil {
@@ -214,6 +290,9 @@ func RequireSchemaVersion(db *gorm.DB) error {
 	status, err := ReadSchemaStatus(db)
 	if err != nil {
 		return err
+	}
+	if status.Ready {
+		return nil
 	}
 	if status.Current < status.Expected {
 		return fmt.Errorf("数据库结构版本过旧：当前 %d，程序要求 %d，请先执行 migrate-schema up", status.Current, status.Expected)

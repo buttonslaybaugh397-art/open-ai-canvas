@@ -42,7 +42,7 @@ export function MetricCard({ icon, label, value }: { icon: ReactNode; label: str
 
 export function ArtifactStatus({ artifact, taskStatus, compact = false }: { artifact?: ShotArtifact; taskStatus?: TaskStatus; compact?: boolean }) {
     const className = `artifact-status-tag ${compact ? "!m-0" : ""}`;
-    if (taskStatus === "queued" || taskStatus === "running" || (taskStatus === "succeeded" && !artifact)) {
+	if (taskStatus === "preparing" || taskStatus === "queued" || taskStatus === "running" || (taskStatus === "succeeded" && !artifact)) {
         return <Tag className={`${className} is-running`} color="processing">生成中</Tag>;
     }
     if (taskStatus === "failed") return <Tag className={`${className} is-failed`} color="error">生成失败</Tag>;

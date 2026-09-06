@@ -52,7 +52,7 @@ export default function ProjectDetailPage() {
         queryKey: ["project", projectId, "unit-workspace", activeUnitId],
         queryFn: () => getProjectUnitWorkspace(projectId, activeUnitId),
         enabled: Boolean(projectId && activeUnitId) && (activeView === "chapters" || activeView === "workflow"),
-        refetchInterval: (query) => (query.state.data?.tasks || []).some((task) => task.clientContext?.shotId && (task.status === "queued" || task.status === "running")) ? 2_000 : false,
+		refetchInterval: (query) => (query.state.data?.tasks || []).some((task) => task.clientContext?.shotId && (task.status === "preparing" || task.status === "queued" || task.status === "running")) ? 2_000 : false,
     });
     const project = coreQuery.data?.project;
     const workspace = workspaceQuery.data;

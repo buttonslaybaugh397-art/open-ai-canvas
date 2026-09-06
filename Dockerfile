@@ -10,15 +10,18 @@ RUN CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" 
     && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o /out/OpenAICanvas-ComfyBridge-linux-arm64 .
 
 # 构建 Vite 前端产物。
-FROM oven/bun:1.3.13 AS web-build
+# 使用 pnpm 安装依赖，避免 Bun 在大体积 mermaid tarball 解包时受网络截断影响。
+FROM node:22-alpine AS web-build
 
 WORKDIR /app/web
 ARG VITE_TLDRAW_LICENSE_KEY
 ARG BUILD_VERSION
 ENV VITE_TLDRAW_LICENSE_KEY=${VITE_TLDRAW_LICENSE_KEY}
 ENV CANVAS_BUILD_VERSION=${BUILD_VERSION}
-COPY web/package.json web/bun.lock ./
-RUN --mount=type=cache,target=/root/.bun/install/cache bun install --frozen-lockfile --cache-dir=/root/.bun/install/cache
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN npm install --global pnpm@10.8.1
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile --ignore-scripts --registry=https://registry.npmjs.org --network-concurrency=4
 COPY VERSION /app/VERSION
 COPY CHANGELOG.md /app/CHANGELOG.md
 COPY canvas-agent /app/canvas-agent
@@ -26,10 +29,11 @@ COPY web ./
 COPY --from=comfy-bridge-build /out/OpenAICanvas-ComfyBridge.exe /app/web/public/OpenAICanvas-ComfyBridge.exe
 COPY --from=comfy-bridge-build /out/OpenAICanvas-ComfyBridge-linux-amd64 /app/web/public/OpenAICanvas-ComfyBridge-linux-amd64
 COPY --from=comfy-bridge-build /out/OpenAICanvas-ComfyBridge-linux-arm64 /app/web/public/OpenAICanvas-ComfyBridge-linux-arm64
-# Bun 1.3 与 TypeScript 7 的 tsc shim 在生产容器中解析路径异常；Bridge
-# 已在上一步完成校验，生产镜像直接执行 Vite 打包，类型检查留给开发 CI。
-RUN CANVAS_PREBUILT_BRIDGE=1 bun run build:bridge \
-    && bun --bun ./node_modules/vite/bin/vite.js build
+# Bridge 已在上一步完成校验，生产镜像直接执行 Vite 打包，类型检查留给开发 CI。
+RUN test -s public/OpenAICanvas-ComfyBridge.exe \
+    && test -s public/OpenAICanvas-ComfyBridge-linux-amd64 \
+    && test -s public/OpenAICanvas-ComfyBridge-linux-arm64 \
+    && node ./node_modules/vite/bin/vite.js build
 
 # 运行镜像：nginx 托管静态前端，并在 Compose 中把 /api 转发到后端服务。
 FROM nginx:1.27-alpine

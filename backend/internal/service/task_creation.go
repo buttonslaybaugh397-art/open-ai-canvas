@@ -13,6 +13,16 @@ import (
 // CreateTask 收敛任务进入系统前的 admission 流程：输入标准化、逻辑模型路由、
 // 能力/额度校验和持久化。执行阶段由 worker 与 provider 相关模块负责。
 func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task, error) {
+	return s.createTask(userID, req, model.TaskStatusQueued)
+}
+
+// PrepareTask 先登记一个不会被 worker 领取的任务。前端可以在参考素材上传期间
+// 立即拿到任务 ID，素材准备完成后再通过 FinalizePreparingTask 入队。
+func (s *Service) PrepareTask(userID string, req CreateTaskRequest) (*model.Task, error) {
+	return s.createTask(userID, req, model.TaskStatusPreparing)
+}
+
+func (s *Service) createTask(userID string, req CreateTaskRequest, initialStatus model.TaskStatus) (*model.Task, error) {
 	if s.IsDraining() {
 		return nil, &AppError{Status: 503, Code: 503, Message: "服务正在维护，暂不接受新的生成任务", Retryable: true}
 	}
@@ -61,6 +71,9 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 	}
 	// 前端自管的文本持久化任务：直连模型生成、增量上报 text-deltas，不排入 worker 队列生成。
 	if isTextReplayTaskRequest(normalizedInput) {
+		if initialStatus == model.TaskStatusPreparing {
+			return nil, errors.New("文本持久化任务不支持准备态")
+		}
 		return s.createTextReplayTask(userID, req, normalizedInput)
 	}
 	if err := s.requireCustomChannelsForTaskInput(normalizedInput); err != nil {
@@ -81,9 +94,13 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 		return nil, err
 	}
 	if activeTasks >= int64(policy.Task.ActiveTaskLimit) {
-		return nil, BadAuthRequest(fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))
+		return nil, BadAuthRequest(fmt.Sprintf("同时准备、排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))
 	}
-	task := model.Task{ID: newID(), UserID: userID, TraceID: req.TraceID, RequestID: req.RequestID, SessionID: req.SessionID, ProjectID: req.ProjectID, Type: taskType, Status: model.TaskStatusQueued, Stage: "等待队列调度", Progress: 5, Prompt: prompt, Operation: req.Operation, Provider: req.Provider, Model: req.Model}
+	stage := "等待队列调度"
+	if initialStatus == model.TaskStatusPreparing {
+		stage = "正在准备生成输入"
+	}
+	task := model.Task{ID: newID(), UserID: userID, TraceID: req.TraceID, RequestID: req.RequestID, SessionID: req.SessionID, ProjectID: req.ProjectID, Type: taskType, Status: initialStatus, Stage: stage, Progress: 5, Prompt: prompt, Operation: req.Operation, Provider: req.Provider, Model: req.Model}
 	if routed != nil {
 		task.LogicalModelID = routed.LogicalModel.ID
 		task.LogicalModelRevisionID = routed.Revision.ID
@@ -113,7 +130,7 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 	}
 	err = s.createTaskWithinStorageQuota(&task, billingOrder, policy)
 	if errors.Is(err, repository.ErrActiveTaskLimit) {
-		return nil, BadAuthRequest(fmt.Sprintf("同时排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))
+		return nil, BadAuthRequest(fmt.Sprintf("同时准备、排队或运行的任务最多 %d 个，请等待已有任务完成", policy.Task.ActiveTaskLimit))
 	}
 	if errors.Is(err, repository.ErrInsufficientCredits) {
 		return nil, BadAuthRequest("积分不足，请先使用兑换码充值")
@@ -125,7 +142,11 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 		return nil, err
 	}
 	s.recordActivity(userID, "task", 1)
-	_ = s.log(userID, task.ID, "info", "任务已进入队列", "")
+	if initialStatus == model.TaskStatusPreparing {
+		_ = s.log(userID, task.ID, "info", "任务已登记，等待生成输入准备", "")
+	} else {
+		_ = s.log(userID, task.ID, "info", "任务已进入队列", "")
+	}
 	return taskForOutput(task), nil
 }
 
