@@ -453,8 +453,23 @@ async function createAndWaitGenerationTask(options: BackendGenerationTaskOptions
             task = await dependencies.finalizeTask(task.id, finalInput);
             onTaskUpdate?.(task); // 通知任务已进入队列
         } catch (error) {
-            if (dependencies.cancelTask) await dependencies.cancelTask(task.id).catch(() => undefined);
-            throw error;
+            // finalize 失败可能是网络问题，也可能后端已成功入队；先检查真实状态再决定是否取消。
+            try {
+                const latest = await listGenerationTasks(1, { signal, activeOnly: false }).then((tasks) => tasks.find((t) => t.id === task!.id));
+                if (latest && (latest.status === "queued" || latest.status === "running")) {
+                    // 后端已成功入队，前端网络错误不应取消；直接使用最新状态继续等待。
+                    task = latest;
+                    onTaskUpdate?.(task);
+                } else if (dependencies.cancelTask) {
+                    // 确认仍在 preparing 或其他非活动状态，可以安全取消。
+                    await dependencies.cancelTask(task.id).catch(() => undefined);
+                    throw error;
+                }
+            } catch (checkError) {
+                // 状态检查也失败，保守取消并抛出原错误。
+                if (dependencies.cancelTask) await dependencies.cancelTask(task.id).catch(() => undefined);
+                throw error;
+            }
         }
     } else {
         // 文本任务或旧版依赖：使用原有单阶段流程
@@ -483,7 +498,17 @@ async function createBackendGenerationTaskWithPreparation(options: BackendGenera
         options.onTaskUpdate?.(readyTask);
         return readyTask;
     } catch (error) {
-        if (dependencies.cancelTask) await dependencies.cancelTask(draftTask.id).catch(() => undefined);
+        // finalize 失败后先检查后端真实状态，避免误杀已入队任务。
+        try {
+            const latest = await listGenerationTasks(1, { signal: options.signal, activeOnly: false }).then((tasks) => tasks.find((t) => t.id === draftTask.id));
+            if (latest && (latest.status === "queued" || latest.status === "running")) {
+                options.onTaskUpdate?.(latest);
+                return latest;
+            }
+            if (dependencies.cancelTask) await dependencies.cancelTask(draftTask.id).catch(() => undefined);
+        } catch {
+            if (dependencies.cancelTask) await dependencies.cancelTask(draftTask.id).catch(() => undefined);
+        }
         throw error;
     }
 }
