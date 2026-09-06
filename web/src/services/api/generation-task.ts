@@ -1,7 +1,14 @@
 import { getMediaBlob } from "@/services/file-storage";
 import { getImageBlob } from "@/services/image-storage";
 import { resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
-import { createGenerationTask, waitForGenerationTask, type GenerationTask } from "@/services/api/task-center";
+import {
+    cancelGenerationTask,
+    createGenerationTask,
+    finalizeGenerationTask,
+    prepareGenerationTask,
+    waitForGenerationTask,
+    type GenerationTask,
+} from "@/services/api/task-center";
 import { LOCAL_DREAMINA_WAIT_STOPPED_CODE, LocalDreaminaGenerationClientError, runLocalDreaminaGenerationTask, type LocalDreaminaGenerationInput, type LocalDreaminaGenerationTask } from "@/services/local-dreamina-generation";
 import { isLocalDreaminaBackgroundTask, localDreaminaTaskId, projectLocalDreaminaTask, stripLocalDreaminaTaskPrefix } from "@/services/local-dreamina-task-projection";
 import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
@@ -52,6 +59,9 @@ type BackendGenerationTaskOptions = {
 
 export type GenerationTaskDependencies = {
     createTask: typeof createGenerationTask;
+    prepareTask?: typeof prepareGenerationTask;
+    finalizeTask?: typeof finalizeGenerationTask;
+    cancelTask?: typeof cancelGenerationTask;
     waitTask: typeof waitForGenerationTask;
     runLocal: (input: LocalDreaminaGenerationInput, signal?: AbortSignal, onTaskUpdate?: (task: LocalDreaminaGenerationTask) => void) => ReturnType<typeof runLocalDreaminaGenerationTask>;
     createId: () => string;
@@ -61,6 +71,9 @@ export type GenerationTaskDependencies = {
 
 const defaultDependencies: GenerationTaskDependencies = {
     createTask: createGenerationTask,
+    prepareTask: prepareGenerationTask,
+    finalizeTask: finalizeGenerationTask,
+    cancelTask: cancelGenerationTask,
     waitTask: waitForGenerationTask,
     runLocal: (input, signal, onTaskUpdate) => runLocalDreaminaGenerationTask(input, { onTaskUpdate }, signal),
     createId: () => crypto.randomUUID(),
@@ -74,6 +87,12 @@ type PreparedGenerationReferences = {
     referenceAudios: Awaited<ReturnType<typeof prepareBackendMediaReference>>[];
     mask?: Awaited<ReturnType<typeof prepareBackendImageReference>>;
 };
+
+type UploadedReferenceResource = Awaited<ReturnType<typeof uploadResourceFile>>;
+
+// 一个画布任务可能同时把同一素材作为普通参考图、遮罩或批次参考提交。
+// 上传在浏览器端做去重，避免同一 storageKey 被重复读取和上传。
+const preparedReferenceUploads = new Map<string, Promise<UploadedReferenceResource>>();
 
 // 生成、计费、取消和任务记录必须共用后端任务生命周期，页面层不能再直连供应商。
 export async function runBackendGenerationTask(
@@ -109,9 +128,7 @@ export async function runBackendGenerationTask(
         );
     }
     assertBackendRuntimeConfigured(config, mode);
-    const prepared = await prepareGenerationReferences({ referenceImages, referenceVideos, referenceAudios, mask });
-    throwIfAborted(signal);
-    return createAndWaitGenerationTask({ projectId, mode, prompt, config, referenceImages, referenceVideos, referenceAudios, textHistory, signal, metadata, onTaskUpdate }, prepared, dependencies);
+    return createAndWaitGenerationTask({ projectId, mode, prompt, config, referenceImages, referenceVideos, referenceAudios, textHistory, signal, metadata, onTaskUpdate }, dependencies);
 }
 
 // 分镜等后台生产流程只需要可靠提交任务；任务状态与产物由项目工作区轮询和
@@ -124,9 +141,7 @@ export async function submitBackendGenerationTask(
     assertClientPromptLimit(options.mode, options.prompt, options.config, options.metadata);
     if (usesLocalDreamina(options.config)) throw new Error("本机即梦任务暂不支持后台提交");
     assertBackendRuntimeConfigured(options.config, options.mode);
-    const prepared = await prepareGenerationReferences(options);
-    throwIfAborted(options.signal);
-    return createBackendGenerationTask(options, prepared, dependencies);
+    return createBackendGenerationTaskWithPreparation(options, dependencies);
 }
 
 export async function runBackendToolGenerationTask(options: {
@@ -191,8 +206,6 @@ export async function runBackendGenerationTaskBatch(options: BackendGenerationTa
             }),
         );
     }
-    const prepared = await prepareGenerationReferences(options);
-    throwIfAborted(options.signal);
     return Promise.allSettled(
         Array.from({ length: count }, (_, batchIndex) =>
             createAndWaitGenerationTask(
@@ -200,7 +213,6 @@ export async function runBackendGenerationTaskBatch(options: BackendGenerationTa
                     ...options,
                     metadata: { ...options.metadata, batchIndex, batchCount: count },
                 },
-                prepared,
                 dependencies,
             ),
         ),
@@ -291,13 +303,16 @@ async function runLocalDreaminaGeneration(options: BackendGenerationTaskOptions,
 
 function generationOperation(options: BackendGenerationTaskOptions) {
     if (options.mode !== "video") return options.mode;
-    return resolveVideoOperation({
-        textCount: 0,
-        imageCount: options.referenceImages?.length ?? 0,
-        videoCount: options.referenceVideos?.length ?? 0,
-        audioCount: options.referenceAudios?.length ?? 0,
-        characterCount: 0,
-    }, options.metadata?.videoEditOperation as string | undefined);
+    return resolveVideoOperation(
+        {
+            textCount: 0,
+            imageCount: options.referenceImages?.length ?? 0,
+            videoCount: options.referenceVideos?.length ?? 0,
+            audioCount: options.referenceAudios?.length ?? 0,
+            characterCount: 0,
+        },
+        options.metadata?.videoEditOperation as string | undefined,
+    );
 }
 
 export function isGenerationTaskCancelled(error: unknown, signal?: AbortSignal) {
@@ -405,26 +420,58 @@ async function prepareGenerationReferences({
     referenceAudios = [],
     mask,
 }: Pick<BackendGenerationTaskOptions, "referenceImages" | "referenceVideos" | "referenceAudios" | "mask">): Promise<PreparedGenerationReferences> {
-    const preparedImages = await Promise.all(referenceImages.map(prepareBackendImageReference));
-    const preparedVideos = await Promise.all(referenceVideos.map(prepareBackendMediaReference));
-    const preparedAudios = await Promise.all(referenceAudios.map(prepareBackendMediaReference));
-    const preparedMask = mask ? await prepareBackendImageReference(mask) : undefined;
+    // 不同媒体之间没有依赖关系，必须并行准备；串行等待会把每类上传耗时叠加到任务创建前。
+    const [preparedImages, preparedVideos, preparedAudios, preparedMask] = await Promise.all([
+        Promise.all(referenceImages.map(prepareBackendImageReference)),
+        Promise.all(referenceVideos.map(prepareBackendMediaReference)),
+        Promise.all(referenceAudios.map(prepareBackendMediaReference)),
+        mask ? prepareBackendImageReference(mask) : Promise.resolve(undefined),
+    ]);
     return { referenceImages: preparedImages, referenceVideos: preparedVideos, referenceAudios: preparedAudios, mask: preparedMask };
 }
 
-async function createAndWaitGenerationTask(options: BackendGenerationTaskOptions, prepared: PreparedGenerationReferences, dependencies: GenerationTaskDependencies) {
-    const task = await createBackendGenerationTask(options, prepared, dependencies);
+async function createAndWaitGenerationTask(options: BackendGenerationTaskOptions, dependencies: GenerationTaskDependencies) {
+    const task = await createBackendGenerationTaskWithPreparation(options, dependencies);
     const { signal, onTaskUpdate, onTextDelta } = options;
     const completed = await dependencies.waitTask(task.id, { signal, initialTask: task, onTaskUpdate, onTextDelta });
     return parseBackendGenerationResult(completed);
 }
 
+async function createBackendGenerationTaskWithPreparation(options: BackendGenerationTaskOptions, dependencies: GenerationTaskDependencies) {
+    // Keep injected test/legacy clients working until they opt into the two-phase API.
+    if (!dependencies.prepareTask || !dependencies.finalizeTask) {
+        const prepared = await prepareGenerationReferences(options);
+        throwIfAborted(options.signal);
+        return createBackendGenerationTask(options, prepared, dependencies);
+    }
+
+    throwIfAborted(options.signal);
+    const draftTask = await dependencies.prepareTask(generationTaskRequest(options, draftGenerationReferences(options)));
+    options.onTaskUpdate?.(draftTask);
+    try {
+        const prepared = await prepareGenerationReferences(options);
+        throwIfAborted(options.signal);
+        const readyTask = await dependencies.finalizeTask(draftTask.id, generationTaskInput(options, prepared));
+        options.onTaskUpdate?.(readyTask);
+        return readyTask;
+    } catch (error) {
+        if (dependencies.cancelTask) await dependencies.cancelTask(draftTask.id).catch(() => undefined);
+        throw error;
+    }
+}
+
 async function createBackendGenerationTask(options: BackendGenerationTaskOptions, prepared: PreparedGenerationReferences, dependencies: GenerationTaskDependencies) {
-    const { projectId, mode, prompt, config, metadata, onTaskUpdate } = options;
+    const task = await dependencies.createTask(generationTaskRequest(options, prepared));
+    options.onTaskUpdate?.(task);
+    return task;
+}
+
+function generationTaskRequest(options: BackendGenerationTaskOptions, prepared: PreparedGenerationReferences) {
+    const { projectId, mode, prompt, config, metadata } = options;
     const videoOperation = generationOperation(options);
     const workflow = resolveGenerationWorkflowExecution(config, mode);
     const logicalModelId = workflow ? "" : logicalModelIDForConfig(config);
-    const task = await dependencies.createTask({
+    return {
         ...(projectId ? { projectId } : {}),
         type: `canvas_${mode}`,
         operation: mode === "video" ? videoOperation : mode,
@@ -432,22 +479,50 @@ async function createBackendGenerationTask(options: BackendGenerationTaskOptions
         ...(workflow ? { provider: workflow.provider } : {}),
         model: workflow?.taskModel || config.model,
         ...(logicalModelId ? { logicalModelId } : {}),
-        input: {
-            mode,
-            prompt,
-            ...(workflow ? { execution: workflowPublicExecution(workflow) } : {}),
-            config: backendProviderConfig(config, mode),
-            capabilityOptions: logicalModelId ? logicalCapabilityOptions(config, mode) : undefined,
-            textHistory: options.textHistory,
-            referenceImages: prepared.referenceImages,
-            referenceVideos: prepared.referenceVideos,
-            referenceAudios: prepared.referenceAudios,
-            mask: prepared.mask,
-            metadata: generationMetadata(config, metadata),
-        },
-    });
-    onTaskUpdate?.(task);
-    return task;
+        input: generationTaskInput(options, prepared, workflow, logicalModelId),
+    };
+}
+
+function generationTaskInput(
+    options: BackendGenerationTaskOptions,
+    prepared: PreparedGenerationReferences,
+    workflow = resolveGenerationWorkflowExecution(options.config, options.mode),
+    logicalModelId = workflow ? "" : logicalModelIDForConfig(options.config),
+) {
+    return {
+        mode: options.mode,
+        prompt: options.prompt,
+        ...(workflow ? { execution: workflowPublicExecution(workflow) } : {}),
+        config: backendProviderConfig(options.config, options.mode),
+        capabilityOptions: logicalModelId ? logicalCapabilityOptions(options.config, options.mode) : undefined,
+        textHistory: options.textHistory,
+        referenceImages: prepared.referenceImages,
+        referenceVideos: prepared.referenceVideos,
+        referenceAudios: prepared.referenceAudios,
+        mask: prepared.mask,
+        metadata: generationMetadata(options.config, options.metadata),
+    };
+}
+
+function draftGenerationReferences(options: BackendGenerationTaskOptions): PreparedGenerationReferences {
+    return {
+        referenceImages: (options.referenceImages || []).map((image) => draftImageReference(image)),
+        referenceVideos: (options.referenceVideos || []).map((media) => draftMediaReference(media)),
+        referenceAudios: (options.referenceAudios || []).map((media) => draftMediaReference(media)),
+        mask: options.mask ? draftImageReference(options.mask) : undefined,
+    };
+}
+
+function draftImageReference(image: ReferenceImage) {
+    const storageKey = resourceIdFromStorageKey(image.storageKey) ? image.storageKey : undefined;
+    const url = /^https?:\/\//i.test(image.url || "") ? image.url : undefined;
+    return backendImageReference(image, { storageKey, url });
+}
+
+function draftMediaReference<T extends ReferenceVideo | ReferenceAudio>(media: T) {
+    const storageKey = resourceIdFromStorageKey(media.storageKey) ? media.storageKey : undefined;
+    const url = /^https?:\/\//i.test(media.url || "") ? media.url : undefined;
+    return backendMediaReference(media, { storageKey, url });
 }
 
 function generationMetadata(config: AiConfig, metadata?: Record<string, unknown>) {
@@ -457,12 +532,8 @@ function generationMetadata(config: AiConfig, metadata?: Record<string, unknown>
     const protocol = modelCost?.protocol || channel.interfaceType;
     const defaults = modelCost?.defaultOptions;
     if (!protocol || !defaults || !Object.keys(defaults).length) return metadata;
-    const existing = metadata?.providerOptions && typeof metadata.providerOptions === "object" && !Array.isArray(metadata.providerOptions)
-        ? metadata.providerOptions as Record<string, unknown>
-        : {};
-    const namespace = existing[protocol] && typeof existing[protocol] === "object" && !Array.isArray(existing[protocol])
-        ? existing[protocol] as Record<string, unknown>
-        : {};
+    const existing = metadata?.providerOptions && typeof metadata.providerOptions === "object" && !Array.isArray(metadata.providerOptions) ? (metadata.providerOptions as Record<string, unknown>) : {};
+    const namespace = existing[protocol] && typeof existing[protocol] === "object" && !Array.isArray(existing[protocol]) ? (existing[protocol] as Record<string, unknown>) : {};
     return { ...metadata, providerOptions: { ...existing, [protocol]: { ...defaults, ...namespace } } };
 }
 
@@ -476,7 +547,15 @@ async function prepareBackendMediaReference(media: ReferenceVideo | ReferenceAud
     if (!blob) throw new Error("参考媒体尚未保存，请重新上传后再生成");
     try {
         const kind: "video" | "audio" | "file" = blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : "file";
-        const resource = await uploadResourceFile(blob, kind, { fileName: media.name, width: "width" in media ? media.width : undefined, height: "height" in media ? media.height : undefined, durationMs: media.durationMs });
+        const resource = await uploadPreparedReference(media.storageKey ? `media:${kind}:${media.storageKey}` : "", () =>
+            uploadResourceFile(blob, kind, {
+                fileName: media.name,
+                width: "width" in media ? media.width : undefined,
+                height: "height" in media ? media.height : undefined,
+                durationMs: media.durationMs,
+                idempotencyKey: media.storageKey,
+            }),
+        );
         return backendMediaReference(media, { storageKey: resourceStorageKey(resource.id), type: resource.mimeType || media.type || blob.type });
     } catch (error) {
         throw new Error(error instanceof Error ? `参考媒体上传失败：${error.message}` : "参考媒体上传失败");
@@ -490,10 +569,24 @@ async function prepareBackendImageReference(image: ReferenceImage) {
     const blob = image.storageKey ? await getImageBlob(image.storageKey) : sourceUrl ? await (await fetch(sourceUrl)).blob() : null;
     if (!blob) throw new Error("参考图片尚未保存，请重新上传后再生成");
     try {
-        const resource = await uploadResourceFile(blob, "image", { fileName: image.name });
+        const resource = await uploadPreparedReference(image.storageKey ? `image:${image.storageKey}` : "", () => uploadResourceFile(blob, "image", { fileName: image.name, idempotencyKey: image.storageKey }));
         return backendImageReference(image, { storageKey: resourceStorageKey(resource.id), type: resource.mimeType || image.type || blob.type });
     } catch (error) {
         throw new Error(error instanceof Error ? `参考图片上传失败：${error.message}` : "参考图片上传失败");
+    }
+}
+
+async function uploadPreparedReference(cacheKey: string, upload: () => Promise<UploadedReferenceResource>) {
+    if (!cacheKey) return upload();
+    const existing = preparedReferenceUploads.get(cacheKey);
+    if (existing) return existing;
+    const pending = upload();
+    preparedReferenceUploads.set(cacheKey, pending);
+    try {
+        return await pending;
+    } catch (error) {
+        preparedReferenceUploads.delete(cacheKey);
+        throw error;
     }
 }
 
@@ -616,11 +709,12 @@ function workflowPublicExecution(workflow: GenerationWorkflowExecution) {
 function logicalCapabilityOptions(config: AiConfig, mode: BackendGenerationMode) {
     const channel = resolveModelChannel(config, config.model);
     const spec = channel.modelCosts?.find((item) => item.model === modelOptionName(config.model))?.logicalCapabilitySpec;
-    const candidates: Record<string, unknown> = mode === "image"
-        ? { size: config.size, quality: config.quality, transparentBackground: config.transparentBackground === "true", count: Number(config.count) }
-        : mode === "video"
-            ? { size: config.size, videoSeconds: Number(config.videoSeconds), vquality: config.vquality, videoGenerateAudio: config.videoGenerateAudio === "true", videoWatermark: config.videoWatermark === "true" }
-            : mode === "audio"
+    const candidates: Record<string, unknown> =
+        mode === "image"
+            ? { size: config.size, quality: config.quality, transparentBackground: config.transparentBackground === "true", count: Number(config.count) }
+            : mode === "video"
+              ? { size: config.size, videoSeconds: Number(config.videoSeconds), vquality: config.vquality, videoGenerateAudio: config.videoGenerateAudio === "true", videoWatermark: config.videoWatermark === "true" }
+              : mode === "audio"
                 ? { audioVoice: config.audioVoice, audioFormat: config.audioFormat, audioSpeed: Number(config.audioSpeed) }
                 : {};
     return Object.fromEntries(Object.entries(candidates).filter(([key]) => Boolean(spec?.options?.[key])));

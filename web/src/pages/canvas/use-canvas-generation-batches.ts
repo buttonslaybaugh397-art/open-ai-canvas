@@ -5,7 +5,6 @@ import { nanoid } from "nanoid";
 import { generationBatchStatus, isGenerationCostUncertainError } from "@/lib/canvas/canvas-generation-batch";
 import { buildGenerationConfig, createGenerationRetryContext, generationTaskMetadata, resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
 import { unchangedModeratedPrompt } from "@/lib/generation-error";
-import { listGenerationTasks } from "@/services/api/task-center";
 import { useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 import type { CanvasGenerationBatch, CanvasGenerationBatchItem, CanvasGenerationBatchMode, CanvasNodeData } from "@/types/canvas";
@@ -162,10 +161,11 @@ export function useCanvasGenerationBatches({ projectId, projectLoaded, nodes, no
             );
             if (!hasWaitingItems) return;
 
-            const tasks = await listGenerationTasks(100, { projectId, activeOnly: true }).catch(() => null);
-            if (!tasks) return;
-            const activeTaskCount = tasks.filter((task) => task.status === "queued" || task.status === "running").length;
             const nodeById = new Map(currentNodes.map((node) => [node.id, node]));
+            // 不再把任务列表查询放在提交路径上。任务创建接口本身会以数据库条件
+            // 更新原子校验 active limit；前端只用当前画布已知状态做乐观并发控制，
+            // 这样批次入队后可以立即发送 POST /tasks。
+            const activeTaskCount = currentNodes.filter((node) => node.metadata?.taskStatus === "queued" || node.metadata?.taskStatus === "running").length;
             const pendingReservations = [...controllersRef.current.keys()].filter((key) => {
                 const [, itemId] = key.split(":");
                 const item = currentNodes
