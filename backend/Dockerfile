@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS payment-package-build
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS payment-package-build
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -32,7 +32,7 @@ COPY --from=payment-package-build /src/plugin-packages /app/plugin-packages
 RUN PAYMENT_PLUGIN_SMOKE_TEST=1 \
     sh /app/plugin-packages/verify-payment-packages.sh "$TARGETOS" "$TARGETARCH"
 
-FROM golang:1.25-alpine AS backend-build
+FROM golang:1.23-alpine AS backend-build
 
 ARG GOPROXY=https://proxy.golang.org,direct
 ARG BUILD_VERSION
