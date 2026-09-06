@@ -38,7 +38,7 @@ description: Host Updater、Release 检查、数据库备份迁移、健康验�
 
 ## 安装与升级约束
 
-仅支持 Linux/systemd、Docker Compose 和 PostgreSQL 部署。更新器是宿主机服务，不是业务容器内的进程；无需手工挂载 `open-ai-canvas-host-updater-linux-amd64`，也不要向 backend 挂载 Docker Socket。
+支持两种运行方式：Linux/systemd 宿主机服务，或 Release 附带的独立 Compose `host-updater` 容器。两种方式都要求 Docker Compose 和 PostgreSQL；systemd 模式无需手工挂载 `open-ai-canvas-host-updater-linux-amd64`，Compose 模式无需下载二进制。无论哪种方式，backend 都不应挂载 Docker Socket。
 
 自动配置会拒绝外部数据库、不持久化的数据目录和不匹配的数据库连接；backend 数据目录须为 `/data`，PostgreSQL/Redis 也须使用对应持久挂载，防止备份指向另一套空数据。
 
@@ -56,6 +56,22 @@ curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canv
 无需预先创建 `.env`：运行设置直接填写在编排的 `environment`、`ports`、`image` 中。自动配置生成的 `.env` 保存版本、项目名、端口、数据库名称和更新器设置等恢复元数据；后续检查/更新会重新读取 Compose，不能把生成的元数据当作另一份需要手工维护的配置。
 
 自动配置使用 Docker Compose 规范化 YAML，**会展开变量、YAML 锚点与 `env_file`，不保留原注释和排版**，解析后的环境值保存在原 Compose 中。原文先备份到 `backups/compose-before-configure-*.yml`，新 Compose 限制为 `0600`。这些文件可能包含密钥，都应按敏感配置管理。存在多个候选编排时安装会拒绝猜测，请明确指定原文件；1Panel 若保留编辑器草稿，后续操作前应重新打开服务器上的当前编排，避免旧草稿覆盖自动挂载。
+
+## Compose 容器模式
+
+不使用 systemd 的服务器可直接部署 Release 中的 `docker-compose.container.yml`。编排会自动启动 `host-updater`，在 named volume `updater-runtime` 中生成并持久化 Token 与 Unix Socket，在 `updater-state` 中保存更新状态和恢复信息；backend 通过只读挂载访问运行时目录，并等待更新器健康后再启动。Docker Socket 只挂载到 `host-updater`，这是该模式唯一的高权限边界。
+
+```bash
+cd /opt/open-ai-canvas
+sudo docker compose -f docker-compose.container.yml config --quiet
+sudo docker compose -f docker-compose.container.yml up -d --wait --wait-timeout 600
+```
+
+默认宿主机项目目录必须是 `/opt/open-ai-canvas`。更新器容器会在容器内以同一绝对路径作为 Compose 项目目录，Docker 守护进程随后也会按这个路径解析 bind mount；如果 1Panel 的实际目录不同，只需修改编排顶部 `x-canvas-project-dir` 的值为宿主机真实绝对路径，并把 `CANVAS_UPDATER_COMPOSE_FILE` 填为 1Panel 实际保存的文件名（通常是 `docker-compose.yml`）。不要把宿主机路径写成容器内路径，也不要用相对路径。
+
+该文件中的应用镜像固定到发布版本，`host-updater` 默认关闭自更新，避免更新过程中替换正在执行的高权限容器；应用更新完成后如需升级更新器，重新拉取对应版本的 `docker-compose.container.yml` 并单独重建 `host-updater`。每次应用更新仍会在停写后生成完整恢复包，迁移、启动或健康检查失败会自动回滚；不要执行 `docker compose down -v`，否则会删除恢复所依赖的数据卷。
+
+如果从已有 1Panel 编排切换到容器模式，必须保持 Compose 项目名和 PostgreSQL、Redis、backend-data、deployment-secrets 等卷的实际名称一致。自定义过 volume 名称时，先按服务器现有名称调整编排；名称不一致会让 Compose 创建新空卷，不能把“容器启动成功”当成“数据已接上”。
 
 安装脚本会拉取镜像并重建 backend/web，并非只读诊断命令。若应用标签为 `latest`，会固定到仓库最新正式 Release；生产部署应事先固定版本。已有更新/迁移正在执行或处于待人工恢复状态时，安装拒绝继续，不重写恢复状态。配置落盘失败会尝试恢复原 Compose 与 `.env`；整个首次安装流程不是完整数据备份/自动回滚事务，必须先保留业务恢复点。
 

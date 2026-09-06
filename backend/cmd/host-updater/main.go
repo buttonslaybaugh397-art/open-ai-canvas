@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -34,19 +36,38 @@ func run(ctx context.Context) error {
 	configure := len(os.Args) == 2 && os.Args[1] == "configure"
 	checkInstall := len(os.Args) == 2 && os.Args[1] == "check-install"
 	if len(os.Args) > 1 && !configure && !checkInstall {
-		return errors.New("用法：open-ai-canvas-host-updater [configure]")
+		return errors.New("用法：open-ai-canvas-host-updater [capabilities|configure|check-install]")
 	}
+	containerMode := strings.EqualFold(strings.TrimSpace(os.Getenv("CANVAS_UPDATER_RUNTIME")), "compose")
 	socketPath := env("CANVAS_UPDATER_SOCKET", "/run/open-ai-canvas-updater/updater.sock")
 	installDir := env("CANVAS_UPDATER_INSTALL_DIR", "/opt/open-ai-canvas")
-	token := strings.TrimSpace(os.Getenv("CANVAS_UPDATER_TOKEN"))
+	tokenFile := env("CANVAS_UPDATER_TOKEN_FILE", filepath.Join(filepath.Dir(socketPath), "token"))
+	token, err := resolveToken(os.Getenv("CANVAS_UPDATER_TOKEN"), tokenFile, containerMode, configure || checkInstall)
+	if err != nil {
+		return err
+	}
+	composeFile := strings.TrimSpace(os.Getenv("CANVAS_UPDATER_COMPOSE_FILE"))
+	if containerMode && composeFile == "" {
+		composeFile, err = detectComposeFile(installDir)
+		if err != nil {
+			return err
+		}
+	}
+	if composeFile == "" {
+		composeFile = "docker-compose.deploy.yml"
+	}
 	constructor := hostupdate.NewManager
 	if configure || checkInstall {
 		constructor = hostupdate.NewConfigurator
 	}
+	serviceName := env("CANVAS_UPDATER_SERVICE_NAME", "open-ai-canvas-updater.service")
+	if containerMode {
+		serviceName = strings.TrimSpace(os.Getenv("CANVAS_UPDATER_SERVICE_NAME"))
+	}
 	manager, err := constructor(hostupdate.Config{
 		Repository:         env("CANVAS_UPDATER_REPOSITORY", "buttonslaybaugh397-art/open-ai-canvas"),
 		InstallDir:         installDir,
-		ComposeFile:        env("CANVAS_UPDATER_COMPOSE_FILE", "docker-compose.deploy.yml"),
+		ComposeFile:        composeFile,
 		ReleaseComposeFile: strings.TrimSpace(os.Getenv("CANVAS_UPDATER_RELEASE_COMPOSE_FILE")),
 		EnvFile:            env("CANVAS_UPDATER_ENV_FILE", ".env"),
 		StateDir:           env("CANVAS_UPDATER_STATE_DIR", "/var/lib/open-ai-canvas-updater"),
@@ -56,10 +77,11 @@ func run(ctx context.Context) error {
 		StableWindow:       envDuration("CANVAS_UPDATER_STABLE_WINDOW", 30*time.Second),
 		StepTimeout:        envDuration("CANVAS_UPDATER_STEP_TIMEOUT", 20*time.Minute),
 		BinaryPath:         env("CANVAS_UPDATER_BINARY_PATH", "/usr/local/bin/open-ai-canvas-host-updater"),
-		ServiceName:        env("CANVAS_UPDATER_SERVICE_NAME", "open-ai-canvas-updater.service"),
-		SelfUpdate:         envBool("CANVAS_UPDATER_SELF_UPDATE", true),
+		ServiceName:        serviceName,
+		SelfUpdate:         envBool("CANVAS_UPDATER_SELF_UPDATE", !containerMode),
 		MigrationMaxBytes:  envBytes("CANVAS_UPDATER_MIGRATION_MAX_BYTES", 20<<30),
-		ManagedCompose:     !configure && os.Getenv("CANVAS_UPDATER_CONFIG_SOURCE") == "compose",
+		ManagedCompose:     !configure && (containerMode || os.Getenv("CANVAS_UPDATER_CONFIG_SOURCE") == "compose"),
+		ContainerMode:      containerMode,
 	})
 	if err != nil {
 		return err
@@ -79,7 +101,6 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	tokenFile := env("CANVAS_UPDATER_TOKEN_FILE", filepath.Join(filepath.Dir(socketPath), "token"))
 	if err := persistTokenFile(tokenFile, token); err != nil {
 		return err
 	}
@@ -113,6 +134,58 @@ func run(ctx context.Context) error {
 		}
 		return err
 	}
+}
+
+func generateToken() (string, error) {
+	data := make([]byte, 32)
+	if _, err := rand.Read(data); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(data), nil
+}
+
+func detectComposeFile(installDir string) (string, error) {
+	var found string
+	for _, name := range []string{"compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml", "docker-compose.container.yml", "docker-compose.1panel.yml", "docker-compose.deploy.yml"} {
+		info, err := os.Stat(filepath.Join(installDir, name))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("读取部署编排：%w", err)
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		if found != "" {
+			return "", errors.New("项目目录有多个编排，请在 host-updater.environment 中填写 CANVAS_UPDATER_COMPOSE_FILE")
+		}
+		found = name
+	}
+	if found == "" {
+		return "", errors.New("未找到部署编排，请检查项目目录挂载或填写 CANVAS_UPDATER_COMPOSE_FILE")
+	}
+	return found, nil
+}
+
+func resolveToken(explicit, tokenFile string, containerMode, skipGeneration bool) (string, error) {
+	token := strings.TrimSpace(explicit)
+	if token == "" {
+		data, err := os.ReadFile(tokenFile)
+		if err == nil {
+			token = strings.TrimSpace(string(data))
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("读取 Host Updater Token：%w", err)
+		}
+	}
+	if token == "" && containerMode && !skipGeneration {
+		generated, err := generateToken()
+		if err != nil {
+			return "", fmt.Errorf("生成 Compose Host Updater Token：%w", err)
+		}
+		token = generated
+	}
+	return token, nil
 }
 
 func removeStaleSocket(path string) error {

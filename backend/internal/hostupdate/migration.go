@@ -532,7 +532,7 @@ func (m *Manager) stopMigrationCache() error {
 }
 
 func (m *Manager) startMigrationServices(version string) error {
-	return m.compose(m.composePath(), version, m.config.StepTimeout, nil, "up", "-d", "--remove-orphans", "--wait", "--wait-timeout", "600")
+	return m.startApplicationServices(version)
 }
 
 func (m *Manager) migrationServicesRunning(version string) (bool, error) {

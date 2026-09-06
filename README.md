@@ -230,6 +230,22 @@ curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canv
 
 更新流程、数据库迁移、健康验证和异常回退说明见 [`docs/content/docs/backend/system-update.mdx`](docs/content/docs/backend/system-update.mdx)。
 
+### 直接使用 Compose 容器更新器
+
+如果服务器或 1Panel 不便运行 systemd，可直接使用 Release 附带的 `docker-compose.container.yml`。它会自动拉起 `host-updater` 容器，Token 和 Unix Socket 保存于 named volume；只有该容器挂载 Docker Socket，backend 仅以只读方式共享运行时目录：
+
+```bash
+mkdir -p /opt/open-ai-canvas
+cd /opt/open-ai-canvas
+# 将 Release 中的 docker-compose.container.yml 放到此目录
+sudo docker compose -f docker-compose.container.yml config --quiet
+sudo docker compose -f docker-compose.container.yml up -d --wait --wait-timeout 600
+```
+
+该编排默认要求宿主机项目目录为 `/opt/open-ai-canvas`，因为更新器容器内执行 Docker Compose 时，宿主机和容器内的项目路径必须一致。1Panel 如果使用其他目录，修改编排顶部 `x-canvas-project-dir` 的值，并在 `host-updater.environment` 中把 `CANVAS_UPDATER_COMPOSE_FILE` 填为 1Panel 实际保存的文件名（通常是 `docker-compose.yml`）；不要把它填成容器内路径。首次启动会使用固定的 Release 镜像标签，后续从后台更新时会自动备份、迁移、健康检查并在失败时恢复旧版本和更新前数据。
+
+若从已有 1Panel 部署切换，必须保持原 Compose 项目名和数据卷名称一致，且不得执行 `docker compose down -v`。自定义 volume 名称的部署应先把 `docker-compose.container.yml` 中对应卷名改为当前实际名称，否则 Compose 可能创建空卷。
+
 ### 公网必做事项
 
 - 先在受控网络注册首个管理员，再开放公网入口；保持 `CANVAS_REGISTRATION_ENABLED=false`。

@@ -198,8 +198,11 @@ func describeDeployment(document composeDocument, repository string) (Deployment
 		if text(mount["target"]) != "/run/open-ai-canvas-updater" {
 			continue
 		}
-		if text(mount["type"]) != "bind" || info.SocketDir != "" {
-			return DeploymentInfo{}, errors.New("更新器 Socket 目录必须是唯一的宿主机 bind 挂载")
+		if info.SocketDir != "" {
+			return DeploymentInfo{}, errors.New("更新器 Socket 必须只有一个 bind 或 named volume 挂载")
+		}
+		if text(mount["type"]) != "bind" && text(mount["type"]) != "volume" {
+			return DeploymentInfo{}, errors.New("更新器 Socket 必须使用 bind 或 named volume 挂载")
 		}
 		info.SocketDir = text(mount["source"])
 	}

@@ -170,7 +170,7 @@ func disconnectedUpdateStatus(detail string) hostupdate.Status {
 }
 
 func updaterConnectionDetail(err error) string {
-	const hint = "请检查 systemd 服务、Unix Socket 挂载和 Token 配置"
+	const hint = "请检查 systemd 服务、host-updater 容器、Unix Socket 挂载和 Token 配置"
 	if err == nil {
 		return "Host Updater 当前不可连接；" + hint
 	}

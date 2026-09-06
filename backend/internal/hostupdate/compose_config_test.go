@@ -86,6 +86,28 @@ func TestDescribeInlineCompose(t *testing.T) {
 	}
 }
 
+func TestDescribeComposeAcceptsNamedSocketVolume(t *testing.T) {
+	document := composeFixtureDocument(t)
+	backend := object(object(document["services"])["backend"])
+	backend["volumes"] = append(backend["volumes"].([]any), map[string]any{
+		"type": "volume", "source": "updater-runtime", "target": "/run/open-ai-canvas-updater",
+	})
+	info, err := describeDeployment(document, "test-owner/open-ai-canvas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.SocketDir != "updater-runtime" {
+		t.Fatalf("named Socket volume source = %q", info.SocketDir)
+	}
+
+	backend["volumes"] = append(backend["volumes"].([]any), map[string]any{
+		"type": "volume", "source": "second-updater-runtime", "target": "/run/open-ai-canvas-updater",
+	})
+	if _, err := describeDeployment(document, "test-owner/open-ai-canvas"); err == nil {
+		t.Fatal("duplicate Socket volumes were accepted")
+	}
+}
+
 func TestDescribeInlineComposeRejectsAmbiguity(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -274,6 +296,54 @@ func TestConfigureOnePanelComposeCLI(t *testing.T) {
 	}
 	if !reflect.DeepEqual(before["volumes"], after["volumes"]) || !reflect.DeepEqual(object(before["services"])["postgres"], object(after["services"])["postgres"]) {
 		t.Fatal("1Panel automatic configuration changed secret/database volumes or initialization")
+	}
+}
+
+func TestContainerComposeCLI(t *testing.T) {
+	if os.Getenv("CANVAS_COMPOSE_CLI_TEST") != "1" {
+		t.Skip("set CANVAS_COMPOSE_CLI_TEST=1 for real Compose parser verification")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join("..", "..", "..")
+	path := filepath.Join(root, "docker-compose.container.yml")
+	command := exec.Command("docker", "compose", "-f", path, "config", "--format", "json")
+	output, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document composeDocument
+	if err := json.Unmarshal(output, &document); err != nil {
+		t.Fatal(err)
+	}
+	services := object(document["services"])
+	updater := object(services["host-updater"])
+	backend := object(services["backend"])
+	if updater == nil || backend == nil {
+		t.Fatal("container Compose must include host-updater and backend")
+	}
+	hasMount := func(service map[string]any, source string) bool {
+		mounts, _ := service["volumes"].([]any)
+		for _, item := range mounts {
+			if text(object(item)["source"]) == source {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasMount(updater, "/var/run/docker.sock") {
+		t.Fatal("host-updater must receive the Docker Socket")
+	}
+	if hasMount(backend, "/var/run/docker.sock") {
+		t.Fatal("backend must not receive the Docker Socket")
+	}
+	dependsOn := object(backend["depends_on"])
+	if text(object(dependsOn["host-updater"])["condition"]) != "service_healthy" {
+		t.Fatal("backend must wait for a healthy host-updater")
+	}
+	if backend["healthcheck"] == nil || updater["healthcheck"] == nil {
+		t.Fatal("backend and host-updater healthchecks are required")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -123,6 +124,69 @@ func TestCurrentVersionRejectsLatest(t *testing.T) {
 	if _, err := manager.currentVersion(); err == nil {
 		t.Fatal("latest tag was accepted")
 	}
+}
+
+func TestContainerHealthURLUsesComposeNetwork(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("CANVAS_UPDATER_HEALTH_URL=http://127.0.0.1:6868/api/health/ready\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{config: Config{InstallDir: dir, EnvFile: ".env", ManagedCompose: true, ContainerMode: true}}
+	if got := m.healthURL(); got != "http://web:3000/api/health/ready" {
+		t.Fatalf("container health URL = %s", got)
+	}
+}
+
+func TestContainerStartDoesNotRecreateUpdater(t *testing.T) {
+	runner := &recordingRunner{}
+	m := &Manager{config: Config{InstallDir: t.TempDir(), EnvFile: ".env", ContainerMode: true}, runner: runner}
+	if err := m.startApplicationServices("v1.2.10"); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 3 {
+		t.Fatalf("startup stages = %d", len(runner.calls))
+	}
+	for _, call := range runner.calls {
+		joined := strings.Join(call, " ")
+		if !strings.Contains(joined, "--no-deps") || strings.Contains(joined, "host-updater") || strings.Contains(joined, "--remove-orphans") {
+			t.Fatalf("startup may replace the updater: %s", joined)
+		}
+	}
+}
+
+func TestCurrentVersionFallsBackToManagedCompose(t *testing.T) {
+	installDir := t.TempDir()
+	composePath := filepath.Join(installDir, "docker-compose.yml")
+	if err := os.WriteFile(composePath, []byte(inlineComposeFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{
+		config: Config{
+			Repository: "test-owner/open-ai-canvas", InstallDir: installDir,
+			ComposeFile: "docker-compose.yml", EnvFile: ".env", ManagedCompose: true,
+		},
+		runner: composeFixtureRunner{document: composeFixtureDocument(t)},
+	}
+	version, err := manager.currentVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != "v1.2.8" {
+		t.Fatalf("compose fallback version = %q", version)
+	}
+}
+
+type composeFixtureRunner struct {
+	document composeDocument
+}
+
+func (r composeFixtureRunner) Run(_ context.Context, _ string, _ []string, _ []string, stdout io.Writer, _ io.Writer) error {
+	data, err := json.Marshal(r.document)
+	if err != nil {
+		return err
+	}
+	_, err = stdout.Write(data)
+	return err
 }
 
 func TestCreateBackupReadsBackendDataAsRoot(t *testing.T) {

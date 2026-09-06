@@ -72,17 +72,37 @@ func (m *Manager) latestRelease(ctx context.Context) (*Release, error) {
 
 func (m *Manager) currentVersion() (string, error) {
 	values, err := readEnvFile(m.envPath())
-	if err != nil {
+	if err == nil {
+		version := strings.TrimSpace(values["CANVAS_IMAGE_TAG"])
+		if version != "" && version != "latest" {
+			if !strings.HasPrefix(version, "v") {
+				version = "v" + version
+			}
+			return version, nil
+		}
+		if !m.config.ManagedCompose {
+			return "", errors.New("CANVAS_IMAGE_TAG 必须固定为发布版本，不能使用 latest")
+		}
+	} else if !m.config.ManagedCompose {
 		return "", err
 	}
-	version := strings.TrimSpace(values["CANVAS_IMAGE_TAG"])
-	if version == "" || version == "latest" {
-		return "", errors.New("CANVAS_IMAGE_TAG 必须固定为发布版本，不能使用 latest")
+	if m.config.ManagedCompose {
+		document, composeErr := m.readCompose(context.Background(), m.composePath(), "")
+		if composeErr == nil {
+			info, describeErr := describeDeployment(document, m.config.Repository)
+			if describeErr == nil && deploymentVersion.MatchString(info.Version) {
+				return "v" + strings.TrimPrefix(info.Version, "v"), nil
+			}
+			if describeErr != nil {
+				return "", describeErr
+			}
+		}
+		if err != nil {
+			return "", errors.Join(err, composeErr)
+		}
+		return "", composeErr
 	}
-	if !strings.HasPrefix(version, "v") {
-		version = "v" + version
-	}
-	return version, nil
+	return "", errors.New("无法识别当前应用版本")
 }
 
 func (m *Manager) prepareTargetCompose(targetVersion string) (string, error) {
@@ -709,7 +729,7 @@ func (c execCommandWithInput) Run(ctx context.Context, name string, args, enviro
 
 func (m *Manager) verifyHealthy(targetVersion string) error {
 	healthURL := m.healthURL()
-	if m.config.ManagedCompose {
+	if m.config.ManagedCompose && !m.config.ContainerMode {
 		document, err := m.readCompose(context.Background(), m.composePath(), "")
 		if err != nil {
 			return err
@@ -736,6 +756,9 @@ func (m *Manager) verifyHealthy(targetVersion string) error {
 }
 
 func (m *Manager) healthURL() string {
+	if m.config.ContainerMode {
+		return firstNonEmpty(m.config.HealthURL, "http://web:3000/api/health/ready")
+	}
 	if m.config.ManagedCompose {
 		values, err := readEnvFile(m.envPath())
 		if err == nil && values["CANVAS_UPDATER_HEALTH_URL"] != "" {

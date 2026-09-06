@@ -660,6 +660,9 @@ description: 影策已实现功能的手工验证清单与未确认边界
 - [x] 后端 Host Updater、Unix Socket 客户端、管理员 API、版本比较和状态持久化相关测试通过。
 - [x] 前端 TypeScript 检查、生产构建、侧栏入口、更新器未安装空态、更新器连接态、GitHub Release 日志、浅色/深色主题浏览器验收通过。
 - [x] Compose 配置校验、systemd 安装脚本语法和 Release 二进制构建命令通过。
+- [x] 独立 Compose Host Updater 支持 named volume Token/Socket、自动生成 Token、backend 健康依赖和无 `.env` 时从实际编排识别版本；CLI Compose 解析回归通过。
+- [ ] 在真实 Linux/1Panel 以 `docker-compose.container.yml` 首次启动，确认 host-updater 自动拉起、backend 只读共享 Socket、重启后 Token/状态保留且既有 PostgreSQL/Redis/backend 数据卷未切换。
+- [ ] 在真实 Linux/1Panel 容器模式执行一次在线更新，确认更新器不会被自身更新流程提前终止，完整恢复包、失败回滚和手工升级 updater 镜像流程可用。
 - [ ] 在生产更新前生成 PostgreSQL + 数据目录 ZIP，确认 `.partial` 不会被当作有效备份，最终 ZIP 可打开且 SHA-256、元数据、`database.dump`、`backend-data.tar` 均有效。
 - [ ] 从首个在线更新版本升级到包含 schema v2 的测试版本，确认旧服务先 drain，迁移服务独占执行，目标 build version 和 schema version 在稳定窗口内一致。
 - [ ] 人为让目标版本健康检查失败，确认自动恢复旧 Compose、旧镜像和数据库备份；旧版本因 schema 过高拒绝启动时，必须在数据库恢复完成后才能重新健康。

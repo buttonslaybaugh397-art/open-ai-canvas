@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1.7
+
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS host-updater-build
+
+ARG TARGETOS
+ARG TARGETARCH
+ARG GOPROXY=https://proxy.golang.org,direct
+ARG BUILD_VERSION
+ARG BUILD_COMMIT=unknown
+ARG BUILD_TIME=unknown
+ENV GOPROXY=$GOPROXY
+
+RUN sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.aliyun.com#' /etc/apk/repositories
+
+WORKDIR /src
+COPY VERSION ./VERSION
+COPY backend/go.mod backend/go.sum ./backend/
+RUN --mount=type=cache,target=/go/pkg/mod cd backend && go mod download
+COPY backend ./backend
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build set -eu; \
+    version="${BUILD_VERSION:-$(tr -d '\r\n' < /src/VERSION)}"; \
+    ldflags="-s -w -X infinite-canvas/backend/internal/buildinfo.Version=${version} -X infinite-canvas/backend/internal/buildinfo.Commit=${BUILD_COMMIT} -X infinite-canvas/backend/internal/buildinfo.BuildTime=${BUILD_TIME}"; \
+    test -n "$TARGETOS"; test -n "$TARGETARCH"; \
+    cd backend; \
+    CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
+      go build -trimpath -ldflags="$ldflags" -o /out/open-ai-canvas-host-updater ./cmd/host-updater
+
+FROM docker:cli AS host-updater
+
+RUN apk add --no-cache ca-certificates curl tzdata
+COPY --from=host-updater-build /out/open-ai-canvas-host-updater /usr/local/bin/open-ai-canvas-host-updater
+
+WORKDIR /opt/open-ai-canvas
+ENTRYPOINT ["/usr/local/bin/open-ai-canvas-host-updater"]

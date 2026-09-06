@@ -41,6 +41,7 @@ type Config struct {
 	SelfUpdate         bool
 	MigrationMaxBytes  int64
 	ManagedCompose     bool
+	ContainerMode      bool
 }
 
 type commandRunner interface {
@@ -376,7 +377,7 @@ func (m *Manager) runUpdate(fromVersion, targetVersion string) {
 		m.failWithRollback(err, fromVersion, backup)
 		return
 	}
-	if err := m.compose(m.composePath(), targetVersion, m.config.StepTimeout, nil, "up", "-d", "--remove-orphans", "--wait", "--wait-timeout", "600"); err != nil {
+	if err := m.startApplicationServices(targetVersion); err != nil {
 		m.failWithRollback(err, fromVersion, backup)
 		return
 	}
@@ -549,7 +550,7 @@ func (m *Manager) runRollback(targetVersion string, backup Backup, automatic boo
 }
 
 func (m *Manager) startRollbackServices(version string) error {
-	primaryErr := m.compose(m.composePath(), version, m.config.StepTimeout, nil, "up", "-d", "--remove-orphans", "--wait", "--wait-timeout", "600")
+	primaryErr := m.startApplicationServices(version)
 	if primaryErr == nil {
 		return nil
 	}
@@ -562,6 +563,21 @@ func (m *Manager) startRollbackServices(version string) error {
 	}
 	if err := m.compose(m.composePath(), version, m.config.StepTimeout, nil, "up", "-d", "--no-deps", "web"); err != nil {
 		return errors.Join(primaryErr, err)
+	}
+	return nil
+}
+
+func (m *Manager) startApplicationServices(version string) error {
+	if !m.config.ContainerMode {
+		return m.compose(m.composePath(), version, m.config.StepTimeout, nil, "up", "-d", "--remove-orphans", "--wait", "--wait-timeout", "600")
+	}
+	// Never reconcile the running updater, including indirectly via backend's
+	// dependency, while it is responsible for completing a recovery transaction.
+	for _, services := range [][]string{{"postgres", "redis"}, {"backend"}, {"web"}} {
+		args := append([]string{"up", "-d", "--no-deps", "--wait", "--wait-timeout", "600"}, services...)
+		if err := m.compose(m.composePath(), version, m.config.StepTimeout, nil, args...); err != nil {
+			return err
+		}
 	}
 	return nil
 }

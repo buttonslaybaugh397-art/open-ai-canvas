@@ -26,6 +26,9 @@ jobs:
           - image: open-ai-canvas-backend
             dockerfile: backend/Dockerfile
             target: backend
+          - image: open-ai-canvas-host-updater
+            dockerfile: backend/Dockerfile.host-updater
+            target: host-updater
 
     steps:
       - name: Checkout repository
@@ -149,6 +152,7 @@ jobs:
             dist/SHA256SUMS \
             docker-compose.deploy.yml \
             docker-compose.1panel.yml \
+            docker-compose.container.yml \
             scripts/install-host-updater.sh \
             --verify-tag \
             --title "$GITHUB_REF_NAME" \

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v1.2.10
+
+- 新增独立 Compose Host Updater 容器模式，自动拉起更新器并通过 named volume 共享 Token/Unix Socket；backend 不再需要 Docker Socket，启动时等待更新器健康。
+- Compose 模式支持首次无 `.env` 启动时从实际编排识别当前版本并自动生成持久化 Token；更新仍保留完整备份、迁移、健康验证和失败回滚链路。
+- Release 工作流新增多架构 `open-ai-canvas-host-updater` 镜像和 `docker-compose.container.yml` 发布附件；补充 Socket、Token、Compose 依赖及容器权限回归测试和部署文档。
+- 明确 1Panel 非标准项目目录通过编排顶部 `x-canvas-project-dir` 配置，避免更新器容器内外 bind mount 路径不一致造成服务恢复失败。
+
 ## v1.2.9
 
 - Host Updater 安装自动识别 1Panel 编排与固定镜像版本，下载校验二进制、配置 systemd 开机自启并自动挂载只读 Socket，无需手工挂载更新器或预先维护 `.env`。
