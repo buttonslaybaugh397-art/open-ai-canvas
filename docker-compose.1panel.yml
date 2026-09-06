@@ -1,0 +1,171 @@
+name: open-ai-canvas
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-open_ai_canvas}
+      POSTGRES_USER: ${POSTGRES_USER:-open_ai_canvas}
+      CANVAS_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_PASSWORD_FILE: /run/canvas-secrets/postgres-password
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        password_file=/run/canvas-secrets/postgres-password
+        database_url_file=/run/canvas-secrets/database-url
+        case "$$POSTGRES_DB" in ""|*[!A-Za-z0-9_]*) echo "POSTGRES_DB 只能包含字母、数字和下划线" >&2; exit 1 ;; esac
+        case "$$POSTGRES_USER" in ""|*[!A-Za-z0-9_]*) echo "POSTGRES_USER 只能包含字母、数字和下划线" >&2; exit 1 ;; esac
+        if [ ! -s "$$password_file" ]; then
+          if [ -n "$${CANVAS_POSTGRES_PASSWORD:-}" ]; then
+            password="$$CANVAS_POSTGRES_PASSWORD"
+          else
+            password="$$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48)"
+          fi
+          [ "$${#password}" -ge 32 ] || { echo "POSTGRES_PASSWORD 至少需要 32 位" >&2; exit 1; }
+          case "$$password" in *[!A-Za-z0-9]*) echo "POSTGRES_PASSWORD 只能包含字母和数字" >&2; exit 1 ;; esac
+          umask 077
+          printf '%s' "$$password" > "$$password_file"
+        fi
+        password="$$(cat "$$password_file")"
+        [ "$${#password}" -ge 32 ] || { echo "持久化的 PostgreSQL 密码无效" >&2; exit 1; }
+        case "$$password" in *[!A-Za-z0-9]*) echo "持久化的 PostgreSQL 密码无效" >&2; exit 1 ;; esac
+        printf 'host=postgres port=5432 user=%s password=%s dbname=%s sslmode=disable\n' "$$POSTGRES_USER" "$$password" "$$POSTGRES_DB" > "$$database_url_file"
+        chmod 0444 "$$password_file" "$$database_url_file"
+        unset CANVAS_POSTGRES_PASSWORD
+        exec docker-entrypoint.sh postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - deployment-secrets:/run/canvas-secrets
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  migrate:
+    image: ghcr.io/${CANVAS_IMAGE_OWNER:-buttonslaybaugh397-art}/open-ai-canvas-backend:${CANVAS_IMAGE_TAG:-v1.2.6}
+    pull_policy: always
+    environment:
+      CANVAS_BACKEND_DATA_DIR: /data
+      CANVAS_DATABASE_DRIVER: postgres
+    command:
+      - /bin/sh
+      - -ec
+      - export DATABASE_URL="$$(cat /run/canvas-secrets/database-url)"; exec migrate-schema up
+    volumes:
+      - deployment-secrets:/run/canvas-secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redis:
+    image: redis:7.4-alpine
+    command: [redis-server, --appendonly, yes, --appendfsync, everysec]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  host-updater:
+    image: ghcr.io/buttonslaybaugh397-art/open-ai-canvas-host-updater:${CANVAS_IMAGE_TAG:-v1.2.6}
+    pull_policy: always
+    environment:
+      CANVAS_UPDATER_RUNTIME: compose
+      CANVAS_UPDATER_REPOSITORY: buttonslaybaugh397-art/open-ai-canvas
+      CANVAS_UPDATER_INSTALL_DIR: /opt/1panel/docker/compose/1
+      CANVAS_UPDATER_COMPOSE_FILE: docker-compose.yml
+      CANVAS_UPDATER_RELEASE_COMPOSE_FILE: docker-compose.1panel.yml
+      CANVAS_UPDATER_ENV_FILE: .env
+      CANVAS_UPDATER_STATE_DIR: /var/lib/open-ai-canvas-updater
+      CANVAS_UPDATER_BACKUP_DIR: /var/lib/open-ai-canvas-updater/backups
+      CANVAS_UPDATER_SOCKET: /run/open-ai-canvas-updater/updater.sock
+      CANVAS_UPDATER_TOKEN: ${CANVAS_UPDATER_TOKEN:-C8mJ4rG7sV2xP9nQ5dL6wH3fK8yT1zB4uN7pR6aS9eX2}
+      CANVAS_UPDATER_HEALTH_URL: http://web:3000/api/health/ready
+      CANVAS_UPDATER_CONFIG_SOURCE: compose
+      CANVAS_UPDATER_SELF_UPDATE: "false"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - type: bind
+        source: /opt/1panel/docker/compose/1
+        target: /opt/1panel/docker/compose/1
+        bind:
+          create_host_path: false
+      - updater-runtime:/run/open-ai-canvas-updater
+      - updater-state:/var/lib/open-ai-canvas-updater
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/open-ai-canvas-updater/updater.sock"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  backend:
+    image: ghcr.io/${CANVAS_IMAGE_OWNER:-buttonslaybaugh397-art}/open-ai-canvas-backend:${CANVAS_IMAGE_TAG:-v1.2.6}
+    pull_policy: always
+    environment:
+      CANVAS_BACKEND_ADDR: ":8080"
+      CANVAS_BACKEND_DATA_DIR: /data
+      CANVAS_AUTO_MIGRATE: "false"
+      CANVAS_SHUTDOWN_TIMEOUT: ${CANVAS_SHUTDOWN_TIMEOUT:-10m}
+      CANVAS_DATABASE_DRIVER: postgres
+      REDIS_URL: redis://redis:6379/0
+      CANVAS_WORKER_CONCURRENCY: ${CANVAS_WORKER_CONCURRENCY:-3}
+      CANVAS_CHANNEL_CONCURRENCY: ${CANVAS_CHANNEL_CONCURRENCY:-3}
+      CANVAS_REGISTRATION_ENABLED: ${CANVAS_REGISTRATION_ENABLED:-false}
+      CANVAS_ALLOW_PRIVATE_UPSTREAMS: ${CANVAS_ALLOW_PRIVATE_UPSTREAMS:-false}
+      CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS: ${CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS:-}
+      CANVAS_CORS_ORIGINS: ${CANVAS_CORS_ORIGINS:-http://64.90.0.216:6868}
+      CANVAS_UPDATER_SOCKET: /run/open-ai-canvas-updater/updater.sock
+      CANVAS_UPDATER_TOKEN: ${CANVAS_UPDATER_TOKEN:-C8mJ4rG7sV2xP9nQ5dL6wH3fK8yT1zB4uN7pR6aS9eX2}
+      CANVAS_UPDATER_TOKEN_FILE: /run/open-ai-canvas-updater/token
+      GIN_MODE: release
+    command:
+      - /bin/sh
+      - -ec
+      - export DATABASE_URL="$$(cat /run/canvas-secrets/database-url)"; exec infinite-canvas-backend
+    volumes:
+      - backend-data:/data
+      - deployment-secrets:/run/canvas-secrets:ro
+      - updater-runtime:/run/open-ai-canvas-updater:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      host-updater:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health/ready"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 12
+    restart: unless-stopped
+    stop_grace_period: ${CANVAS_SHUTDOWN_TIMEOUT:-10m}
+
+  web:
+    image: ghcr.io/${CANVAS_IMAGE_OWNER:-buttonslaybaugh397-art}/open-ai-canvas-web:${CANVAS_IMAGE_TAG:-v1.2.6}
+    pull_policy: always
+    ports:
+      - "${CANVAS_BIND_ADDRESS:-0.0.0.0}:${CANVAS_HTTP_PORT:-6868}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  backend-data:
+  deployment-secrets:
+  postgres-data:
+  redis-data:
+  updater-runtime:
+  updater-state:
