@@ -1,3 +1,3 @@
 module open-ai-canvas/comfy-bridge
 
-go 1.23
+go 1.21
