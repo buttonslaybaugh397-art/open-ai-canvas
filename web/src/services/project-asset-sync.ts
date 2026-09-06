@@ -1,7 +1,7 @@
 import { canvasNodeToAsset, declaredCanvasNodeAssetCategory, findCanvasNodeAsset, type CanvasAssetSource } from "@/lib/canvas/canvas-node-asset";
 import { canvasVideoAssetPreviewUrl } from "@/lib/canvas/canvas-media-preview";
 import { readImageMeta } from "@/lib/image-utils";
-import { parseBackendGenerationResult, type BackendGenerationResult } from "@/services/api/generation-task";
+import { backendMediaResultSource, parseBackendGenerationResult, type BackendGenerationResult } from "@/services/api/generation-task";
 import { linkProjectAsset, moveProjectAsset, updateProjectAssetCategory } from "@/services/api/projects";
 import type { GenerationTask, GenerationTaskOutput } from "@/services/api/task-center";
 import { getMediaBlob, resolveMediaUrl, setMediaBlob } from "@/services/file-storage";
@@ -159,8 +159,9 @@ export function projectGenerationTaskResult(task: GenerationTask, result?: Backe
 
 async function storedGenerationImage(result: NonNullable<BackendGenerationResult["images"]>[number], effectKey: string, scope: string, signal?: AbortSignal) {
     throwIfAborted(signal);
+    const source = backendMediaResultSource(result);
     if (result.storageKey) {
-        const url = await resolveImageUrl(result.storageKey, result.dataUrl);
+        const url = await resolveImageUrl(result.storageKey, source);
         if (!url) throw new Error("图片结果资源不可用");
         const meta = result.width && result.height ? undefined : await readImageMeta(url, signal);
         throwIfAborted(signal);
@@ -177,7 +178,12 @@ async function storedGenerationImage(result: NonNullable<BackendGenerationResult
     const blob = await loadOrStoreGenerationArtifact({
         effectKey: storageKey,
         read: (key) => getImageBlob(key),
-        materialize: async () => (await fetch(result.dataUrl, { signal })).blob(),
+        materialize: async () => {
+            if (!source) throw new Error("图片结果缺少可读取地址");
+            const response = await fetch(source, { signal });
+            if (!response.ok) throw new Error(`图片结果读取失败（HTTP ${response.status}）`);
+            return response.blob();
+        },
         write: async (key, artifact) => {
             await setImageBlob(key, artifact);
         },
@@ -198,13 +204,18 @@ async function storedGenerationImage(result: NonNullable<BackendGenerationResult
     };
 }
 
-async function storedGenerationMedia(dataUrl: string, effectKey: string, mediaType: "video" | "audio", metadata: { width?: number; height?: number; durationMs?: number; bytes?: number; mimeType: string }, scope: string, signal?: AbortSignal) {
+async function storedGenerationMedia(source: string, effectKey: string, mediaType: "video" | "audio", metadata: { width?: number; height?: number; durationMs?: number; bytes?: number; mimeType: string }, scope: string, signal?: AbortSignal) {
     throwIfAborted(signal);
     const storageKey = generationArtifactStorageKey(effectKey, mediaType, scope);
     const blob = await loadOrStoreGenerationArtifact({
         effectKey: storageKey,
         read: (key) => getMediaBlob(key),
-        materialize: async () => (await fetch(dataUrl, { signal })).blob(),
+        materialize: async () => {
+            if (!source) throw new Error(`${mediaType === "video" ? "视频" : "音频"}结果缺少可读取地址`);
+            const response = await fetch(source, { signal });
+            if (!response.ok) throw new Error(`${mediaType === "video" ? "视频" : "音频"}结果读取失败（HTTP ${response.status}）`);
+            return response.blob();
+        },
         write: async (key, artifact) => {
             await setMediaBlob(key, artifact);
         },
@@ -263,9 +274,10 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
     if (input.output.mediaType === "video") {
         const video = result.video;
         if (!video) throw new Error("生成任务缺少视频输出");
+        const source = backendMediaResultSource(video);
         const stored = video.storageKey
             ? {
-                  url: await resolveMediaUrl(video.storageKey, video.dataUrl),
+                  url: await resolveMediaUrl(video.storageKey, source),
                   storageKey: video.storageKey,
                   width: video.width || 0,
                   height: video.height || 0,
@@ -274,7 +286,7 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
                   mimeType: video.mimeType || "video/mp4",
               }
             : await storedGenerationMedia(
-                  video.dataUrl,
+                  source,
                   input.effectKey,
                   "video",
                   {
@@ -310,16 +322,17 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
 
     const audio = result.audio;
     if (!audio) throw new Error("生成任务缺少音频输出");
+    const source = backendMediaResultSource(audio);
     const stored = audio.storageKey
         ? {
-              url: await resolveMediaUrl(audio.storageKey, audio.dataUrl),
+              url: await resolveMediaUrl(audio.storageKey, source),
               storageKey: audio.storageKey,
               durationMs: audio.durationMs,
               bytes: audio.bytes || 0,
               mimeType: audio.mimeType || "audio/mpeg",
           }
         : await storedGenerationMedia(
-              audio.dataUrl,
+              source,
               input.effectKey,
               "audio",
               {

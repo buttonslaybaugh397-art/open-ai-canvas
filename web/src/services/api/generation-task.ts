@@ -1,14 +1,7 @@
 import { getMediaBlob } from "@/services/file-storage";
 import { getImageBlob } from "@/services/image-storage";
 import { resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
-import {
-    cancelGenerationTask,
-    createGenerationTask,
-    finalizeGenerationTask,
-    prepareGenerationTask,
-    waitForGenerationTask,
-    type GenerationTask,
-} from "@/services/api/task-center";
+import { cancelGenerationTask, createGenerationTask, finalizeGenerationTask, prepareGenerationTask, queryGenerationTask, waitForGenerationTask, type GenerationTask } from "@/services/api/task-center";
 import { LOCAL_DREAMINA_WAIT_STOPPED_CODE, LocalDreaminaGenerationClientError, runLocalDreaminaGenerationTask, type LocalDreaminaGenerationInput, type LocalDreaminaGenerationTask } from "@/services/local-dreamina-generation";
 import { isLocalDreaminaBackgroundTask, localDreaminaTaskId, projectLocalDreaminaTask, stripLocalDreaminaTaskPrefix } from "@/services/local-dreamina-task-projection";
 import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
@@ -27,13 +20,36 @@ export type BackendGenerationMode = "text" | "image" | "video" | "audio";
 
 export type BackendGenerationResult = {
     mode?: BackendGenerationMode;
-    images?: Array<{ dataUrl: string; storageKey?: string; width?: number; height?: number; bytes?: number; mimeType?: string }>;
-    video?: { dataUrl: string; storageKey?: string; width?: number; height?: number; durationMs?: number; bytes?: number; mimeType?: string };
-    audio?: { dataUrl: string; storageKey?: string; durationMs?: number; bytes?: number; mimeType?: string; format?: string };
+    images?: Array<BackendMediaResult>;
+    video?: BackendMediaResult;
+    audio?: BackendMediaResult & { format?: string };
     text?: string;
     toolCalls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string }; thoughtSignature?: string }>;
     reasoning?: string;
 };
+
+export type BackendMediaResult = {
+    dataUrl?: string;
+    url?: string;
+    videoUrl?: string;
+    video_url?: string;
+    resultUrl?: string;
+    result_url?: string;
+    outputUrl?: string;
+    output_url?: string;
+    storageKey?: string;
+    resourceId?: string;
+    width?: number;
+    height?: number;
+    durationMs?: number;
+    bytes?: number;
+    mimeType?: string;
+};
+
+export function backendMediaResultSource(media?: BackendMediaResult) {
+    if (!media) return "";
+    return media.dataUrl || media.url || media.videoUrl || media.video_url || media.resultUrl || media.result_url || media.outputUrl || media.output_url || "";
+}
 
 type BackendGenerationTaskOptions = {
     projectId?: string;
@@ -49,6 +65,8 @@ type BackendGenerationTaskOptions = {
     metadata?: Record<string, unknown>;
     onTaskUpdate?: (task: GenerationTask) => void;
     onTextDelta?: (text: string) => void;
+    streamText?: boolean;
+    enableThinking?: boolean;
     localIdempotencyKey?: string;
     localResumeOnly?: boolean;
     clientOperationId?: string;
@@ -62,6 +80,7 @@ export type GenerationTaskDependencies = {
     prepareTask?: typeof prepareGenerationTask;
     finalizeTask?: typeof finalizeGenerationTask;
     cancelTask?: typeof cancelGenerationTask;
+    queryTask?: typeof queryGenerationTask;
     waitTask: typeof waitForGenerationTask;
     runLocal: (input: LocalDreaminaGenerationInput, signal?: AbortSignal, onTaskUpdate?: (task: LocalDreaminaGenerationTask) => void) => ReturnType<typeof runLocalDreaminaGenerationTask>;
     createId: () => string;
@@ -74,6 +93,7 @@ const defaultDependencies: GenerationTaskDependencies = {
     prepareTask: prepareGenerationTask,
     finalizeTask: finalizeGenerationTask,
     cancelTask: cancelGenerationTask,
+    queryTask: queryGenerationTask,
     waitTask: waitForGenerationTask,
     runLocal: (input, signal, onTaskUpdate) => runLocalDreaminaGenerationTask(input, { onTaskUpdate }, signal),
     createId: () => crypto.randomUUID(),
@@ -109,6 +129,9 @@ export async function runBackendGenerationTask(
         signal,
         metadata,
         onTaskUpdate,
+        onTextDelta,
+        streamText,
+        enableThinking,
         localIdempotencyKey,
         localResumeOnly,
         clientOperationId,
@@ -128,7 +151,13 @@ export async function runBackendGenerationTask(
         );
     }
     assertBackendRuntimeConfigured(config, mode);
-    return createAndWaitGenerationTask({ projectId, mode, prompt, config, referenceImages, referenceVideos, referenceAudios, textHistory, signal, metadata, onTaskUpdate }, dependencies);
+    if (canPreRegisterTask(mode, dependencies)) {
+        const task = await createAndFinalizeGenerationTask({ projectId, mode, prompt, config, referenceImages, referenceVideos, referenceAudios, textHistory, mask, signal, metadata, onTaskUpdate, onTextDelta, streamText, enableThinking }, dependencies);
+        return parseAndWaitGenerationTask(task, { signal, onTaskUpdate, onTextDelta }, dependencies);
+    }
+    const prepared = await prepareGenerationReferences({ referenceImages, referenceVideos, referenceAudios, mask });
+    throwIfAborted(signal);
+    return createAndWaitGenerationTask({ projectId, mode, prompt, config, referenceImages, referenceVideos, referenceAudios, textHistory, signal, metadata, onTaskUpdate, onTextDelta, streamText, enableThinking }, prepared, dependencies);
 }
 
 // 分镜等后台生产流程只需要可靠提交任务；任务状态与产物由项目工作区轮询和
@@ -141,7 +170,10 @@ export async function submitBackendGenerationTask(
     assertClientPromptLimit(options.mode, options.prompt, options.config, options.metadata);
     if (usesLocalDreamina(options.config)) throw new Error("本机即梦任务暂不支持后台提交");
     assertBackendRuntimeConfigured(options.config, options.mode);
-    return createBackendGenerationTaskWithPreparation(options, dependencies);
+    if (canPreRegisterTask(options.mode, dependencies)) return createAndFinalizeGenerationTask(options, dependencies);
+    const prepared = await prepareGenerationReferences(options);
+    throwIfAborted(options.signal);
+    return createBackendGenerationTask(options, prepared, dependencies);
 }
 
 export async function runBackendToolGenerationTask(options: {
@@ -206,16 +238,21 @@ export async function runBackendGenerationTaskBatch(options: BackendGenerationTa
             }),
         );
     }
+    const prepared = canPreRegisterTask(options.mode, dependencies) ? undefined : await prepareGenerationReferences(options);
+    throwIfAborted(options.signal);
     return Promise.allSettled(
-        Array.from({ length: count }, (_, batchIndex) =>
-            createAndWaitGenerationTask(
-                {
-                    ...options,
-                    metadata: { ...options.metadata, batchIndex, batchCount: count },
-                },
-                dependencies,
-            ),
-        ),
+        Array.from({ length: count }, (_, batchIndex) => {
+            const taskOptions = {
+                ...options,
+                metadata: { ...options.metadata, batchIndex, batchCount: count },
+            };
+            if (canPreRegisterTask(options.mode, dependencies)) {
+                return createAndFinalizeGenerationTask(taskOptions, dependencies).then((task) =>
+                    parseAndWaitGenerationTask(task, { signal: options.signal, onTaskUpdate: options.onTaskUpdate, onTextDelta: options.onTextDelta }, dependencies),
+                );
+            }
+            return createAndWaitGenerationTask(taskOptions, prepared || { referenceImages: [], referenceVideos: [], referenceAudios: [] }, dependencies);
+        }),
     );
 }
 
@@ -430,58 +467,39 @@ async function prepareGenerationReferences({
     return { referenceImages: preparedImages, referenceVideos: preparedVideos, referenceAudios: preparedAudios, mask: preparedMask };
 }
 
-async function createAndWaitGenerationTask(options: BackendGenerationTaskOptions, dependencies: GenerationTaskDependencies) {
+async function createAndWaitGenerationTask(options: BackendGenerationTaskOptions, prepared: PreparedGenerationReferences, dependencies: GenerationTaskDependencies) {
+    const task = await createBackendGenerationTask(options, prepared, dependencies);
     const { signal, onTaskUpdate, onTextDelta } = options;
-    let task: GenerationTask | undefined;
-
-    // 视频和音频任务使用两阶段预登记：先创建 preparing 任务占位（立即返回任务ID给前端），
-    // 完成素材上传和技能处理后再 finalize 入队。文本任务不预登记，避免 Token 计费复杂性。
-    const canPreRegister = (options.mode === "video" || options.mode === "audio") && dependencies.prepareTask && dependencies.finalizeTask;
-
-    if (canPreRegister) {
-        // 阶段一：立即创建 preparing 任务，锁定模型、渠道、时长和计费
-        const draftReferences = draftGenerationReferences(options);
-        const draftRequest = generationTaskRequest(options, draftReferences);
-        task = await dependencies.prepareTask(draftRequest);
-        onTaskUpdate?.(task); // 立即通知前端任务已创建
-
-        try {
-            // 阶段二：完成素材上传和技能处理，回写最终提示词和元数据
-            const preparedReferences = await prepareGenerationReferences(options);
-            throwIfAborted(signal);
-            const finalInput = generationTaskInput(options, preparedReferences);
-            task = await dependencies.finalizeTask(task.id, finalInput);
-            onTaskUpdate?.(task); // 通知任务已进入队列
-        } catch (error) {
-            // finalize 失败可能是网络问题，也可能后端已成功入队；先检查真实状态再决定是否取消。
-            try {
-                const latest = await listGenerationTasks(1, { signal, activeOnly: false }).then((tasks) => tasks.find((t) => t.id === task!.id));
-                if (latest && (latest.status === "queued" || latest.status === "running")) {
-                    // 后端已成功入队，前端网络错误不应取消；直接使用最新状态继续等待。
-                    task = latest;
-                    onTaskUpdate?.(task);
-                } else if (dependencies.cancelTask) {
-                    // 确认仍在 preparing 或其他非活动状态，可以安全取消。
-                    await dependencies.cancelTask(task.id).catch(() => undefined);
-                    throw error;
-                }
-            } catch (checkError) {
-                // 状态检查也失败，保守取消并抛出原错误。
-                if (dependencies.cancelTask) await dependencies.cancelTask(task.id).catch(() => undefined);
-                throw error;
-            }
-        }
-    } else {
-        // 文本任务或旧版依赖：使用原有单阶段流程
-        task = await createBackendGenerationTaskWithPreparation(options, dependencies);
-    }
-
     const completed = await dependencies.waitTask(task.id, { signal, initialTask: task, onTaskUpdate, onTextDelta });
     return parseBackendGenerationResult(completed);
 }
 
-async function createBackendGenerationTaskWithPreparation(options: BackendGenerationTaskOptions, dependencies: GenerationTaskDependencies) {
-    // Keep injected test/legacy clients working until they opt into the two-phase API.
+function canPreRegisterTask(mode: BackendGenerationMode, dependencies: GenerationTaskDependencies) {
+    return (mode === "image" || mode === "video" || mode === "audio") && Boolean(dependencies.prepareTask && dependencies.finalizeTask);
+}
+
+function draftGenerationReferences(options: BackendGenerationTaskOptions): PreparedGenerationReferences {
+    return {
+        referenceImages: (options.referenceImages || []).map((image) => draftImageReference(image)),
+        referenceVideos: (options.referenceVideos || []).map((media) => draftMediaReference(media)),
+        referenceAudios: (options.referenceAudios || []).map((media) => draftMediaReference(media)),
+        mask: options.mask ? draftImageReference(options.mask) : undefined,
+    };
+}
+
+function draftImageReference(image: ReferenceImage) {
+    const storageKey = resourceIdFromStorageKey(image.storageKey) ? image.storageKey : undefined;
+    const url = /^https?:\/\//i.test(image.url || "") ? image.url : undefined;
+    return backendImageReference(image, { storageKey, url });
+}
+
+function draftMediaReference<T extends ReferenceVideo | ReferenceAudio>(media: T) {
+    const storageKey = resourceIdFromStorageKey(media.storageKey) ? media.storageKey : undefined;
+    const url = /^https?:\/\//i.test(media.url || "") ? media.url : undefined;
+    return backendMediaReference(media, { storageKey, url } as Partial<T>);
+}
+
+async function createAndFinalizeGenerationTask(options: BackendGenerationTaskOptions, dependencies: GenerationTaskDependencies) {
     if (!dependencies.prepareTask || !dependencies.finalizeTask) {
         const prepared = await prepareGenerationReferences(options);
         throwIfAborted(options.signal);
@@ -498,19 +516,28 @@ async function createBackendGenerationTaskWithPreparation(options: BackendGenera
         options.onTaskUpdate?.(readyTask);
         return readyTask;
     } catch (error) {
-        // finalize 失败后先检查后端真实状态，避免误杀已入队任务。
+        // A dropped response can hide a successful enqueue. Confirm the server state before
+        // surfacing an error or cancelling the preparation task.
         try {
-            const latest = await listGenerationTasks(1, { signal: options.signal, activeOnly: false }).then((tasks) => tasks.find((t) => t.id === draftTask.id));
-            if (latest && (latest.status === "queued" || latest.status === "running")) {
+            const latest = await (dependencies.queryTask || queryGenerationTask)(draftTask.id, { signal: options.signal });
+            if (latest.status === "queued" || latest.status === "running" || latest.status === "succeeded" || latest.status === "failed" || latest.status === "cancelled") {
                 options.onTaskUpdate?.(latest);
                 return latest;
             }
-            if (dependencies.cancelTask) await dependencies.cancelTask(draftTask.id).catch(() => undefined);
+            if (latest.status === "preparing" && dependencies.cancelTask) {
+                await dependencies.cancelTask(draftTask.id).catch(() => undefined);
+            }
         } catch {
-            if (dependencies.cancelTask) await dependencies.cancelTask(draftTask.id).catch(() => undefined);
+            // Unknown state is deliberately left recoverable; cancelling here could kill a
+            // provider task that was accepted while the status request was failing.
         }
         throw error;
     }
+}
+
+async function parseAndWaitGenerationTask(task: GenerationTask, options: Pick<BackendGenerationTaskOptions, "signal" | "onTaskUpdate" | "onTextDelta">, dependencies: GenerationTaskDependencies) {
+    const completed = await dependencies.waitTask(task.id, { signal: options.signal, initialTask: task, onTaskUpdate: options.onTaskUpdate, onTextDelta: options.onTextDelta });
+    return parseBackendGenerationResult(completed);
 }
 
 async function createBackendGenerationTask(options: BackendGenerationTaskOptions, prepared: PreparedGenerationReferences, dependencies: GenerationTaskDependencies) {
@@ -549,33 +576,13 @@ function generationTaskInput(
         config: backendProviderConfig(options.config, options.mode),
         capabilityOptions: logicalModelId ? logicalCapabilityOptions(options.config, options.mode) : undefined,
         textHistory: options.textHistory,
+        ...(options.mode === "text" ? { textOptions: { stream: options.streamText !== false, thinking: options.enableThinking === true } } : {}),
         referenceImages: prepared.referenceImages,
         referenceVideos: prepared.referenceVideos,
         referenceAudios: prepared.referenceAudios,
         mask: prepared.mask,
         metadata: generationMetadata(options.config, options.metadata),
     };
-}
-
-function draftGenerationReferences(options: BackendGenerationTaskOptions): PreparedGenerationReferences {
-    return {
-        referenceImages: (options.referenceImages || []).map((image) => draftImageReference(image)),
-        referenceVideos: (options.referenceVideos || []).map((media) => draftMediaReference(media)),
-        referenceAudios: (options.referenceAudios || []).map((media) => draftMediaReference(media)),
-        mask: options.mask ? draftImageReference(options.mask) : undefined,
-    };
-}
-
-function draftImageReference(image: ReferenceImage) {
-    const storageKey = resourceIdFromStorageKey(image.storageKey) ? image.storageKey : undefined;
-    const url = /^https?:\/\//i.test(image.url || "") ? image.url : undefined;
-    return backendImageReference(image, { storageKey, url });
-}
-
-function draftMediaReference<T extends ReferenceVideo | ReferenceAudio>(media: T) {
-    const storageKey = resourceIdFromStorageKey(media.storageKey) ? media.storageKey : undefined;
-    const url = /^https?:\/\//i.test(media.url || "") ? media.url : undefined;
-    return backendMediaReference(media, { storageKey, url });
 }
 
 function generationMetadata(config: AiConfig, metadata?: Record<string, unknown>) {
@@ -775,7 +782,72 @@ function logicalCapabilityOptions(config: AiConfig, mode: BackendGenerationMode)
 
 export function parseBackendGenerationResult(task: GenerationTask): BackendGenerationResult {
     if (!task.resultJson) throw new Error("后端任务没有返回结果");
-    const result = JSON.parse(task.resultJson) as BackendGenerationResult;
-    if (!result || typeof result !== "object") throw new Error("后端任务结果格式错误");
+    const parsed: unknown = JSON.parse(task.resultJson);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("后端任务结果格式错误");
+    const raw = parsed as Record<string, unknown>;
+    const mediaKeys = ["dataUrl", "data_url", "url", "videoUrl", "video_url", "resultUrl", "result_url", "outputUrl", "output_url", "downloadUrl", "download_url", "fileUrl", "file_url", "uri", "content"] as const;
+    const findNestedMediaValue = (value: unknown, depth = 0, allowBareString = false): { text?: string; storageKey?: string; resourceId?: string } => {
+        if (typeof value === "string" && value.trim()) return allowBareString ? { text: value.trim() } : {};
+        if (!value || typeof value !== "object" || depth > 4) return {};
+        const item = value as Record<string, unknown>;
+        const storageKey = typeof item.storageKey === "string" ? item.storageKey : typeof item.storage_key === "string" ? item.storage_key : undefined;
+        const resourceId = typeof item.resourceId === "string" ? item.resourceId : typeof item.resource_id === "string" ? item.resource_id : undefined;
+        const ignoredKeys = new Set(["storageKey", "storage_key", "resourceId", "resource_id", "width", "height", "durationMs", "duration_ms", "bytes", "mimeType", "mime_type"]);
+        const keys = [...mediaKeys, ...Object.keys(item).filter((key) => !mediaKeys.includes(key as (typeof mediaKeys)[number]) && !ignoredKeys.has(key))];
+        for (const key of keys) {
+            const nested = findNestedMediaValue(item[key], depth + 1, mediaKeys.includes(key as (typeof mediaKeys)[number]));
+            if (nested.text || nested.storageKey || nested.resourceId) {
+                return {
+                    ...(storageKey ? { storageKey } : {}),
+                    ...(resourceId ? { resourceId } : {}),
+                    ...nested,
+                };
+            }
+        }
+        return {
+            ...(storageKey ? { storageKey } : {}),
+            ...(resourceId ? { resourceId } : {}),
+        };
+    };
+    const normalize = (value: unknown): BackendMediaResult | undefined => {
+        if (typeof value === "string") {
+            const text = value.trim();
+            return text ? (text.startsWith("data:") ? { dataUrl: text } : { url: text }) : undefined;
+        }
+        if (!value || typeof value !== "object") return undefined;
+        const item = value as Record<string, unknown>;
+        const normalized: BackendMediaResult = { ...item } as BackendMediaResult;
+        const nested = findNestedMediaValue(value);
+        const candidate = nested.text;
+        if (!normalized.dataUrl && candidate?.startsWith("data:")) normalized.dataUrl = candidate;
+        if (!normalized.url && candidate && !candidate.startsWith("data:")) normalized.url = candidate;
+        if (!normalized.storageKey && nested.storageKey) normalized.storageKey = nested.storageKey;
+        if (!normalized.resourceId && nested.resourceId) normalized.resourceId = nested.resourceId;
+        if (!normalized.storageKey && typeof normalized.resourceId === "string" && normalized.resourceId.trim()) normalized.storageKey = resourceStorageKey(normalized.resourceId.trim());
+        return normalized;
+    };
+    const result: BackendGenerationResult = { ...raw } as BackendGenerationResult;
+    const rootMedia = (kind: "video" | "audio" | "image") => {
+        const direct = raw[kind];
+        if (direct !== undefined) return normalize(direct);
+        const keys = kind === "video" ? ["video_url", "videoUrl", "result_url", "resultUrl", "output_url", "outputUrl", "url", "download_url", "downloadUrl"] : kind === "audio" ? ["audio_url", "audioUrl", "result_url", "resultUrl", "output_url", "outputUrl", "url"] : ["image_url", "imageUrl", "result_url", "resultUrl", "output_url", "outputUrl", "url"];
+        const key = keys.find((candidate) => raw[candidate] !== undefined);
+        return key ? normalize(raw[key]) : undefined;
+    };
+    const hasRootMedia = (kind: "video" | "audio" | "image") => {
+        const keys = kind === "video"
+            ? ["video_url", "videoUrl", "result_url", "resultUrl", "output_url", "outputUrl", "url", "download_url", "downloadUrl"]
+            : kind === "audio"
+              ? ["audio_url", "audioUrl", "result_url", "resultUrl", "output_url", "outputUrl", "url"]
+              : ["image_url", "imageUrl", "result_url", "resultUrl", "output_url", "outputUrl", "url"];
+        return keys.some((key) => raw[key] !== undefined);
+    };
+    if ("video" in raw || hasRootMedia("video")) result.video = rootMedia("video");
+    if ("audio" in raw || hasRootMedia("audio")) result.audio = rootMedia("audio") as BackendGenerationResult["audio"];
+    if (!Array.isArray(raw.images) && (raw.image !== undefined || hasRootMedia("image"))) {
+        const image = rootMedia("image");
+        if (image) result.images = [image];
+    }
+    if (Array.isArray(raw.images)) result.images = raw.images.map(normalize).filter((item): item is BackendMediaResult => Boolean(item));
     return result;
 }

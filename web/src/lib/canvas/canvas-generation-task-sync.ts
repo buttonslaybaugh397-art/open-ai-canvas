@@ -113,28 +113,31 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
     const result = parseBackendGenerationResult(task);
 
     if (mode === "image") {
-        const image = result.images?.[0];
-        if (!image?.dataUrl) throw new Error("后端任务没有返回图片");
-        let resultDataUrl = image.dataUrl;
+        const imageResult = result.images?.[0];
+        if (!imageResult) throw new Error("后端任务没有返回图片");
+        const imageSource = imageResult.dataUrl || imageResult.url || imageResult.videoUrl || imageResult.video_url || imageResult.resultUrl || imageResult.result_url || imageResult.outputUrl || imageResult.output_url || "";
+        if (!imageSource && !imageResult.storageKey) throw new Error("后端任务没有返回图片");
+        let resultDataUrl = imageSource;
         const emotionEdit = node.metadata?.emotionEdit;
         if (emotionEdit) {
+            if (!imageSource) throw new Error("情绪编辑结果缺少可读取图片地址");
             if (!emotionEdit.editRegion) throw new Error("情绪编辑任务缺少局部合成区域，已拒绝使用整图重绘结果");
             const sourceNode = nodes.find((item) => item.id === emotionEdit.sourceNodeId);
             if (!sourceNode?.metadata?.content) throw new Error("情绪编辑源图片已删除，无法恢复局部合成结果");
             const sourceDataUrl = await resolveImageUrl(sourceNode.metadata.storageKey, sourceNode.metadata.content);
             if (!sourceDataUrl) throw new Error("无法读取情绪编辑源图片，未使用整图重绘结果");
-            resultDataUrl = await compositeEmotionImage(sourceDataUrl, image.dataUrl, emotionEdit.editRegion, emotionEdit.faceBox);
+            resultDataUrl = await compositeEmotionImage(sourceDataUrl, imageSource, emotionEdit.editRegion, emotionEdit.faceBox);
         }
         const uploaded =
-            image.storageKey && !emotionEdit
-                ? { url: await resolveImageUrl(image.storageKey, image.dataUrl), storageKey: image.storageKey, width: image.width || 1024, height: image.height || 1024, bytes: image.bytes || 0, mimeType: image.mimeType || "image/png" }
+            imageResult.storageKey && !emotionEdit
+                ? { url: await resolveImageUrl(imageResult.storageKey, imageSource), storageKey: imageResult.storageKey, width: imageResult.width || 1024, height: imageResult.height || 1024, bytes: imageResult.bytes || 0, mimeType: imageResult.mimeType || "image/png" }
                 : await uploadImage(resultDataUrl);
         const imageConfig = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
         const requestedImageSize = nodeSizeFromRatio(node.metadata?.size || "auto", imageConfig.width, imageConfig.height);
         const imageSizeBounds = requestedImageSize || { width: node.width || imageConfig.width, height: node.height || imageConfig.height };
-        const hasReportedImageSize = Boolean(image.width && image.width > 0 && image.height && image.height > 0);
-        const resultWidth = image.storageKey && !hasReportedImageSize && requestedImageSize ? requestedImageSize.width : uploaded.width;
-        const resultHeight = image.storageKey && !hasReportedImageSize && requestedImageSize ? requestedImageSize.height : uploaded.height;
+        const hasReportedImageSize = Boolean(imageResult.width && imageResult.width > 0 && imageResult.height && imageResult.height > 0);
+        const resultWidth = imageResult.storageKey && !hasReportedImageSize && requestedImageSize ? requestedImageSize.width : uploaded.width;
+        const resultHeight = imageResult.storageKey && !hasReportedImageSize && requestedImageSize ? requestedImageSize.height : uploaded.height;
         const normalizedImage = resultWidth === uploaded.width && resultHeight === uploaded.height ? uploaded : { ...uploaded, width: resultWidth, height: resultHeight };
         const imageSize =
             node.metadata?.generationType === "edit" && !requestedImageSize ? { width: node.width || imageConfig.width, height: node.height || imageConfig.height } : fitNodeSize(resultWidth, resultHeight, imageSizeBounds.width, imageSizeBounds.height);
@@ -149,18 +152,21 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
     }
 
     if (mode === "video") {
-        if (!result.video?.dataUrl) throw new Error("后端任务没有返回视频");
-        const video = result.video.storageKey
+        const videoResult = result.video;
+        if (!videoResult) throw new Error("后端任务没有返回可播放视频");
+        const videoSource = videoResult.dataUrl || videoResult.url || videoResult.videoUrl || videoResult.video_url || videoResult.resultUrl || videoResult.result_url || videoResult.outputUrl || videoResult.output_url || "";
+        if (!videoSource && !videoResult.storageKey) throw new Error("后端任务没有返回可播放视频");
+        const video = videoResult.storageKey
             ? {
-                  url: await resolveMediaUrl(result.video.storageKey, result.video.dataUrl),
-                  storageKey: result.video.storageKey,
-                  width: result.video.width,
-                  height: result.video.height,
-                  durationMs: result.video.durationMs,
-                  bytes: result.video.bytes || 0,
-                  mimeType: result.video.mimeType || "video/mp4",
+                  url: await resolveMediaUrl(videoResult.storageKey, videoSource),
+                  storageKey: videoResult.storageKey,
+                  width: videoResult.width,
+                  height: videoResult.height,
+                  durationMs: videoResult.durationMs,
+                  bytes: videoResult.bytes || 0,
+                  mimeType: videoResult.mimeType || "video/mp4",
               }
-            : await storeGeneratedVideo({ url: result.video.dataUrl, mimeType: result.video.mimeType || "video/mp4" });
+            : await storeGeneratedVideo({ url: videoSource, mimeType: videoResult.mimeType || "video/mp4" });
         const videoSize = fitNodeSize(video.width || node.width || VIDEO_NODE_MAX_SIZE.width, video.height || node.height || VIDEO_NODE_MAX_SIZE.height, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
         const geometry = node.metadata?.locked
             ? {}
@@ -178,10 +184,13 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
     }
 
     if (mode === "audio") {
-        if (!result.audio?.dataUrl) throw new Error("后端任务没有返回音频");
-        const audio = result.audio.storageKey
-            ? { url: await resolveMediaUrl(result.audio.storageKey, result.audio.dataUrl), storageKey: result.audio.storageKey, durationMs: result.audio.durationMs, bytes: result.audio.bytes || 0, mimeType: result.audio.mimeType || "audio/mpeg" }
-            : await storeGeneratedAudio(await (await fetch(result.audio.dataUrl)).blob(), result.audio.format || "mp3");
+        const audioResult = result.audio;
+        if (!audioResult) throw new Error("后端任务没有返回音频");
+        const audioSource = audioResult.dataUrl || audioResult.url || audioResult.resultUrl || audioResult.result_url || audioResult.outputUrl || audioResult.output_url || "";
+        if (!audioSource && !audioResult.storageKey) throw new Error("后端任务没有返回音频");
+        const audio = audioResult.storageKey
+            ? { url: await resolveMediaUrl(audioResult.storageKey, audioSource), storageKey: audioResult.storageKey, durationMs: audioResult.durationMs, bytes: audioResult.bytes || 0, mimeType: audioResult.mimeType || "audio/mpeg" }
+            : await storeGeneratedAudio(await (await fetch(audioSource)).blob(), audioResult.format || "mp3");
         return { ...node, type: CanvasNodeType.Audio, metadata: { ...node.metadata, ...workflowMetadataForResultNode(), ...audioMetadata(audio), prompt, ...completedTaskMetadata(task), errorDetails: undefined } };
     }
 

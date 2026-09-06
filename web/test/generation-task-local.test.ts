@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { createModelChannel, defaultConfig } from "../src/stores/use-config-store";
-import { runBackendGenerationTask, runBackendGenerationTaskBatch } from "../src/services/api/generation-task";
+import { parseBackendGenerationResult, runBackendGenerationTask, runBackendGenerationTaskBatch } from "../src/services/api/generation-task";
 import { deleteGenerationTask, formatTaskLog, listGenerationTasks, projectBackendSafeTaskLog, splitGenerationTaskObservationIds, type GenerationTask } from "../src/services/api/task-center";
 import { isLocalDreaminaBackgroundTask, localDreaminaCancellationCopy, localDreaminaDetachOutcome, projectLocalDreaminaTask } from "../src/services/local-dreamina-task-projection";
 import { LocalDreaminaGenerationClientError, runLocalDreaminaGenerationTask, type LocalDreaminaGenerationInput } from "../src/services/local-dreamina-generation";
@@ -23,6 +23,19 @@ function sourceSection(source: string, startMarker: string, endMarker: string) {
     expect(end).toBeGreaterThan(start);
     return compactSource(source.slice(start, end));
 }
+
+test("解析远端视频结果的多种 URL 和资源引用形态", () => {
+    const task = (resultJson: string) => ({ resultJson }) as GenerationTask;
+
+    expect(parseBackendGenerationResult(task(JSON.stringify({ video: { storageKey: "resource:resource-video-1" } }))).video).toMatchObject({ storageKey: "resource:resource-video-1" });
+    expect(parseBackendGenerationResult(task(JSON.stringify({ video: { video_url: "https://cdn.example.com/output.mp4" } }))).video).toMatchObject({ url: "https://cdn.example.com/output.mp4", video_url: "https://cdn.example.com/output.mp4" });
+    expect(parseBackendGenerationResult(task(JSON.stringify({ video: { video_url: { url: "https://cdn.example.com/nested.mp4" } } }))).video).toMatchObject({ url: "https://cdn.example.com/nested.mp4" });
+    expect(parseBackendGenerationResult(task(JSON.stringify({ video: { result_url: { url: "https://cdn.example.com/result.mp4" } } }))).video).toMatchObject({ url: "https://cdn.example.com/result.mp4" });
+    expect(parseBackendGenerationResult(task(JSON.stringify({ video: { resource_id: "resource-video-2" } }))).video).toMatchObject({ resourceId: "resource-video-2", storageKey: "resource:resource-video-2" });
+    expect(parseBackendGenerationResult(task(JSON.stringify({ video: "https://cdn.example.com/direct.mp4" }))).video).toMatchObject({ url: "https://cdn.example.com/direct.mp4" });
+    expect(parseBackendGenerationResult(task(JSON.stringify({ video_url: "https://cdn.example.com/root.mp4" }))).video).toMatchObject({ url: "https://cdn.example.com/root.mp4" });
+    expect(parseBackendGenerationResult(task(JSON.stringify({ video_url: { url: "https://cdn.example.com/root-nested.mp4" } }))).video).toMatchObject({ url: "https://cdn.example.com/root-nested.mp4" });
+});
 
 function backendModelConfig(model: string) {
     const channel = createModelChannel({

@@ -1,10 +1,32 @@
 import { expect, test } from "bun:test";
 
-import { defaultConfig } from "../src/stores/use-config-store";
-import { submitBackendGenerationTask, type GenerationTaskDependencies } from "../src/services/api/generation-task";
+import { createModelChannel, defaultConfig } from "../src/stores/use-config-store";
+import { runBackendGenerationTask, submitBackendGenerationTask, type GenerationTaskDependencies } from "../src/services/api/generation-task";
 import type { GenerationTask } from "../src/services/api/task-center";
 import type { ProjectDetail } from "../src/services/api/projects";
 import { buildShotAssetReferenceContext, resolveShotAssetMentionPrompt } from "../src/pages/projects/detail/workflow-shot-references";
+
+function backendModelConfig(model: string) {
+    const channel = createModelChannel({
+        id: "system-test-channel",
+        name: "System test channel",
+        baseUrl: "/api/system-test-channel",
+        apiKey: "system",
+        apiFormat: "openai",
+        scope: "system",
+        models: [model],
+    });
+    const selectedModel = `${channel.id}::${model}`;
+    return {
+        ...defaultConfig,
+        channelMode: "remote" as const,
+        channels: [channel],
+        model: selectedModel,
+        imageModel: selectedModel,
+        videoModel: selectedModel,
+        audioModel: selectedModel,
+    };
+}
 
 test("production workbench does not silently drop bound voice samples before backend validation", async () => {
     const source = await Bun.file(new URL("../src/pages/projects/detail/workflow-production-workbench.tsx", import.meta.url)).text();
@@ -95,7 +117,7 @@ test("shot generation submits historical character image, current voice and asse
         projectId: "project-1",
         mode: "video",
         prompt,
-        config: { ...defaultConfig, model: "MiniMax-H3", videoModel: "MiniMax-H3" },
+        config: backendModelConfig("MiniMax-H3"),
         referenceImages: context.referenceImages,
         referenceAudios: context.referenceAudios,
         metadata: { shotId: "shot-1", videoEditOperation: "reference_to_video" },
@@ -138,7 +160,7 @@ test("background generation submission returns after task creation without waiti
         projectId: "project-1",
         mode: "video",
         prompt: "角色表演",
-        config: { ...defaultConfig, model: "MiniMax-H3", videoModel: "MiniMax-H3" },
+        config: backendModelConfig("MiniMax-H3"),
         metadata: { shotId: "shot-1", videoEditOperation: "reference_to_video" },
     }, dependencies);
 
@@ -165,7 +187,7 @@ test("registers a preparation task before finalizing uploaded references", async
         projectId: "project-1",
         mode: "video",
         prompt: "角色表演",
-        config: { ...defaultConfig, model: "MiniMax-H3", videoModel: "MiniMax-H3" },
+        config: backendModelConfig("MiniMax-H3"),
         referenceImages: [{ url: "", storageKey: "resource:character-image-1" }],
     }, {
         createTask: async () => {
@@ -198,4 +220,61 @@ test("registers a preparation task before finalizing uploaded references", async
     expect(events).toEqual(["prepare", "ready"]);
     expect(draftInput?.input.referenceImages[0]?.storageKey).toBe("resource:character-image-1");
     expect(readyInput?.referenceImages[0]?.storageKey).toBe("resource:character-image-1");
+});
+
+test("continues waiting when finalize response fails after the backend accepted the task", async () => {
+    const events: string[] = [];
+    const preparingTask = {
+        id: "accepted-after-timeout-1",
+        type: "canvas_video",
+        status: "preparing",
+        prompt: "角色表演",
+        attempts: 0,
+        createdAt: "2026-09-06T00:00:00.000Z",
+        updatedAt: "2026-09-06T00:00:00.000Z",
+    } satisfies GenerationTask;
+    const queuedTask = { ...preparingTask, status: "queued" as const };
+    const completedTask = {
+        ...queuedTask,
+        status: "succeeded" as const,
+        resultJson: JSON.stringify({ video: { video_url: { url: "https://cdn.example.com/accepted.mp4" } } }),
+    };
+
+    const result = await runBackendGenerationTask({
+        projectId: "project-1",
+        mode: "video",
+        prompt: "角色表演",
+        config: backendModelConfig("MiniMax-H3"),
+    }, {
+        createTask: async () => {
+            throw new Error("two-phase submission must not use the legacy create endpoint");
+        },
+        prepareTask: async () => {
+            events.push("prepare");
+            return preparingTask;
+        },
+        finalizeTask: async () => {
+            events.push("finalize");
+            throw new Error("网络连接中断");
+        },
+        queryTask: async () => {
+            events.push("query");
+            return queuedTask;
+        },
+        cancelTask: async () => {
+            events.push("cancel");
+            return preparingTask;
+        },
+        waitTask: async (_id, options) => {
+            events.push("wait:" + options?.initialTask?.status);
+            options?.onTaskUpdate?.(completedTask);
+            return completedTask;
+        },
+        runLocal: async () => ({ mode: "video" }),
+        createId: () => "id-1",
+        now: () => "2026-09-06T00:00:00.000Z",
+    });
+
+    expect(result.video).toMatchObject({ url: "https://cdn.example.com/accepted.mp4" });
+    expect(events).toEqual(["prepare", "finalize", "query", "wait:queued"]);
 });

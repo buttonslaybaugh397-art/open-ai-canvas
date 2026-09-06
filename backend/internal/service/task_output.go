@@ -197,7 +197,24 @@ func findTaskMediaPreview(value any, hint string) (string, string) {
 	switch item := value.(type) {
 	case string:
 		text := strings.TrimSpace(item)
-		if !strings.HasPrefix(text, "/api/resources/") && !strings.HasPrefix(text, "http://") && !strings.HasPrefix(text, "https://") {
+		if strings.HasPrefix(text, "resource:") {
+			resourceID := validCanvasResourceID(strings.TrimPrefix(text, "resource:"))
+			if resourceID != "" {
+				return "/api/resources/" + resourceID + "/file", hint
+			}
+		}
+		if strings.HasPrefix(text, "/api/resources/") {
+			resourceID := strings.TrimPrefix(text, "/api/resources/")
+			if slash := strings.IndexByte(resourceID, '/'); slash >= 0 {
+				resourceID = resourceID[:slash]
+			}
+			resourceID = validCanvasResourceID(resourceID)
+			if resourceID == "" {
+				return "", ""
+			}
+			return text, hint
+		}
+		if !strings.HasPrefix(text, "http://") && !strings.HasPrefix(text, "https://") {
 			return "", ""
 		}
 		kind := hint
@@ -215,7 +232,7 @@ func findTaskMediaPreview(value any, hint string) (string, string) {
 			}
 		}
 	case map[string]any:
-		for _, key := range []string{"images", "image", "video", "dataUrl", "url", "resultUrl", "outputUrl"} {
+		for _, key := range []string{"images", "image", "video", "dataUrl", "data_url", "url", "videoUrl", "video_url", "audioUrl", "audio_url", "imageUrl", "image_url", "resultUrl", "result_url", "outputUrl", "output_url", "downloadUrl", "download_url", "fileUrl", "file_url", "uri", "content", "storageKey", "storage_key", "resourceId", "resource_id"} {
 			child, exists := item[key]
 			if !exists {
 				continue
@@ -225,6 +242,11 @@ func findTaskMediaPreview(value any, hint string) (string, string) {
 				childHint = "video"
 			} else if key == "images" || key == "image" {
 				childHint = "image"
+			}
+			if key == "resourceId" || key == "resource_id" {
+				if resourceID, ok := child.(string); ok && resourceID != "" {
+					child = "resource:" + resourceID
+				}
 			}
 			if previewURL, previewKind := findTaskMediaPreview(child, childHint); previewURL != "" {
 				return previewURL, previewKind

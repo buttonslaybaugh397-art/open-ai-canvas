@@ -544,18 +544,27 @@ func findTaskOutputResource(value any, mediaType string) (string, string) {
 			}
 		}
 	case map[string]any:
-		for _, key := range []string{"resourceId", "storageKey", "url", "dataUrl", "resultUrl", "outputUrl"} {
+		for _, key := range []string{"resourceId", "resource_id", "storageKey", "storage_key", "url", "dataUrl", "data_url", "resultUrl", "result_url", "outputUrl", "output_url", "videoUrl", "video_url", "audioUrl", "audio_url", "imageUrl", "image_url"} {
 			if raw, ok := item[key].(string); ok {
 				text := strings.TrimSpace(raw)
 				if strings.HasPrefix(text, "resource:") {
-					return strings.TrimPrefix(text, "resource:"), mediaType
+					if id := validCanvasResourceID(strings.TrimPrefix(text, "resource:")); id != "" {
+						return id, mediaType
+					}
+					continue
+				}
+				if key == "resourceId" || key == "resource_id" {
+					if id := validCanvasResourceID(text); id != "" {
+						return id, mediaType
+					}
+					continue
 				}
 				if strings.HasPrefix(text, "/api/resources/") {
 					id := strings.TrimPrefix(text, "/api/resources/")
 					if slash := strings.IndexByte(id, '/'); slash >= 0 {
 						id = id[:slash]
 					}
-					if id != "" {
+					if id = validCanvasResourceID(id); id != "" {
 						return id, mediaType
 					}
 				}

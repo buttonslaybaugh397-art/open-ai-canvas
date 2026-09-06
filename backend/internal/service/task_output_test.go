@@ -39,6 +39,18 @@ func TestTaskMediaPreviewUsesSafeMediaURLs(t *testing.T) {
 	if previewURL, _ := taskMediaPreview(`{"url":"file:///tmp/output.mp4"}`, "video"); previewURL != "" {
 		t.Fatalf("unsafe local URL was exposed: %q", previewURL)
 	}
+	if previewURL, _ := taskMediaPreview(`{"video":{"storageKey":"resource:resource-video-1"}}`, "video"); previewURL != "/api/resources/resource-video-1/file" {
+		t.Fatalf("resource storage key was not converted to a preview URL: %q", previewURL)
+	}
+	if previewURL, _ := taskMediaPreview(`{"video":{"resourceId":"resource-video-2"}}`, "video"); previewURL != "/api/resources/resource-video-2/file" {
+		t.Fatalf("resource ID was not converted to a preview URL: %q", previewURL)
+	}
+	if previewURL, _ := taskMediaPreview(`{"video":{"video_url":"https://cdn.example.com/output.mp4"}}`, "video"); previewURL != "https://cdn.example.com/output.mp4" {
+		t.Fatalf("snake_case video URL was not exposed: %q", previewURL)
+	}
+	if previewURL, _ := taskMediaPreview(`{"video":{"storageKey":"resource:../../etc/passwd"}}`, "video"); previewURL != "" {
+		t.Fatalf("invalid resource ID was exposed: %q", previewURL)
+	}
 }
 
 func TestTaskClientContextRequiresCreatePageMetadata(t *testing.T) {
@@ -76,5 +88,17 @@ func TestTaskOutputResourceReadsPersistedMedia(t *testing.T) {
 	id, mediaType := taskOutputResource(`{"mode":"video","video":{"resourceId":"resource-1","storageKey":"resource:resource-1"}}`, "canvas_video")
 	if id != "resource-1" || mediaType != "video" {
 		t.Fatalf("unexpected task output resource: id=%q mediaType=%q", id, mediaType)
+	}
+}
+
+func TestTaskOutputResourceAcceptsDirectAndSnakeCaseResourceIDs(t *testing.T) {
+	if id, mediaType := taskOutputResource(`{"video":{"resourceId":"resource-video-1"}}`, "canvas_video"); id != "resource-video-1" || mediaType != "video" {
+		t.Fatalf("direct resource ID was not extracted: id=%q mediaType=%q", id, mediaType)
+	}
+	if id, mediaType := taskOutputResource(`{"video":{"resource_id":"resource-video-2"}}`, "canvas_video"); id != "resource-video-2" || mediaType != "video" {
+		t.Fatalf("snake_case resource ID was not extracted: id=%q mediaType=%q", id, mediaType)
+	}
+	if id, _ := taskOutputResource(`{"video":{"resourceId":"../../etc/passwd"}}`, "canvas_video"); id != "" {
+		t.Fatalf("invalid resource ID was extracted: %q", id)
 	}
 }
