@@ -431,8 +431,36 @@ async function prepareGenerationReferences({
 }
 
 async function createAndWaitGenerationTask(options: BackendGenerationTaskOptions, dependencies: GenerationTaskDependencies) {
-    const task = await createBackendGenerationTaskWithPreparation(options, dependencies);
     const { signal, onTaskUpdate, onTextDelta } = options;
+    let task: GenerationTask | undefined;
+
+    // 视频和音频任务使用两阶段预登记：先创建 preparing 任务占位（立即返回任务ID给前端），
+    // 完成素材上传和技能处理后再 finalize 入队。文本任务不预登记，避免 Token 计费复杂性。
+    const canPreRegister = (options.mode === "video" || options.mode === "audio") && dependencies.prepareTask && dependencies.finalizeTask;
+
+    if (canPreRegister) {
+        // 阶段一：立即创建 preparing 任务，锁定模型、渠道、时长和计费
+        const draftReferences = draftGenerationReferences(options);
+        const draftRequest = generationTaskRequest(options, draftReferences);
+        task = await dependencies.prepareTask(draftRequest);
+        onTaskUpdate?.(task); // 立即通知前端任务已创建
+
+        try {
+            // 阶段二：完成素材上传和技能处理，回写最终提示词和元数据
+            const preparedReferences = await prepareGenerationReferences(options);
+            throwIfAborted(signal);
+            const finalInput = generationTaskInput(options, preparedReferences);
+            task = await dependencies.finalizeTask(task.id, finalInput);
+            onTaskUpdate?.(task); // 通知任务已进入队列
+        } catch (error) {
+            if (dependencies.cancelTask) await dependencies.cancelTask(task.id).catch(() => undefined);
+            throw error;
+        }
+    } else {
+        // 文本任务或旧版依赖：使用原有单阶段流程
+        task = await createBackendGenerationTaskWithPreparation(options, dependencies);
+    }
+
     const completed = await dependencies.waitTask(task.id, { signal, initialTask: task, onTaskUpdate, onTextDelta });
     return parseBackendGenerationResult(completed);
 }
