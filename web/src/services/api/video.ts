@@ -64,7 +64,15 @@ export async function pollVideoGenerationTask(config: AiConfig, task: VideoGener
 
 export async function storeGeneratedVideo(result: VideoGenerationResult): Promise<UploadedFile> {
     if (result.blob) return uploadMediaFile(result.blob, "video");
-    if (result.url) return { url: result.url, storageKey: "", bytes: 0, mimeType: result.mimeType || "video/mp4" };
+    if (result.url) {
+        // Data URL 需要转换为 Blob 并上传，直接返回会导致 URL 过长或无法播放
+        if (result.url.startsWith("data:")) {
+            const response = await fetch(result.url);
+            const blob = await response.blob();
+            return uploadMediaFile(blob, "video");
+        }
+        return { url: result.url, storageKey: "", bytes: 0, mimeType: result.mimeType || "video/mp4" };
+    }
     throw new Error("视频接口没有返回可播放的视频");
 }
 
