@@ -86,6 +86,22 @@ export function hasRemoteUserDataSyncSession() {
     return Boolean(activeRemoteUserId) && remoteUserDataPhase === "ready";
 }
 
+export async function saveRemoteAssetNow(assetId: string) {
+    if (!activeRemoteUserId) return;
+    requireRemoteUserDataBaseline();
+    const normalizedAssetId = assetId.trim();
+    if (!normalizedAssetId) throw new Error("素材 ID 不能为空");
+
+    await withRemoteUserDataSyncExclusive(async () => {
+        requireRemoteUserDataBaseline();
+        const source = useAssetStore.getState().assets.find((asset) => asset.id === normalizedAssetId);
+        if (!source) throw new Error("素材不存在，无法同步");
+        const remotePayload = await ensureRemoteResourceReferences(assetForRemoteSync(source));
+        await upsertRemoteAsset(remotePayload);
+        acknowledgedAssets.set(source.id, source);
+    });
+}
+
 export function withRemoteUserDataSyncExclusive<T>(operation: () => Promise<T>): Promise<T> {
     const pending = remoteOperationTail.catch(() => undefined).then(operation);
     remoteOperationTail = pending.then(

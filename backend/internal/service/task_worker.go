@@ -31,6 +31,7 @@ func (s *Service) taskWorker() *taskWorkerCoordinator {
 func (w *taskWorkerCoordinator) start(ctx context.Context) {
 	s := w.service
 	s.startTextReplayCleanup(ctx)
+	s.startTaskPreparationCleanup(ctx)
 	s.startProviderCancellationReconciliation(ctx)
 	s.startBillingReviewAudit(ctx)
 	s.runWorkerLoop(func(ctx context.Context) {
@@ -245,7 +246,10 @@ func (s *Service) shouldDeferVideoProviderTask(task model.Task, decryptedInput s
 		return false
 	}
 	resolved, resolveErr := s.resolveProviderConfig(input.Config)
-	return resolveErr == nil && resolved.InterfaceType == string(model.ChannelInterfaceNewAPIChannel2)
+	if resolveErr != nil {
+		return false
+	}
+	return resolved.InterfaceType == string(model.ChannelInterfaceNewAPIChannel1) || resolved.InterfaceType == string(model.ChannelInterfaceNewAPIChannel2)
 }
 
 func taskTimeoutMessage(taskType string) string {

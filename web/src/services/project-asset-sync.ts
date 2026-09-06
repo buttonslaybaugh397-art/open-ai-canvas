@@ -12,7 +12,7 @@ import { getImageBlob, resolveImageUrl, setImageBlob } from "@/services/image-st
 import { generationArtifactStorageKey, loadOrStoreGenerationArtifact } from "@/services/generation-artifact-sink";
 import { createLocalDreaminaTaskEffectStore } from "@/services/local-dreamina-generation";
 import { createProviderNeutralGenerationTaskEffectStore } from "@/services/provider-neutral-generation-effects";
-import { saveRemoteUserDataNow } from "@/services/user-data-sync";
+import { saveRemoteAssetNow } from "@/services/user-data-sync";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { normalizeAssetCategory } from "@/lib/asset-category";
 import { runGenerationConsumer } from "@/services/generation-consumer-lifecycle";
@@ -73,7 +73,7 @@ async function persistCanvasNodeAsset(options: EnsureCanvasNodeAssetOptions): Pr
     }
     if (!options.domainProjectId) {
         // 个人画布也必须在返回成功前把素材提交到服务端，不能只依赖延迟自动同步。
-        await saveRemoteUserDataNow();
+        await saveRemoteAssetNow(asset.id);
         throwIfAborted(options.signal);
         return { assetId: asset.id, created, linkedToProject: false };
     }
@@ -92,7 +92,7 @@ async function syncAssetToProject(assetId: string, domainProjectId: string, cate
     }
 
     // 项目关联依赖后端 assets 记录，先强制完成素材同步，不能依赖延迟自动同步的时序。
-    await saveRemoteUserDataNow();
+    await saveRemoteAssetNow(asset.id);
     throwIfAborted(signal);
     const { asset: linkedAsset } = await linkProjectAsset(
         domainProjectId,
@@ -113,7 +113,7 @@ async function syncAssetToProject(assetId: string, domainProjectId: string, cate
         primaryVersionId: linked.primaryVersionId,
         metadata: { ...asset.metadata, projectIds: [...new Set([...linkedProjectIds, domainProjectId])] },
     });
-    await saveRemoteUserDataNow();
+    await saveRemoteAssetNow(asset.id);
     throwIfAborted(signal);
 }
 
