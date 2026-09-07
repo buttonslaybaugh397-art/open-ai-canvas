@@ -70,10 +70,11 @@ func providerPayloadIndicatesAcceptedTask(payload map[string]any) bool {
 		return false
 	}
 	status := providerStatusFromPayload(payload, 0)
+	inFlight := false
 	if status != "" {
 		switch status {
 		case "accepted", "submitted", "queued", "pending", "processing", "running", "in_progress", "in-progress", "not_start", "created":
-			return true
+			inFlight = true
 		case "failed", "failure", "error", "cancelled", "canceled", "expired", "succeeded", "success", "completed", "done":
 			return false
 		}
@@ -96,7 +97,7 @@ func providerPayloadIndicatesAcceptedTask(payload map[string]any) bool {
 		}
 		return false
 	}
-	return true
+	return inFlight || status == ""
 }
 
 func providerStatusFromPayload(value any, depth int) string {
