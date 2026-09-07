@@ -640,7 +640,12 @@ func (s *Service) LogAPICall(log model.ApiCallLog) error {
 		log.StartedAt = log.CreatedAt.Add(-time.Duration(log.DurationMs) * time.Millisecond)
 	}
 	s.estimateCallCost(&log)
-	if log.BillingOrderID != "" && log.ProviderRequestID != "" {
+	// A failed create response may contain only a request/trace ID. Persist
+	// provider IDs from successful creates (or later poll/download calls), but
+	// never turn a rejected create into an accepted task merely because the
+	// gateway echoed request_id in its error body.
+	acceptedProviderCall := log.ProviderRequestID != "" && (log.Status == model.ApiCallStatusSucceeded || log.RequestKind != "create")
+	if log.BillingOrderID != "" && acceptedProviderCall {
 		if err := s.repo.UpdateBillingProviderRequestID(log.BillingOrderID, log.ProviderRequestID); err != nil {
 			return err
 		}
@@ -656,7 +661,11 @@ func (s *Service) LogAPICall(log model.ApiCallLog) error {
 			next := time.Now().Add(5 * time.Second)
 			nextPollAt = &next
 		}
-		if err := s.repo.UpdateTaskProviderState(log.TaskID, log.ProviderRequestID, stage, nextPollAt); err != nil {
+		providerRequestID := ""
+		if acceptedProviderCall {
+			providerRequestID = log.ProviderRequestID
+		}
+		if err := s.repo.UpdateTaskProviderState(log.TaskID, providerRequestID, stage, nextPollAt); err != nil {
 			return err
 		}
 	}

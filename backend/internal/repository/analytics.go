@@ -166,7 +166,7 @@ func (r *Repository) APICallLogTasks(ids []string) ([]model.Task, error) {
 func (r *Repository) LatestProviderRequestIDForTask(taskID string) (string, error) {
 	var log model.ApiCallLog
 	err := r.db.Select("provider_request_id").
-		Where("task_id = ? AND provider_request_id <> ''", taskID).
+		Where("task_id = ? AND provider_request_id <> '' AND (request_kind <> ? OR status = ?)", taskID, "create", model.ApiCallStatusSucceeded).
 		Order("created_at desc").
 		First(&log).Error
 	return strings.TrimSpace(log.ProviderRequestID), err
