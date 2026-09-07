@@ -135,6 +135,14 @@ func TestEnrichAPICallLogRejectsEmptyTextUsage(t *testing.T) {
 	}
 }
 
+func TestEnrichAPICallLogReadsNestedProviderRequestID(t *testing.T) {
+	log := &model.ApiCallLog{Capability: "video", RequestKind: "create"}
+	(&Service{}).EnrichAPICallLog(log, []byte(`{"data":{"result":{"task_id":"nested-task-1"}}}`))
+	if log.ProviderRequestID != "nested-task-1" {
+		t.Fatalf("ProviderRequestID = %q", log.ProviderRequestID)
+	}
+}
+
 func TestEnsureChatCompletionStreamUsageRequest(t *testing.T) {
 	data, err := EnsureChatCompletionStreamUsageRequest([]byte(`{"model":"gpt-test","stream":true,"stream_options":{"custom":true}}`))
 	if err != nil {

@@ -3116,7 +3116,7 @@ func runAsyncAudioTask(ctx context.Context, input canvasGenerationInput, body ma
 			return nil, err
 		}
 		state = asyncAudioPayload(state)
-		id = firstNonEmptyString(stringField(state, "id"), stringField(state, "task_id"), stringField(state, "request_id"))
+		id = providerRequestIDFromPayload(state)
 		if id == "" {
 			return nil, errors.New("异步音频接口没有返回任务 ID")
 		}
@@ -3397,11 +3397,11 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 		}
 	}
 	if id == "" {
-		id = firstNonEmptyString(stringField(created, "id"), stringField(created, "request_id"), stringField(created, "task_id"))
+		id = providerRequestIDFromPayload(created)
 	}
 	if id == "" {
 		if data, ok := created["data"].(map[string]interface{}); ok {
-			id = firstNonEmptyString(stringField(data, "id"), stringField(data, "request_id"), stringField(data, "task_id"))
+			id = providerRequestIDFromPayload(data)
 		}
 	}
 	if id == "" {
@@ -3503,9 +3503,9 @@ func runMiniMaxVideoTask(ctx context.Context, input canvasGenerationInput) (map[
 		if err := postJSON(ctx, input.Config, "/v2/video_generation", body, &created); err != nil {
 			return nil, err
 		}
-		id = firstNonEmptyString(stringField(created, "task_id"), stringField(created, "id"))
+		id = providerRequestIDFromPayload(created)
 		if data, ok := created["data"].(map[string]interface{}); ok {
-			id = firstNonEmptyString(id, stringField(data, "task_id"), stringField(data, "id"))
+			id = firstNonEmptyString(id, providerRequestIDFromPayload(data))
 		}
 	}
 	if id == "" {
@@ -3693,7 +3693,7 @@ func runNovitaVideoTask(ctx context.Context, input canvasGenerationInput) (map[s
 		if err := postNovitaJSON(ctx, input.Config, "/video/create", body, &created); err != nil {
 			return nil, err
 		}
-		id = strings.TrimSpace(stringField(created, "task_id"))
+		id = providerRequestIDFromPayload(created)
 	}
 	if id == "" {
 		return nil, errors.New("Novita 视频接口没有返回任务 ID")
@@ -3826,21 +3826,59 @@ func geminiVeoURL(baseURL string, path string) string {
 }
 
 func findProviderMediaURL(value interface{}) string {
+	return findProviderMediaURLDepth(value, 0, false)
+}
+
+func findProviderMediaURLDepth(value interface{}, depth int, mediaContext bool) string {
+	if depth > 12 {
+		return ""
+	}
+	preferred := []string{"video_url", "videoUrl", "video_uri", "videoUri", "output_url", "outputUrl", "download_url", "downloadUrl", "file_url", "fileUrl", "object", "uri", "url", "result_url", "resultUrl"}
 	switch typed := value.(type) {
 	case map[string]interface{}:
-		for _, key := range []string{"uri", "url", "videoUri", "video_url"} {
-			if candidate := strings.TrimSpace(stringField(typed, key)); isPublicMediaURL(candidate) {
-				return candidate
+		// Prefer explicitly video/output fields at the current node. Generic
+		// result_url/url fields are checked after nested media containers so a
+		// wrapper URL cannot mask content.output.url or files[0].video_url.
+		for _, key := range preferred[:10] {
+			for actual, candidateValue := range typed {
+				if strings.EqualFold(actual, key) {
+					if candidate, ok := candidateValue.(string); ok && isPublicMediaURL(strings.TrimSpace(candidate)) {
+						return strings.TrimSpace(candidate)
+					}
+				}
 			}
 		}
-		for _, child := range typed {
-			if candidate := findProviderMediaURL(child); candidate != "" {
+		for _, container := range []string{"data", "result", "video", "content", "output", "outputs", "files", "videos", "task", "response"} {
+			for actual, child := range typed {
+				if strings.EqualFold(actual, container) {
+					if candidate := findProviderMediaURLDepth(child, depth+1, true); candidate != "" {
+						return candidate
+					}
+				}
+			}
+		}
+		for _, key := range preferred[10:] {
+			if (strings.EqualFold(key, "uri") || strings.EqualFold(key, "url")) && !mediaContext {
+				continue
+			}
+			for actual, candidateValue := range typed {
+				if strings.EqualFold(actual, key) {
+					if candidate, ok := candidateValue.(string); ok && isPublicMediaURL(strings.TrimSpace(candidate)) {
+						return strings.TrimSpace(candidate)
+					}
+				}
+			}
+		}
+		for key, child := range typed {
+			keyLower := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "_", ""), "-", ""))
+			childContext := mediaContext || strings.Contains(keyLower, "video") || strings.Contains(keyLower, "output") || strings.Contains(keyLower, "result") || strings.Contains(keyLower, "content") || strings.Contains(keyLower, "file")
+			if candidate := findProviderMediaURLDepth(child, depth+1, childContext); candidate != "" {
 				return candidate
 			}
 		}
 	case []interface{}:
 		for _, child := range typed {
-			if candidate := findProviderMediaURL(child); candidate != "" {
+			if candidate := findProviderMediaURLDepth(child, depth+1, mediaContext); candidate != "" {
 				return candidate
 			}
 		}
@@ -3849,7 +3887,18 @@ func findProviderMediaURL(value interface{}) string {
 }
 
 func newAPIVideoResultURL(state map[string]interface{}) string {
-	return nestedNewAPIVideoResultURL(state, false, 0)
+	// A nested media URL is authoritative when both it and a wrapper-level
+	// result_url are present (some NewAPI gateways return a content endpoint
+	// alongside the actual file URL). Search containers first, then fall back
+	// to the wrapper URL fields.
+	for _, key := range []string{"data", "result", "video", "content", "output", "outputs", "files", "videos", "task", "response"} {
+		if nested, ok := state[key]; ok {
+			if candidate := findProviderMediaURLDepth(nested, 0, true); candidate != "" {
+				return candidate
+			}
+		}
+	}
+	return findProviderMediaURLDepth(state, 0, true)
 }
 
 func nestedNewAPIVideoResultURL(payload map[string]interface{}, allowResultURL bool, depth int) string {
@@ -3934,11 +3983,11 @@ func runNewAPIChannel2VideoTask(ctx context.Context, input canvasGenerationInput
 		if err := postJSON(ctx, input.Config, "/video/generations", body, &created); err != nil {
 			return nil, err
 		}
-		id = firstNonEmptyString(stringField(created, "task_id"), stringField(created, "id"))
+		id = providerRequestIDFromPayload(created)
 	}
 	if id == "" {
 		if data, ok := created["data"].(map[string]interface{}); ok {
-			id = firstNonEmptyString(stringField(data, "task_id"), stringField(data, "id"))
+			id = firstNonEmptyString(id, providerRequestIDFromPayload(data))
 		}
 	}
 	if id == "" {
@@ -4030,7 +4079,10 @@ func newAPIChannel2VideoResult(ctx context.Context, input canvasGenerationInput,
 
 func newAPIChannel2PayloadError(payload map[string]interface{}) error {
 	code := strings.ToLower(strings.TrimSpace(stringField(payload, "code")))
-	if code == "" || code == "0" || code == "ok" || code == "success" {
+	if code == "" || code == "0" || code == "ok" || code == "success" || code == "accepted" || code == "queued" || code == "pending" || code == "processing" || code == "in_progress" || code == "in-progress" {
+		return nil
+	}
+	if numeric, err := strconv.Atoi(code); err == nil && numeric >= 200 && numeric < 300 {
 		return nil
 	}
 	return newAPIChannel2ResponseError{Code: code, Message: firstNonEmptyString(stringField(payload, "message"), stringField(payload, "msg"))}
@@ -4235,7 +4287,7 @@ func runNewAPIChannel1VideoTask(ctx context.Context, input canvasGenerationInput
 		if data, ok := created["data"].(map[string]interface{}); ok {
 			created = data
 		}
-		id = firstNonEmptyString(stringField(created, "id"), stringField(created, "task_id"))
+		id = providerRequestIDFromPayload(created)
 	}
 	status := normalizeNewAPIVideoStatus(stringField(created, "status"))
 	if isNewAPIVideoFailureStatus(status) {
@@ -4288,15 +4340,7 @@ func queryNewAPIChannel1VideoTask(ctx context.Context, input canvasGenerationInp
 }
 
 func newAPIChannel1VideoResult(ctx context.Context, input canvasGenerationInput, state map[string]interface{}, id string) (map[string]interface{}, error) {
-	videoURL := firstNonEmptyString(stringField(state, "object"), stringField(state, "video_url"), stringField(state, "videoUrl"), stringField(state, "url"))
-	if videoURL == "" {
-		if object, ok := state["object"]; ok {
-			videoURL = findProviderMediaURL(object)
-		}
-	}
-	if videoURL == "" {
-		videoURL = newAPIVideoResultURL(state)
-	}
+	videoURL := newAPIVideoResultURL(state)
 	if videoURL == "" {
 		return nil, fmt.Errorf("NewAPI 媒体任务 %s 已完成但没有返回视频 URL", id)
 	}
@@ -4532,7 +4576,7 @@ func runSeedanceVideosTask(ctx context.Context, input canvasGenerationInput) (ma
 		if data, ok := created["data"].(map[string]interface{}); ok {
 			created = data
 		}
-		id = firstNonEmptyString(stringField(created, "id"), stringField(created, "task_id"))
+		id = providerRequestIDFromPayload(created)
 	}
 	if id == "" {
 		return nil, errors.New("Seedance 接口没有返回任务 ID")
@@ -5037,12 +5081,15 @@ func doJSON(req *http.Request, target interface{}) error {
 		if payload.Error != nil && payload.Error.Message != "" {
 			return errors.New(providerPayloadErrorMessage(payload.Error.Message))
 		}
-		if payload.Code != nil && *payload.Code != 0 {
+		if payload.Code != nil && (*payload.Code < 0 || *payload.Code >= 300) {
 			return errors.New(providerPayloadErrorMessage(payload.Msg))
 		}
 	}
 	if payload, ok := target.(*map[string]interface{}); ok {
 		if _, rawMessage, failed := providerPayloadBusinessFailure(*payload); failed {
+			if providerPayloadIndicatesAcceptedTask(*payload) {
+				return nil
+			}
 			return providerPayloadError{raw: rawMessage, message: providerPayloadErrorMessage(rawMessage)}
 		}
 		if errValue, ok := (*payload)["error"].(map[string]interface{}); ok && stringField(errValue, "message") != "" {
@@ -5230,9 +5277,16 @@ func recordProviderRequest(req *http.Request, startedAt time.Time, statusCode in
 		status = model.ApiCallStatusFailed
 		errorCode, errorText = providerRequestErrorDetails(requestErr)
 	} else if businessCode, businessMessage, failed := providerResponseBusinessFailure(responseBody); failed {
-		status = model.ApiCallStatusFailed
-		errorCode = businessCode
-		errorText = businessMessage
+		// A few gateways return a non-zero wrapper code even when the nested
+		// payload contains a queued task. Keep the API call successful in that
+		// case so LogAPICall persists the provider ID with poll_stage=accepted.
+		var payload map[string]any
+		accepted := json.Unmarshal(responseBody, &payload) == nil && providerPayloadIndicatesAcceptedTask(payload)
+		if !accepted {
+			status = model.ApiCallStatusFailed
+			errorCode = businessCode
+			errorText = businessMessage
+		}
 	}
 	requestKind := providerRequestKind(req.Method, req.URL.Path)
 	if metadata.RequestKind != "" {

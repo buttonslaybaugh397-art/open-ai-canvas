@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -61,12 +62,81 @@ func providerPayloadBusinessFailure(payload map[string]any) (string, string, boo
 	return code, message, true
 }
 
+// providerPayloadIndicatesAcceptedTask prevents a gateway's wrapper/business
+// code from hiding a real asynchronous submission. Once a task identifier and
+// an in-flight status are present, the caller must be allowed to poll it.
+func providerPayloadIndicatesAcceptedTask(payload map[string]any) bool {
+	if payload == nil || providerRequestIDFromPayload(payload) == "" {
+		return false
+	}
+	status := providerStatusFromPayload(payload, 0)
+	if status != "" {
+		switch status {
+		case "accepted", "submitted", "queued", "pending", "processing", "running", "in_progress", "in-progress", "not_start", "created":
+			return true
+		case "failed", "failure", "error", "cancelled", "canceled", "expired", "succeeded", "success", "completed", "done":
+			return false
+		}
+	}
+	// Some wrappers omit status but return a custom success code alongside the
+	// task id. An explicit non-success business code still wins over the ID.
+	if _, hasError := payload["error"]; hasError {
+		return false
+	}
+	for key, value := range payload {
+		if !strings.EqualFold(key, "code") && !strings.EqualFold(key, "statusCode") && !strings.EqualFold(key, "status_code") {
+			continue
+		}
+		code := strings.ToLower(strings.TrimSpace(fmt.Sprint(value)))
+		if code == "" || code == "<nil>" || code == "0" || code == "success" || code == "succeeded" || code == "ok" || code == "accepted" || code == "queued" || code == "pending" || code == "processing" {
+			continue
+		}
+		if numeric, err := strconv.Atoi(code); err == nil && numeric >= 200 && numeric < 300 {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func providerStatusFromPayload(value any, depth int) string {
+	if depth > 12 {
+		return ""
+	}
+	switch current := value.(type) {
+	case map[string]any:
+		for key, candidate := range current {
+			if strings.EqualFold(key, "status") || strings.EqualFold(key, "state") {
+				if text, ok := candidate.(string); ok {
+					return strings.ToLower(strings.TrimSpace(text))
+				}
+			}
+		}
+		for _, nested := range current {
+			if status := providerStatusFromPayload(nested, depth+1); status != "" {
+				return status
+			}
+		}
+	case []any:
+		for _, nested := range current {
+			if status := providerStatusFromPayload(nested, depth+1); status != "" {
+				return status
+			}
+		}
+	}
+	return ""
+}
+
 func providerBusinessCodeFailed(value any) bool {
 	code := strings.ToLower(strings.TrimSpace(fmt.Sprint(value)))
 	switch code {
-	case "", "0", "success", "succeeded", "ok", "<nil>":
+	case "", "0", "success", "succeeded", "ok", "accepted", "queued", "pending", "processing", "in_progress", "in-progress", "<nil>":
 		return false
 	default:
+		// Some gateways expose the HTTP result as a business code.
+		if numeric, err := strconv.Atoi(code); err == nil && numeric >= 200 && numeric < 300 {
+			return false
+		}
 		return true
 	}
 }

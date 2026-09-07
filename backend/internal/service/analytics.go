@@ -980,6 +980,89 @@ func (s *Service) EnrichAPICallLog(log *model.ApiCallLog, responseBody []byte) {
 	s.enrichAPICallLogFailureSummary(log, responseBody)
 }
 
+// providerRequestIDFromPayload accepts the response envelopes used by the
+// different video gateways. IDs are often nested below data/result/task or
+// returned as an operation name, so shallow field lookups silently lose the
+// ability to resume an already accepted generation.
+func providerRequestIDFromPayload(value any) string {
+	return findProviderRequestID(value, 0)
+}
+
+func findProviderRequestID(value any, depth int) string {
+	if depth > 12 {
+		return ""
+	}
+	// Resolve explicit asynchronous identifiers before generic `id`. A number
+	// of gateways wrap the real task_id under data/result while the outer id is
+	// only a request or trace identifier.
+	keys := []string{"task_id", "taskId", "request_id", "requestId", "operation_id", "operationId", "name"}
+	// Search each identifier spelling through the whole response before moving
+	// to the next spelling. This prevents an outer request_id from winning over
+	// the actual nested task_id.
+	for _, key := range keys {
+		if id := findProviderField(value, key, depth); id != "" {
+			return id
+		}
+	}
+	return findProviderGenericID(value, depth)
+}
+
+func findProviderField(value any, wanted string, depth int) string {
+	if depth > 12 {
+		return ""
+	}
+	switch current := value.(type) {
+	case map[string]any:
+		for actual, candidate := range current {
+			if strings.EqualFold(actual, wanted) {
+				if text, ok := candidate.(string); ok && strings.TrimSpace(text) != "" {
+					return strings.TrimSpace(text)
+				}
+			}
+		}
+		for _, nested := range current {
+			if id := findProviderField(nested, wanted, depth+1); id != "" {
+				return id
+			}
+		}
+	case []any:
+		for _, nested := range current {
+			if id := findProviderField(nested, wanted, depth+1); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+func findProviderGenericID(value any, depth int) string {
+	if depth > 12 {
+		return ""
+	}
+	switch current := value.(type) {
+	case map[string]any:
+		for actual, candidate := range current {
+			if strings.EqualFold(actual, "id") {
+				if text, ok := candidate.(string); ok && strings.TrimSpace(text) != "" {
+					return strings.TrimSpace(text)
+				}
+			}
+		}
+		for _, nested := range current {
+			if id := findProviderGenericID(nested, depth+1); id != "" {
+				return id
+			}
+		}
+	case []any:
+		for _, nested := range current {
+			if id := findProviderGenericID(nested, depth+1); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
 func (s *Service) enrichAPICallLogFailureSummary(log *model.ApiCallLog, responseBody []byte) {
 	if log.Status != model.ApiCallStatusFailed || log.StatusCode < 400 {
 		return
@@ -1064,7 +1147,7 @@ func (s *Service) enrichAPICallLogPayload(log *model.ApiCallLog, payload map[str
 		}
 		log.CachedTokens = firstInt64(usageMetadata, "cachedContentTokenCount")
 	}
-	log.ProviderRequestID = firstNonEmpty(stringField(payload, "task_id"), stringField(payload, "id"), stringField(payload, "request_id"), stringField(payload, "name"), log.ProviderRequestID)
+	log.ProviderRequestID = firstNonEmpty(providerRequestIDFromPayload(payload), log.ProviderRequestID)
 	log.ProviderStatus = strings.ToLower(firstNonEmpty(stringField(payload, "status"), log.ProviderStatus))
 	if log.ProviderStatus == "failed" || log.ProviderStatus == "cancelled" || log.ProviderStatus == "expired" {
 		log.Status = model.ApiCallStatusFailed

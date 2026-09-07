@@ -26,6 +26,7 @@ type taskRouteExecutionResult struct {
 	canvasOps         []map[string]interface{}
 	err               error
 	providerSucceeded bool
+	providerAccepted  bool
 }
 
 func newTaskRouteExecutor(s *Service) *taskRouteExecutor {
@@ -70,6 +71,13 @@ func (e *taskRouteExecutor) execute(ctx context.Context, task *model.Task, attem
 		attempt = nextAttempt
 		_ = e.port.log(task.UserID, task.ID, "warn", "上游未创建任务，切换备用能力路由", nextAttempt.RouteID)
 	}
+	// A provider task may be accepted even when polling/download later fails.
+	// Preserve that distinction so the terminal path does not report a request
+	// rejection or refund an already-submitted generation.
+	// A request ID recorded during a failed create response is not proof that
+	// the provider accepted the job. LogAPICall marks successful creates as
+	// "accepted"; poll/download stages and resumed tasks are accepted too.
+	execution.providerAccepted = task.ProviderRequestID != "" && task.PollStage != "create"
 	execution.providerSucceeded = execution.err == nil
 	return execution, nil
 }

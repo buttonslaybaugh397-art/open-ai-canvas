@@ -604,6 +604,20 @@ func TestProviderPayloadErrorMessageUsesSafeActionableCategories(t *testing.T) {
 	}
 }
 
+func TestProviderPayloadBusinessFailureAllowsAcceptedTaskCodes(t *testing.T) {
+	for _, payload := range []map[string]any{
+		{"code": 202, "data": map[string]any{"task_id": "task-1", "status": "queued"}},
+		{"code": "accepted", "task": map[string]any{"taskId": "task-2", "status": "processing"}},
+	} {
+		if _, _, failed := providerPayloadBusinessFailure(payload); failed && !providerPayloadIndicatesAcceptedTask(payload) {
+			t.Fatalf("accepted payload classified as failure: %#v", payload)
+		}
+		if !providerPayloadIndicatesAcceptedTask(payload) {
+			t.Fatalf("accepted payload not recognized: %#v", payload)
+		}
+	}
+}
+
 func TestProviderPayloadErrorCategoryFlagsRealPersonRejection(t *testing.T) {
 	raw := `{"error":{"code":"InputImageSensitiveContentDetected.PrivacyInformation","message":"The request failed because the input image 'content[1]' may contain real person. Request id: secret-trace"}}`
 	message, ok := providerPayloadErrorCategory(raw)
@@ -1587,6 +1601,22 @@ func TestRunVideoTaskUsesNestedURLBeforeResultURL(t *testing.T) {
 	want := "POST /v1/videos,GET /v1/videos/video-1,GET /files/video.mp4"
 	if got := strings.Join(paths, ","); got != want {
 		t.Fatalf("paths = %q, want %q", got, want)
+	}
+}
+
+func TestFindProviderMediaURLSupportsDeepNestedArrays(t *testing.T) {
+	payload := map[string]interface{}{
+		"result_url": "https://example.test/content-endpoint",
+		"data": map[string]interface{}{
+			"outputs": []interface{}{map[string]interface{}{
+				"content": map[string]interface{}{
+					"files": []interface{}{map[string]interface{}{"videoUrl": "https://cdn.example.test/video.mp4"}},
+				},
+			}},
+		},
+	}
+	if got := newAPIVideoResultURL(payload); got != "https://cdn.example.test/video.mp4" {
+		t.Fatalf("newAPIVideoResultURL() = %q", got)
 	}
 }
 

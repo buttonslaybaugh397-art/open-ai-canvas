@@ -155,6 +155,8 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task) error {
 	}
 	result, canvasOps, err := routeResult.result, routeResult.canvasOps, routeResult.err
 	providerSucceeded := routeResult.providerSucceeded
+	providerAccepted := routeResult.providerAccepted || (strings.TrimSpace(task.ProviderRequestID) != "" && task.PollStage != "create")
+	providerErr := routeResult.err
 	if err == nil {
 		result, err = s.persistGeneratedMediaResult(task.UserID, result)
 	}
@@ -183,6 +185,12 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task) error {
 			}
 			err = errors.New(taskTimeoutMessage(task.Type))
 		}
+		if providerErr != nil && providerAccepted && isRecoverableVideoProviderError(*task, err) {
+			if deferErr := s.deferAcceptedVideoTask(task, err); deferErr != nil {
+				return deferErr
+			}
+			return nil
+		}
 		return terminal.handleExecutionFailure(task, err, providerSucceeded, channelSlotFailedBeforeRequest)
 	}
 	latest, err := s.repo.Task(task.ID)
@@ -207,6 +215,46 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task) error {
 		return terminalErr
 	}
 	return terminal.handleSuccess(task)
+}
+
+// Accepted asynchronous video jobs must remain recoverable when a provider
+// transiently rejects a poll/download request. The next worker run rehydrates
+// the provider ID and resumes polling instead of entering local failed state.
+func (s *Service) deferAcceptedVideoTask(task *model.Task, cause error) error {
+	if task == nil || strings.TrimSpace(task.ProviderRequestID) == "" {
+		return errors.New("已提交视频任务缺少上游任务 ID")
+	}
+	stage := "上游任务已提交，等待结果"
+	if cause != nil {
+		stage = "上游任务已提交，稍后继续查询"
+	}
+	if err := s.repo.DeferRunningTaskForProviderPoll(task.ID, task.LeaseOwner, stage, 15*time.Second); err != nil {
+		return fmt.Errorf("保留已提交视频任务失败：%w", err)
+	}
+	_ = s.log(task.UserID, task.ID, "warn", stage, safeProviderLogError(cause))
+	return nil
+}
+
+func isRecoverableVideoProviderError(task model.Task, err error) bool {
+	if err == nil || strings.TrimSpace(task.ProviderRequestID) == "" || (!strings.HasPrefix(task.Type, "canvas_video") && !strings.HasPrefix(task.Type, "video_")) {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	var httpErr providerHTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode == 400 || httpErr.StatusCode == 404 || httpErr.StatusCode == 409 || httpErr.StatusCode == 422 || httpErr.StatusCode == 429 || httpErr.StatusCode >= 500
+	}
+	// Result parsing/download errors are recoverable while the upstream job ID
+	// is present; explicit provider terminal failures are handled normally.
+	message := strings.ToLower(err.Error())
+	for _, terminal := range []string{"视频生成失败", "任务失败", "cancelled", "canceled", "expired", "上游返回失败"} {
+		if strings.Contains(message, terminal) {
+			return false
+		}
+	}
+	return true
 }
 
 func taskUsesUpstreamReportedProgress(taskType string) bool {
