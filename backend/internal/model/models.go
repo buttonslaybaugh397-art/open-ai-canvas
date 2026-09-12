@@ -27,7 +27,7 @@ type AssetVersionStatus string
 type WorkflowStatus string
 type WorkflowStepStatus string
 
-// AdminAuditEvent 只允许追加，用于还原管理员写操作，禁止作为可编辑业务状态使用。
+// AdminAuditEvent 只允许追加，记录管理员操作与账号敏感变更，禁止作为可编辑业务状态使用。
 type AdminAuditEvent struct {
 	ID           string    `json:"id" gorm:"primaryKey;size:36"`
 	ActorUserID  string    `json:"actorUserId" gorm:"index;size:36"`

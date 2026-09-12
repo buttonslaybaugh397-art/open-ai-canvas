@@ -29,4 +29,5 @@ canvas-agent/pnpm-lock.yaml
 *.sqlite3
 .settings-key
 .env*
+**/.env*
 !.env.example

@@ -153,6 +153,7 @@ func RegisterAuthRoutes(r *gin.RouterGroup, svc *service.Service) {
 		ok(c, gin.H{"ok": true})
 	})
 	r.GET("/auth/session", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
 		user, err := currentUser(c, svc)
 		if err != nil {
 			ok(c, gin.H{"user": nil})
@@ -201,6 +202,35 @@ func RegisterAuthRoutes(r *gin.RouterGroup, svc *service.Service) {
 			return
 		}
 		ok(c, gin.H{"channels": channels})
+	})
+	r.PATCH("/auth/display-name", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		actor, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		if !enforceRateLimit(c, "self-display-name:"+actor.ID, 10, 10*time.Minute) {
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 16<<10)
+		var req service.UpdateOwnDisplayNameRequest
+		decoder := json.NewDecoder(c.Request.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil {
+			fail(c, http.StatusBadRequest, errors.New("请仅提交 displayName 字段"))
+			return
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			fail(c, http.StatusBadRequest, errors.New("请求必须为单个 JSON 对象"))
+			return
+		}
+		user, err := svc.UpdateOwnDisplayName(actor, req)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"user": user})
 	})
 }
 

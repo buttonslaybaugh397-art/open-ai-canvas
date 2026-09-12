@@ -9,8 +9,11 @@ import type { OSSConnectionTestInput, OSSConnectionTestResult, OSSProvider, S3Pr
 
 let authSessionRequest: Promise<AuthSessionPayload> | null = null;
 let authSessionCache: { payload: AuthSessionPayload; expiresAt: number } | null = null;
+let authSessionRevision = 0;
 
 function invalidateAuthSessionCache() {
+    authSessionRevision += 1;
+    authSessionRequest = null;
     authSessionCache = null;
 }
 
@@ -579,20 +582,24 @@ export function linuxDOLoginURL(next: string) {
     return `${base}/auth/linuxdo/start?next=${encodeURIComponent(next)}`;
 }
 
-export function getAuthSession() {
+export function getAuthSession(): Promise<AuthSessionPayload> {
     const now = Date.now();
     if (authSessionCache && authSessionCache.expiresAt > now) return Promise.resolve(authSessionCache.payload);
     if (authSessionRequest) return authSessionRequest;
-    authSessionRequest = http
+    const revision = authSessionRevision;
+    const request = http
         .get<AuthSessionPayload>("/auth/session")
         .then((payload) => {
+            // A rename or login may finish before an older session read returns.
+            if (revision !== authSessionRevision) return getAuthSession();
             authSessionCache = { payload, expiresAt: Date.now() + 5_000 };
             return payload;
         })
         .finally(() => {
-            authSessionRequest = null;
+            if (authSessionRequest === request) authSessionRequest = null;
         });
-    return authSessionRequest;
+    authSessionRequest = request;
+    return request;
 }
 
 export function getSystemChannels() {
@@ -620,6 +627,14 @@ export async function login(input: { username: string; password: string }) {
 
 export function sendRegistrationEmailCode(email: string) {
     return http.post<{ sent: boolean }>("/auth/email-code", { email });
+}
+
+export type UpdateOwnDisplayNameInput = { displayName: string };
+
+export async function updateOwnDisplayName(input: UpdateOwnDisplayNameInput) {
+    const result = await http.patch<{ user: LocalUser }>("/auth/display-name", { displayName: input.displayName });
+    invalidateAuthSessionCache();
+    return result;
 }
 
 export function sendPasswordResetEmailCode(email: string) {

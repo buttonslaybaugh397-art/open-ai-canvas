@@ -47,6 +47,7 @@ export function WorkspaceAccountMenu() {
                     </div>
 
                     <div className="border-t border-border/35 py-2">
+                        <Link to="/settings?section=account" onClick={() => setMenuOpen(false)} className="flex h-9 items-center gap-2 rounded px-2 text-xs text-foreground/62 hover:bg-surface-hover hover:text-foreground"><CircleUserRound className="size-3.5" />账号设置</Link>
                         <AppChangelogButton className="flex h-8 w-full items-center gap-2 rounded px-2 text-[var(--fs-label)] text-foreground/58 hover:bg-surface-hover hover:text-foreground [&_svg]:size-3.5" showLabel showVersion versionClassName="ml-auto text-[var(--fs-micro)] tabular-nums text-foreground/32" />
                     </div>
 

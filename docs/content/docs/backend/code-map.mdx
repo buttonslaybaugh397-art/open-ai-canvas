@@ -96,6 +96,7 @@ HTTP 请求 -> handler -> service（稳定导入面 / 别名）-> app（组合�
 | 平台及个人用量统计 | `app/analytics.go`、`repository/analytics.go`、`handler/admin_analytics.go` |
 | 个人每日积分消耗 | `app/finance.go`、`repository/finance.go` |
 | 用户名修改与管理员密码重置 | `app/admin.go`、`repository/admin_user.go`；登录字段更新在 `auth/auth.go`、`auth/linuxdo.go` |
+| 用户自行修改显示名称（登录用户名不变） | `auth/profile.go`、`repository/user_profile.go`、`handler/auth.go`；界面 `web/src/pages/settings/account-settings-pane.tsx` |
 | 存储恢复及管理员显式读取凭据 | `app/settings.go`、`app/storage_location.go`、`handler/auth.go` |
 | 特定渠道请求准备 | `app/provider_aistarslab.go`、`provider_huiquyun.go`、`provider_weijin.go`、`provider_protocol.go` |
 | 自定义渠道注册和多 Provider 宿主清单 | `protocol/channel_plugins.go`、`protocol/manifest.go`、`app/protocol_plugins.go` |

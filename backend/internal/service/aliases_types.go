@@ -160,6 +160,7 @@ type (
 	LogicalModelRequest                    = app.LogicalModelRequest
 	LogicalRouteRequest                    = app.LogicalRouteRequest
 	LoginRequest                           = app.LoginRequest
+	UpdateOwnDisplayNameRequest            = app.UpdateOwnDisplayNameRequest
 	ModelCapabilityConfig                  = app.ModelCapabilityConfig
 	ModelCatalogResponse                   = app.ModelCatalogResponse
 	ModelCatalogSource                     = app.ModelCatalogSource

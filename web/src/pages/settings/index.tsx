@@ -1,7 +1,7 @@
 import { App, Button, Input, InputNumber } from "antd";
 import { Select } from "@/components/ui/base/select";
 import { SettingsRow } from "@/components/ui/product/settings-row";
-import { ArrowLeft, Boxes, Bug, Cloud, MessageSquareText, MonitorUp, RadioTower, SlidersHorizontal, SquareTerminal, Workflow } from "lucide-react";
+import { ArrowLeft, Boxes, Bug, CircleUserRound, Cloud, MessageSquareText, MonitorUp, RadioTower, SlidersHorizontal, SquareTerminal, Workflow } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
@@ -18,12 +18,14 @@ import { LocalCliSettings } from "./local-cli-settings";
 import { PromptPreferencesPane } from "./prompt-preferences-pane";
 import DiagnosticsPanel from "./diagnostics-panel";
 import { RunningHubSettingsPane } from "./runninghub-settings-pane";
+import { AccountSettingsPane } from "./account-settings-pane";
 import { COMFYUI_PLUGIN_ID, RUNNINGHUB_PLUGIN_ID } from "@/lib/plugins/builtin/workflows";
 import { usePluginStore } from "@/stores/use-plugin-store";
 
-type ConfigSectionKey = "local-cli" | "channels" | "models" | "runninghub" | "comfyui" | "preferences" | "prompts" | "storage" | "diagnostics";
+type ConfigSectionKey = "account" | "local-cli" | "channels" | "models" | "runninghub" | "comfyui" | "preferences" | "prompts" | "storage" | "diagnostics";
 
 const configSections: Array<{ key: ConfigSectionKey; label: string; description: string; icon: ReactNode }> = [
+    { key: "account", label: "账号设置", description: "", icon: <CircleUserRound className="size-4" /> },
     { key: "local-cli", label: "本机工具", description: "连接 Runtime 与官方 CLI", icon: <SquareTerminal className="size-4" /> },
     { key: "channels", label: "个人渠道", description: "模型服务与个人工作流", icon: <RadioTower className="size-4" /> },
     { key: "runninghub", label: "RunningHub 工作流", description: "个人渠道的云端工作流配置", icon: <Workflow className="size-4" /> },
@@ -120,6 +122,7 @@ export default function SettingsPage() {
     };
 
     const panes: Record<ConfigSectionKey, ReactNode> = {
+        account: <SettingsPane><AccountSettingsPane /></SettingsPane>,
         "local-cli": <SettingsPane><LocalCliSettings /></SettingsPane>,
         channels: <SettingsPane><ChannelSettingsPane onOpenModels={() => selectSection("models")} onOpenRunningHub={runningHubPluginEnabled ? () => selectSection("runninghub") : undefined} onOpenComfyUI={comfyUIPluginEnabled ? () => selectSection("comfyui") : undefined} /></SettingsPane>,
         models: (

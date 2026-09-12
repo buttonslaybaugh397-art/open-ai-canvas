@@ -11,36 +11,37 @@ import (
 const SessionCookieName = auth.SessionCookieName
 
 type (
-	EmailCodeCooldownError     = auth.EmailCodeCooldownError
-	RegisterRequest            = auth.RegisterRequest
-	LoginRequest               = auth.LoginRequest
-	PublicAuthSettings         = auth.PublicAuthSettings
-	AuthSessionResult          = auth.AuthSessionResult
-	AuthUser                   = auth.AuthUser
-	RegistrationSettingRequest = auth.RegistrationSettingRequest
-	PublicRegistrationSetting  = auth.PublicRegistrationSetting
-	PasswordResetRequest       = auth.PasswordResetRequest
-	EmailSettingRequest        = auth.EmailSettingRequest
-	PublicEmailSetting         = auth.PublicEmailSetting
-	LinuxDOSettingRequest      = auth.LinuxDOSettingRequest
-	PublicLinuxDOSetting       = auth.PublicLinuxDOSetting
-	LinuxDOCallbackResult      = auth.LinuxDOCallbackResult
-	LibTVSettingRequest        = auth.LibTVSettingRequest
-	PublicLibTVSetting         = auth.PublicLibTVSetting
-	LibTVImportRequest         = auth.LibTVImportRequest
-	LibTVImportResult          = auth.LibTVImportResult
-	LibTVCanvasConnection      = auth.LibTVCanvasConnection
-	LibTVCanvasNode            = auth.LibTVCanvasNode
-	LibTVImportIssue           = auth.LibTVImportIssue
-	LibTVImportMetadata        = auth.LibTVImportMetadata
-	LibTVImportWarning         = auth.LibTVImportWarning
-	TapNowImportRequest        = auth.TapNowImportRequest
-	TapNowImportResult         = auth.TapNowImportResult
-	TapNowCanvasConnection     = auth.TapNowCanvasConnection
-	TapNowCanvasNode           = auth.TapNowCanvasNode
-	TapNowImportIssue          = auth.TapNowImportIssue
-	TapNowImportMetadata       = auth.TapNowImportMetadata
-	TapNowImportWarning        = auth.TapNowImportWarning
+	EmailCodeCooldownError      = auth.EmailCodeCooldownError
+	RegisterRequest             = auth.RegisterRequest
+	LoginRequest                = auth.LoginRequest
+	UpdateOwnDisplayNameRequest = auth.UpdateOwnDisplayNameRequest
+	PublicAuthSettings          = auth.PublicAuthSettings
+	AuthSessionResult           = auth.AuthSessionResult
+	AuthUser                    = auth.AuthUser
+	RegistrationSettingRequest  = auth.RegistrationSettingRequest
+	PublicRegistrationSetting   = auth.PublicRegistrationSetting
+	PasswordResetRequest        = auth.PasswordResetRequest
+	EmailSettingRequest         = auth.EmailSettingRequest
+	PublicEmailSetting          = auth.PublicEmailSetting
+	LinuxDOSettingRequest       = auth.LinuxDOSettingRequest
+	PublicLinuxDOSetting        = auth.PublicLinuxDOSetting
+	LinuxDOCallbackResult       = auth.LinuxDOCallbackResult
+	LibTVSettingRequest         = auth.LibTVSettingRequest
+	PublicLibTVSetting          = auth.PublicLibTVSetting
+	LibTVImportRequest          = auth.LibTVImportRequest
+	LibTVImportResult           = auth.LibTVImportResult
+	LibTVCanvasConnection       = auth.LibTVCanvasConnection
+	LibTVCanvasNode             = auth.LibTVCanvasNode
+	LibTVImportIssue            = auth.LibTVImportIssue
+	LibTVImportMetadata         = auth.LibTVImportMetadata
+	LibTVImportWarning          = auth.LibTVImportWarning
+	TapNowImportRequest         = auth.TapNowImportRequest
+	TapNowImportResult          = auth.TapNowImportResult
+	TapNowCanvasConnection      = auth.TapNowCanvasConnection
+	TapNowCanvasNode            = auth.TapNowCanvasNode
+	TapNowImportIssue           = auth.TapNowImportIssue
+	TapNowImportMetadata        = auth.TapNowImportMetadata
+	TapNowImportWarning         = auth.TapNowImportWarning
 )
 
 type authHost struct {
@@ -142,6 +143,10 @@ func (s *Service) CurrentUser(cookieValue string) (*model.User, error) {
 
 func (s *Service) PublicAuthUser(user *model.User) (AuthUser, error) {
 	return s.authDomain().PublicAuthUser(user)
+}
+
+func (s *Service) UpdateOwnDisplayName(actor *model.User, req UpdateOwnDisplayNameRequest) (AuthUser, error) {
+	return s.authDomain().UpdateOwnDisplayName(actor, req)
 }
 
 func (s *Service) AdminRegistrationSetting(actor *model.User) (*PublicRegistrationSetting, error) {

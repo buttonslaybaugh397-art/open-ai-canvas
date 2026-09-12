@@ -76,11 +76,12 @@ export function WorkspaceSidebarFooter({ expandedClassName, collapsedClassName, 
                                 </div>
                             </div>
 
-                            {user.role === "admin" ? (
-                                <nav className="py-2" aria-label="管理工具">
+                            <nav className="py-2" aria-label="账号工具">
+                                <MenuLink to="/settings?section=account" icon={<CircleUserRound />} label="账号设置" onNavigate={() => setMenuOpen(false)} />
+                                {user.role === "admin" ? (
                                     <MenuLink to="/admin" icon={<ShieldCheck />} label="管理员后台" onNavigate={() => setMenuOpen(false)} />
-                                </nav>
-                            ) : null}
+                                ) : null}
+                            </nav>
 
                             <div className="border-y border-border/65 py-2">
                                 <AppChangelogButton className="flex h-8 w-full items-center gap-2 rounded px-2 text-[var(--fs-label)] text-foreground/58 hover:bg-surface-hover hover:text-foreground [&_svg]:size-3.5" showLabel showVersion versionClassName="ml-auto text-[var(--fs-micro)] tabular-nums text-foreground/32" />

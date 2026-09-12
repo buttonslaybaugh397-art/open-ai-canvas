@@ -66,6 +66,34 @@ paths:
           $ref: "#/components/responses/Envelope"
         "401":
           $ref: "#/components/responses/Error"
+  /auth/display-name:
+    patch:
+      tags: [auth]
+      summary: 当前用户修改自己的显示名称
+      description: |
+        仅接受 displayName，拒绝登录用户名、用户 ID、角色、密码等额外字段。账号取自登录 Cookie。
+        去除首尾空白后须为 1-40 个 Unicode 字符，支持中文及同名，不允许换行和控制字符。
+        返回 data.user，保留公开第三方身份；不更换登录用户名、用户 ID、密码、积分、历史数据或会话。
+        修改与 user.display_name.update_self 审计同事务；相同名称不重复写入。每账号每 10 分钟限 10 次请求。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [displayName]
+              properties:
+                displayName:
+                  type: string
+                  description: 去除首尾空白后须为 1-40 个字符，不含换行或控制字符
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
   /admin/users/{id}:
     patch:
       tags: [admin-users]

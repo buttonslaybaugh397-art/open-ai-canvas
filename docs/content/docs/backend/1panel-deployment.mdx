@@ -1,0 +1,61 @@
+---
+title: 1Panel 编排部署
+description: 本地增强版的镜像、持久数据和启动顺序
+---
+
+# 1Panel 编排部署
+
+使用根目录 `docker-compose.1panel.yml`，环境变量模板为 `1panel.env.example`。这是单独的完整编排，不需要叠加 `docker-compose.deploy.yml`，也不要追加到旧 YAML 末尾，避免重复的 `services` / `volumes`。包含 PostgreSQL 17、Redis 7.4、一次性迁移、后端和网页服务。
+
+## 镜像前提
+
+默认镜像仓库是本地分支对应的 `ghcr.io/buttonslaybaugh397-art`，不会切换到上游仓库。`CANVAS_IMAGE_TAG` 默认 `latest`，前端、后端和迁移统一使用这一标签；未设置或留空也采用该默认值。需要固定版本时可设置实际发布成功的共同 `sha-xxxxxxx` 标签。`latest` 指我们仓库已发布的镜像，不代表本机未发布源码；编排本身不构建或发布镜像。
+
+本次编排交付尚未发布包含当前本地改动的镜像。之前的 `sha-f88d6d9` 不代表当前已合并的新代码，不能用它验证新统计、账号设置等新增功能；本模板依赖当前后端的 `migrate-schema up` 和 `/api/health/ready`，不是旧镜像回退模板。发布流程会在默认分支更新 `latest`，前后端为独立任务，部署前应确认二者均成功且对应同一提交。使用私有镜像时，在 1Panel 配置 GHCR 拉取凭据，不把凭据写进编排。
+
+## 1Panel 配置
+
+1. 在“容器 → 编排”创建或编辑编排，整份替换为 `docker-compose.1panel.yml`。
+2. 在编排环境变量中填写 `CANVAS_CORS_ORIGINS`；`CANVAS_IMAGE_TAG` 保持默认 `latest` 即可，其余按 `1panel.env.example` 设置。缺少 CORS 时配置检查会直接失败，不使用通配 CORS。
+3. 默认只绑定宿主机 `127.0.0.1:6868`，通过 1Panel 网站反向代理配 HTTPS，目标为 `http://127.0.0.1:6868`。反向代理若运行在独立容器网络，容器内的 `127.0.0.1` 不是宿主机；应配置能访问宿主机的网络与目标地址。不要直接暴露后端、PostgreSQL 或 Redis 端口。
+4. 仅作直接 IP 测试时，可设置 `CANVAS_BIND_ADDRESS=0.0.0.0`、`CANVAS_HTTP_PORT=6868`，并将 CORS 设为实际 `http://服务器IP:6868`。生产使用 HTTPS，CORS 填浏览器访问域名的 Origin，不带路径或末尾斜杠。不要填写 Markdown 链接或 `*`。
+5. 保存启动。`postgres` 健康后运行迁移；迁移成功且 Redis 健康后启动后端；后端就绪后启动网页。`migrate` 退出码 0 是正常完成，不需要一直运行。
+
+外层反向代理应保留 `Host`、`X-Forwarded-Proto` 和 `X-Forwarded-For`。文本事件流及明确的模型 SSE 路径需要禁用缓冲，规则参考仓库 `nginx.conf`，不要对所有 API 关闭缓存和缓冲。
+
+## 旧数据库与密钥
+
+默认固定命名卷与早期 `open-ai-canvas` 编排一致，避免 1Panel 改变项目名称后意外换成空卷。更新前仍须在旧容器“挂载”中核对实际名称，并先做完整备份：
+
+| 环境变量 | 默认卷 | 内容 |
+| --- | --- | --- |
+| `CANVAS_POSTGRES_VOLUME` | `open-ai-canvas_postgres-data` | PostgreSQL 17 数据文件 |
+| `CANVAS_BACKEND_VOLUME` | `open-ai-canvas_backend-data` | 上传文件、平台配置加密文件 `.settings-key` 等 |
+| `CANVAS_SECRETS_VOLUME` | `open-ai-canvas_deployment-secrets` | PostgreSQL 密码及连接串 |
+| `CANVAS_REDIS_VOLUME` | `open-ai-canvas_redis-data` | Redis AOF 持久数据 |
+
+卷不存在时 Docker 会创建新卷，因此不能把模板默认值当作已经识别到真实数据。旧部署若使用宿主机目录挂载，需要按旧容器实际挂载修改相应 `volumes`，不要把目录路径填进上述卷名变量。不能将 SQLite 文件、SQL dump 或备份压缩包直接挂到 PostgreSQL 数据目录；也不能把其他 PostgreSQL 主版本的数据目录直接交给 17 使用。
+
+首次全新部署会生成 48 位随机十六进制密码，后续重建继续读取 secrets 卷，不会重新生成覆盖。如果已经存在 PostgreSQL 数据但密码文件丢失，启动明确失败，需还原对应 secrets 卷或提供原 `POSTGRES_PASSWORD`。手动密码至少 32 位且只允许字母和数字；已有密码不能通过修改环境变量完成轮换。此约束沿用此前自动密码编排，不支持将其他格式的现有密码直接套入模板。
+
+密码文件只挂载给 PostgreSQL、迁移和后端；Redis、网页都不挂载。为兼容这几个镜像中的不同 UID，文件模式为 `0444`，不是 Docker 原生加密 secrets；必须保护宿主机 Docker 管理权限和备份，不能把 secrets 卷挂给不可信容器。平台配置密钥在后端数据卷的 `.settings-key`，不是数据库密码文件；缺少匹配密钥会导致存储或渠道凭据无法解密。
+
+不要删除旧卷、不要执行 `docker compose down -v`，不要通过清空 Redis AOF 修复启动错误。更新完成后也不要盲目回退应用镜像，因为数据库 schema 可能已经前进。
+
+应直接更新原编排，不要让两套 PostgreSQL 容器同时使用同一个数据卷。换编排名称或迁移到新项目之前，确认原服务已停用并核对实际卷名。
+
+## 更新与排障
+
+编排不挂载 Host Updater socket、Token 或 Docker socket，使用 1Panel 管理升级，避免在线更新器覆盖本地增强版。迁移、后端和前端均使用 `pull_policy: always`：每次执行编排启动或更新时检查并拉取我们仓库 `latest` 当前指向的镜像，不只使用存量镜像。普通容器重启不会拉取，运行期间也不会自动检查或替换版本。仍可将 `CANVAS_IMAGE_TAG` 设为共同 SHA 标签以固定部署版本。
+
+Redis 保留 AOF 持久化、真实 PONG 检查，启动宽限为 120 秒，之后每 10 秒检查一次，最多 18 次连续失败。宽限只能容纳恢复耗时，不能修复权限、磁盘已满或 AOF 损坏。仍提示 unhealthy 时，先查看 Redis 容器日志和健康检查输出，保留原数据再按具体错误处理，不要把依赖降为 `service_started`。
+
+迁移容器禁用继承的 HTTP 健康检查，必须成功退出才放行后端；迁移失败看 `migrate` 日志。旧 `migrate` 孤立容器警告本身不是 Redis 故障原因，本编排已明确包含该服务。
+
+可先在服务器编排目录运行配置验证（只检查配置，不启动服务）：
+
+```bash
+docker compose --env-file .env -f docker-compose.1panel.yml config --quiet
+```
+
+验证登录、历史画布和资源、个人积分统计、渠道配置解密、生成轮询和任务持久化后再完成升级验收。健康检查通过不等于业务验证完成。
