@@ -8,12 +8,12 @@
 | --- | --- |
 | `docker-compose.yml` | 完整编排，包含 PostgreSQL、Redis、数据库迁移、后端和网页 |
 | `.env.example` | 可公开的环境配置模板，不含真实密码，默认 `latest` |
-| `.env`（仅本地） | 私有恢复配置，已填入当前数据库凭据及 `latest` 镜像标签；不提交仓库，CORS 仍待填 |
+| `.env`（仅本地） | 私有恢复配置，已填入当前数据库凭据、`latest` 标签和此前部署访问地址；不提交仓库，使用前核对地址 |
 | `README.md` | 部署与数据保护说明 |
 
 ## 启动前配置
 
-- `CANVAS_IMAGE_TAG`：默认 `latest`，前端、后端和迁移使用我们自己仓库的最新版镜像，无需手填版本号；需要锁定版本时可改成已发布的共同 `sha-xxxxxxx` 标签。`latest` 指仓库已发布版本，不是本机未发布源码。当前本地增强代码及显示名称修改尚未由本次任务发布成镜像；本编排不会自动构建或发布镜像，也不是 `sha-f88d6d9` 回退模板，镜像需包含 `migrate-schema` 与就绪检查接口。
+- `CANVAS_IMAGE_TAG`：默认 `latest`，前端、后端和迁移使用我们自己仓库的最新版镜像，无需手填版本号；需要锁定版本时可改成已发布的共同 `sha-xxxxxxx` 标签。`latest` 指仓库已发布版本，不是本机未发布源码；推送后应等待镜像工作流成功，再更新编排。本编排不会自动构建或发布镜像，也不是 `sha-f88d6d9` 回退模板，镜像需包含 `migrate-schema` 与就绪检查接口。
 - `CANVAS_CORS_ORIGINS`：实际浏览器访问地址，例如 `https://canvas.example.com`，不要填写路径、末尾斜杠、Markdown 链接或 `*`。
 - 默认仓库 `CANVAS_IMAGE_OWNER=buttonslaybaugh397-art`，没有切换到上游镜像。使用私有仓库时，在 1Panel 配置拉取凭据，不把凭据写入编排。
 
@@ -33,7 +33,11 @@
 docker compose --env-file .env -f docker-compose.yml config --quiet
 ```
 
+若 1Panel 提示 `CANVAS_CORS_ORIGINS is missing a value`，说明编排解析时没有读取到该变量，尚未进入容器启动阶段。在该编排的环境变量中添加实际浏览器 Origin（包含协议和非默认端口），或确认已填写的 `.env` 位于 1Panel 实际使用的编排目录；仅在本机填写或推送 `.env.example` 不会同步服务器配置。编辑器模式请在环境变量栏配置，不要将 `KEY=value` 文本追加到 YAML。直接 IP 访问还需 `CANVAS_BIND_ADDRESS=0.0.0.0`，反向代理部署按实际网络保留回环绑定。不要改为 `*` 或移除 CORS 校验。
+
 外层反向代理需保留 `Host`、`X-Forwarded-Proto`、`X-Forwarded-For`，并为实际使用的 SSE 路径配置流式转发。反向代理若运行在独立容器中，其 `127.0.0.1` 不是宿主机，应使用可到达宿主机的网络与地址。
+
+网页 Nginx 从原始 `Host` 读取完整主机名和端口，并覆盖客户端自带的 `X-Forwarded-Host`；普通 API、SSE、分享和 OAuth 回调统一处理。旧网页镜像可能丢失端口，更新前可在 `backend.environment` 配置完整 `CANVAS_CORS_ORIGINS` 并更新编排重建后端；仅修改文件或普通重启不会改变已有容器环境变量。外层反向代理也需保留公开端口。
 
 ## 旧部署数据保护
 
