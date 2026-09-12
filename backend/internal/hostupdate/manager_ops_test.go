@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -45,7 +46,8 @@ func TestSetEnvValuePreservesOtherSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stat.Mode().Perm() != 0o640 {
+	// Windows exposes writable files as 0666 and does not implement POSIX modes.
+	if runtime.GOOS != "windows" && stat.Mode().Perm() != 0o640 {
 		t.Fatalf("mode=%o, want 640", stat.Mode().Perm())
 	}
 }

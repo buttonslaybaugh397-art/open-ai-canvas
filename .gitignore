@@ -31,6 +31,7 @@ docs/content/docs/overview/*
 !docs/content/docs/progress/
 docs/content/docs/progress/*
 !docs/content/docs/progress/upstream-differences-20260912.mdx
+!docs/content/docs/progress/upstream-merge-20260912.mdx
 .env*
 !.env.example
 data/

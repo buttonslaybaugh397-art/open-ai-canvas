@@ -64,3 +64,4 @@
 - [待办](content/docs/progress/todo.mdx)
 - [待测试](content/docs/progress/pending-test.mdx)
 - [本地与上游差异核对（2026-09-12）](content/docs/progress/upstream-differences-20260912.mdx)：rc3 工作区的本地增强、v1.2.9 尚未合入项、保留理由与后续合并边界。
+- [v1.2.9 合并结果（2026-09-12）](content/docs/progress/upstream-merge-20260912.mdx)：本轮实际采用内容、本地保留项、未覆盖理由与验证结果。
