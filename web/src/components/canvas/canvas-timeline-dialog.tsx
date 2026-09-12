@@ -1,9 +1,12 @@
+import { App, Button, Dropdown, Input, InputNumber, Progress } from "antd";
+import { AppModal } from "@/components/ui/product/app-modal";
+import { Tooltip } from "@/components/ui/base/tooltip";
 // 二期：多轨时间线编辑弹窗。
 // 数据源是项目级 TimelineProject：视频/音频节点自动入轨，字幕条目转字幕片段。
 // 交互：拖拽移动片段（吸附播放头/片段边缘）、左右边缘裁剪、删除、播放头跳转。
 
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
-import { App, Button, Dropdown, Input, InputNumber, Modal, Progress, Tooltip } from "antd";
+
 import { Captions, Clapperboard, FolderOpen, Library, Lock, LockOpen, Maximize2, MoreHorizontal, Music2, Plus, Scissors, Trash2, Upload, Video, Wand2, ZoomIn, ZoomOut } from "lucide-react";
 import { saveAs } from "file-saver";
 
@@ -632,7 +635,7 @@ export function CanvasTimelineDialog({
     );
 
     return (
-        <Modal
+        <AppModal
             className="canvas-timeline-dialog"
             title={title}
             open={open}
@@ -644,7 +647,7 @@ export function CanvasTimelineDialog({
             afterOpenChange={(visible) => {
                 if (visible) ensureToolbarObserved();
             }}
-            styles={{ container: { padding: 0, overflow: "hidden" }, body: { padding: 0 } }}
+            flush
         >
             <div className="flex h-[min(76vh,760px)] min-h-[420px] flex-col text-sm" style={{ color: theme.node.text }}>
                 <div ref={toolbarRef} className="flex flex-nowrap items-center gap-2 overflow-hidden border-b px-4 py-3" style={{ borderColor: theme.toolbar.border, background: theme.toolbar.panel }}>
@@ -750,7 +753,6 @@ export function CanvasTimelineDialog({
                     </div>
                     <input
                         ref={uploadInputRef}
-                        name="canvas-timeline-media-upload"
                         type="file"
                         accept="video/*,audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav"
                         multiple
@@ -842,14 +844,12 @@ export function CanvasTimelineDialog({
                             ) : null}
                         </div>
                         <div className="flex items-start gap-3">
-                            <Input.TextArea id={`timeline-subtitle-${selectedSubtitleClip.id}-text`} name={`timeline-subtitle-${selectedSubtitleClip.id}-text`} autoSize={{ minRows: 1, maxRows: 3 }} value={selectedSubtitleClip.text || ""} placeholder="字幕文本" className="flex-1" onChange={(event) => updateClip(selectedSubtitleClip.id, { text: event.target.value })} />
+                            <Input.TextArea autoSize={{ minRows: 1, maxRows: 3 }} value={selectedSubtitleClip.text || ""} placeholder="字幕文本" className="flex-1" onChange={(event) => updateClip(selectedSubtitleClip.id, { text: event.target.value })} />
                             <div className="flex shrink-0 items-center gap-1.5 text-xs">
-                                <InputNumber id={`timeline-subtitle-${selectedSubtitleClip.id}-start`} name={`timeline-subtitle-${selectedSubtitleClip.id}-start`} size="small" min={0} step={100} value={selectedSubtitleClip.startMs} onChange={(startMs) => updateClip(selectedSubtitleClip.id, { startMs: startMs ?? 0 })} className="w-28" />
+                                <InputNumber size="small" min={0} step={100} value={selectedSubtitleClip.startMs} onChange={(startMs) => updateClip(selectedSubtitleClip.id, { startMs: startMs ?? 0 })} className="w-28" />
                                 <span className="opacity-40">→</span>
                                 <InputNumber
                                     size="small"
-                                    id={`timeline-subtitle-${selectedSubtitleClip.id}-end`}
-                                    name={`timeline-subtitle-${selectedSubtitleClip.id}-end`}
                                     min={0}
                                     step={100}
                                     value={selectedSubtitleClip.startMs + selectedSubtitleClip.durationMs}
@@ -877,8 +877,6 @@ export function CanvasTimelineDialog({
                             <span className="opacity-50">起点</span>
                             <InputNumber
                                 size="small"
-                                id={`timeline-media-${selectedMediaClip.id}-start`}
-                                name={`timeline-media-${selectedMediaClip.id}-start`}
                                 min={selectedMediaMinStartMs}
                                 max={selectedMediaMaxStartMs}
                                 step={100}
@@ -889,8 +887,6 @@ export function CanvasTimelineDialog({
                             <span className="opacity-50">时长</span>
                             <InputNumber
                                 size="small"
-                                id={`timeline-media-${selectedMediaClip.id}-duration`}
-                                name={`timeline-media-${selectedMediaClip.id}-duration`}
                                 min={MIN_CLIP_DURATION_MS}
                                 max={selectedMediaMaxDurationMs}
                                 step={100}
@@ -901,8 +897,6 @@ export function CanvasTimelineDialog({
                             <span className="opacity-50">源内起点</span>
                             <InputNumber
                                 size="small"
-                                id={`timeline-media-${selectedMediaClip.id}-source-start`}
-                                name={`timeline-media-${selectedMediaClip.id}-source-start`}
                                 min={0}
                                 max={selectedMediaMaxSourceStartMs}
                                 step={100}
@@ -926,6 +920,6 @@ export function CanvasTimelineDialog({
                     <span className="ml-auto truncate text-xs opacity-45">拖拽片段移动，左右边缘裁剪，字幕片段来自视频节点的字幕数据</span>
                 </div>
             </div>
-        </Modal>
+        </AppModal>
     );
 }

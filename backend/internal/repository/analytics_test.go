@@ -18,6 +18,45 @@ type sqlCaptureLogger struct {
 	statements []string
 }
 
+func TestAPICallLogRecordTypeFiltersListAndExport(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:api-log-record-types?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.ApiCallLog{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for _, item := range []model.ApiCallLog{
+		{ID: "request", Capability: "video", RequestKind: "create", CreatedAt: now},
+		{ID: "poll", Capability: "video", RequestKind: "poll", CreatedAt: now},
+		{ID: "video-download", Capability: "video", RequestKind: "download", CreatedAt: now},
+		{ID: "image-download", Capability: "image", RequestKind: "download", CreatedAt: now},
+	} {
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	repo := New(db)
+	for _, tc := range []struct {
+		kind  string
+		count int
+	}{{"", 1}, {"request", 1}, {"download", 2}, {"all", 4}} {
+		filter := APICallLogFilter{AnalyticsFilter: AnalyticsFilter{From: now.Add(-time.Hour), To: now.Add(time.Hour)}, RecordType: tc.kind}
+		logs, total, err := repo.QueryAPICallLogs(filter)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(logs) != tc.count || total != int64(tc.count) {
+			t.Fatalf("kind=%s: count=%d total=%d", tc.kind, len(logs), total)
+		}
+		exported, err := repo.ExportAPICallLogs(filter, 100)
+		if err != nil || len(exported) != tc.count {
+			t.Fatalf("kind=%s: export count=%d err=%v", tc.kind, len(exported), err)
+		}
+	}
+}
+
 func (l *sqlCaptureLogger) LogMode(logger.LogLevel) logger.Interface { return l }
 func (*sqlCaptureLogger) Info(context.Context, string, ...any)       {}
 func (*sqlCaptureLogger) Warn(context.Context, string, ...any)       {}
@@ -110,5 +149,88 @@ func TestQueryAPICallLogsSearchesFailureFields(t *testing.T) {
 		if total != 1 || len(logs) != 1 || logs[0].ID != item.ID {
 			t.Fatalf("QueryAPICallLogs(%q) = total:%d logs:%#v", keyword, total, logs)
 		}
+	}
+}
+
+func TestQueryAPICallLogsHidesInternalPollStages(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:api-log-visible-stages?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.ApiCallLog{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	logs := []model.ApiCallLog{
+		{ID: "image-create", UserID: "user-1", Capability: "image", RequestKind: "create", CreatedAt: now},
+		{ID: "image-poll", UserID: "user-1", Capability: "image", RequestKind: "poll", CreatedAt: now.Add(time.Second)},
+		{ID: "image-download", UserID: "user-1", Capability: "image", RequestKind: "download", CreatedAt: now.Add(2 * time.Second)},
+		{ID: "video-create", UserID: "user-1", Capability: "video", RequestKind: "create", CreatedAt: now.Add(3 * time.Second)},
+		{ID: "video-poll", UserID: "user-1", Capability: "video", RequestKind: "poll", CreatedAt: now.Add(4 * time.Second)},
+	}
+	if err := db.Create(&logs).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	items, total, err := New(db).QueryAPICallLogs(APICallLogFilter{
+		AnalyticsFilter: AnalyticsFilter{From: now.Add(-time.Hour), To: now.Add(time.Hour)},
+		Page:            1,
+		Limit:           20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 || len(items) != 2 {
+		t.Fatalf("visible logs = total:%d items:%#v, want only create logs without polls or downloads", total, items)
+	}
+	if items[0].ID != "video-create" || items[1].ID != "image-create" {
+		t.Fatalf("visible logs = %#v, want video-create and image-create", items)
+	}
+}
+
+func TestAnalyticsQueriesUseCanonicalRequestsAndSettledBilling(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:analytics-canonical-facts?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.ApiCallLog{}, &model.BillingOrder{}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, item := range []model.ApiCallLog{
+		{ID: "create", UserID: "user-1", Capability: "video", RequestKind: "create", CreatedAt: now},
+		{ID: "poll", UserID: "user-1", Capability: "video", RequestKind: "poll", CreatedAt: now.Add(time.Second)},
+		{ID: "download", UserID: "user-1", Capability: "video", RequestKind: "download", CreatedAt: now.Add(2 * time.Second)},
+		{ID: "legacy", UserID: "user-1", Capability: "text", RequestKind: "", CreatedAt: now.Add(3 * time.Second)},
+	} {
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, item := range []model.BillingOrder{
+		{ID: "settled", UserID: "user-1", IdempotencyKey: "analytics-settled", Model: "video-model", Capability: "video", Status: model.BillingStatusSettled, ActualAmountMicrocredits: 2_500_000, CreatedAt: now},
+		{ID: "reserved", UserID: "user-1", IdempotencyKey: "analytics-reserved", Model: "video-model", Capability: "video", Status: model.BillingStatusReserved, ActualAmountMicrocredits: 9_000_000, CreatedAt: now},
+		{ID: "refunded", UserID: "user-1", IdempotencyKey: "analytics-refunded", Model: "video-model", Capability: "video", Status: model.BillingStatusRefunded, ActualAmountMicrocredits: 8_000_000, CreatedAt: now},
+	} {
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	repo := New(db)
+	filter := AnalyticsFilter{From: now.Add(-time.Hour), To: now.Add(time.Hour), UserID: "user-1"}
+	logs, err := repo.AnalyticsAPICallLogs(filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 2 {
+		t.Fatalf("analytics logs = %#v, want create and legacy root records", logs)
+	}
+	orders, err := repo.AnalyticsBillingOrders(filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orders) != 1 || orders[0].ID != "settled" || orders[0].ActualAmountMicrocredits != 2_500_000 {
+		t.Fatalf("analytics billing orders = %#v, want only settled order", orders)
 	}
 }

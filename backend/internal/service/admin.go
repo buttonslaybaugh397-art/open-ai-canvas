@@ -3,7 +3,8 @@ package service
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
+	stdlog "log"
+	"net/http"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ type CreateAdminUserRequest struct {
 	Status      model.UserStatus `json:"status"`
 }
 type UpdateUserRequest struct {
+	Username    *string          `json:"username"`
 	DisplayName string           `json:"displayName"`
 	Email       string           `json:"email"`
 	Password    string           `json:"password"`
@@ -50,7 +52,7 @@ type AdminUserPage struct {
 	Users []AdminUser `json:"users"`
 	Total int64       `json:"total"`
 	Page  int         `json:"page"`
-	Limit int         `json:"limit"`
+	Limit int         `json:"pageSize"`
 }
 
 type AdminUser struct {
@@ -63,7 +65,7 @@ type AdminChannelPage struct {
 	Channels []PublicModelChannel `json:"channels"`
 	Total    int64                `json:"total"`
 	Page     int                  `json:"page"`
-	Limit    int                  `json:"limit"`
+	Limit    int                  `json:"pageSize"`
 }
 
 type AdminUserReference struct {
@@ -86,6 +88,8 @@ type AdminReferenceData struct {
 
 type ChannelRequest struct {
 	Name                 string           `json:"name"`
+	PublicAlias          *string          `json:"publicAlias"`
+	SortOrder            *int             `json:"sortOrder"`
 	BaseURL              string           `json:"baseUrl"`
 	AllowLocalChannel    *bool            `json:"allowLocalChannel"`
 	APIKey               string           `json:"apiKey"`
@@ -103,6 +107,8 @@ type PublicModelChannel struct {
 	Scope             model.ChannelScope        `json:"scope"`
 	Enabled           bool                      `json:"enabled"`
 	Name              string                    `json:"name"`
+	PublicAlias       string                    `json:"publicAlias,omitempty"`
+	SortOrder         int                       `json:"sortOrder"`
 	BaseURL           string                    `json:"baseUrl"`
 	AllowLocalChannel bool                      `json:"allowLocalChannel,omitempty"`
 	APIKey            string                    `json:"apiKey"`
@@ -281,7 +287,25 @@ func (s *Service) UpdateUser(actor *model.User, userID string, req UpdateUserReq
 	}
 	user, err := s.repo.User(userID)
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, NotFound("用户不存在")
+		}
 		return nil, err
+	}
+	previousUsername := user.Username
+	if req.Username != nil {
+		username := normalizeUsername(*req.Username)
+		if err := validateUsername(username); err != nil {
+			return nil, err
+		}
+		existing, err := s.repo.UserByUsername(username)
+		if err == nil && existing.ID != user.ID {
+			return nil, NewAppError(http.StatusConflict, "用户名已存在")
+		}
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+		user.Username = username
 	}
 	if actor.ID == user.ID && req.Status == model.UserStatusDisabled {
 		return nil, BadAuthRequest("不能禁用当前管理员账号")
@@ -338,17 +362,32 @@ func (s *Service) UpdateUser(actor *model.User, userID string, req UpdateUserReq
 			return nil, err
 		}
 		user.PasswordHash = hash
-		if err := s.repo.DeleteUserAuthSessions(user.ID); err != nil {
-			return nil, fmt.Errorf("清理旧登录会话失败，密码未更新：%w", err)
-		}
 	}
 	user.Role = nextRole
 	user.Status = nextStatus
 	user.UpdatedAt = time.Now()
-	if err := s.repo.Save(user); err != nil {
+	metadata := map[string]any{"role": user.Role, "status": user.Status}
+	summary := "更新用户账号状态或资料"
+	if req.Password != "" {
+		summary = "更新用户密码并撤销旧登录会话"
+		metadata["passwordChanged"] = true
+		metadata["sessionsRevoked"] = true
+	}
+	if previousUsername != user.Username {
+		metadata["previousUsername"] = previousUsername
+		metadata["username"] = user.Username
+	}
+	audit, err := newAdminAuditEvent(actor, "user.update", "user", user.ID, summary, metadata)
+	if err != nil {
 		return nil, err
 	}
-	if err := s.appendAdminAudit(actor, "user.update", "user", user.ID, "更新用户账号状态或资料", map[string]any{"role": user.Role, "status": user.Status}); err != nil {
+	if err := s.repo.UpdateAdminUser(user, previousUsername, req.Password != "", audit); err != nil {
+		if errors.Is(err, repository.ErrUsernameExists) {
+			return nil, NewAppError(http.StatusConflict, "用户名已存在")
+		}
+		if errors.Is(err, repository.ErrUserChanged) {
+			return nil, NewAppError(http.StatusConflict, "用户资料已变化，请刷新后重试")
+		}
 		return nil, err
 	}
 	return user, nil
@@ -383,7 +422,7 @@ func (s *Service) DeleteUser(actor *model.User, userID string) error {
 	// 有资金流水后必须保留用户主体，删除入口改为停用并清除全部登录态。
 	user.Status = model.UserStatusDisabled
 	user.UpdatedAt = time.Now()
-	if err := s.repo.Save(user); err != nil {
+	if err := s.repo.DisableUser(user.ID, user.UpdatedAt); err != nil {
 		return err
 	}
 	return s.appendAdminAudit(actor, "user.disable", "user", user.ID, "停用用户并清除登录态", nil)
@@ -539,6 +578,10 @@ func (s *Service) UpdateSystemChannel(actor *model.User, id string, req ChannelR
 	if err := s.RequireAdmin(actor); err != nil {
 		return nil, err
 	}
+	if req.presentationOnly() {
+		return s.updateChannelPresentation(id, req)
+	}
+	updateModels := req.Models != nil
 	channel, err := s.repo.AdminSystemChannel(id)
 	if err != nil {
 		return nil, err
@@ -567,8 +610,10 @@ func (s *Service) UpdateSystemChannel(actor *model.User, id string, req ChannelR
 	if err := s.repo.Save(&next); err != nil {
 		return nil, err
 	}
-	if err := s.syncInitialChannelModels(&next, req.Models); err != nil {
-		return nil, err
+	if updateModels {
+		if err := s.syncInitialChannelModels(&next, req.Models); err != nil {
+			return nil, err
+		}
 	}
 	s.invalidateRouteCatalog()
 	items, err := s.repo.ChannelModels(next.ID, true)
@@ -642,7 +687,9 @@ func (s *Service) LogAPICall(log model.ApiCallLog) error {
 	s.estimateCallCost(&log)
 	if log.BillingOrderID != "" && log.ProviderRequestID != "" {
 		if err := s.repo.UpdateBillingProviderRequestID(log.BillingOrderID, log.ProviderRequestID); err != nil {
-			return err
+			// 账单关联是请求日志的辅助状态，不能因为关联更新失败而丢失
+			// 已经发生的上游调用记录。后续由任务/账单对账流程补偿关联。
+			stdlog.Printf("provider billing request id update failed: billing_order_id=%s provider_request_id=%s error=%v", log.BillingOrderID, log.ProviderRequestID, err)
 		}
 	}
 	if log.TaskID != "" {
@@ -657,7 +704,9 @@ func (s *Service) LogAPICall(log model.ApiCallLog) error {
 			nextPollAt = &next
 		}
 		if err := s.repo.UpdateTaskProviderState(log.TaskID, log.ProviderRequestID, stage, nextPollAt); err != nil {
-			return err
+			// 请求日志本身仍需保留；任务状态可由后续任务收尾或恢复流程
+			// 重建，不能让一次状态写失败掩盖真实的上游调用。
+			stdlog.Printf("provider task state update failed: task_id=%s provider_request_id=%s error=%v", log.TaskID, log.ProviderRequestID, err)
 		}
 	}
 	if merged, err := s.mergeVideoAPICallLog(log); err != nil {
@@ -761,8 +810,16 @@ func (s *Service) channelFromRequest(req ChannelRequest, channel model.ModelChan
 	if requestedAllowLocal && !s.DesktopLocalChannelsEnabled() {
 		return channel, BadAuthRequest("当前后端未启用本机渠道")
 	}
-	if _, err := s.validateChannelOutboundURL(baseURL, requestedAllowLocal, false); err != nil {
-		return channel, err
+	// 启用/停用或只修改价格、模型等本地配置时，不应要求上游域名当前可解析。
+	// 只有 Base URL 或本机渠道开关实际变化时才做出站地址校验。
+	connectionChanged := strings.TrimRight(baseURL, "/") != strings.TrimRight(channel.BaseURL, "/")
+	if req.AllowLocalChannel != nil {
+		connectionChanged = connectionChanged || *req.AllowLocalChannel != channel.AllowLocalChannel
+	}
+	if connectionChanged {
+		if _, err := s.validateChannelOutboundURL(baseURL, requestedAllowLocal, false); err != nil {
+			return channel, err
+		}
 	}
 	models := uniqueNonEmpty(req.Models)
 	modelsJSON, _ := json.Marshal(models)
@@ -771,6 +828,19 @@ func (s *Service) channelFromRequest(req ChannelRequest, channel model.ModelChan
 		return channel, err
 	}
 	channel.Name = name
+	if req.PublicAlias != nil {
+		alias := strings.TrimSpace(*req.PublicAlias)
+		if len([]rune(alias)) > 80 {
+			return channel, BadAuthRequest("前台显示别名不能超过 80 个字符")
+		}
+		channel.PublicAlias = alias
+	}
+	if req.SortOrder != nil {
+		if err := validateChannelSortOrder(*req.SortOrder); err != nil {
+			return channel, err
+		}
+		channel.SortOrder = *req.SortOrder
+	}
 	channel.BaseURL = strings.TrimRight(baseURL, "/")
 	channel.AllowLocalChannel = requestedAllowLocal
 	if req.APIKey != "" {
@@ -854,12 +924,18 @@ func publicChannel(channel model.ModelChannel, admin bool, channelModels []model
 	} else if admin {
 		apiKey = channel.APIKey
 	}
+	name, alias := channel.PublicName(), ""
+	if admin {
+		name, alias = channel.Name, channel.PublicAlias
+	}
 	return PublicModelChannel{
 		ID:                channel.ID,
 		UserID:            channel.UserID,
 		Scope:             channel.Scope,
 		Enabled:           channel.Enabled,
-		Name:              channel.Name,
+		Name:              name,
+		PublicAlias:       alias,
+		SortOrder:         channel.SortOrder,
 		BaseURL:           baseURL,
 		AllowLocalChannel: admin && channel.AllowLocalChannel,
 		APIKey:            apiKey,

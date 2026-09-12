@@ -33,64 +33,252 @@ type AnalyticsOverview struct {
 	KPI      AnalyticsKPI          `json:"kpi"`
 	Trend    []AnalyticsTrendPoint `json:"trend"`
 	Models   []AnalyticsModelRow   `json:"models"`
+	Channels []AnalyticsChannelRow `json:"channels"`
 	Users    []AnalyticsUserRow    `json:"users"`
 	Failures []AnalyticsFailureRow `json:"failures"`
 }
 
 type AnalyticsKPI struct {
-	ActiveUsers         int     `json:"activeUsers"`
-	DAU                 int     `json:"dau"`
-	WAU                 int     `json:"wau"`
-	MAU                 int     `json:"mau"`
-	GenerationTasks     int     `json:"generationTasks"`
-	UpstreamRequests    int     `json:"upstreamRequests"`
-	SuccessRate         float64 `json:"successRate"`
-	P95DurationMs       int64   `json:"p95DurationMs"`
-	CurrentQueuedTasks  int64   `json:"currentQueuedTasks"`
-	EstimatedCostMicros int64   `json:"estimatedCostMicros"`
-	CostAvailable       bool    `json:"costAvailable"`
-	Currency            string  `json:"currency"`
+	ActiveUsers                 int     `json:"activeUsers"`
+	DAU                         int     `json:"dau"`
+	WAU                         int     `json:"wau"`
+	MAU                         int     `json:"mau"`
+	GenerationTasks             int     `json:"generationTasks"`
+	TextTasks                   int     `json:"textTasks"`
+	ImageTasks                  int     `json:"imageTasks"`
+	VideoTasks                  int     `json:"videoTasks"`
+	AudioTasks                  int     `json:"audioTasks"`
+	SucceededTasks              int     `json:"succeededTasks"`
+	FailedTasks                 int     `json:"failedTasks"`
+	CancelledTasks              int     `json:"cancelledTasks"`
+	QueuedTasks                 int     `json:"queuedTasks"`
+	RunningTasks                int     `json:"runningTasks"`
+	TaskSuccessRate             float64 `json:"taskSuccessRate"`
+	MediaCount                  int     `json:"mediaCount"`
+	GeneratedImages             int     `json:"generatedImages"`
+	GeneratedVideos             int     `json:"generatedVideos"`
+	GeneratedAudio              int     `json:"generatedAudio"`
+	VideoSeconds                int     `json:"videoSeconds"`
+	AverageTaskDurationMs       int64   `json:"averageTaskDurationMs"`
+	UpstreamRequests            int     `json:"upstreamRequests"`
+	SucceededRequests           int     `json:"succeededRequests"`
+	FailedRequests              int     `json:"failedRequests"`
+	SuccessRate                 float64 `json:"successRate"`
+	P95DurationMs               int64   `json:"p95DurationMs"`
+	InputTokens                 int64   `json:"inputTokens"`
+	OutputTokens                int64   `json:"outputTokens"`
+	CachedTokens                int64   `json:"cachedTokens"`
+	UsageAvailable              bool    `json:"usageAvailable"`
+	CreditsConsumedMicrocredits int64   `json:"creditsConsumedMicrocredits"`
+	CurrentQueuedTasks          int64   `json:"currentQueuedTasks"`
+	EstimatedCostMicros         int64   `json:"estimatedCostMicros"`
+	CostAvailable               bool    `json:"costAvailable"`
+	Currency                    string  `json:"currency"`
 }
 
 type AnalyticsTrendPoint struct {
 	Day                string  `json:"day"`
 	Tasks              int     `json:"tasks"`
+	TextTasks          int     `json:"textTasks"`
+	ImageTasks         int     `json:"imageTasks"`
+	VideoTasks         int     `json:"videoTasks"`
+	AudioTasks         int     `json:"audioTasks"`
+	SucceededTasks     int     `json:"succeededTasks"`
+	FailedTasks        int     `json:"failedTasks"`
+	TaskSuccessRate    float64 `json:"taskSuccessRate"`
+	MediaCount         int     `json:"mediaCount"`
+	VideoSeconds       int     `json:"videoSeconds"`
 	Requests           int     `json:"requests"`
 	ActiveUsers        int     `json:"activeUsers"`
 	RequestSuccessRate float64 `json:"requestSuccessRate"`
 }
 
 type AnalyticsModelRow struct {
-	Model               string  `json:"model"`
-	Capability          string  `json:"capability"`
-	Tasks               int     `json:"tasks"`
-	Requests            int     `json:"requests"`
-	UniqueUsers         int     `json:"uniqueUsers"`
-	TaskSuccessRate     float64 `json:"taskSuccessRate"`
-	RequestSuccessRate  float64 `json:"requestSuccessRate"`
-	P50DurationMs       int64   `json:"p50DurationMs"`
-	P95DurationMs       int64   `json:"p95DurationMs"`
-	InputTokens         int64   `json:"inputTokens"`
-	OutputTokens        int64   `json:"outputTokens"`
-	CachedTokens        int64   `json:"cachedTokens"`
-	UsageAvailable      bool    `json:"usageAvailable"`
-	MediaCount          int     `json:"mediaCount"`
-	VideoSeconds        int     `json:"videoSeconds"`
-	EstimatedCostMicros int64   `json:"estimatedCostMicros"`
-	CostAvailable       bool    `json:"costAvailable"`
-	Currency            string  `json:"currency"`
+	Model                       string  `json:"model"`
+	Capability                  string  `json:"capability"`
+	Tasks                       int     `json:"tasks"`
+	SucceededTasks              int     `json:"succeededTasks"`
+	FailedTasks                 int     `json:"failedTasks"`
+	CancelledTasks              int     `json:"cancelledTasks"`
+	QueuedTasks                 int     `json:"queuedTasks"`
+	RunningTasks                int     `json:"runningTasks"`
+	Requests                    int     `json:"requests"`
+	SucceededRequests           int     `json:"succeededRequests"`
+	FailedRequests              int     `json:"failedRequests"`
+	UniqueUsers                 int     `json:"uniqueUsers"`
+	TaskSuccessRate             float64 `json:"taskSuccessRate"`
+	RequestSuccessRate          float64 `json:"requestSuccessRate"`
+	P50DurationMs               int64   `json:"p50DurationMs"`
+	P95DurationMs               int64   `json:"p95DurationMs"`
+	InputTokens                 int64   `json:"inputTokens"`
+	OutputTokens                int64   `json:"outputTokens"`
+	CachedTokens                int64   `json:"cachedTokens"`
+	UsageAvailable              bool    `json:"usageAvailable"`
+	MediaCount                  int     `json:"mediaCount"`
+	GeneratedImages             int     `json:"generatedImages"`
+	GeneratedVideos             int     `json:"generatedVideos"`
+	GeneratedAudio              int     `json:"generatedAudio"`
+	VideoSeconds                int     `json:"videoSeconds"`
+	CreditsConsumedMicrocredits int64   `json:"creditsConsumedMicrocredits"`
+	EstimatedCostMicros         int64   `json:"estimatedCostMicros"`
+	CostAvailable               bool    `json:"costAvailable"`
+	Currency                    string  `json:"currency"`
 }
 
 type AnalyticsUserRow struct {
-	UserID        string `json:"userId"`
-	Name          string `json:"name"`
-	ActiveDays    int    `json:"activeDays"`
-	Tasks         int    `json:"tasks"`
-	AgentMessages int    `json:"agentMessages"`
-	CanvasDays    int    `json:"canvasDays"`
-	Assets        int    `json:"assets"`
-	Resources     int    `json:"resources"`
-	CommonModel   string `json:"commonModel"`
+	UserID                      string                    `json:"userId"`
+	Name                        string                    `json:"name"`
+	ActiveDays                  int                       `json:"activeDays"`
+	LoginCount                  int                       `json:"loginCount"`
+	FirstActiveAt               *time.Time                `json:"firstActiveAt,omitempty"`
+	LastActiveAt                *time.Time                `json:"lastActiveAt,omitempty"`
+	Tasks                       int                       `json:"tasks"`
+	TextTasks                   int                       `json:"textTasks"`
+	ImageTasks                  int                       `json:"imageTasks"`
+	VideoTasks                  int                       `json:"videoTasks"`
+	AudioTasks                  int                       `json:"audioTasks"`
+	SucceededTasks              int                       `json:"succeededTasks"`
+	FailedTasks                 int                       `json:"failedTasks"`
+	CancelledTasks              int                       `json:"cancelledTasks"`
+	QueuedTasks                 int                       `json:"queuedTasks"`
+	RunningTasks                int                       `json:"runningTasks"`
+	TaskSuccessRate             float64                   `json:"taskSuccessRate"`
+	AverageTaskDurationMs       int64                     `json:"averageTaskDurationMs"`
+	P95TaskDurationMs           int64                     `json:"p95TaskDurationMs"`
+	Requests                    int                       `json:"requests"`
+	SucceededRequests           int                       `json:"succeededRequests"`
+	FailedRequests              int                       `json:"failedRequests"`
+	RequestSuccessRate          float64                   `json:"requestSuccessRate"`
+	P95RequestDurationMs        int64                     `json:"p95RequestDurationMs"`
+	MediaCount                  int                       `json:"mediaCount"`
+	GeneratedImages             int                       `json:"generatedImages"`
+	GeneratedVideos             int                       `json:"generatedVideos"`
+	GeneratedAudio              int                       `json:"generatedAudio"`
+	VideoSeconds                int                       `json:"videoSeconds"`
+	InputTokens                 int64                     `json:"inputTokens"`
+	OutputTokens                int64                     `json:"outputTokens"`
+	CachedTokens                int64                     `json:"cachedTokens"`
+	UsageAvailable              bool                      `json:"usageAvailable"`
+	CreditsConsumedMicrocredits int64                     `json:"creditsConsumedMicrocredits"`
+	EstimatedCostMicros         int64                     `json:"estimatedCostMicros"`
+	CostAvailable               bool                      `json:"costAvailable"`
+	Currency                    string                    `json:"currency"`
+	AgentMessages               int                       `json:"agentMessages"`
+	CanvasDays                  int                       `json:"canvasDays"`
+	Assets                      int                       `json:"assets"`
+	Resources                   int                       `json:"resources"`
+	CommonModel                 string                    `json:"commonModel"`
+	Models                      []AnalyticsUserModelRow   `json:"models"`
+	Channels                    []AnalyticsUserChannelRow `json:"channels"`
+	Daily                       []AnalyticsUserDayRow     `json:"daily"`
+}
+
+type AnalyticsChannelRow struct {
+	ChannelID                   string  `json:"channelId"`
+	Name                        string  `json:"name"`
+	Tasks                       int     `json:"tasks"`
+	Requests                    int     `json:"requests"`
+	SucceededRequests           int     `json:"succeededRequests"`
+	FailedRequests              int     `json:"failedRequests"`
+	RequestSuccessRate          float64 `json:"requestSuccessRate"`
+	UniqueUsers                 int     `json:"uniqueUsers"`
+	UniqueModels                int     `json:"uniqueModels"`
+	P50DurationMs               int64   `json:"p50DurationMs"`
+	P95DurationMs               int64   `json:"p95DurationMs"`
+	MediaCount                  int     `json:"mediaCount"`
+	GeneratedImages             int     `json:"generatedImages"`
+	GeneratedVideos             int     `json:"generatedVideos"`
+	GeneratedAudio              int     `json:"generatedAudio"`
+	VideoSeconds                int     `json:"videoSeconds"`
+	InputTokens                 int64   `json:"inputTokens"`
+	OutputTokens                int64   `json:"outputTokens"`
+	CachedTokens                int64   `json:"cachedTokens"`
+	UsageAvailable              bool    `json:"usageAvailable"`
+	CreditsConsumedMicrocredits int64   `json:"creditsConsumedMicrocredits"`
+	EstimatedCostMicros         int64   `json:"estimatedCostMicros"`
+	CostAvailable               bool    `json:"costAvailable"`
+	Currency                    string  `json:"currency"`
+}
+
+type AnalyticsUserModelRow struct {
+	Model                       string  `json:"model"`
+	Capability                  string  `json:"capability"`
+	Tasks                       int     `json:"tasks"`
+	SucceededTasks              int     `json:"succeededTasks"`
+	FailedTasks                 int     `json:"failedTasks"`
+	Requests                    int     `json:"requests"`
+	SucceededRequests           int     `json:"succeededRequests"`
+	FailedRequests              int     `json:"failedRequests"`
+	TaskSuccessRate             float64 `json:"taskSuccessRate"`
+	RequestSuccessRate          float64 `json:"requestSuccessRate"`
+	MediaCount                  int     `json:"mediaCount"`
+	VideoSeconds                int     `json:"videoSeconds"`
+	InputTokens                 int64   `json:"inputTokens"`
+	OutputTokens                int64   `json:"outputTokens"`
+	CachedTokens                int64   `json:"cachedTokens"`
+	UsageAvailable              bool    `json:"usageAvailable"`
+	CreditsConsumedMicrocredits int64   `json:"creditsConsumedMicrocredits"`
+	EstimatedCostMicros         int64   `json:"estimatedCostMicros"`
+	CostAvailable               bool    `json:"costAvailable"`
+	Currency                    string  `json:"currency"`
+}
+
+type AnalyticsUserChannelRow struct {
+	ChannelID                   string  `json:"channelId"`
+	Name                        string  `json:"name"`
+	Tasks                       int     `json:"tasks"`
+	Requests                    int     `json:"requests"`
+	SucceededRequests           int     `json:"succeededRequests"`
+	FailedRequests              int     `json:"failedRequests"`
+	RequestSuccessRate          float64 `json:"requestSuccessRate"`
+	UniqueModels                int     `json:"uniqueModels"`
+	MediaCount                  int     `json:"mediaCount"`
+	GeneratedImages             int     `json:"generatedImages"`
+	GeneratedVideos             int     `json:"generatedVideos"`
+	GeneratedAudio              int     `json:"generatedAudio"`
+	VideoSeconds                int     `json:"videoSeconds"`
+	InputTokens                 int64   `json:"inputTokens"`
+	OutputTokens                int64   `json:"outputTokens"`
+	CachedTokens                int64   `json:"cachedTokens"`
+	UsageAvailable              bool    `json:"usageAvailable"`
+	CreditsConsumedMicrocredits int64   `json:"creditsConsumedMicrocredits"`
+	EstimatedCostMicros         int64   `json:"estimatedCostMicros"`
+	CostAvailable               bool    `json:"costAvailable"`
+	Currency                    string  `json:"currency"`
+}
+
+type AnalyticsUserDayRow struct {
+	Day                         string `json:"day"`
+	LoginCount                  int    `json:"loginCount"`
+	Tasks                       int    `json:"tasks"`
+	TextTasks                   int    `json:"textTasks"`
+	ImageTasks                  int    `json:"imageTasks"`
+	VideoTasks                  int    `json:"videoTasks"`
+	AudioTasks                  int    `json:"audioTasks"`
+	SucceededTasks              int    `json:"succeededTasks"`
+	FailedTasks                 int    `json:"failedTasks"`
+	CancelledTasks              int    `json:"cancelledTasks"`
+	QueuedTasks                 int    `json:"queuedTasks"`
+	RunningTasks                int    `json:"runningTasks"`
+	Requests                    int    `json:"requests"`
+	SucceededRequests           int    `json:"succeededRequests"`
+	FailedRequests              int    `json:"failedRequests"`
+	MediaCount                  int    `json:"mediaCount"`
+	GeneratedImages             int    `json:"generatedImages"`
+	GeneratedVideos             int    `json:"generatedVideos"`
+	GeneratedAudio              int    `json:"generatedAudio"`
+	VideoSeconds                int    `json:"videoSeconds"`
+	InputTokens                 int64  `json:"inputTokens"`
+	OutputTokens                int64  `json:"outputTokens"`
+	CachedTokens                int64  `json:"cachedTokens"`
+	CreditsConsumedMicrocredits int64  `json:"creditsConsumedMicrocredits"`
+	EstimatedCostMicros         int64  `json:"estimatedCostMicros"`
+	CostAvailable               bool   `json:"costAvailable"`
+	Currency                    string `json:"currency"`
+	AgentMessages               int    `json:"agentMessages"`
+	CanvasActive                bool   `json:"canvasActive"`
+	Assets                      int    `json:"assets"`
+	Resources                   int    `json:"resources"`
 }
 
 type AnalyticsFailureRow struct {
@@ -103,18 +291,19 @@ type AnalyticsFailureRow struct {
 
 type APICallLogQuery struct {
 	AnalyticsQuery
-	Keyword string
-	Status  string
-	IDs     []string
-	Page    int
-	Limit   int
+	RecordType string
+	Keyword    string
+	Status     string
+	IDs        []string
+	Page       int
+	Limit      int
 }
 
 type APICallLogPage struct {
 	Logs  []model.ApiCallLog `json:"logs"`
 	Total int64              `json:"total"`
 	Page  int                `json:"page"`
-	Limit int                `json:"limit"`
+	Limit int                `json:"pageSize"`
 }
 
 type ModelPricingRequest struct {
@@ -135,16 +324,9 @@ func (s *Service) AdminAnalytics(actor *model.User, query AnalyticsQuery) (*Anal
 		return nil, err
 	}
 	filter := normalizeAnalyticsFilter(query)
-	tasks, err := s.repo.AnalyticsTasks(filter)
+	tasks, logs, billingOrders, err := s.analyticsFacts(filter)
 	if err != nil {
 		return nil, err
-	}
-	logs, err := s.repo.AnalyticsAPICallLogs(filter)
-	if err != nil {
-		return nil, err
-	}
-	if filter.ChannelID != "" {
-		tasks = tasksWithLoggedRequests(tasks, logs)
 	}
 	activityFilter := filter
 	rollingFrom := filter.To.AddDate(0, 0, -30)
@@ -158,18 +340,9 @@ func (s *Service) AdminAnalytics(actor *model.User, query AnalyticsQuery) (*Anal
 	rollingTasks := tasks
 	rollingLogs := logs
 	if activityFilter.From.Before(filter.From) {
-		rollingTasks, err = s.repo.AnalyticsTasks(activityFilter)
+		rollingTasks, rollingLogs, _, err = s.analyticsFacts(activityFilter)
 		if err != nil {
 			return nil, err
-		}
-		if hasCreationDimensionFilter(filter) {
-			rollingLogs, err = s.repo.AnalyticsAPICallLogs(activityFilter)
-			if err != nil {
-				return nil, err
-			}
-		}
-		if filter.ChannelID != "" {
-			rollingTasks = tasksWithLoggedRequests(rollingTasks, rollingLogs)
 		}
 	}
 	users, err := s.repo.Users()
@@ -180,17 +353,82 @@ func (s *Service) AdminAnalytics(actor *model.User, query AnalyticsQuery) (*Anal
 	if err != nil {
 		return nil, err
 	}
-	result := buildAnalyticsOverview(filter, tasks, rollingTasks, rollingLogs, logs, activities, users)
+	result := buildAnalyticsOverview(filter, tasks, rollingTasks, rollingLogs, logs, billingOrders, activities, users)
+	channels, err := s.repo.HistoricalSystemChannelReferences()
+	if err != nil {
+		return nil, err
+	}
+	channelNames := make(map[string]string, len(channels))
+	for _, channel := range channels {
+		channelNames[channel.ID] = channel.Name
+	}
+	for index := range result.Channels {
+		result.Channels[index].Name = firstNonEmpty(channelNames[result.Channels[index].ChannelID], result.Channels[index].Name)
+	}
+	for userIndex := range result.Users {
+		for channelIndex := range result.Users[userIndex].Channels {
+			channel := &result.Users[userIndex].Channels[channelIndex]
+			channel.Name = firstNonEmpty(channelNames[channel.ChannelID], channel.Name)
+		}
+	}
 	result.KPI.CurrentQueuedTasks = queued
 	return result, nil
+}
+
+func (s *Service) analyticsFacts(filter repository.AnalyticsFilter) ([]model.Task, []model.ApiCallLog, []model.BillingOrder, error) {
+	baseFilter := filter
+	baseFilter.Model = ""
+	baseFilter.ChannelID = ""
+	baseFilter.Capability = ""
+	tasks, err := s.repo.AnalyticsTasks(baseFilter)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	logs, err := s.repo.AnalyticsAPICallLogs(baseFilter)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	billingOrders, err := s.repo.AnalyticsBillingOrders(baseFilter)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	taskIDs := make([]string, 0, len(logs)+len(billingOrders))
+	seenTaskIDs := make(map[string]bool, len(tasks)+len(logs)+len(billingOrders))
+	for _, task := range tasks {
+		seenTaskIDs[task.ID] = true
+	}
+	for _, log := range logs {
+		if log.TaskID != "" && !seenTaskIDs[log.TaskID] {
+			seenTaskIDs[log.TaskID] = true
+			taskIDs = append(taskIDs, log.TaskID)
+		}
+	}
+	for _, order := range billingOrders {
+		if order.TaskID != "" && !seenTaskIDs[order.TaskID] {
+			seenTaskIDs[order.TaskID] = true
+			taskIDs = append(taskIDs, order.TaskID)
+		}
+	}
+	taskReferences := append([]model.Task(nil), tasks...)
+	if len(taskIDs) > 0 {
+		relatedTasks, queryErr := s.repo.APICallLogTasks(taskIDs)
+		if queryErr != nil {
+			return nil, nil, nil, queryErr
+		}
+		taskReferences = append(taskReferences, relatedTasks...)
+	}
+	return filterAnalyticsFacts(filter, tasks, taskReferences, logs, billingOrders)
 }
 
 func (s *Service) AdminAPICallLogs(actor *model.User, query APICallLogQuery) (*APICallLogPage, error) {
 	if err := s.RequireAdmin(actor); err != nil {
 		return nil, err
 	}
+	if query.RecordType != "" && query.RecordType != "request" && query.RecordType != "download" && query.RecordType != "all" {
+		return nil, BadAuthRequest("请求明细类型无效")
+	}
 	filter := normalizeAnalyticsFilter(query.AnalyticsQuery)
-	logs, total, err := s.repo.QueryAPICallLogs(repository.APICallLogFilter{AnalyticsFilter: filter, Keyword: query.Keyword, Status: query.Status, Page: query.Page, Limit: query.Limit})
+	logs, total, err := s.repo.QueryAPICallLogs(repository.APICallLogFilter{AnalyticsFilter: filter, RecordType: query.RecordType, Keyword: query.Keyword, Status: query.Status, Page: query.Page, Limit: query.Limit})
 	if err != nil {
 		return nil, err
 	}
@@ -291,8 +529,7 @@ func (s *Service) decorateAPICallLogs(logs []model.ApiCallLog) error {
 		if task, exists := taskByID[logs[index].TaskID]; exists && task.UserID == logs[index].UserID {
 			logs[index].TaskStatus = task.Status
 			previewURL, previewKind := taskMediaPreview(task.ResultJSON, task.Type)
-			previewStorageKey := taskMediaPreviewStorageKey(task.ResultJSON, previewURL)
-			if canvasResourceID(previewStorageKey) != "" || canvasResourceID(previewURL) != "" {
+			if canvasResourceID(previewURL) != "" {
 				logs[index].MediaPreviewURL = "/api/admin/api-logs/" + logs[index].ID + "/media"
 				logs[index].MediaPreviewKind = previewKind
 			} else if strings.HasPrefix(previewURL, "https://") || strings.HasPrefix(previewURL, "http://") {
@@ -349,10 +586,7 @@ func (s *Service) adminAPICallLogMediaResource(actor *model.User, logID string) 
 		return "", nil, BadAuthRequest("请求与媒体归属不一致")
 	}
 	previewURL, _ := taskMediaPreview(task.ResultJSON, task.Type)
-	resourceID := canvasResourceID(taskMediaPreviewStorageKey(task.ResultJSON, previewURL))
-	if resourceID == "" {
-		resourceID = canvasResourceID(previewURL)
-	}
+	resourceID := canvasResourceID(previewURL)
 	if resourceID == "" {
 		return "", nil, BadAuthRequest("该请求没有已持久化媒体")
 	}
@@ -382,6 +616,9 @@ func (s *Service) AdminAPICallLogsCSV(actor *model.User, query APICallLogQuery) 
 	if err := s.RequireAdmin(actor); err != nil {
 		return nil, err
 	}
+	if query.RecordType != "" && query.RecordType != "request" && query.RecordType != "download" && query.RecordType != "all" {
+		return nil, BadAuthRequest("请求明细类型无效")
+	}
 	filter := normalizeAnalyticsFilter(query.AnalyticsQuery)
 	ids := uniqueNonEmpty(query.IDs)
 	if len(query.IDs) > 0 && len(ids) == 0 {
@@ -390,7 +627,7 @@ func (s *Service) AdminAPICallLogsCSV(actor *model.User, query APICallLogQuery) 
 	if len(ids) > 200 {
 		return nil, BadAuthRequest("单次最多导出 200 条已选请求明细")
 	}
-	logs, err := s.repo.ExportAPICallLogs(repository.APICallLogFilter{AnalyticsFilter: filter, Keyword: query.Keyword, Status: query.Status, IDs: ids}, 10_000)
+	logs, err := s.repo.ExportAPICallLogs(repository.APICallLogFilter{AnalyticsFilter: filter, RecordType: query.RecordType, Keyword: query.Keyword, Status: query.Status, IDs: ids}, 10_000)
 	if err != nil {
 		return nil, err
 	}
@@ -425,30 +662,27 @@ func (s *Service) AdminAPICallLogsCSV(actor *model.User, query APICallLogQuery) 
 }
 
 func (s *Service) AdminAnalyticsCSV(actor *model.User, query AnalyticsQuery) ([]byte, error) {
-	if err := s.RequireAdmin(actor); err != nil {
-		return nil, err
-	}
-	filter := normalizeAnalyticsFilter(query)
-	logs, err := s.repo.AnalyticsAPICallLogs(filter)
+	overview, err := s.AdminAnalytics(actor, query)
 	if err != nil {
 		return nil, err
 	}
 	var buffer bytes.Buffer
 	buffer.WriteString("\xEF\xBB\xBF")
 	writer := csv.NewWriter(&buffer)
-	_ = writer.Write([]string{"时间", "用户ID", "渠道ID", "任务ID", "能力", "请求阶段", "模型", "状态", "状态码", "耗时毫秒", "输入Token", "输出Token", "缓存Token", "媒体数量", "视频秒数", "估算费用(微单位)", "币种", "错误类型"})
-	for _, log := range logs {
+	_ = writer.Write([]string{"用户", "用户ID", "活跃天数", "登录次数", "首次活跃", "最后活跃", "任务总数", "文本任务", "图片任务", "视频任务", "音频任务", "成功任务", "失败任务", "取消任务", "排队任务", "运行任务", "任务成功率(%)", "平均任务耗时毫秒", "P95任务耗时毫秒", "上游请求", "成功请求", "失败请求", "请求成功率(%)", "P95请求耗时毫秒", "输出媒体数", "生成图片数", "生成视频数", "生成音频数", "生成视频秒数", "输入Token", "输出Token", "缓存Token", "已结算消耗(微积分)", "上游估算费用(微单位)", "币种", "Agent消息", "画布活跃天数", "素材", "资源", "常用模型", "模型明细(JSON)", "渠道明细(JSON)", "每日明细(JSON)"})
+	for _, row := range overview.Users {
+		tokens := []string{"", "", ""}
+		if row.UsageAvailable {
+			tokens = []string{strconv.FormatInt(row.InputTokens, 10), strconv.FormatInt(row.OutputTokens, 10), strconv.FormatInt(row.CachedTokens, 10)}
+		}
 		cost := ""
-		if log.CostAvailable {
-			cost = strconv.FormatInt(log.EstimatedCostMicros, 10)
+		if row.CostAvailable {
+			cost = strconv.FormatInt(row.EstimatedCostMicros, 10)
 		}
-		inputTokens, outputTokens, cachedTokens := "", "", ""
-		if log.UsageAvailable {
-			inputTokens = strconv.FormatInt(log.InputTokens, 10)
-			outputTokens = strconv.FormatInt(log.OutputTokens, 10)
-			cachedTokens = strconv.FormatInt(log.CachedTokens, 10)
-		}
-		_ = writer.Write([]string{log.CreatedAt.Format(time.RFC3339), log.UserID, log.ChannelID, log.TaskID, log.Capability, log.RequestKind, log.Model, string(log.Status), strconv.Itoa(log.StatusCode), strconv.FormatInt(log.DurationMs, 10), inputTokens, outputTokens, cachedTokens, strconv.Itoa(log.MediaCount), strconv.Itoa(log.VideoSeconds), cost, log.Currency, classifyAPICallError(log)})
+		modelsJSON, _ := json.Marshal(row.Models)
+		channelsJSON, _ := json.Marshal(row.Channels)
+		dailyJSON, _ := json.Marshal(row.Daily)
+		_ = writer.Write([]string{row.Name, row.UserID, strconv.Itoa(row.ActiveDays), strconv.Itoa(row.LoginCount), analyticsCSVTime(row.FirstActiveAt), analyticsCSVTime(row.LastActiveAt), strconv.Itoa(row.Tasks), strconv.Itoa(row.TextTasks), strconv.Itoa(row.ImageTasks), strconv.Itoa(row.VideoTasks), strconv.Itoa(row.AudioTasks), strconv.Itoa(row.SucceededTasks), strconv.Itoa(row.FailedTasks), strconv.Itoa(row.CancelledTasks), strconv.Itoa(row.QueuedTasks), strconv.Itoa(row.RunningTasks), strconv.FormatFloat(row.TaskSuccessRate, 'f', 2, 64), strconv.FormatInt(row.AverageTaskDurationMs, 10), strconv.FormatInt(row.P95TaskDurationMs, 10), strconv.Itoa(row.Requests), strconv.Itoa(row.SucceededRequests), strconv.Itoa(row.FailedRequests), strconv.FormatFloat(row.RequestSuccessRate, 'f', 2, 64), strconv.FormatInt(row.P95RequestDurationMs, 10), strconv.Itoa(row.MediaCount), strconv.Itoa(row.GeneratedImages), strconv.Itoa(row.GeneratedVideos), strconv.Itoa(row.GeneratedAudio), strconv.Itoa(row.VideoSeconds), tokens[0], tokens[1], tokens[2], strconv.FormatInt(row.CreditsConsumedMicrocredits, 10), cost, row.Currency, strconv.Itoa(row.AgentMessages), strconv.Itoa(row.CanvasDays), strconv.Itoa(row.Assets), strconv.Itoa(row.Resources), row.CommonModel, string(modelsJSON), string(channelsJSON), string(dailyJSON)})
 	}
 	writer.Flush()
 	return buffer.Bytes(), writer.Error()
@@ -554,12 +788,15 @@ func normalizeCapability(value string) string {
 	}
 }
 
-func buildAnalyticsOverview(filter repository.AnalyticsFilter, tasks []model.Task, rollingTasks []model.Task, rollingLogs []model.ApiCallLog, logs []model.ApiCallLog, activities []model.UserDailyActivity, users []model.User) *AnalyticsOverview {
-	result := &AnalyticsOverview{From: filter.From, To: filter.To, Trend: []AnalyticsTrendPoint{}, Models: []AnalyticsModelRow{}, Users: []AnalyticsUserRow{}, Failures: []AnalyticsFailureRow{}}
+func buildAnalyticsOverview(filter repository.AnalyticsFilter, tasks []model.Task, rollingTasks []model.Task, rollingLogs []model.ApiCallLog, logs []model.ApiCallLog, billingOrders []model.BillingOrder, activities []model.UserDailyActivity, users []model.User) *AnalyticsOverview {
+	result := &AnalyticsOverview{From: filter.From, To: filter.To, Trend: []AnalyticsTrendPoint{}, Models: []AnalyticsModelRow{}, Channels: []AnalyticsChannelRow{}, Users: []AnalyticsUserRow{}, Failures: []AnalyticsFailureRow{}}
+	videoSecondsByTask := generatedVideoSecondsByTask(tasks, logs)
 	result.KPI.GenerationTasks = len(tasks)
 	result.KPI.UpstreamRequests = len(logs)
 	result.KPI.SuccessRate = successRateLogs(logs)
 	durations := make([]int64, 0, len(logs))
+	var taskDurationTotal int64
+	taskDurationCount := 0
 	activeUsers := map[string]bool{}
 	if !hasCreationDimensionFilter(filter) {
 		for _, activity := range activities {
@@ -571,9 +808,36 @@ func buildAnalyticsOverview(filter repository.AnalyticsFilter, tasks []model.Tas
 	}
 	for _, task := range tasks {
 		activeUsers[task.UserID] = true
+		capability := capabilityFromTaskType(task.Type)
+		incrementCapabilityCount(capability, &result.KPI.TextTasks, &result.KPI.ImageTasks, &result.KPI.VideoTasks, &result.KPI.AudioTasks)
+		switch task.Status {
+		case model.TaskStatusSucceeded:
+			result.KPI.SucceededTasks++
+		case model.TaskStatusFailed:
+			result.KPI.FailedTasks++
+		case model.TaskStatusCancelled:
+			result.KPI.CancelledTasks++
+		case model.TaskStatusQueued:
+			result.KPI.QueuedTasks++
+		case model.TaskStatusRunning:
+			result.KPI.RunningTasks++
+		}
+		mediaCount := taskGeneratedMediaCount(task)
+		result.KPI.MediaCount += mediaCount
+		incrementGeneratedMediaCount(capability, mediaCount, &result.KPI.GeneratedImages, &result.KPI.GeneratedVideos, &result.KPI.GeneratedAudio)
+		result.KPI.VideoSeconds += videoSecondsByTask[task.ID]
+		if duration := taskDurationMs(task); duration > 0 {
+			taskDurationTotal += duration
+			taskDurationCount++
+		}
 	}
 	for _, log := range logs {
 		activeUsers[log.UserID] = true
+		if log.Status == model.ApiCallStatusSucceeded {
+			result.KPI.SucceededRequests++
+		} else if log.Status == model.ApiCallStatusFailed {
+			result.KPI.FailedRequests++
+		}
 	}
 	result.KPI.ActiveUsers = len(activeUsers)
 	rollingActivities := activities
@@ -586,22 +850,36 @@ func buildAnalyticsOverview(filter repository.AnalyticsFilter, tasks []model.Tas
 	currency := ""
 	for _, log := range logs {
 		durations = append(durations, log.DurationMs)
+		if log.UsageAvailable {
+			result.KPI.UsageAvailable = true
+			result.KPI.InputTokens += log.InputTokens
+			result.KPI.OutputTokens += log.OutputTokens
+			result.KPI.CachedTokens += log.CachedTokens
+		}
 		if log.CostAvailable {
 			result.KPI.CostAvailable = true
 			result.KPI.EstimatedCostMicros += log.EstimatedCostMicros
 			currency = mergeCurrency(currency, log.Currency)
 		}
 	}
+	for _, order := range billingOrders {
+		result.KPI.CreditsConsumedMicrocredits += order.ActualAmountMicrocredits
+	}
+	result.KPI.TaskSuccessRate = ratio(result.KPI.SucceededTasks, result.KPI.SucceededTasks+result.KPI.FailedTasks)
+	if taskDurationCount > 0 {
+		result.KPI.AverageTaskDurationMs = taskDurationTotal / int64(taskDurationCount)
+	}
 	result.KPI.Currency = currency
 	result.KPI.P95DurationMs = percentile(durations, 0.95)
-	result.Trend = buildAnalyticsTrend(filter, tasks, logs, activities)
-	result.Models = buildAnalyticsModels(tasks, logs)
-	result.Users = buildAnalyticsUsers(filter, tasks, logs, activities, users)
+	result.Trend = buildAnalyticsTrend(filter, tasks, logs, activities, videoSecondsByTask)
+	result.Models = buildAnalyticsModels(tasks, logs, billingOrders, videoSecondsByTask)
+	result.Channels = buildAnalyticsChannels(tasks, logs, billingOrders, videoSecondsByTask)
+	result.Users = buildAnalyticsUsers(filter, tasks, logs, billingOrders, activities, users, videoSecondsByTask)
 	result.Failures = buildAnalyticsFailures(logs)
 	return result
 }
 
-func buildAnalyticsTrend(filter repository.AnalyticsFilter, tasks []model.Task, logs []model.ApiCallLog, activities []model.UserDailyActivity) []AnalyticsTrendPoint {
+func buildAnalyticsTrend(filter repository.AnalyticsFilter, tasks []model.Task, logs []model.ApiCallLog, activities []model.UserDailyActivity, videoSecondsByTask map[string]int) []AnalyticsTrendPoint {
 	points := map[string]*AnalyticsTrendPoint{}
 	for day := time.Date(filter.From.Year(), filter.From.Month(), filter.From.Day(), 0, 0, 0, 0, time.UTC); day.Before(filter.To); day = day.AddDate(0, 0, 1) {
 		key := day.Format("2006-01-02")
@@ -609,11 +887,22 @@ func buildAnalyticsTrend(filter repository.AnalyticsFilter, tasks []model.Task, 
 	}
 	requestTotals := map[string]int{}
 	requestSuccess := map[string]int{}
+	taskTotals := map[string]int{}
 	activeByDay := map[string]map[string]bool{}
 	for _, task := range tasks {
 		key := task.CreatedAt.UTC().Format("2006-01-02")
 		if point := points[key]; point != nil {
 			point.Tasks++
+			incrementCapabilityCount(capabilityFromTaskType(task.Type), &point.TextTasks, &point.ImageTasks, &point.VideoTasks, &point.AudioTasks)
+			if task.Status == model.TaskStatusSucceeded {
+				point.SucceededTasks++
+				taskTotals[key]++
+			} else if task.Status == model.TaskStatusFailed {
+				point.FailedTasks++
+				taskTotals[key]++
+			}
+			point.MediaCount += taskGeneratedMediaCount(task)
+			point.VideoSeconds += videoSecondsByTask[task.ID]
 			if activeByDay[key] == nil {
 				activeByDay[key] = map[string]bool{}
 			}
@@ -655,13 +944,14 @@ func buildAnalyticsTrend(filter repository.AnalyticsFilter, tasks []model.Task, 
 	for _, key := range keys {
 		point := points[key]
 		point.ActiveUsers = len(activeByDay[key])
+		point.TaskSuccessRate = ratio(point.SucceededTasks, taskTotals[key])
 		point.RequestSuccessRate = ratio(requestSuccess[key], requestTotals[key])
 		result = append(result, *point)
 	}
 	return result
 }
 
-func buildAnalyticsModels(tasks []model.Task, logs []model.ApiCallLog) []AnalyticsModelRow {
+func buildAnalyticsModels(tasks []model.Task, logs []model.ApiCallLog, billingOrders []model.BillingOrder, videoSecondsByTask map[string]int) []AnalyticsModelRow {
 	type accumulator struct {
 		row            AnalyticsModelRow
 		users          map[string]bool
@@ -671,6 +961,7 @@ func buildAnalyticsModels(tasks []model.Task, logs []model.ApiCallLog) []Analyti
 		durations      []int64
 	}
 	items := map[string]*accumulator{}
+	taskByID := make(map[string]model.Task, len(tasks))
 	get := func(modelName string, capability string) *accumulator {
 		if modelName == "" {
 			modelName = "未识别"
@@ -682,24 +973,49 @@ func buildAnalyticsModels(tasks []model.Task, logs []model.ApiCallLog) []Analyti
 		return items[key]
 	}
 	for _, task := range tasks {
+		taskByID[task.ID] = task
 		capability := capabilityFromTaskType(task.Type)
 		item := get(task.Model, capability)
 		item.row.Tasks++
 		item.users[task.UserID] = true
-		if task.Status != model.TaskStatusCancelled {
-			item.taskTotal++
-			if task.Status == model.TaskStatusSucceeded {
-				item.taskSuccess++
-			}
+		switch task.Status {
+		case model.TaskStatusSucceeded:
+			item.row.SucceededTasks++
+		case model.TaskStatusFailed:
+			item.row.FailedTasks++
+		case model.TaskStatusCancelled:
+			item.row.CancelledTasks++
+		case model.TaskStatusQueued:
+			item.row.QueuedTasks++
+		case model.TaskStatusRunning:
+			item.row.RunningTasks++
 		}
+		if task.Status == model.TaskStatusSucceeded || task.Status == model.TaskStatusFailed {
+			item.taskTotal++
+		}
+		if task.Status == model.TaskStatusSucceeded {
+			item.taskSuccess++
+		}
+		mediaCount := taskGeneratedMediaCount(task)
+		item.row.MediaCount += mediaCount
+		incrementGeneratedMediaCount(capability, mediaCount, &item.row.GeneratedImages, &item.row.GeneratedVideos, &item.row.GeneratedAudio)
+		item.row.VideoSeconds += videoSecondsByTask[task.ID]
 	}
 	for _, log := range logs {
-		item := get(log.Model, log.Capability)
+		modelName, capability := log.Model, log.Capability
+		if task, exists := taskByID[log.TaskID]; exists && task.UserID == log.UserID {
+			modelName = firstNonEmpty(task.Model, modelName)
+			capability = firstNonEmpty(capabilityFromTaskType(task.Type), capability)
+		}
+		item := get(modelName, capability)
 		item.row.Requests++
 		item.users[log.UserID] = true
 		item.durations = append(item.durations, log.DurationMs)
 		if log.Status == model.ApiCallStatusSucceeded {
 			item.requestSuccess++
+			item.row.SucceededRequests++
+		} else if log.Status == model.ApiCallStatusFailed {
+			item.row.FailedRequests++
 		}
 		if log.UsageAvailable {
 			item.row.UsageAvailable = true
@@ -707,13 +1023,21 @@ func buildAnalyticsModels(tasks []model.Task, logs []model.ApiCallLog) []Analyti
 			item.row.OutputTokens += log.OutputTokens
 			item.row.CachedTokens += log.CachedTokens
 		}
-		item.row.MediaCount += log.MediaCount
-		item.row.VideoSeconds += log.VideoSeconds
 		if log.CostAvailable {
 			item.row.CostAvailable = true
 			item.row.EstimatedCostMicros += log.EstimatedCostMicros
 			item.row.Currency = mergeCurrency(item.row.Currency, log.Currency)
 		}
+	}
+	for _, order := range billingOrders {
+		modelName, capability := order.Model, order.Capability
+		if task, exists := taskByID[order.TaskID]; exists && task.UserID == order.UserID {
+			modelName = firstNonEmpty(task.Model, modelName)
+			capability = firstNonEmpty(capabilityFromTaskType(task.Type), capability)
+		}
+		item := get(modelName, capability)
+		item.row.CreditsConsumedMicrocredits += order.ActualAmountMicrocredits
+		item.users[order.UserID] = true
 	}
 	result := make([]AnalyticsModelRow, 0, len(items))
 	for _, item := range items {
@@ -733,63 +1057,397 @@ func buildAnalyticsModels(tasks []model.Task, logs []model.ApiCallLog) []Analyti
 	return result
 }
 
-func buildAnalyticsUsers(filter repository.AnalyticsFilter, tasks []model.Task, logs []model.ApiCallLog, activities []model.UserDailyActivity, users []model.User) []AnalyticsUserRow {
+func buildAnalyticsChannels(tasks []model.Task, logs []model.ApiCallLog, billingOrders []model.BillingOrder, videoSecondsByTask map[string]int) []AnalyticsChannelRow {
+	type accumulator struct {
+		row       AnalyticsChannelRow
+		users     map[string]bool
+		models    map[string]bool
+		durations []int64
+	}
+	items := map[string]*accumulator{}
+	get := func(channelID string) *accumulator {
+		key := channelID
+		if items[key] == nil {
+			name := channelID
+			if name == "" {
+				name = "本地、自定义或未关联"
+			}
+			items[key] = &accumulator{row: AnalyticsChannelRow{ChannelID: channelID, Name: name}, users: map[string]bool{}, models: map[string]bool{}}
+		}
+		return items[key]
+	}
+
+	taskChannel := analyticsTaskChannels(tasks, logs, billingOrders)
+
+	for _, task := range tasks {
+		item := get(taskChannel[task.ID])
+		capability := capabilityFromTaskType(task.Type)
+		mediaCount := taskGeneratedMediaCount(task)
+		item.row.Tasks++
+		item.row.MediaCount += mediaCount
+		incrementGeneratedMediaCount(capability, mediaCount, &item.row.GeneratedImages, &item.row.GeneratedVideos, &item.row.GeneratedAudio)
+		item.row.VideoSeconds += videoSecondsByTask[task.ID]
+		item.users[task.UserID] = true
+		if task.Model != "" {
+			item.models[task.Model] = true
+		}
+	}
+	for _, log := range logs {
+		item := get(log.ChannelID)
+		item.row.Requests++
+		item.users[log.UserID] = true
+		if log.Model != "" {
+			item.models[log.Model] = true
+		}
+		item.durations = append(item.durations, log.DurationMs)
+		if log.Status == model.ApiCallStatusSucceeded {
+			item.row.SucceededRequests++
+		} else if log.Status == model.ApiCallStatusFailed {
+			item.row.FailedRequests++
+		}
+		if log.UsageAvailable {
+			item.row.UsageAvailable = true
+			item.row.InputTokens += log.InputTokens
+			item.row.OutputTokens += log.OutputTokens
+			item.row.CachedTokens += log.CachedTokens
+		}
+		if log.CostAvailable {
+			item.row.CostAvailable = true
+			item.row.EstimatedCostMicros += log.EstimatedCostMicros
+			item.row.Currency = mergeCurrency(item.row.Currency, log.Currency)
+		}
+	}
+	for _, order := range billingOrders {
+		channelID := order.ChannelID
+		if channelID == "" {
+			channelID = taskChannel[order.TaskID]
+		}
+		item := get(channelID)
+		item.row.CreditsConsumedMicrocredits += order.ActualAmountMicrocredits
+		item.users[order.UserID] = true
+		if order.Model != "" {
+			item.models[order.Model] = true
+		}
+	}
+
+	result := make([]AnalyticsChannelRow, 0, len(items))
+	for _, item := range items {
+		item.row.UniqueUsers = len(item.users)
+		item.row.UniqueModels = len(item.models)
+		item.row.RequestSuccessRate = ratio(item.row.SucceededRequests, item.row.SucceededRequests+item.row.FailedRequests)
+		item.row.P50DurationMs = percentile(item.durations, 0.5)
+		item.row.P95DurationMs = percentile(item.durations, 0.95)
+		result = append(result, item.row)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Requests == result[j].Requests {
+			return result[i].Tasks > result[j].Tasks
+		}
+		return result[i].Requests > result[j].Requests
+	})
+	return result
+}
+
+func buildAnalyticsUsers(filter repository.AnalyticsFilter, tasks []model.Task, logs []model.ApiCallLog, billingOrders []model.BillingOrder, activities []model.UserDailyActivity, users []model.User, videoSecondsByTask map[string]int) []AnalyticsUserRow {
+	type channelAccumulator struct {
+		row    AnalyticsUserChannelRow
+		models map[string]bool
+	}
+	type accumulator struct {
+		row               AnalyticsUserRow
+		activeDays        map[string]bool
+		taskDurationTotal int64
+		taskDurationCount int
+		taskFinished      int
+		requestSuccess    int
+		taskDurations     []int64
+		requestDurations  []int64
+		models            map[string]*AnalyticsUserModelRow
+		channels          map[string]*channelAccumulator
+		daily             map[string]*AnalyticsUserDayRow
+	}
 	names := map[string]string{}
 	for _, user := range users {
 		names[user.ID] = firstNonEmpty(user.DisplayName, user.Username)
 	}
-	rows := map[string]*AnalyticsUserRow{}
-	models := map[string]map[string]int{}
-	get := func(userID string) *AnalyticsUserRow {
+	rows := map[string]*accumulator{}
+	taskByID := make(map[string]model.Task, len(tasks))
+	get := func(userID string) *accumulator {
 		if rows[userID] == nil {
-			rows[userID] = &AnalyticsUserRow{UserID: userID, Name: firstNonEmpty(names[userID], userID)}
+			rows[userID] = &accumulator{
+				row:        AnalyticsUserRow{UserID: userID, Name: firstNonEmpty(names[userID], userID), Models: []AnalyticsUserModelRow{}, Channels: []AnalyticsUserChannelRow{}, Daily: []AnalyticsUserDayRow{}},
+				activeDays: map[string]bool{},
+				models:     map[string]*AnalyticsUserModelRow{},
+				channels:   map[string]*channelAccumulator{},
+				daily:      map[string]*AnalyticsUserDayRow{},
+			}
 		}
 		return rows[userID]
 	}
+	getDay := func(item *accumulator, day string) *AnalyticsUserDayRow {
+		if item.daily[day] == nil {
+			item.daily[day] = &AnalyticsUserDayRow{Day: day}
+		}
+		return item.daily[day]
+	}
+	getModel := func(item *accumulator, modelName string, capability string) *AnalyticsUserModelRow {
+		modelName = firstNonEmpty(modelName, "未识别")
+		key := modelName + "\x00" + capability
+		if item.models[key] == nil {
+			item.models[key] = &AnalyticsUserModelRow{Model: modelName, Capability: capability}
+		}
+		return item.models[key]
+	}
+	getChannel := func(item *accumulator, channelID string) *channelAccumulator {
+		if item.channels[channelID] == nil {
+			name := channelID
+			if name == "" {
+				name = "本地、自定义或未关联"
+			}
+			item.channels[channelID] = &channelAccumulator{row: AnalyticsUserChannelRow{ChannelID: channelID, Name: name}, models: map[string]bool{}}
+		}
+		return item.channels[channelID]
+	}
+	taskChannel := analyticsTaskChannels(tasks, logs, billingOrders)
+	if !hasCreationDimensionFilter(filter) {
+		for _, user := range users {
+			if filter.UserID == "" || filter.UserID == user.ID {
+				get(user.ID)
+			}
+		}
+	}
 	if !hasCreationDimensionFilter(filter) {
 		for _, activity := range activities {
-			if activity.Day.Before(filter.From) || !activity.Day.Before(filter.To) || !meaningfulActivity(activity) {
+			if activity.Day.Before(filter.From) || !activity.Day.Before(filter.To) {
 				continue
 			}
-			row := get(activity.UserID)
-			row.ActiveDays++
-			row.AgentMessages += activity.AgentMessageCount
+			item := get(activity.UserID)
+			dayKey := activity.Day.UTC().Format("2006-01-02")
+			day := getDay(item, dayKey)
+			item.row.LoginCount += activity.LoginCount
+			item.row.AgentMessages += activity.AgentMessageCount
 			if activity.CanvasActive {
-				row.CanvasDays++
+				item.row.CanvasDays++
 			}
-			row.Assets += activity.AssetCount
-			row.Resources += activity.ResourceCount
+			item.row.Assets += activity.AssetCount
+			item.row.Resources += activity.ResourceCount
+			day.LoginCount += activity.LoginCount
+			day.AgentMessages += activity.AgentMessageCount
+			day.CanvasActive = day.CanvasActive || activity.CanvasActive
+			day.Assets += activity.AssetCount
+			day.Resources += activity.ResourceCount
+			if meaningfulActivity(activity) {
+				item.activeDays[dayKey] = true
+			}
+			if activity.FirstActiveAt != nil {
+				updateAnalyticsUserActivityBounds(&item.row, *activity.FirstActiveAt)
+			}
+			if activity.LastActiveAt != nil {
+				updateAnalyticsUserActivityBounds(&item.row, *activity.LastActiveAt)
+			}
+			if activity.LoginCount > 0 {
+				if activity.FirstActiveAt == nil && !activity.CreatedAt.IsZero() {
+					updateAnalyticsUserActivityBounds(&item.row, activity.CreatedAt)
+				}
+				if activity.LastActiveAt == nil && !activity.UpdatedAt.IsZero() {
+					updateAnalyticsUserActivityBounds(&item.row, activity.UpdatedAt)
+				}
+			}
 		}
 	}
 	for _, task := range tasks {
-		if models[task.UserID] == nil {
-			models[task.UserID] = map[string]int{}
+		taskByID[task.ID] = task
+		item := get(task.UserID)
+		dayKey := task.CreatedAt.UTC().Format("2006-01-02")
+		day := getDay(item, dayKey)
+		item.activeDays[dayKey] = true
+		updateAnalyticsUserActivityBounds(&item.row, task.CreatedAt)
+		if task.CompletedAt != nil {
+			updateAnalyticsUserActivityBounds(&item.row, *task.CompletedAt)
 		}
-		models[task.UserID][task.Model]++
-		get(task.UserID).Tasks++
+		capability := capabilityFromTaskType(task.Type)
+		modelRow := getModel(item, task.Model, capability)
+		channel := getChannel(item, taskChannel[task.ID])
+		item.row.Tasks++
+		day.Tasks++
+		modelRow.Tasks++
+		incrementCapabilityCount(capability, &item.row.TextTasks, &item.row.ImageTasks, &item.row.VideoTasks, &item.row.AudioTasks)
+		incrementCapabilityCount(capability, &day.TextTasks, &day.ImageTasks, &day.VideoTasks, &day.AudioTasks)
+		channel.row.Tasks++
+		if task.Model != "" {
+			channel.models[task.Model] = true
+		}
+		switch task.Status {
+		case model.TaskStatusSucceeded:
+			item.row.SucceededTasks++
+			day.SucceededTasks++
+			modelRow.SucceededTasks++
+			item.taskFinished++
+		case model.TaskStatusFailed:
+			item.row.FailedTasks++
+			day.FailedTasks++
+			modelRow.FailedTasks++
+			item.taskFinished++
+		case model.TaskStatusCancelled:
+			item.row.CancelledTasks++
+			day.CancelledTasks++
+		case model.TaskStatusQueued:
+			item.row.QueuedTasks++
+			day.QueuedTasks++
+		case model.TaskStatusRunning:
+			item.row.RunningTasks++
+			day.RunningTasks++
+		}
+		mediaCount := taskGeneratedMediaCount(task)
+		videoSeconds := videoSecondsByTask[task.ID]
+		item.row.MediaCount += mediaCount
+		day.MediaCount += mediaCount
+		modelRow.MediaCount += mediaCount
+		channel.row.MediaCount += mediaCount
+		incrementGeneratedMediaCount(capability, mediaCount, &item.row.GeneratedImages, &item.row.GeneratedVideos, &item.row.GeneratedAudio)
+		incrementGeneratedMediaCount(capability, mediaCount, &day.GeneratedImages, &day.GeneratedVideos, &day.GeneratedAudio)
+		incrementGeneratedMediaCount(capability, mediaCount, &channel.row.GeneratedImages, &channel.row.GeneratedVideos, &channel.row.GeneratedAudio)
+		item.row.VideoSeconds += videoSeconds
+		day.VideoSeconds += videoSeconds
+		modelRow.VideoSeconds += videoSeconds
+		channel.row.VideoSeconds += videoSeconds
+		if duration := taskDurationMs(task); duration > 0 {
+			item.taskDurationTotal += duration
+			item.taskDurationCount++
+			item.taskDurations = append(item.taskDurations, duration)
+		}
 	}
-	if hasCreationDimensionFilter(filter) {
-		activeDays := map[string]map[string]bool{}
-		for _, log := range logs {
-			get(log.UserID)
-			if activeDays[log.UserID] == nil {
-				activeDays[log.UserID] = map[string]bool{}
-			}
-			activeDays[log.UserID][log.CreatedAt.UTC().Format("2006-01-02")] = true
+	for _, log := range logs {
+		item := get(log.UserID)
+		dayKey := log.CreatedAt.UTC().Format("2006-01-02")
+		day := getDay(item, dayKey)
+		item.activeDays[dayKey] = true
+		updateAnalyticsUserActivityBounds(&item.row, log.CreatedAt)
+		modelName, capability := log.Model, log.Capability
+		if task, exists := taskByID[log.TaskID]; exists && task.UserID == log.UserID {
+			modelName = firstNonEmpty(task.Model, modelName)
+			capability = firstNonEmpty(capabilityFromTaskType(task.Type), capability)
 		}
-		for userID, days := range activeDays {
-			get(userID).ActiveDays = len(days)
+		modelRow := getModel(item, modelName, capability)
+		channel := getChannel(item, log.ChannelID)
+		item.row.Requests++
+		day.Requests++
+		modelRow.Requests++
+		channel.row.Requests++
+		if modelName != "" {
+			channel.models[modelName] = true
+		}
+		if log.Status == model.ApiCallStatusSucceeded {
+			item.requestSuccess++
+			item.row.SucceededRequests++
+			day.SucceededRequests++
+			modelRow.SucceededRequests++
+			channel.row.SucceededRequests++
+		} else if log.Status == model.ApiCallStatusFailed {
+			item.row.FailedRequests++
+			day.FailedRequests++
+			modelRow.FailedRequests++
+			channel.row.FailedRequests++
+		}
+		item.requestDurations = append(item.requestDurations, log.DurationMs)
+		if log.UsageAvailable {
+			item.row.UsageAvailable = true
+			item.row.InputTokens += log.InputTokens
+			item.row.OutputTokens += log.OutputTokens
+			item.row.CachedTokens += log.CachedTokens
+			day.InputTokens += log.InputTokens
+			day.OutputTokens += log.OutputTokens
+			day.CachedTokens += log.CachedTokens
+			modelRow.UsageAvailable = true
+			modelRow.InputTokens += log.InputTokens
+			modelRow.OutputTokens += log.OutputTokens
+			modelRow.CachedTokens += log.CachedTokens
+			channel.row.UsageAvailable = true
+			channel.row.InputTokens += log.InputTokens
+			channel.row.OutputTokens += log.OutputTokens
+			channel.row.CachedTokens += log.CachedTokens
+		}
+		if log.CostAvailable {
+			item.row.CostAvailable = true
+			item.row.EstimatedCostMicros += log.EstimatedCostMicros
+			item.row.Currency = mergeCurrency(item.row.Currency, log.Currency)
+			day.CostAvailable = true
+			day.EstimatedCostMicros += log.EstimatedCostMicros
+			day.Currency = mergeCurrency(day.Currency, log.Currency)
+			modelRow.CostAvailable = true
+			modelRow.EstimatedCostMicros += log.EstimatedCostMicros
+			modelRow.Currency = mergeCurrency(modelRow.Currency, log.Currency)
+			channel.row.CostAvailable = true
+			channel.row.EstimatedCostMicros += log.EstimatedCostMicros
+			channel.row.Currency = mergeCurrency(channel.row.Currency, log.Currency)
+		}
+	}
+	for _, order := range billingOrders {
+		item := get(order.UserID)
+		item.row.CreditsConsumedMicrocredits += order.ActualAmountMicrocredits
+		settledAt := order.CreatedAt
+		if order.SettledAt != nil {
+			settledAt = *order.SettledAt
+		}
+		if !settledAt.Before(filter.From) && settledAt.Before(filter.To) {
+			getDay(item, settledAt.UTC().Format("2006-01-02")).CreditsConsumedMicrocredits += order.ActualAmountMicrocredits
+		}
+		modelName, capability := order.Model, order.Capability
+		if task, exists := taskByID[order.TaskID]; exists && task.UserID == order.UserID {
+			modelName = firstNonEmpty(task.Model, modelName)
+			capability = firstNonEmpty(capabilityFromTaskType(task.Type), capability)
+		}
+		getModel(item, modelName, capability).CreditsConsumedMicrocredits += order.ActualAmountMicrocredits
+		channelID := order.ChannelID
+		if channelID == "" {
+			channelID = taskChannel[order.TaskID]
+		}
+		channel := getChannel(item, channelID)
+		channel.row.CreditsConsumedMicrocredits += order.ActualAmountMicrocredits
+		if modelName != "" {
+			channel.models[modelName] = true
 		}
 	}
 	result := make([]AnalyticsUserRow, 0, len(rows))
-	for userID, row := range rows {
-		bestCount := 0
-		for modelName, count := range models[userID] {
-			if modelName != "" && count > bestCount {
-				row.CommonModel, bestCount = modelName, count
-			}
+	for _, item := range rows {
+		item.row.ActiveDays = len(item.activeDays)
+		item.row.TaskSuccessRate = ratio(item.row.SucceededTasks, item.taskFinished)
+		item.row.RequestSuccessRate = ratio(item.requestSuccess, item.row.Requests)
+		if item.taskDurationCount > 0 {
+			item.row.AverageTaskDurationMs = item.taskDurationTotal / int64(item.taskDurationCount)
 		}
-		result = append(result, *row)
+		item.row.P95TaskDurationMs = percentile(item.taskDurations, 0.95)
+		item.row.P95RequestDurationMs = percentile(item.requestDurations, 0.95)
+		for _, modelRow := range item.models {
+			modelRow.TaskSuccessRate = ratio(modelRow.SucceededTasks, modelRow.SucceededTasks+modelRow.FailedTasks)
+			modelRow.RequestSuccessRate = ratio(modelRow.SucceededRequests, modelRow.SucceededRequests+modelRow.FailedRequests)
+			item.row.Models = append(item.row.Models, *modelRow)
+		}
+		sort.Slice(item.row.Models, func(i, j int) bool {
+			if item.row.Models[i].Tasks == item.row.Models[j].Tasks {
+				return item.row.Models[i].Requests > item.row.Models[j].Requests
+			}
+			return item.row.Models[i].Tasks > item.row.Models[j].Tasks
+		})
+		if len(item.row.Models) > 0 && item.row.Models[0].Tasks > 0 {
+			item.row.CommonModel = item.row.Models[0].Model
+		}
+		for _, channel := range item.channels {
+			channel.row.UniqueModels = len(channel.models)
+			channel.row.RequestSuccessRate = ratio(channel.row.SucceededRequests, channel.row.SucceededRequests+channel.row.FailedRequests)
+			item.row.Channels = append(item.row.Channels, channel.row)
+		}
+		sort.Slice(item.row.Channels, func(i, j int) bool {
+			if item.row.Channels[i].Requests == item.row.Channels[j].Requests {
+				return item.row.Channels[i].Tasks > item.row.Channels[j].Tasks
+			}
+			return item.row.Channels[i].Requests > item.row.Channels[j].Requests
+		})
+		for _, day := range item.daily {
+			item.row.Daily = append(item.row.Daily, *day)
+		}
+		sort.Slice(item.row.Daily, func(i, j int) bool { return item.row.Daily[i].Day < item.row.Daily[j].Day })
+		result = append(result, item.row)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Tasks == result[j].Tasks {
@@ -850,7 +1508,7 @@ func classifyAPICallError(log model.ApiCallLog) string {
 }
 
 func meaningfulActivity(activity model.UserDailyActivity) bool {
-	return activity.TaskCount > 0 || activity.AgentMessageCount > 0 || activity.CanvasActive || activity.AssetCount > 0 || activity.ResourceCount > 0
+	return activity.LoginCount > 0 || activity.TaskCount > 0 || activity.AgentMessageCount > 0 || activity.CanvasActive || activity.AssetCount > 0 || activity.ResourceCount > 0
 }
 
 func rollingActiveUsers(activities []model.UserDailyActivity, tasks []model.Task, logs []model.ApiCallLog, from time.Time, to time.Time) int {
@@ -925,24 +1583,295 @@ func capabilityFromTaskType(taskType string) string {
 	return ""
 }
 
+func incrementCapabilityCount(capability string, textTasks *int, imageTasks *int, videoTasks *int, audioTasks *int) {
+	switch capability {
+	case "text":
+		*textTasks++
+	case "image":
+		*imageTasks++
+	case "video":
+		*videoTasks++
+	case "audio":
+		*audioTasks++
+	}
+}
+
+func incrementGeneratedMediaCount(capability string, count int, images *int, videos *int, audio *int) {
+	if count <= 0 {
+		return
+	}
+	switch capability {
+	case "image":
+		*images += count
+	case "video":
+		*videos += count
+	case "audio":
+		*audio += count
+	}
+}
+
+func updateAnalyticsUserActivityBounds(row *AnalyticsUserRow, at time.Time) {
+	if at.IsZero() {
+		return
+	}
+	if row.FirstActiveAt == nil || at.Before(*row.FirstActiveAt) {
+		value := at
+		row.FirstActiveAt = &value
+	}
+	if row.LastActiveAt == nil || at.After(*row.LastActiveAt) {
+		value := at
+		row.LastActiveAt = &value
+	}
+}
+
+func analyticsCSVTime(value *time.Time) string {
+	if value == nil || value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
+}
+
+func taskGeneratedMediaCount(task model.Task) int {
+	if task.Status != model.TaskStatusSucceeded {
+		return 0
+	}
+	switch capabilityFromTaskType(task.Type) {
+	case "image":
+		if count := taskImageOutputCount(task.ResultJSON); count > 0 {
+			return count
+		}
+		if count := taskJSONPositiveInt(task.InputJSON, "count"); count > 0 {
+			return count
+		}
+		return 1
+	case "video", "audio":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func taskGeneratedVideoSeconds(task model.Task) int {
+	if task.Status != model.TaskStatusSucceeded || capabilityFromTaskType(task.Type) != "video" {
+		return 0
+	}
+	for _, key := range []string{"videoSeconds", "durationSeconds", "duration", "seconds"} {
+		if seconds := taskJSONPositiveInt(task.InputJSON, key); seconds > 0 {
+			return seconds
+		}
+	}
+	return 0
+}
+
+func generatedVideoSecondsByTask(tasks []model.Task, logs []model.ApiCallLog) map[string]int {
+	result := make(map[string]int, len(tasks))
+	taskSnapshot := make(map[string]bool, len(tasks))
+	eligible := make(map[string]bool, len(tasks))
+	for _, task := range tasks {
+		if task.Status != model.TaskStatusSucceeded || capabilityFromTaskType(task.Type) != "video" {
+			continue
+		}
+		eligible[task.ID] = true
+		if seconds := taskGeneratedVideoSeconds(task); seconds > 0 {
+			result[task.ID] = seconds
+			taskSnapshot[task.ID] = true
+		}
+	}
+	for _, log := range logs {
+		if !eligible[log.TaskID] || taskSnapshot[log.TaskID] || log.Capability != "video" || log.VideoSeconds <= result[log.TaskID] {
+			continue
+		}
+		result[log.TaskID] = log.VideoSeconds
+	}
+	return result
+}
+
+func taskDurationMs(task model.Task) int64 {
+	if task.StartedAt == nil || task.CompletedAt == nil || !task.CompletedAt.After(*task.StartedAt) {
+		return 0
+	}
+	return task.CompletedAt.Sub(*task.StartedAt).Milliseconds()
+}
+
+func taskImageOutputCount(raw string) int {
+	var payload any
+	if json.Unmarshal([]byte(raw), &payload) != nil {
+		return 0
+	}
+	return imageOutputCount(payload)
+}
+
+func imageOutputCount(value any) int {
+	switch item := value.(type) {
+	case []any:
+		for _, child := range item {
+			if count := imageOutputCount(child); count > 0 {
+				return count
+			}
+		}
+	case map[string]any:
+		for _, key := range []string{"images", "outputs"} {
+			if children, ok := item[key].([]any); ok && len(children) > 0 {
+				return len(children)
+			}
+		}
+		for _, key := range []string{"image", "data"} {
+			if child, exists := item[key]; exists {
+				if children, ok := child.([]any); ok && len(children) > 0 {
+					return len(children)
+				}
+				if count := imageOutputCount(child); count > 0 {
+					return count
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func taskJSONPositiveInt(raw string, key string) int {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	var payload any
+	if decoder.Decode(&payload) != nil {
+		return 0
+	}
+	return nestedPositiveInt(payload, key)
+}
+
+func nestedPositiveInt(value any, key string) int {
+	switch item := value.(type) {
+	case map[string]any:
+		if raw, exists := item[key]; exists {
+			if parsed := positiveIntValue(raw); parsed > 0 {
+				return parsed
+			}
+		}
+		for _, child := range item {
+			if parsed := nestedPositiveInt(child, key); parsed > 0 {
+				return parsed
+			}
+		}
+	case []any:
+		for _, child := range item {
+			if parsed := nestedPositiveInt(child, key); parsed > 0 {
+				return parsed
+			}
+		}
+	}
+	return 0
+}
+
+func positiveIntValue(value any) int {
+	var parsed int64
+	switch item := value.(type) {
+	case json.Number:
+		parsed, _ = strconv.ParseInt(item.String(), 10, 32)
+	case string:
+		parsed, _ = strconv.ParseInt(strings.TrimSpace(item), 10, 32)
+	case float64:
+		parsed = int64(item)
+	case int:
+		parsed = int64(item)
+	case int64:
+		parsed = item
+	}
+	if parsed <= 0 || parsed > int64(^uint(0)>>1) {
+		return 0
+	}
+	return int(parsed)
+}
+
 func hasCreationDimensionFilter(filter repository.AnalyticsFilter) bool {
 	return filter.Model != "" || filter.ChannelID != "" || filter.Capability != ""
 }
 
-func tasksWithLoggedRequests(tasks []model.Task, logs []model.ApiCallLog) []model.Task {
-	ids := map[string]bool{}
-	for _, log := range logs {
-		if log.TaskID != "" {
-			ids[log.TaskID] = true
-		}
+func analyticsTaskChannels(tasks []model.Task, logs []model.ApiCallLog, billingOrders []model.BillingOrder) map[string]string {
+	type candidate struct {
+		channelID string
+		rank      int
+		at        time.Time
 	}
-	result := make([]model.Task, 0, len(tasks))
+	owners := make(map[string]string, len(tasks))
+	selected := make(map[string]candidate, len(tasks))
 	for _, task := range tasks {
-		if ids[task.ID] {
-			result = append(result, task)
+		owners[task.ID] = task.UserID
+	}
+	consider := func(taskID string, userID string, channelID string, rank int, at time.Time) {
+		owner, exists := owners[taskID]
+		if !exists || channelID == "" || (userID != "" && userID != owner) {
+			return
 		}
+		current, exists := selected[taskID]
+		if exists && (current.rank > rank || (current.rank == rank && (current.at.After(at) || (current.at.Equal(at) && current.channelID >= channelID)))) {
+			return
+		}
+		selected[taskID] = candidate{channelID: channelID, rank: rank, at: at}
+	}
+	for _, log := range logs {
+		rank := 1
+		if log.Status == model.ApiCallStatusSucceeded {
+			rank = 2
+		}
+		consider(log.TaskID, log.UserID, log.ChannelID, rank, log.CreatedAt)
+	}
+	for _, order := range billingOrders {
+		at := order.CreatedAt
+		if order.SettledAt != nil {
+			at = *order.SettledAt
+		}
+		consider(order.TaskID, order.UserID, order.ChannelID, 3, at)
+	}
+	result := make(map[string]string, len(tasks))
+	for taskID, item := range selected {
+		result[taskID] = item.channelID
 	}
 	return result
+}
+
+func filterAnalyticsFacts(filter repository.AnalyticsFilter, tasks []model.Task, taskReferences []model.Task, logs []model.ApiCallLog, billingOrders []model.BillingOrder) ([]model.Task, []model.ApiCallLog, []model.BillingOrder, error) {
+	taskByID := make(map[string]model.Task, len(taskReferences))
+	for _, task := range taskReferences {
+		taskByID[task.ID] = task
+	}
+	taskChannels := analyticsTaskChannels(taskReferences, logs, billingOrders)
+	matches := func(modelName string, capability string, channelID string) bool {
+		return (filter.Model == "" || modelName == filter.Model) &&
+			(filter.Capability == "" || capability == filter.Capability) &&
+			(filter.ChannelID == "" || channelID == filter.ChannelID)
+	}
+
+	filteredTasks := make([]model.Task, 0, len(tasks))
+	for _, task := range tasks {
+		if matches(task.Model, capabilityFromTaskType(task.Type), taskChannels[task.ID]) {
+			filteredTasks = append(filteredTasks, task)
+		}
+	}
+	filteredLogs := make([]model.ApiCallLog, 0, len(logs))
+	for _, log := range logs {
+		modelName, capability := log.Model, normalizeCapability(log.Capability)
+		if task, exists := taskByID[log.TaskID]; exists && task.UserID == log.UserID {
+			modelName = firstNonEmpty(task.Model, modelName)
+			capability = firstNonEmpty(capabilityFromTaskType(task.Type), capability)
+		}
+		if matches(modelName, capability, log.ChannelID) {
+			filteredLogs = append(filteredLogs, log)
+		}
+	}
+	filteredOrders := make([]model.BillingOrder, 0, len(billingOrders))
+	for _, order := range billingOrders {
+		modelName, capability := order.Model, normalizeCapability(order.Capability)
+		channelID := order.ChannelID
+		if task, exists := taskByID[order.TaskID]; exists && task.UserID == order.UserID {
+			modelName = firstNonEmpty(task.Model, modelName)
+			capability = firstNonEmpty(capabilityFromTaskType(task.Type), capability)
+			channelID = firstNonEmpty(channelID, taskChannels[task.ID])
+		}
+		if matches(modelName, capability, channelID) {
+			filteredOrders = append(filteredOrders, order)
+		}
+	}
+	return filteredTasks, filteredLogs, filteredOrders, nil
 }
 
 func (s *Service) estimateCallCost(log *model.ApiCallLog) {
@@ -974,6 +1903,9 @@ func (s *Service) EnrichAPICallLog(log *model.ApiCallLog, responseBody []byte) {
 	if log == nil {
 		return
 	}
+	// A create endpoint has no provider task ID in its URL. Inferring the final
+	// path segment here would turn /videos/generations into a bogus task ID when
+	// the create request itself failed.
 	if log.ProviderRequestID == "" && log.RequestKind != "create" {
 		log.ProviderRequestID = providerRequestIDFromPath(log.Path)
 	}
@@ -1004,7 +1936,13 @@ func (s *Service) enrichAPICallLogFailureSummary(log *model.ApiCallLog, response
 }
 
 func (s *Service) enrichAPICallLogPayload(log *model.ApiCallLog, payload map[string]any) {
+	nestedTaskID := ""
 	if data, ok := payload["data"].(map[string]any); ok {
+		if log.Capability == "video" && strings.Contains(log.Path, "/v1/video/generations") {
+			if extracted, err := firstJSONString(data, "task_id", "taskId"); err == nil {
+				nestedTaskID = extracted
+			}
+		}
 		for key, value := range data {
 			if _, exists := payload[key]; !exists {
 				payload[key] = value
@@ -1068,7 +2006,11 @@ func (s *Service) enrichAPICallLogPayload(log *model.ApiCallLog, payload map[str
 		}
 		log.CachedTokens = firstInt64(usageMetadata, "cachedContentTokenCount")
 	}
-	log.ProviderRequestID = firstNonEmpty(stringField(payload, "task_id"), stringField(payload, "id"), stringField(payload, "request_id"), stringField(payload, "name"), log.ProviderRequestID)
+	if extracted, err := firstJSONString(payload, "task_id", "id", "request_id", "name"); err == nil {
+		log.ProviderRequestID = firstNonEmpty(nestedTaskID, extracted, log.ProviderRequestID)
+	} else {
+		log.ProviderRequestID = firstNonEmpty(nestedTaskID, log.ProviderRequestID)
+	}
 	log.ProviderStatus = strings.ToLower(firstNonEmpty(stringField(payload, "status"), log.ProviderStatus))
 	if log.ProviderStatus == "failed" || log.ProviderStatus == "cancelled" || log.ProviderStatus == "expired" {
 		log.Status = model.ApiCallStatusFailed

@@ -1,6 +1,6 @@
 import { fetchFile } from "@ffmpeg/util";
 
-import { getMediaBlobFromSource } from "@/services/file-storage";
+import { getMediaBlob } from "@/services/file-storage";
 import { buildExtractAudioArgs, buildSegmentTrimArgs, SEGMENT_INPUT_NAME, SEGMENT_OUTPUT_NAME } from "./canvas-video-segment-args";
 import { loadFFmpeg } from "./canvas-video-merge";
 
@@ -30,10 +30,15 @@ function assertValidRange(range: VideoSegmentRange, durationMs?: number) {
 }
 
 async function readVideoSourceBlob(source: VideoSegmentSource) {
-    // A resource key uses the same-origin proxy. Do not retry its external
-    // preview URL after that path fails, otherwise OSS CORS is required.
-    const blob = await getMediaBlobFromSource(source.url, source.storageKey);
-    if (blob) return blob;
+    if (source.storageKey) {
+        const stored = await getMediaBlob(source.storageKey);
+        if (stored) return stored;
+    }
+    if (source.url) {
+        const response = await fetch(source.url);
+        if (!response.ok) throw new Error(`视频资源请求失败（${response.status}）`);
+        return response.blob();
+    }
     throw new Error("找不到视频素材，请重新上传后再操作");
 }
 

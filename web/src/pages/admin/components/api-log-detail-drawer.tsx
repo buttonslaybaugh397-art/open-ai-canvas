@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
-import { App, Button, Descriptions, Drawer, Empty, Skeleton, Tabs, Typography } from "antd";
+import { App, Button, Descriptions, Drawer, Skeleton, Tabs, Typography } from "antd";
+import { EmptyState } from "@/components/ui/product/empty-state";
 import { RefreshCw } from "lucide-react";
 
 import { formatCredits } from "@/constant/credits";
 import { getAdminApiLog, queryAdminApiLogTask, type ApiCallLog } from "@/services/api/auth";
 import { AdminStatusBadge } from "./admin-ui";
-import { apiLogDisplayStatus } from "./api-log-status";
 
 export function ApiLogDetailDrawer({ logId, onClose, onLogUpdated }: { logId: string | null; onClose: () => void; onLogUpdated?: (log: ApiCallLog) => void }) {
     const { message } = App.useApp();
@@ -50,16 +50,18 @@ export function ApiLogDetailDrawer({ logId, onClose, onLogUpdated }: { logId: st
 
     return (
         <Drawer title="请求详情" open={Boolean(logId)} onClose={onClose} size="min(920px, 100vw)" destroyOnHidden rootClassName="admin-drawer">
-            {loading ? <Skeleton active paragraph={{ rows: 12 }} /> : log ? <LogDetail log={log} querying={querying} onQueryProviderTask={queryProviderTask} /> : <Empty description="没有请求详情" />}
+            {loading ? <Skeleton active paragraph={{ rows: 12 }} /> : log ? <LogDetail log={log} querying={querying} onQueryProviderTask={queryProviderTask} /> : <EmptyState size="compact" title="没有请求详情" />}
         </Drawer>
     );
 }
 
 function LogDetail({ log, querying, onQueryProviderTask }: { log: ApiCallLog; querying: boolean; onQueryProviderTask: () => void }) {
-    const displayStatus = apiLogDisplayStatus(log);
+    const providerStatus = log.providerStatus?.toLowerCase();
+    const processing = ["queued", "pending", "processing", "running", "in_progress"].includes(providerStatus || "");
+    const failed = log.status === "failed" || ["failed", "cancelled", "expired"].includes(providerStatus || "");
     const items = [
         ["时间", new Date(log.startedAt || log.createdAt).toLocaleString("zh-CN", { hour12: false })],
-        ["状态", <AdminStatusBadge label={displayStatus.label} tone={displayStatus.tone} />],
+        ["状态", <AdminStatusBadge label={failed ? "失败" : processing ? "处理中" : "成功"} tone={failed ? "error" : processing ? "warning" : "success"} />],
         [
             "用户",
             <span>
@@ -92,7 +94,7 @@ function LogDetail({ log, querying, onQueryProviderTask }: { log: ApiCallLog; qu
             {canQueryProviderTask ? (
                 <div className="flex justify-end">
                     <Button icon={<RefreshCw className="size-4" />} loading={querying} onClick={onQueryProviderTask}>
-                        手动查询任务
+                        {querying ? "正在下载并入库" : "手动查询任务"}
                     </Button>
                 </div>
             ) : null}
@@ -124,7 +126,7 @@ function requestKindText(value: ApiCallLog["requestKind"]) {
 }
 
 function PayloadPanel({ value, empty }: { value?: string; empty: string }) {
-    if (!value) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={empty} />;
+    if (!value) return <EmptyState size="compact" title={empty} />;
     return (
         <div className="relative">
             <div className="absolute right-3 top-2 z-10">

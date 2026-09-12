@@ -35,7 +35,7 @@ func (s *Service) QuoteLogicalModel(logicalModelID string, intent ModelRequestIn
 		if routed.PriceTier != nil {
 			priceTierID = routed.PriceTier.ID
 		}
-		order, billingErr := s.newBillingOrderWithPriceTier("", "", "quote", routed.ChannelModel.ChannelID, routed.ChannelModel.ModelKey, capability, "model_quote", quantity, tokenEstimate, priceTierID, resolvedIntent)
+		order, billingErr := s.newBillingOrderWithPriceTier("", "", "quote", routed.ChannelModel.ChannelID, routed.ChannelModel.ModelKey, capability, "model_quote", quantity, tokenEstimate, priceTierID)
 		if billingErr != nil {
 			return nil, billingErr
 		}

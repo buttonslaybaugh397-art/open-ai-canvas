@@ -37,6 +37,19 @@ func RegisterAdminAnalyticsRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"models": result.Models})
 	})
+	r.GET("/admin/analytics/channels", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		result, err := svc.AdminAnalytics(user, analyticsQuery(c))
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"channels": result.Channels})
+	})
 	r.GET("/admin/analytics/users", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {

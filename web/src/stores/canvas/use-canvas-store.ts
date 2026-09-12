@@ -26,7 +26,6 @@ export type CanvasProject = {
     appearance?: CanvasAppearance;
     backgroundMode: CanvasBackgroundMode;
     showImageInfo: boolean;
-    generationRatio?: string;
     viewport: ViewportTransform;
     directorScenes: DirectorScene[];
     timeline?: TimelineProject;
@@ -41,18 +40,11 @@ type CanvasStore = {
     renameProject: (id: string, title: string) => void;
     deleteProjects: (ids: string[]) => void;
     replaceProjects: (projects: CanvasProject[]) => void;
-    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "projectId" | "nodes" | "connections" | "chatSessions" | "activeChatId" | "starterMode" | "appearance" | "backgroundMode" | "showImageInfo" | "generationRatio" | "viewport" | "directorScenes" | "timeline">>) => void;
+    updateProject: (id: string, patch: Partial<Pick<CanvasProject, "projectId" | "nodes" | "connections" | "chatSessions" | "activeChatId" | "starterMode" | "appearance" | "backgroundMode" | "showImageInfo" | "viewport" | "directorScenes" | "timeline">>) => void;
 };
 
 const initialViewport: ViewportTransform = { x: 0, y: 0, k: 1 };
 export const CANVAS_STORE_KEY = "infinite-canvas:canvas_store";
-
-function nextCanvasUpdatedAt(previous: string) {
-    const now = Date.now();
-    const previousTime = Date.parse(previous);
-    return new Date(Number.isFinite(previousTime) ? Math.max(now, previousTime + 1) : now).toISOString();
-}
-
 type PersistedCanvasState = Pick<CanvasStore, "projects">;
 type QueuedCanvasPersist = {
     name: string;
@@ -103,9 +95,15 @@ function runWithBrowserCanvasStorageLock<T>(scope: string, operation: () => Prom
     return operation();
 }
 
+/**
+ * 串行化同一用户作用域的画布持久化，并在一次失败后允许队列继续前进。
+ *
+ * `pending` 必须把当前写入的真实结果返回给调用方；只有前一个 tail 的失败被
+ * 转换成已处理的 void，才不会让一次旧失败永久毒化后续保存队列。
+ */
 export function withCanvasStorePersistenceLock<T>(scope: string, operation: () => Promise<T>, options: CanvasStorageLockOptions = {}): Promise<T> {
     const previous = canvasStorageTails.get(scope) ?? Promise.resolve();
-    const pending = previous.catch(() => undefined).then(() => runWithBrowserCanvasStorageLock(scope, operation, options));
+    const pending = previous.then(() => undefined, () => undefined).then(() => runWithBrowserCanvasStorageLock(scope, operation, options));
     const tail = pending.then(
         () => undefined,
         () => undefined,
@@ -268,6 +266,7 @@ function pendingGenerationAttempt(scope: string, projectId: string, effectKeys?:
 }
 
 function ordinaryCanvasProjectSnapshot(scope: string, project: CanvasProject, durableProject: CanvasProject | undefined) {
+    if (!hasGenerationEffectKeys(project) && !hasGenerationEffectKeys(durableProject)) return project;
     const durableNodes = new Map((durableProject?.nodes || []).map((node) => [node.id, node]));
     const durableSessions = new Map((durableProject?.chatSessions || []).map((session) => [session.id, session]));
     let changed = false;
@@ -296,7 +295,7 @@ function ordinaryCanvasProjectSnapshot(scope: string, project: CanvasProject, du
             }
             continue;
         }
-        if (JSON.stringify(localKeys) === JSON.stringify(durableKeys)) {
+        if (sameGenerationEffectKeys(localKeys, durableKeys)) {
             nodes.push(node);
             continue;
         }
@@ -326,7 +325,7 @@ function ordinaryCanvasProjectSnapshot(scope: string, project: CanvasProject, du
             }
             continue;
         }
-        if (JSON.stringify(session.generationEffectKeys) === JSON.stringify(durableKeys)) {
+        if (sameGenerationEffectKeys(session.generationEffectKeys, durableKeys)) {
             chatSessions.push(session);
             continue;
         }
@@ -347,6 +346,19 @@ function ordinaryCanvasProjectSnapshot(scope: string, project: CanvasProject, du
         };
     }
     return changed ? { ...project, nodes, chatSessions } : project;
+}
+
+function hasGenerationEffectKeys(value: CanvasProject | undefined) {
+    if (!value) return false;
+    return value.nodes.some((node) => Boolean(node.metadata?.generationEffectKeys?.length))
+        || value.chatSessions.some((session) => Boolean(session.generationEffectKeys?.length));
+}
+
+function sameGenerationEffectKeys(left?: readonly string[], right?: readonly string[]) {
+    if (left === right) return true;
+    if (!left?.length && !right?.length) return true;
+    if (!left || !right || left.length !== right.length) return false;
+    return left.every((value, index) => value === right[index]);
 }
 
 function ordinaryCanvasPersistenceState(scope: string, state: PersistedCanvasState, durableProjects: CanvasProject[]) {
@@ -403,7 +415,10 @@ const canvasStorage: PersistStorage<CanvasStore> = {
         clearCanvasSaveTimer(scope);
         const timer = setTimeout(() => {
             if (canvasSaveTimers.get(scope) === timer) canvasSaveTimers.delete(scope);
-            void writeQueuedCanvasPersist(scope, token).catch(() => undefined);
+            void writeQueuedCanvasPersist(scope, token).catch((error) => {
+                // 自动保存无法把异常返回给原始状态更新调用方，但失败队列仍会保留给下一次写入或显式 flush 重试。
+                console.error("画布本地持久化失败，已保留待写队列", { scope, error });
+            });
         }, 400);
         canvasSaveTimers.set(scope, timer);
     },
@@ -466,7 +481,6 @@ export const useCanvasStore = create<CanvasStore>()(
                     appearance: source.appearance ? normalizeCanvasAppearance(source.appearance, "dark") : undefined,
                     backgroundMode: source.backgroundMode || DEFAULT_CANVAS_BACKGROUND_MODE,
                     showImageInfo: source.showImageInfo || false,
-                    generationRatio: source.generationRatio,
                     viewport: source.viewport || initialViewport,
                     directorScenes: source.directorScenes || [],
                 };
@@ -478,7 +492,7 @@ export const useCanvasStore = create<CanvasStore>()(
             },
             renameProject: (id, title) =>
                 set((state) => ({
-                    projects: state.projects.map((project) => (project.id === id ? { ...project, title: title.trim() || project.title, updatedAt: nextCanvasUpdatedAt(project.updatedAt) } : project)),
+                    projects: state.projects.map((project) => (project.id === id ? { ...project, title: title.trim() || project.title, updatedAt: new Date().toISOString() } : project)),
                 })),
             deleteProjects: (ids) =>
                 set((state) => {
@@ -488,7 +502,7 @@ export const useCanvasStore = create<CanvasStore>()(
             replaceProjects: (projects) => set({ projects }),
             updateProject: (id, patch) =>
                 set((state) => ({
-                    projects: state.projects.map((project) => (project.id === id ? { ...project, ...patch, updatedAt: nextCanvasUpdatedAt(project.updatedAt) } : project)),
+                    projects: state.projects.map((project) => (project.id === id ? { ...project, ...patch, updatedAt: new Date().toISOString() } : project)),
                 })),
         }),
         {

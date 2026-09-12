@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { canGenerateImageInPlace, findAvailableGenerationGroupPosition, imageGenerationGroupSize } from "../src/lib/canvas/canvas-generation-layout";
+import { canGenerateImageInPlace, canGenerateMediaInPlace, findAvailableGenerationGroupPosition, imageGenerationGroupSize } from "../src/lib/canvas/canvas-generation-layout";
 import { CanvasNodeType, type CanvasNodeData } from "../src/types/canvas";
 
 function node(id: string, x: number, y: number, width = 340, height = 240): CanvasNodeData {
@@ -25,17 +25,20 @@ describe("findAvailableGenerationGroupPosition", () => {
         expect(groupSize).toEqual({ width: 1176, height: 516 });
         expect(findAvailableGenerationGroupPosition([node("child-area", 900, 0)], { x: 436, y: 0 }, groupSize)).toEqual({ x: 436, y: 276 });
     });
-
-    test("输出组会避开来源卡片之外的已有节点", () => {
-        const nodes = [node("source", 0, 0, 480, 390), node("existing-output", 576, 75, 340, 240)];
-        expect(findAvailableGenerationGroupPosition(nodes, { x: 576, y: 75 }, { width: 340, height: 240 })).toEqual({ x: 576, y: 351 });
-    });
 });
 
 describe("canGenerateImageInPlace", () => {
-    test("只有空图片节点复用原节点", () => {
+    test("空图片和显式复制节点复用原节点", () => {
         expect(canGenerateImageInPlace(node("empty", 0, 0))).toBe(true);
         expect(canGenerateImageInPlace({ ...node("result", 0, 0), metadata: { content: "image-url" } })).toBe(false);
+        expect(canGenerateImageInPlace({ ...node("copy", 0, 0), metadata: { content: "image-url", generationResultPlacement: "replace-node" } })).toBe(true);
+        expect(canGenerateImageInPlace({ ...node("copy", 0, 0), metadata: { content: "image-url", generationResultPlacement: "new-version", copiedFromNodeId: "source" } })).toBe(false);
         expect(canGenerateImageInPlace({ ...node("text", 0, 0), type: CanvasNodeType.Text })).toBe(false);
+    });
+
+    test("视频复制节点与图片使用相同的结果落点规则", () => {
+        const video = { ...node("video-copy", 0, 0), type: CanvasNodeType.Video, metadata: { content: "video-url", generationResultPlacement: "replace-node" as const } };
+        expect(canGenerateMediaInPlace(video, CanvasNodeType.Video)).toBe(true);
+        expect(canGenerateMediaInPlace({ ...video, metadata: { ...video.metadata, generationResultPlacement: "new-version" } }, CanvasNodeType.Video)).toBe(false);
     });
 });

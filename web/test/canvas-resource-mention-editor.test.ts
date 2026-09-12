@@ -7,28 +7,16 @@ function source(path: string) {
 }
 
 describe("canvas resource mention editor", () => {
-    test("limits the canvas prompt editor resize to the visible panel height", () => {
-        const overlays = source("../src/components/canvas/canvas-workspace-overlays.tsx");
-        const panel = source("../src/components/canvas/canvas-node-prompt-panel.tsx");
-        const project = source("../src/pages/canvas/project.tsx");
-        expect(overlays).toContain("data-canvas-node-panel");
-        expect(overlays).toContain('fixedPlacement === "below"');
-        expect(overlays).toContain('placement === "below"');
-        expect(project).toContain('placement="below"');
-        expect(panel).toContain('closest<HTMLElement>("[data-canvas-node-panel]")');
-        expect(panel).toContain("const PROMPT_EDITOR_MIN_HEIGHT = 140");
-        expect(panel).toContain("const PROMPT_EDITOR_MAX_LINES = 14");
-        expect(panel).toContain("panel.parentElement.clientHeight - panel.offsetTop - 12");
-        expect(panel).toContain("panel.scrollHeight - height");
-        expect(panel).toContain("Math.min(drag.maxHeight");
-    });
-
-    test("gives the expanded prompt editor a large non-fullscreen workspace", () => {
-        const panel = source("../src/components/canvas/canvas-node-prompt-panel.tsx");
-        expect(panel).toContain('width="min(1120px, calc(100vw - 48px))"');
-        expect(panel).toContain('height: "min(760px, calc(100vh - 72px))"');
-        expect(panel).toContain('expanded ? "min-h-[360px] flex-1"');
-        expect(panel).toContain('className="flex h-full min-h-0 flex-col gap-2.5 p-4"');
+    test("refreshes async reference previews even when prompt text has not changed", () => {
+        const component = source("../src/components/canvas/canvas-resource-mention-textarea.tsx");
+        const unchangedTextBranch = component.match(/if \(currentValue === value && lastRenderedValueRef.current === value\) \{([^}]+)\}/)?.[1] || "";
+        expect(unchangedTextBranch).toContain("syncInlineMentionPreviews(editor, activeReferences)");
+        const sync = component.slice(component.indexOf("function syncInlineMentionPreviews("), component.indexOf("function MentionMenu("));
+        expect(sync).toContain('byId.get(chip.dataset.mentionReferenceId || "")');
+        expect(sync).toContain('preview.getAttribute("src") !== src');
+        expect(sync).toContain("preview.replaceWith(createInlinePreview(reference))");
+        expect(sync).not.toContain("replaceChildren");
+        expect(sync).not.toContain("onChange(");
     });
 
     test("uses stable component classes for inline media references", () => {
@@ -79,6 +67,22 @@ describe("canvas resource mention editor", () => {
         expect(project).not.toContain("removeCanvasResourceMention");
     });
 
+    test("keeps editable mention prompts separate from normalized generation prompts", () => {
+        const imageExecutor = source("../src/pages/canvas/canvas-image-generation-executor.ts");
+        const mediaExecutors = source("../src/pages/canvas/canvas-media-generation-executors.ts");
+        const textExecutor = source("../src/pages/canvas/canvas-text-generation-executor.ts");
+        const generationExecutor = source("../src/pages/canvas/use-canvas-generation-executor.ts");
+
+        expect(imageExecutor.match(/canvasGenerationPromptMetadata\(prompt, effectivePrompt\)/g)?.length).toBeGreaterThanOrEqual(3);
+        expect(imageExecutor).toContain("imageBatchExpanded: count > 1 ? true : undefined");
+        expect(imageExecutor).toContain("imageGenerationReferenceConnections");
+        expect(imageExecutor).toContain("retireImageBatchChildren");
+        expect(mediaExecutors.match(/canvasGenerationPromptMetadata\(prompt, effectivePrompt\)/g)?.length).toBe(2);
+        expect(textExecutor.match(/canvasGenerationPromptMetadata\(prompt, effectivePrompt\)/g)?.length).toBe(2);
+        expect(generationExecutor).toContain("composerContent: prompt");
+        expect(generationExecutor).toContain("canvasGenerationPromptMetadata(prompt, statusPrompt)");
+    });
+
     test("anchors the mention menu to the caret instead of the textarea edge", () => {
         const component = source("../src/components/canvas/canvas-resource-mention-textarea.tsx");
 
@@ -95,9 +99,19 @@ describe("canvas resource mention editor", () => {
 
         expect(component).toContain('reference.kind === "skill" ? "is-skill" : ""');
         expect(component).toContain("reference.skill?.description");
-        expect(component).toContain("reference.skill?.file_count");
+        expect(component).toContain("reference.skill?.fileCount");
         expect(component).toContain("<Workflow aria-hidden />");
         expect(css).toContain(".canvas-resource-mention-item.is-skill");
         expect(css).toContain(".canvas-resource-mention-meta");
+    });
+
+    test("agent composer attachments stay large, previewable, and mentionable", () => {
+        const component = source("../src/components/canvas/canvas-agent-chat-ui.tsx");
+        expect(component).toContain("w-20 shrink-0");
+        expect(component).toContain("insertAttachmentMention");
+        expect(component).toContain("@[attachment:");
+        expect(component).toContain("AgentImagePreview");
+        expect(component).toContain("composerReferences");
+        expect(component).toContain("点击放大预览");
     });
 });

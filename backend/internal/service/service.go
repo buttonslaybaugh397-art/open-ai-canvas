@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/payment"
 	"infinite-canvas/backend/internal/repository"
 )
 
@@ -42,6 +43,7 @@ type Service struct {
 	runtimeErr                 error
 	pluginRuntime              *pluginRuntime
 	pluginRuntimeErr           error
+	paymentRegistry            *payment.Registry
 	workerID                   string
 	routeCatalogMu             sync.RWMutex
 	routeCatalogRefreshMu      sync.Mutex
@@ -54,6 +56,12 @@ type Service struct {
 	workers                    *workerRuntime
 	updateManager              UpdateManager
 	mailSender                 func(emailSettingValue, string, string, string) error
+	readCachesOnce             sync.Once
+	concurrencyReadCache       *boundedReadCache[string, RuntimeTaskPolicy]
+	textReplayReadCache        *boundedReadCache[textReplayCacheKey, *TextReplayResult]
+	routeVersionReadCache      *boundedReadCache[string, int64]
+	routeCatalogRetryAt        time.Time
+	routeCatalogRefreshError   error
 }
 
 const taskWorkerConcurrency = 3
@@ -75,17 +83,18 @@ type CreateSessionRequest struct {
 }
 
 type CreateTaskRequest struct {
-	SessionID      string         `json:"sessionId"`
-	ProjectID      string         `json:"projectId"`
-	Type           string         `json:"type"`
-	Operation      string         `json:"operation"`
-	Prompt         string         `json:"prompt"`
-	Provider       string         `json:"provider"`
-	Model          string         `json:"model"`
-	LogicalModelID string         `json:"logicalModelId"`
-	Input          map[string]any `json:"input"`
-	TraceID        string         `json:"-"`
-	RequestID      string         `json:"-"`
+	creationPrepare *creationTaskPreparation
+	SessionID       string         `json:"sessionId"`
+	ProjectID       string         `json:"projectId"`
+	Type            string         `json:"type"`
+	Operation       string         `json:"operation"`
+	Prompt          string         `json:"prompt"`
+	Provider        string         `json:"provider"`
+	Model           string         `json:"model"`
+	LogicalModelID  string         `json:"logicalModelId"`
+	Input           map[string]any `json:"input"`
+	TraceID         string         `json:"-"`
+	RequestID       string         `json:"-"`
 }
 
 type SessionDetail struct {
@@ -108,7 +117,13 @@ func New(repo *repository.Repository, dataDir string) *Service {
 func NewWithRuntimeCapabilities(repo *repository.Repository, dataDir string, capabilities RuntimeCapabilities) *Service {
 	coordinator, err := newRuntimeCoordinator(repo.Dialect())
 	pluginRuntime, pluginRuntimeErr := newPluginRuntime(dataDir)
-	service := &Service{repo: repo, dataDir: dataDir, runtimeCapabilities: capabilities, activeStorageTests: make(map[string]bool), activeCancels: make(map[string]context.CancelFunc), coordinator: coordinator, runtimeErr: err, pluginRuntime: pluginRuntime, pluginRuntimeErr: pluginRuntimeErr, workerID: newID(), routeCatalogTTL: 30 * time.Second, routeCatalogMaxStale: 5 * time.Minute, routeHealthBlocked: make(map[string]time.Time)}
+	paymentRegistry, _ := payment.NewRegistry()
+	if pluginRuntime != nil {
+		if dynamic := pluginRuntime.paymentRegistrySnapshot(); dynamic != nil {
+			paymentRegistry = dynamic
+		}
+	}
+	service := &Service{repo: repo, dataDir: dataDir, runtimeCapabilities: capabilities, activeStorageTests: make(map[string]bool), activeCancels: make(map[string]context.CancelFunc), coordinator: coordinator, runtimeErr: err, pluginRuntime: pluginRuntime, pluginRuntimeErr: pluginRuntimeErr, paymentRegistry: paymentRegistry, workerID: newID(), routeCatalogTTL: 30 * time.Second, routeCatalogMaxStale: 5 * time.Minute, routeHealthBlocked: make(map[string]time.Time)}
 	service.taskBillingCoordinator = newTaskBillingCoordinator(service.repo)
 	service.taskTerminalCoordinator = newTaskTerminalCoordinator(service)
 	service.taskRouteExecutor = newTaskRouteExecutor(service)
@@ -136,6 +151,7 @@ func (s *Service) StartWorker() {
 	s.taskWorker().start(ctx)
 	s.startResourceDeletionWorker(ctx)
 	s.startSkillSyncWorker(ctx)
+	s.startPaymentWorker(ctx)
 }
 
 func (s *Service) BeginDrain() { s.backgroundWorkers().beginDrain() }

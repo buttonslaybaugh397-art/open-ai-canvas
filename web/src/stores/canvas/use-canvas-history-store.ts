@@ -1,6 +1,5 @@
 import { create } from "zustand";
 import { persist, type PersistStorage } from "zustand/middleware";
-
 import { localForageStorageForScope } from "@/lib/localforage-storage";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 
@@ -11,6 +10,7 @@ export type DeletedCanvasHistoryItem = {
     updatedAt: string;
     deletedAt: string;
     nodeCount: number;
+    coverUrl?: string;
 };
 
 type CanvasHistoryStore = {
@@ -37,20 +37,26 @@ export const useCanvasHistoryStore = create<CanvasHistoryStore>()(
             deletedProjects: [],
             recordDeletedProjects: (projects) => {
                 const now = new Date().toISOString();
-                const additions = projects.map((project) => ({
-                    id: project.id,
-                    title: project.title || "未命名画布",
-                    createdAt: project.createdAt || project.updatedAt || now,
-                    updatedAt: project.updatedAt || now,
+                const newItems: DeletedCanvasHistoryItem[] = projects.map((p) => ({
+                    id: p.id,
+                    title: p.title || "未命名画布",
+                    createdAt: p.createdAt || p.updatedAt || now,
+                    updatedAt: p.updatedAt || now,
                     deletedAt: now,
-                    nodeCount: project.nodes?.length || 0,
+                    nodeCount: p.nodes?.length || 0,
                 }));
                 set((state) => {
-                    const replacedIds = new Set(additions.map((item) => item.id));
-                    return { deletedProjects: [...additions, ...state.deletedProjects.filter((item) => !replacedIds.has(item.id))].slice(0, 200) };
+                    const existingIds = new Set(newItems.map((item) => item.id));
+                    const filtered = state.deletedProjects.filter((item) => !existingIds.has(item.id));
+                    return {
+                        deletedProjects: [...newItems, ...filtered].slice(0, 200),
+                    };
                 });
             },
-            removeDeletedHistoryItem: (id) => set((state) => ({ deletedProjects: state.deletedProjects.filter((item) => item.id !== id) })),
+            removeDeletedHistoryItem: (id) =>
+                set((state) => ({
+                    deletedProjects: state.deletedProjects.filter((item) => item.id !== id),
+                })),
             clearDeletedHistory: () => set({ deletedProjects: [] }),
         }),
         {

@@ -1,11 +1,11 @@
-import { memo, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
+import { memo, useEffect, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import { Link2 } from "lucide-react";
 
 import { ConnectionPath } from "@/components/canvas/canvas-connections";
 import { CanvasFrameNode } from "@/components/canvas/canvas-frame-node";
 import { CanvasNode } from "@/components/canvas/canvas-node";
+import type { CanvasConnectionApproach } from "@/lib/canvas/canvas-connection-tilt";
 import type { CanvasBatchConnectionPreview } from "@/lib/canvas/canvas-batch-connection";
-import { resolveActiveCanvasMediaNodeId } from "@/lib/canvas/canvas-performance-mode";
 import { sortCanvasNodesByStackOrder, type CanvasNodeStackOrder } from "@/lib/canvas/canvas-node-stack-order";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { isFrameNode } from "@/lib/canvas/canvas-frame";
@@ -25,6 +25,7 @@ type CanvasProjectWorldLayersProps = {
     connectingParams: ConnectionHandle | null;
     mouseWorld: Position;
     connectionTargetNodeId: string | null;
+    connectionApproach: CanvasConnectionApproach;
     nodeById: Map<string, CanvasNodeData>;
     visibleNodes: CanvasNodeData[];
     nodeStackOrder: CanvasNodeStackOrder;
@@ -83,11 +84,21 @@ const EMPTY_CANVAS_NODES: CanvasNodeData[] = [];
 
 export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(props: CanvasProjectWorldLayersProps) {
     const { viewportScale } = props;
-    const activeMediaNodeId = resolveActiveCanvasMediaNodeId(props.selectedNodeIds, props.nodeById);
-    const orderedVisibleNodes = [
+    const [activeMediaNodeId, setActiveMediaNodeId] = useState<string | null>(null);
+    useEffect(() => {
+        if (activeMediaNodeId && !props.nodeById.has(activeMediaNodeId)) setActiveMediaNodeId(null);
+    }, [activeMediaNodeId, props.nodeById]);
+    const orderedVisibleNodes = useMemo(() => [
         ...props.visibleNodes.filter(isFrameNode),
         ...sortCanvasNodesByStackOrder(props.visibleNodes.filter((node) => !isFrameNode(node)), props.nodeStackOrder),
-    ];
+    ], [props.nodeStackOrder, props.visibleNodes]);
+    const batchPreviews = useMemo(() => new Map(props.visibleNodes.filter((node) => node.metadata?.isBatchRoot).map((node) => [
+        node.id,
+        (node.metadata?.batchChildIds || []).filter((id) => id !== node.metadata?.primaryImageId)
+            .map((id) => props.nodeById.get(id))
+            .filter((child): child is CanvasNodeData => Boolean(child && child.metadata?.batchRootId === node.id))
+            .slice(0, 5),
+    ])), [props.visibleNodes, props.nodeById]);
     const framePreviewNodes = (node: CanvasNodeData) => {
         const assetFolderId = node.metadata?.folder?.assetFolderId;
         if (assetFolderId) return props.linkedFolderPreviewNodesById.get(assetFolderId) || EMPTY_CANVAS_NODES;
@@ -112,6 +123,8 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
                         toScrollTop={props.scriptScrollTopById[to.id] || 0}
                         active={props.selectedConnectionId === connection.id || props.relatedConnectionIds.has(connection.id)}
                         visualMode="hover-only"
+                        // 拖动预览由 Leafer 图形层逐帧同步；隐藏这层静态 SVG 描边，避免两套位置叠出残影。
+                        hideVisual={props.isNodeDragging}
                         onSelect={() => props.onConnectionSelect(connection.id)}
                         onContextMenu={(event) => props.onConnectionContextMenu(event, connection.id)}
                     />
@@ -144,15 +157,17 @@ export const CanvasProjectWorldLayers = memo(function CanvasProjectWorldLayers(p
                         scale={viewportScale}
                         isSelected={props.selectedNodeIds.has(node.id)}
                         mediaActive={activeMediaNodeId === node.id}
-                        hydrateMediaPreview={activeMediaNodeId === null}
+                        onMediaPlayRequest={setActiveMediaNodeId}
                         isRelated={props.relatedNodeIds.has(node.id)}
                         isFocusRelated={props.activeNodeId === node.id}
                         isConnectionTarget={props.connectionTargetNodeId === node.id || props.batchConnectionPreview?.targetNodeId === node.id}
+                        connectionApproach={props.connectionApproach?.nodeId === node.id ? props.connectionApproach.point : undefined}
                         forceInputVisible={Boolean(props.batchConnectionPreview)}
                         batchCount={props.batchChildCountById.get(node.id) || 0}
                         batchExpanded={Boolean(node.metadata?.imageBatchExpanded)}
+                        batchPreviewNodes={batchPreviews.get(node.id)}
                         batchClosing={Boolean(node.metadata?.batchRootId && props.collapsingBatchIds.has(node.metadata.batchRootId))}
-                        batchOpening={props.openingBatchIds.has(node.id)}
+                        batchOpening={props.openingBatchIds.has(node.metadata?.batchRootId || node.id)}
                         batchRecovering={props.collapsingBatchIds.has(node.id)}
                         batchPrimary={Boolean(node.metadata?.batchRootId && props.nodeById.get(node.metadata.batchRootId)?.metadata?.primaryImageId === node.id)}
                         batchMotion={props.batchMotionById.get(node.id)}

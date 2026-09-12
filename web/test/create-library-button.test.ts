@@ -8,9 +8,17 @@ function compactSource(source: string) {
     return source.replace(/\s+/g, " ").trim();
 }
 
+function readCreateSource() {
+    return readFileSync(resolve(import.meta.dir, "../src/pages/create/index.tsx"), "utf8");
+}
+
+function readCreateWorkspaceSource() {
+    return readFileSync(resolve(import.meta.dir, "../src/pages/create/creation-workspace.tsx"), "utf8");
+}
+
 describe("creation library button", () => {
-    test("places a library control beside the generation mode picker", () => {
-        const source = readFileSync(resolve(import.meta.dir, "../src/pages/create/index.tsx"), "utf8");
+    test("keeps library selection in the reference area instead of the bottom dock", () => {
+        const source = readCreateWorkspaceSource();
         const dockStart = source.indexOf('<footer className="creation-chat-dock">');
         const dockEnd = source.indexOf("</footer>", dockStart);
 
@@ -18,21 +26,21 @@ describe("creation library button", () => {
         expect(dockEnd).toBeGreaterThan(dockStart);
         const dockSource = compactSource(source.slice(dockStart, dockEnd));
         const modePickerIndex = dockSource.indexOf("<ModePicker mode={props.mode}");
-        const attachmentIndex = dockSource.indexOf('aria-label="从本机上传附件"');
-        const libraryIndex = dockSource.indexOf('aria-label="打开素材库选择参考内容"');
 
         expect(modePickerIndex).toBeGreaterThanOrEqual(0);
-        expect(attachmentIndex).toBeGreaterThan(modePickerIndex);
-        expect(libraryIndex).toBeGreaterThan(attachmentIndex);
-        expect(dockSource).toContain("onClick={props.onOpenLibrary}");
-        expect(dockSource).toContain("disabled={interactionBusy || !referencesSupported}");
+        expect(dockSource).not.toContain('aria-label="打开素材库选择参考内容"');
+        expect(dockSource).not.toContain('aria-label="从本机上传附件"');
+        expect(source).toContain("onClick={props.onOpenLibrary}");
+        expect(source).toContain("creation-reference-add-button");
+        expect(source).toContain('showSelectedPrice={false} showOptionPrices variant="creation"');
+        expect(source).toContain("canvas-node-composer-submit-cost");
     });
 
     test("uploads from the library without adding a reference before confirmation", () => {
-        const source = readFileSync(resolve(import.meta.dir, "../src/pages/create/index.tsx"), "utf8");
+        const source = readCreateSource();
         const pickerSource = readFileSync(resolve(import.meta.dir, "../src/components/assets/asset-library-picker-modal.tsx"), "utf8");
         const uploadStart = source.indexOf("const uploadLibraryAssets = async");
-        const uploadEnd = source.indexOf("const handleFileChange", uploadStart);
+        const uploadEnd = source.indexOf("const handleLibrarySelect", uploadStart);
 
         expect(uploadStart).toBeGreaterThanOrEqual(0);
         expect(uploadEnd).toBeGreaterThan(uploadStart);
@@ -45,7 +53,7 @@ describe("creation library button", () => {
     });
 
     test("previews prompt reference images without removing them", () => {
-        const createSource = readFileSync(resolve(import.meta.dir, "../src/pages/create/index.tsx"), "utf8");
+        const createSource = readCreateWorkspaceSource();
         const canvasSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/canvas-node-prompt-panel.tsx"), "utf8");
 
         expect(createSource).toContain('className="creation-user-message-attachments"');
@@ -57,7 +65,7 @@ describe("creation library button", () => {
     });
 
     test("参考内容层叠轨道支持折叠、展开和 Reorder 排序", () => {
-        const source = readFileSync(resolve(import.meta.dir, "../src/pages/create/index.tsx"), "utf8");
+        const source = readCreateWorkspaceSource();
         const styles = readFileSync(resolve(import.meta.dir, "../src/styles/globals.css"), "utf8");
 
         expect(source).toContain('import { Reorder } from "motion/react"');
@@ -65,7 +73,9 @@ describe("creation library button", () => {
         expect(source).toContain('axis="x"');
         expect(source).toContain("values={visibleAttachments}");
         expect(source).toContain("onReorder={reorderVisibleAttachments}");
-        expect(source).toContain('className="creation-reference-card-remove" onPointerDownCapture={(event) => event.stopPropagation()}');
+        expect(source).toContain('className="creation-reference-card-remove"');
+        expect(source).toContain("onPointerDownCapture");
+        expect(source).toContain("event.stopPropagation()");
         expect(source).toContain("<Reorder.Item");
         expect(source).toContain('layout="position"');
         expect(source).toContain("isExpanded");
@@ -99,6 +109,18 @@ describe("creation library button", () => {
         expect(styles).toContain("@media (hover: none)");
         expect(styles).toContain(".creation-reference-card-remove { opacity: 1; }");
         expect(styles).not.toContain(".creation-reference-track:not(.is-expanded) .creation-reference-stack-card:nth-child(n+5) { display: block; }");
+        expect(source).toContain("isExpanded: true");
+        expect(source).toContain("else if (!hadAttachments) setReferencePanelExpanded(true)");
+        expect(styles).toContain("creation-reference-filter-tabs button.is-active::after");
+    });
+
+    test("resolves remote asset images from their stable resource key", () => {
+        const assets = readFileSync(resolve(import.meta.dir, "../src/pages/create/creation-assets.ts"), "utf8");
+        const createSource = readCreateWorkspaceSource();
+
+        expect(assets).toContain("resolveResourceUrl(asset.data.storageKey");
+        expect(createSource).toContain("<CachedResourceImage storageKey={item.storageKey}");
+        expect(createSource).toContain("resolveResourceUrl(item.storageKey, item.previewUrl)");
     });
 
     test("首个、中间和末尾参考内容都按稳定 id 独立删除并保留顺序", () => {
@@ -113,12 +135,12 @@ describe("creation library button", () => {
         expect(removeCreationAttachment(attachments, "last").map((item) => item.id)).toEqual(["first", "middle"]);
     });
 
-    test("删除按钮在指针按下阶段隔离拖拽，附件与素材库入口职责独立", () => {
-        const source = compactSource(readFileSync(resolve(import.meta.dir, "../src/pages/create/index.tsx"), "utf8"));
+    test("删除按钮在指针按下阶段隔离拖拽，素材库入口职责独立", () => {
+        const source = compactSource(readCreateWorkspaceSource());
 
         expect(source).toContain("onPointerDownCapture={(event) => event.stopPropagation()}");
         expect(source).toContain("onRemove(item.id)");
-        expect(source).toContain("onClick={() => props.fileInputRef.current?.click()}");
         expect(source).toContain("onClick={props.onOpenLibrary}");
+        expect(source).not.toContain("onClick={() => props.fileInputRef.current?.click()}");
     });
 });

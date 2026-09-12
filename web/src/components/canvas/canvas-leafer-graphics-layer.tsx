@@ -3,7 +3,7 @@ import { Group, Leafer, Path, Rect } from "leafer-ui";
 
 import { activeConnectionPath, canvasConnectionPath } from "@/components/canvas/canvas-connections";
 import type { CanvasBatchConnectionPreview } from "@/lib/canvas/canvas-batch-connection";
-import { subscribeCanvasGraphicsViewportPreview, subscribeCanvasSelectionPreview } from "@/lib/canvas/canvas-live-viewport";
+import { subscribeCanvasGraphicsViewportPreview, subscribeCanvasNodeDragPreview, subscribeCanvasSelectionPreview, type CanvasNodeDragPreview } from "@/lib/canvas/canvas-live-viewport";
 import { calculateCanvasPreviewTransform, sameCanvasViewport, shouldRebaseCanvasRaster } from "@/lib/canvas/canvas-leafer-viewport";
 import type { CanvasTheme } from "@/lib/canvas-theme";
 import type { CanvasDisplayConnection, CanvasNodeData, ConnectionHandle, Position, SelectionBox, ViewportTransform } from "@/types/canvas";
@@ -22,6 +22,7 @@ type CanvasLeaferGraphicsLayerProps = {
     batchConnectionPreview: CanvasBatchConnectionPreview | null;
     mouseWorld: Position;
     connectionTargetNodeId: string | null;
+    connectionTargetHandleId?: string;
     connectionTargetAnchorRatio?: number;
     nodeById: Map<string, CanvasNodeData>;
     selectionBox: SelectionBox | null;
@@ -37,6 +38,18 @@ type LeaferScene = {
 
 type UnderlayScene = LeaferScene & {
     connections: Group;
+    connectionEntries: Map<string, ConnectionSceneEntry>;
+    connectionIdsByNodeId: Map<string, Set<string>>;
+    dragPreview: CanvasNodeDragPreview | null;
+    dragPreviewConnectionIds: Set<string>;
+};
+
+type ConnectionSceneEntry = {
+    path: Path;
+    connection: CanvasDisplayConnection["connection"];
+    from: CanvasNodeData;
+    to: CanvasNodeData;
+    signature: string;
 };
 
 type OverlayScene = LeaferScene & {
@@ -104,11 +117,15 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
         const unsubscribeSelection = subscribeCanvasSelectionPreview(container, (selection) => {
             syncSelection(overlay.selection, selection, propsRef.current.theme);
         });
+        const unsubscribeNodeDrag = subscribeCanvasNodeDragPreview(container, (preview) => {
+            applyConnectionDragPreview(underlay, propsRef.current, preview);
+        });
         resize();
 
         return () => {
             unsubscribe();
             unsubscribeSelection();
+            unsubscribeNodeDrag();
             resizeObserver.disconnect();
             window.removeEventListener("resize", resize);
             underlay.leafer.destroy(true);
@@ -128,7 +145,7 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
         const overlay = overlayRef.current;
         if (!overlay) return;
         syncOverlayContent(overlay, props, viewportRef.current.k);
-    }, [props.batchConnectionPreview, props.connectingParams, props.connectionTargetAnchorRatio, props.connectionTargetNodeId, props.mouseWorld, props.nodeById, props.scriptScrollTopById, props.selectedNodeBounds, props.selectionBox, props.theme]);
+    }, [props.batchConnectionPreview, props.connectingParams, props.connectionTargetAnchorRatio, props.connectionTargetHandleId, props.connectionTargetNodeId, props.mouseWorld, props.nodeById, props.scriptScrollTopById, props.selectedNodeBounds, props.selectionBox, props.theme]);
 
     useLayoutEffect(() => {
         const underlay = underlayRef.current;
@@ -173,7 +190,7 @@ function createUnderlayScene(host: HTMLDivElement): UnderlayScene {
     const connections = new Group({ hittable: false });
     world.add(connections);
     leafer.add(world);
-    return { leafer, world, host, connections };
+    return { leafer, world, host, connections, connectionEntries: new Map(), connectionIdsByNodeId: new Map(), dragPreview: null, dragPreviewConnectionIds: new Set() };
 }
 
 function createOverlayScene(host: HTMLDivElement): OverlayScene {
@@ -194,20 +211,107 @@ function createOverlayScene(host: HTMLDivElement): OverlayScene {
 }
 
 function rebuildConnections(scene: UnderlayScene, props: CanvasLeaferGraphicsLayerProps) {
-    scene.connections.removeAll(true);
-    props.displayConnections.forEach(({ connection, from, to }) => {
+    const nextIds = new Set(props.displayConnections.map(({ connection }) => connection.id));
+    for (const [connectionId, entry] of scene.connectionEntries) {
+        if (nextIds.has(connectionId)) continue;
+        entry.path.remove();
+        scene.connectionEntries.delete(connectionId);
+    }
+
+    scene.connectionIdsByNodeId.clear();
+    const previewIds = scene.dragPreview ? scene.dragPreview.nodeIds : null;
+    for (const { connection, from, to } of props.displayConnections) {
         const emphasized = props.selectedConnectionId === connection.id || props.relatedConnectionIds.has(connection.id);
-        const path = new Path({
-            path: canvasConnectionPath(connection, from, to, props.scriptScrollTopById[from.id] || 0, props.scriptScrollTopById[to.id] || 0).pathD,
-            stroke: emphasized ? props.theme.accent.primary : props.theme.node.muted,
-            strokeWidth: emphasized ? 1.6 : 1,
-            strokeScaleFixed: true,
-            strokeCap: "round",
-            opacity: emphasized ? 0.52 : 0.24,
-            hittable: false,
-        });
-        scene.connections.add(path);
+        const signature = connectionSceneSignature(connection, from, to, props, emphasized);
+        let entry = scene.connectionEntries.get(connection.id);
+        if (!entry) {
+            const path = new Path({ hittable: false });
+            scene.connections.add(path);
+            entry = { path, connection, from, to, signature: "" };
+            scene.connectionEntries.set(connection.id, entry);
+        }
+        entry.connection = connection;
+        entry.from = from;
+        entry.to = to;
+        if (entry.signature !== signature || scene.dragPreview) {
+            syncConnectionPath(entry, props, scene.dragPreview, previewIds);
+            entry.signature = signature;
+        }
+        for (const nodeId of [from.id, to.id]) {
+            const connectionIds = scene.connectionIdsByNodeId.get(nodeId) || new Set<string>();
+            connectionIds.add(connection.id);
+            scene.connectionIdsByNodeId.set(nodeId, connectionIds);
+        }
+    }
+
+    scene.dragPreviewConnectionIds = collectPreviewConnectionIds(scene, scene.dragPreview);
+}
+
+function connectionSceneSignature(connection: CanvasDisplayConnection["connection"], from: CanvasNodeData, to: CanvasNodeData, props: CanvasLeaferGraphicsLayerProps, emphasized: boolean) {
+    return [
+        connection.id,
+        connection.fromNodeId,
+        connection.toNodeId,
+        connection.fromHandleId || "",
+        connection.toHandleId || "",
+        from.id,
+        from.position.x,
+        from.position.y,
+        from.width,
+        from.height,
+        to.id,
+        to.position.x,
+        to.position.y,
+        to.width,
+        to.height,
+        props.scriptScrollTopById[from.id] || 0,
+        props.scriptScrollTopById[to.id] || 0,
+        emphasized ? "active" : "idle",
+        props.theme.accent.primary,
+        props.theme.node.muted,
+    ].join("|");
+}
+
+function syncConnectionPath(entry: ConnectionSceneEntry, props: CanvasLeaferGraphicsLayerProps, preview: CanvasNodeDragPreview | null, previewIds: ReadonlySet<string> | null = preview?.nodeIds || null) {
+    const from = translatePreviewNode(entry.from, previewIds, preview);
+    const to = translatePreviewNode(entry.to, previewIds, preview);
+    const emphasized = props.selectedConnectionId === entry.connection.id || props.relatedConnectionIds.has(entry.connection.id);
+    entry.path.set({
+        path: canvasConnectionPath(entry.connection, from, to, props.scriptScrollTopById[entry.from.id] || 0, props.scriptScrollTopById[entry.to.id] || 0).pathD,
+        stroke: emphasized ? props.theme.accent.primary : props.theme.node.muted,
+        strokeWidth: emphasized ? 1.6 : 1,
+        strokeScaleFixed: true,
+        strokeCap: "round",
+        opacity: emphasized ? 0.52 : 0.24,
+        hittable: false,
     });
+}
+
+function translatePreviewNode(node: CanvasNodeData, previewIds: ReadonlySet<string> | null, preview: CanvasNodeDragPreview | null) {
+    if (!preview || !previewIds?.has(node.id) || (preview.x === 0 && preview.y === 0)) return node;
+    return { ...node, position: { x: node.position.x + preview.x, y: node.position.y + preview.y } };
+}
+
+function collectPreviewConnectionIds(scene: UnderlayScene, preview: CanvasNodeDragPreview | null) {
+    const connectionIds = new Set<string>();
+    if (!preview) return connectionIds;
+    for (const nodeId of preview.nodeIds) {
+        scene.connectionIdsByNodeId.get(nodeId)?.forEach((connectionId) => connectionIds.add(connectionId));
+    }
+    return connectionIds;
+}
+
+function applyConnectionDragPreview(scene: UnderlayScene, props: CanvasLeaferGraphicsLayerProps, preview: CanvasNodeDragPreview | null) {
+    const affectedConnectionIds = new Set(scene.dragPreviewConnectionIds);
+    const previewIds = preview?.nodeIds || null;
+    collectPreviewConnectionIds(scene, preview).forEach((connectionId) => affectedConnectionIds.add(connectionId));
+    scene.dragPreview = preview;
+    scene.dragPreviewConnectionIds = collectPreviewConnectionIds(scene, preview);
+    for (const connectionId of affectedConnectionIds) {
+        const entry = scene.connectionEntries.get(connectionId);
+        if (!entry) continue;
+        syncConnectionPath(entry, props, preview, previewIds);
+    }
 }
 
 function syncOverlayContent(scene: OverlayScene, props: CanvasLeaferGraphicsLayerProps, viewportScale: number) {
@@ -221,7 +325,7 @@ function syncOverlayContent(scene: OverlayScene, props: CanvasLeaferGraphicsLaye
     scene.selectionBounds.visible = Boolean(bounds && !selection);
     if (bounds && !selection) {
         syncSelectionBounds(scene.selectionBounds, bounds, viewportScale);
-        scene.selectionBounds.stroke = props.theme.accent.primary;
+        scene.selectionBounds.stroke = props.theme.node.label;
     }
 
     const connecting = props.connectingParams;
@@ -234,6 +338,8 @@ function syncOverlayContent(scene: OverlayScene, props: CanvasLeaferGraphicsLaye
                 props.mouseWorld,
                 props.connectionTargetNodeId ? props.nodeById.get(props.connectionTargetNodeId) : undefined,
                 props.scriptScrollTopById[connecting.nodeId] || 0,
+                props.connectionTargetHandleId,
+                props.connectionTargetNodeId ? props.scriptScrollTopById[props.connectionTargetNodeId] || 0 : 0,
             ),
             stroke: props.theme.accent.primary,
             strokeCap: "round",
@@ -245,14 +351,14 @@ function syncOverlayContent(scene: OverlayScene, props: CanvasLeaferGraphicsLaye
     const batch = props.batchConnectionPreview;
     scene.batchDrafts.visible = Boolean(batch);
     if (!batch) return;
-    const target = batch.targetNodeId ? props.nodeById.get(batch.targetNodeId) : undefined;
+    const target = batch.snapToHandle && batch.targetNodeId ? props.nodeById.get(batch.targetNodeId) : undefined;
     const stroke = batch.status === "invalid" ? props.theme.accent.danger : batch.status === "partial" ? props.theme.node.activeStroke : props.theme.accent.primary;
     batch.sourceNodeIds.forEach((sourceNodeId) => {
         const source = props.nodeById.get(sourceNodeId);
         if (!source) return;
         const handle: ConnectionHandle = { nodeId: source.id, handleType: "source" };
         scene.batchDrafts.add(new Path({
-            path: activeConnectionPath(source, handle, batch.mouseWorld, target, props.scriptScrollTopById[source.id] || 0),
+            path: activeConnectionPath(source, handle, batch.mouseWorld, target, props.scriptScrollTopById[source.id] || 0, batch.targetHandleId, target ? props.scriptScrollTopById[target.id] || 0 : 0),
             stroke,
             strokeWidth: 1.4,
             strokeScaleFixed: true,
@@ -270,8 +376,9 @@ function syncSelection(rect: Rect, selection: SelectionBox, theme: CanvasTheme) 
         y: Math.min(selection.startWorldY, selection.currentWorldY),
         width: Math.abs(selection.currentWorldX - selection.startWorldX),
         height: Math.abs(selection.currentWorldY - selection.startWorldY),
-        fill: theme.canvas.selectionFill,
-        stroke: theme.accent.primary,
+        fill: "transparent",
+        stroke: theme.node.label,
+        opacity: selection.hitMode === "intersect" ? 0.82 : 0.68,
     });
 }
 
@@ -279,10 +386,18 @@ function syncViewport(viewport: ViewportTransform, width: number, height: number
     const scale = Math.max(viewport.k, 0.05);
     for (const scene of [underlay, overlay]) scene.world.set({ x: viewport.x, y: viewport.y, scaleX: scale, scaleY: scale });
 
-    overlay.selection.strokeWidth = 1 / scale;
-    overlay.selection.cornerRadius = 2 / scale;
+    overlay.selection.set({
+        strokeWidth: 1 / scale,
+        cornerRadius: 2 / scale,
+        dashPattern: [4 / scale, 4 / scale],
+    });
     if (props.selectedNodeBounds) syncSelectionBounds(overlay.selectionBounds, props.selectedNodeBounds, scale);
-    overlay.selectionBounds.set({ strokeWidth: 1 / scale, cornerRadius: 12 / scale });
+    overlay.selectionBounds.set({
+        strokeWidth: 1 / scale,
+        cornerRadius: 2 / scale,
+        dashPattern: [4 / scale, 4 / scale],
+        opacity: 0.68,
+    });
     overlay.draft.set({ strokeWidth: 1.4 / scale, dashPattern: [8 / scale, 8 / scale] });
     overlay.guides.set({
         visible: typeof props.alignmentGuides.vertical === "number" || typeof props.alignmentGuides.horizontal === "number",

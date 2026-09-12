@@ -45,16 +45,6 @@ export type RequestOptions = {
     videoEndFrameNodeId?: string;
 };
 
-export type VideoGenerationResult = {
-    blob?: Blob;
-    dataUrl?: string;
-    url?: string;
-    storageKey?: string;
-    mimeType?: string;
-    width?: number;
-    height?: number;
-    durationMs?: number;
-    bytes?: number;
-};
+export type VideoGenerationResult = { blob?: Blob; url?: string; mimeType?: string };
 export type VideoGenerationTask = { id: string; provider: "openai" | "agnes" | "seedance" | "video-generations" | "gemini-veo" | "novita" | "minimax"; model: string };
 export type VideoGenerationTaskState = { status: "pending" } | { status: "completed"; result: VideoGenerationResult } | { status: "failed"; error: string };

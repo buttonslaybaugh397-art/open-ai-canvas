@@ -1,11 +1,14 @@
-import { App, Button, Form, Input, Select, Skeleton, Switch } from "antd";
-import { AlertTriangle, BadgeCheck, Check, Cloud, Database, Globe2, HardDrive, KeyRound, LocateFixed, RefreshCw, RotateCcw, Save, Server, ShieldCheck, Wifi } from "lucide-react";
+import { App, Button, Form, Input, Skeleton } from "antd";
+import { Select } from "@/components/ui/base/select";
+import { Switch } from "@/components/ui/base/switch";
+import { AlertTriangle, BadgeCheck, Check, Cloud, Database, Eye, Globe2, HardDrive, KeyRound, LocateFixed, RefreshCw, RotateCcw, Save, Server, ShieldCheck, Wifi } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useBlocker } from "react-router";
 
 import { changesRequireOSSRetest, DEFAULT_OSS_PATH_PREFIX, getS3PresetHints, normalizeOSSConnectionTestInput, S3_PRESET_OPTIONS, type OSSConnectionTestResult, type S3Preset } from "@/lib/oss-settings";
 import { cn } from "@/lib/utils";
-import { getAdminOSSSetting, testAdminOSSConnection, updateAdminOSSSetting, type AdminOSSSetting } from "@/services/api/auth";
+import { getAdminOSSCredentials, getAdminOSSSetting, testAdminOSSConnection, updateAdminOSSSetting, type AdminOSSSetting } from "@/services/api/auth";
+import { useAppearanceStore } from "@/stores/use-appearance-store";
 import { AdminPageFrame } from "../components/admin-shell";
 import { AdminStatusBadge, configuredSecretText, SettingsSectionCard } from "../components/admin-ui";
 
@@ -38,11 +41,14 @@ const STORAGE_MODES: Array<{ mode: StorageMode; label: string; short: string; de
 
 export default function StorageSettingsPage() {
     const { message, modal } = App.useApp();
+    const brandSlug = useAppearanceStore((state) => state.appearance.brandSlug);
     const [setting, setSetting] = useState<AdminOSSSetting | null>(null);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const [saving, setSaving] = useState(false);
     const [testing, setTesting] = useState(false);
+    const [readingCredentials, setReadingCredentials] = useState(false);
+    const [credentialsRead, setCredentialsRead] = useState(false);
     const [testResult, setTestResult] = useState<OSSConnectionTestResult | null>(null);
     const [testStale, setTestStale] = useState(false);
     const [dirty, setDirty] = useState(false);
@@ -57,6 +63,8 @@ export default function StorageSettingsPage() {
     const load = useCallback(
         async (initial = false, announce = false) => {
             const requestVersion = ++requestVersionRef.current;
+            form.setFieldsValue({ accessKeySecret: "", sessionToken: "" });
+            setCredentialsRead(false);
             if (initial) setLoading(true);
             else setRefreshing(true);
             setLoadError("");
@@ -82,7 +90,7 @@ export default function StorageSettingsPage() {
                 }
             }
         },
-        [message],
+        [form, message],
     );
 
     useEffect(() => {
@@ -144,6 +152,7 @@ export default function StorageSettingsPage() {
         form.setFieldsValue(values);
         form.setFields([]);
         setDraftMode(values.mode);
+        setCredentialsRead(false);
         setDirty(false);
         setSaveError("");
         setTestResult(setting.testedAt ? { ok: true, testedAt: setting.testedAt, testedDigest: setting.testedDigest } : null);
@@ -169,13 +178,14 @@ export default function StorageSettingsPage() {
     const applyMode = (nextMode: StorageMode): OSSFormValues | null => {
         if (!setting) return null;
         const current = form.getFieldsValue(true);
-        const nextValues: Partial<OSSFormValues> = { mode: nextMode };
+        const nextValues: Partial<OSSFormValues> = { mode: nextMode, accessKeySecret: "", sessionToken: "" };
         if (nextMode !== "local") {
             Object.assign(nextValues, providerDraftValues(nextMode, setting, current.pathPrefix));
         }
         form.setFieldsValue(nextValues);
         form.setFields([]);
         setDraftMode(nextMode);
+        setCredentialsRead(false);
         setDirty(hasStorageChanges({ ...current, ...nextValues }, setting));
         setTestStale(true);
         setSaveError("");
@@ -185,6 +195,15 @@ export default function StorageSettingsPage() {
     const requestModeChange = (nextMode: StorageMode) => {
         if (!setting || nextMode === draftMode || saving || refreshing) return;
         applyMode(nextMode);
+    };
+
+    const useBrandPathPrefix = () => {
+        if (!setting || saving || refreshing) return;
+        const current = form.getFieldsValue(true);
+        form.setFieldValue("pathPrefix", brandSlug);
+        setDirty(hasStorageChanges({ ...current, pathPrefix: brandSlug }, setting));
+        setTestStale(true);
+        setSaveError("");
     };
 
     const save = async (values: OSSFormValues) => {
@@ -199,6 +218,7 @@ export default function StorageSettingsPage() {
             const nextValues = formValues(result.setting);
             form.setFieldsValue(nextValues);
             setDraftMode(nextValues.mode);
+            setCredentialsRead(false);
             setDirty(false);
             setTestResult(result.setting.testedAt ? { ok: true, testedAt: result.setting.testedAt, testedDigest: result.setting.testedDigest } : null);
             setTestStale(false);
@@ -230,6 +250,25 @@ export default function StorageSettingsPage() {
             await save(values);
         } catch {
             // 保存错误已在 save 中就地提示。
+        }
+    };
+
+    const readCredentials = async () => {
+        if (!setting || draftMode === "local" || draftMode !== setting.provider || setting.credentialsRequireReset) return;
+        setReadingCredentials(true);
+        try {
+            const result = await getAdminOSSCredentials();
+            if (result.credentials.provider !== setting.provider || result.credentials.accessKeyId !== setting.accessKeyId) {
+                throw new Error("平台存储配置已变化，请刷新页面后重试");
+            }
+            form.setFieldsValue({ accessKeySecret: result.credentials.accessKeySecret, sessionToken: result.credentials.sessionToken });
+            setCredentialsRead(true);
+            message.success("已读取当前平台存储凭据");
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : "读取平台存储凭据失败";
+            message.error(errorMessage);
+        } finally {
+            setReadingCredentials(false);
         }
     };
 
@@ -329,6 +368,13 @@ export default function StorageSettingsPage() {
                     <div className="admin-storage-inline-alert" role="alert">
                         <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
                         <span>{saveError || `${loadError}。页面仍显示上一次成功读取的配置。`}</span>
+                    </div>
+                ) : null}
+
+                {setting.credentialsRequireReset ? (
+                    <div className="admin-storage-inline-alert" role="alert">
+                        <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
+                        <span>当前数据库中的对象存储凭据无法用本机存储加密密钥解密。请重新填写当前厂商的 SecretKey，或切换到服务器本地存储后保存；在修复前，新增资源不会使用这份失效凭据。</span>
                     </div>
                 ) : null}
 
@@ -483,8 +529,15 @@ export default function StorageSettingsPage() {
                                             <Form.Item name="bucket" label="Bucket">
                                                 <Input autoComplete="off" placeholder={draftMode === "qiniu" ? "七牛云存储空间名称" : "对象存储 Bucket"} />
                                             </Form.Item>
-                                            <Form.Item name="pathPrefix" label="路径前缀" extra="可留空；保存时自动去除首尾斜杠。">
-                                                <Input autoComplete="off" placeholder="例如：canvas" />
+                                            <Form.Item label="路径前缀" extra={`可自行填写；也可采用外观管理中的英文品牌标识 ${brandSlug}。保存时自动去除首尾斜杠。`}>
+                                                <div className="admin-storage-address-control">
+                                                    <Form.Item name="pathPrefix" noStyle>
+                                                        <Input autoComplete="off" placeholder={`例如：${brandSlug}`} />
+                                                    </Form.Item>
+                                                    <Button disabled={saving || refreshing || form.getFieldValue("pathPrefix") === brandSlug} onClick={useBrandPathPrefix}>
+                                                        使用品牌标识
+                                                    </Button>
+                                                </div>
                                             </Form.Item>
                                         </div>
                                     </div>
@@ -529,6 +582,19 @@ export default function StorageSettingsPage() {
 
                                     <div className="admin-storage-form-section">
                                         <FormSectionTitle icon={<KeyRound className="size-4" />} title="服务端访问凭据" description="密钥仅用于当前后端读写对象；切换厂商时不能复用另一厂商的 Secret。" />
+                                        {hasCurrentProviderSecret ? (
+                                            <div className="mb-3 flex justify-end">
+                                                <Button
+                                                    size="small"
+                                                    icon={<Eye className="size-4" />}
+                                                    loading={readingCredentials}
+                                                    disabled={credentialsRead || Boolean(normalizedDraft.accessKeySecret || normalizedDraft.sessionToken)}
+                                                    onClick={() => void readCredentials()}
+                                                >
+                                                    {credentialsRead ? "已读取保存的凭据" : "读取已保存凭据"}
+                                                </Button>
+                                            </div>
+                                        ) : null}
                                         <div className="admin-storage-form-grid">
                                             <Form.Item name="accessKeyId" label={accessKeyIdLabel(draftMode)}>
                                                 <Input autoComplete="off" placeholder={accessKeyIdLabel(draftMode)} />
@@ -717,6 +783,7 @@ function isAdminOSSSetting(value: unknown): value is AdminOSSSetting {
         typeof setting.accessKeyId === "string" &&
         typeof setting.hasAccessKeySecret === "boolean" &&
         typeof setting.hasSessionToken === "boolean" &&
+        typeof setting.credentialsRequireReset === "boolean" &&
         typeof setting.pathStyle === "boolean" &&
         typeof setting.allowUserS3 === "boolean" &&
         typeof setting.publicBaseUrl === "string" &&

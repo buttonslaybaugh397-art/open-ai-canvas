@@ -18,6 +18,7 @@ type builtinAdapter struct {
 	poll        func(PollContext) (RequestSpec, error)
 	parsePoll   func(PollContext, map[string]any) (PollResult, error)
 	cancel      func(PollContext) (RequestSpec, error)
+	result      func(PollContext) (RequestSpec, error)
 }
 
 func (a builtinAdapter) Metadata() Metadata { return a.info }
@@ -59,6 +60,13 @@ func (a builtinAdapter) BuildCancel(_ context.Context, c PollContext) (RequestSp
 	}
 	return a.cancel(c)
 }
+func (a builtinAdapter) BuildResult(_ context.Context, c PollContext) (RequestSpec, error) {
+	if a.result == nil {
+		return RequestSpec{}, fmt.Errorf("protocol %s does not expose a result endpoint", a.info.ID)
+	}
+	return a.result(c)
+}
+func (a builtinAdapter) ResultAvailable() bool { return a.result != nil }
 
 var builtinRegistry *Registry
 var builtinRegistryMu sync.Mutex
@@ -1083,21 +1091,15 @@ func parseAudioResponse(payload map[string]any) (CreateResult, error) {
 
 func normalizeStatus(raw string) Status {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "1":
+	case "queued", "pending", "created", "submitted", "in_queue", "task_status_queued":
 		return StatusPending
-	case "2":
-		return StatusProcessing
-	case "3":
-		return StatusSucceeded
-	case "4":
-		return StatusFailed
-	case "queued", "queueing", "pending", "created", "submitted", "waiting", "in_queue", "task_status_queued":
-		return StatusPending
-	case "running", "processing", "generating", "started", "in_progress", "executing", "task_status_running":
+	case "running", "processing", "in_progress", "executing", "task_status_running":
 		return StatusProcessing
 	case "succeeded", "success", "completed", "complete", "done", "task_status_succeed":
 		return StatusSucceeded
-	case "fail", "failed", "failure", "error", "errored", "rejected", "aborted", "timeout", "timed_out", "cancelled", "canceled", "expired":
+	case "cancelled", "canceled", "aborted":
+		return StatusCancelled
+	case "failed", "failure", "error", "expired":
 		return StatusFailed
 	default:
 		return ""

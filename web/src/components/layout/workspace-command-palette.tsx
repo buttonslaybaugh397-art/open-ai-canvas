@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ComponentType } from "react"
 import { useNavigate } from "react-router";
 
 import { navigationTools } from "@/constant/navigation-tools";
+import { Kbd } from "@/components/ui/base/kbd";
 import { cn } from "@/lib/utils";
 import { useUserStore } from "@/stores/use-user-store";
 
@@ -27,13 +28,11 @@ export function WorkspaceCommandPalette({ open, onClose }: { open: boolean; onCl
             return { id: slug, title: tool?.label ?? slug, icon: tool?.icon ?? Home, to };
         };
         return [
-            { id: "home", title: "首页", icon: Home, to: "/home" },
-            toolEntry("create", "/create"),
-            ...(features.shortDramaEnabled ? [toolEntry("projects", "/projects")] : []),
+            { id: "home", title: "首页", icon: Home, to: "/" },
+toolEntry("projects", "/projects"),
             toolEntry("canvas", "/canvas"),
             ...(features.taskCenterEnabled ? [toolEntry("tasks", "/tasks")] : []),
             toolEntry("assets", "/assets"),
-            toolEntry("teams", "/teams"),
             toolEntry("skills", "/skills"),
             ...(features.creditsEnabled ? [toolEntry("wallet", "/wallet")] : []),
             toolEntry("settings", "/settings"),
@@ -96,20 +95,15 @@ export function WorkspaceCommandPalette({ open, onClose }: { open: boolean; onCl
                     <div className="flex h-10 items-center gap-2 rounded-[var(--r-md)] border border-[var(--workspace-border)] bg-foreground/5 px-3 transition-colors hover:border-[var(--workspace-border-strong)] focus-within:border-[var(--workspace-border-strong)] focus-within:bg-foreground/[.06]">
                         <Search className="size-4 shrink-0 text-foreground/45" strokeWidth={1.6} />
                         <input
-                            id="workspace-command-search"
-                            name="workspace-command-search"
                             ref={inputRef}
                             value={query}
                             onChange={(event) => setQuery(event.target.value)}
                             className="min-w-0 flex-1 bg-transparent text-[var(--fs-body)] outline-none placeholder:text-foreground/45"
                             placeholder="搜索页面或操作…"
                         />
-                        <kbd
-                            onClick={onClose}
-                            className="hidden h-5 shrink-0 cursor-pointer items-center justify-center rounded-sm border border-[var(--workspace-border)] bg-background/60 px-1.5 font-mono text-[var(--fs-tiny)] font-medium text-foreground/60 transition-colors hover:bg-surface-hover hover:text-foreground sm:inline-flex"
-                        >
+                        <Kbd onClick={onClose} className="hidden shrink-0 cursor-pointer transition-colors hover:bg-surface-hover hover:text-foreground sm:inline-flex">
                             ⌘K
-                        </kbd>
+                        </Kbd>
                         <button
                             type="button"
                             onClick={onClose}

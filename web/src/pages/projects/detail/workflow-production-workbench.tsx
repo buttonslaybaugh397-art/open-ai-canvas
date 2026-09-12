@@ -1,14 +1,22 @@
+import { ImageSizePicker } from "@/components/image-size-picker";
+import { imageResolutionUsesQuality } from "@/lib/image-size-presets";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { App, Button, Empty, Form, Image, Input, InputNumber, Segmented, Select, Tag } from "antd";
-import { Box, ChevronDown, ChevronLeft, ChevronRight, Download, Film, Image as ImageIcon, Layers3, List, Play, Plus, RefreshCcw, Save, SlidersHorizontal, Trash2, UsersRound, WandSparkles, X } from "lucide-react";
+import { App, Button, Form, Image, Input, InputNumber, Select } from "antd";
+import { SegmentedControl } from "@/components/ui/base/segmented-control";
+import { EmptyState } from "@/components/ui/product/empty-state";
+import { StatusBadge } from "@/components/ui/base/badges";
+import { AppModal } from "@/components/ui/product/app-modal/app-modal";
+import { Box, ChevronDown, ChevronLeft, ChevronRight, Download, Film, Image as ImageIcon, Layers3, List, Maximize2, Play, Plus, RefreshCcw, Save, Search, SlidersHorizontal, Trash2, UsersRound, WandSparkles, X } from "lucide-react";
 import { Link, useNavigate } from "react-router";
 
 import { CanvasResourceMentionTextarea } from "@/components/canvas/canvas-resource-mention-textarea";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { ModelPicker } from "@/components/model-picker";
 import { CreditSymbol, requestCreditCost } from "@/constant/credits";
 import { modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, videoDurationOptions } from "@/lib/model-capabilities";
 import { modelQuoteRequest } from "@/lib/model-pricing";
+import { customShotTitle, formatShotOrdinal, normalizeDefaultShotTitle } from "@/lib/shot-label";
 import { modelCompatibilityError, resolveCompatibleModel, resolveModelVideoBooleanOptions, type ModelRequirements } from "@/lib/model-selection";
 import { formatVideoResolutionLabel } from "@/lib/video-generation-options";
 import { submitBackendGenerationTask } from "@/services/api/generation-task";
@@ -80,9 +88,10 @@ export default function WorkflowProductionWorkbench(props: Props) {
     const [form] = Form.useForm<ShotEditorValues>();
     const watchedDuration = Form.useWatch("durationSeconds", form);
     const watchedTitle = Form.useWatch("title", form);
-    const [leftTab, setLeftTab] = useState<"assets" | "episodes" | "shots">("assets");
+    const [leftTab, setLeftTab] = useState<"assets" | "episodes" | "shots">("episodes");
     const [previewTab, setPreviewTab] = useState<"latest" | "history">("latest");
     const [previewArtifactId, setPreviewArtifactId] = useState("");
+    const [imagePreviewArtifact, setImagePreviewArtifact] = useState<ShotArtifact | null>(null);
     const [editorDirty, setEditorDirty] = useState(false);
     const [submittingShotIds, setSubmittingShotIds] = useState<Set<string>>(() => new Set());
     const [taskClock, setTaskClock] = useState(() => Date.now());
@@ -174,8 +183,7 @@ export default function WorkflowProductionWorkbench(props: Props) {
     const quoteRequest = useMemo(() => modelQuoteRequest(generationConfig, routedModel, generationCapability, modelRequirements), [generationCapability, generationConfig, modelRequirements, routedModel]);
     const quoteRequestKey = JSON.stringify(quoteRequest || null);
     const [quotedCredits, setQuotedCredits] = useState<number | null>(null);
-    const [quotedCreditsKey, setQuotedCreditsKey] = useState("");
-    const generationCredits = quotedCreditsKey === quoteRequestKey ? quotedCredits ?? configuredCredits : configuredCredits;
+    const generationCredits = quotedCredits ?? configuredCredits;
     const formattedGenerationCredits = generationCredits?.toLocaleString("zh-CN", { maximumFractionDigits: 6 });
     const modelSummary = routedModel ? modelDisplayName(effectiveConfig, routedModel) : "未选择模型";
     const durationSummary = `${Number(watchedDuration || Math.max(0.5, (selectedShot?.durationMs || 3000) / 1000))}s`;
@@ -205,18 +213,14 @@ export default function WorkflowProductionWorkbench(props: Props) {
     useEffect(() => {
         if (!creditsEnabled || !quoteRequest) {
             setQuotedCredits(null);
-            setQuotedCreditsKey("");
             return;
         }
         const controller = new AbortController();
+        setQuotedCredits(null);
         quoteLogicalModel(quoteRequest.logicalModelID, quoteRequest.intent, controller.signal)
-            .then(({ quote }) => {
-                if (controller.signal.aborted) return;
-                setQuotedCredits(quote.amountMicrocredits / 1_000_000);
-                setQuotedCreditsKey(quoteRequestKey);
-            })
+            .then(({ quote }) => setQuotedCredits(quote.amountMicrocredits / 1_000_000))
             .catch(() => {
-                if (!controller.signal.aborted) setQuotedCreditsKey("");
+                if (!controller.signal.aborted) setQuotedCredits(null);
             });
         return () => controller.abort();
         // quoteRequestKey captures the normalized request without retriggering on object identity.
@@ -231,7 +235,7 @@ export default function WorkflowProductionWorkbench(props: Props) {
             : shotDurationSeconds;
         const videoPrompt = ensureShotAssetMentionPrompt(revision?.videoPrompt || "", shotAssetReferenceContext.mentionReferences);
         form.setFieldsValue({
-            title: selectedShot?.title || "",
+            title: normalizeDefaultShotTitle(selectedShot?.title, Math.max(0, shotIndex)),
             plotDescription: revision?.plotDescription || selectedShot?.description || "",
             action: revision?.action || "",
             dialogue: revision?.dialogue || "",
@@ -245,6 +249,7 @@ export default function WorkflowProductionWorkbench(props: Props) {
             continuityNotes: revision?.continuityNotes || "",
         });
         setPreviewArtifactId("");
+        setImagePreviewArtifact(null);
         setEditorDirty(!revision || videoPrompt !== revision.videoPrompt);
     }, [effectiveConfig, form, generationCapability, initialModel, revision?.id, selectedShot?.id, shotAssetReferenceContext.mentionReferences]);
 
@@ -389,7 +394,7 @@ export default function WorkflowProductionWorkbench(props: Props) {
     const selectedShotSubmitting = submittingShotIds.has(selectedShot?.id || "");
 
     if (!selectedShot) {
-        return <div className="workflow-empty-shot"><Empty description="当前章节还没有分镜"><Button type="primary" icon={<Plus className="size-4" />} loading={addingShot} onClick={onAddShot}>新增第一个分镜</Button></Empty></div>;
+        return <div className="workflow-empty-shot"><EmptyState size="compact" title="当前章节还没有分镜" action={<Button type="primary" icon={<Plus className="size-4" />} loading={addingShot} onClick={onAddShot}>新增第一个分镜</Button>} /></div>;
     }
 
     const requestShotSelection = (nextShotId: string) => {
@@ -445,12 +450,12 @@ export default function WorkflowProductionWorkbench(props: Props) {
         <div className="workflow-production-shell">
             <div className="workflow-production-main">
                 <aside className="workflow-library-panel">
-                    <Segmented
+                        <SegmentedControl
                         block
-                        size="small"
+                        size="sm"
                         value={leftTab}
                         onChange={(value) => setLeftTab(value as typeof leftTab)}
-                        options={[{ value: "assets", label: "资产" }, { value: "episodes", label: "章节" }, { value: "shots", label: "镜头" }]}
+                        options={[{ value: "episodes", label: "章节" }, { value: "shots", label: "镜头" }, { value: "assets", label: "资产" }]}
                     />
                     <div className="workflow-library-scroll thin-scrollbar">
                         {leftTab === "assets" ? <AssetLibrary detail={detail} referenceByVersionId={referenceByVersionId} changing={changeAssetBinding.isPending} onToggle={(asset, reference) => changeAssetBinding.mutate({ asset, reference })} /> : null}
@@ -462,9 +467,9 @@ export default function WorkflowProductionWorkbench(props: Props) {
                 <section className="workflow-shot-editor">
                     <header className="workflow-panel-header">
                         <div className="workflow-shot-heading">
-                            <span className="workflow-shot-number">SC.{String(shotIndex + 1).padStart(2, "0")}</span>
-                            <h2>{watchedTitle || selectedShot.title || "未命名镜头"}</h2>
-                            <Tag className="!m-0" color={saveShot.isPending ? "blue" : editorDirty ? "orange" : revision ? "green" : undefined}>{saveShot.isPending ? "保存中" : editorDirty ? "有未保存修改" : revision ? "已保存" : "草稿"}</Tag>
+                            <span className="workflow-shot-number">{formatShotOrdinal(shotIndex)}</span>
+                            {customShotTitle(watchedTitle || selectedShot.title, shotIndex) ? <h2>{customShotTitle(watchedTitle || selectedShot.title, shotIndex)}</h2> : null}
+                            <StatusBadge tone={saveShot.isPending ? "loading" : editorDirty ? "warning" : revision ? "success" : "neutral"} label={saveShot.isPending ? "保存中" : editorDirty ? "有未保存修改" : revision ? "已保存" : "草稿"} className="m-0" />
                         </div>
                         <div className="flex items-center gap-1"><span className="mr-1 text-[var(--fs-micro)] text-foreground/45">{shotIndex + 1} / {shots.length}</span><Button type="text" size="small" icon={<ChevronLeft className="size-4" />} disabled={shotIndex <= 0} onClick={() => selectRelativeShot(-1)} aria-label="上一个镜头" /><Button type="text" size="small" icon={<ChevronRight className="size-4" />} disabled={shotIndex >= shots.length - 1} onClick={() => selectRelativeShot(1)} aria-label="下一个镜头" /></div>
                     </header>
@@ -506,20 +511,14 @@ export default function WorkflowProductionWorkbench(props: Props) {
                                                 ? <Select options={videoDurationOptions(videoProfile).map((value) => ({ value, label: `${value} 秒` }))} />
                                                 : <InputNumber className="w-full" min={generationCapability === "video" ? videoProfile?.duration.min || 1 : 0.5} max={generationCapability === "video" ? videoProfile?.duration.max || 60 : 60} step={generationCapability === "video" ? videoProfile?.duration.step || 1 : 0.5} />}
                                         </Form.Item>
-                                        <Form.Item label={generationCapability === "video" ? "画幅" : "尺寸 / 画幅"}>
-                                            <Select
-                                                showSearch
-                                                value={aspectRatio}
-                                                onChange={setAspectRatio}
-                                                options={(generationCapability === "video" ? videoProfile?.ratios || [] : imageProfile?.size.values.filter((value) => value !== "*") || []).map((value) => ({ value, label: value }))}
-                                            />
-                                        </Form.Item>
+                                        {generationCapability === "video" ? <Form.Item label="画幅"><Select value={aspectRatio} onChange={setAspectRatio} options={(videoProfile?.ratios || []).map((value) => ({value, label:value}))} /></Form.Item> : null}
                                         {generationCapability === "video" ? (
                                             <Form.Item label="分辨率"><Select value={resolution} onChange={setResolution} options={(videoProfile?.resolutions || []).map((value) => ({ value, label: formatVideoResolutionLabel(value) }))} /></Form.Item>
-                                        ) : imageProfile?.quality.supported ? (
+                                        ) : imageProfile?.quality.supported && !imageResolutionUsesQuality(imageProfile) ? (
                                             <Form.Item label="生成画质"><Select value={imageQuality} onChange={setImageQuality} options={imageProfile.quality.values.map((value) => ({ value, label: value.toUpperCase() }))} /></Form.Item>
                                         ) : <div />}
                                     </div>
+                                    {generationCapability === "image" && imageProfile ? <ImageSizePicker profile={imageProfile} size={aspectRatio} quality={imageQuality} onChange={(size, quality) => { setAspectRatio(size); if (quality) setImageQuality(quality); }} /> : null}
                                 </div>
                                 <div className="workflow-settings-section">
                                     <div className="workflow-settings-section-title">镜头语言</div>
@@ -558,11 +557,11 @@ export default function WorkflowProductionWorkbench(props: Props) {
                     <header className="workflow-preview-header">
                         <div className="workflow-preview-header-row">
                             <div className="workflow-preview-title"><Film className="size-4 shrink-0" /><span>产物预览</span></div>
-                            <Segmented size="small" value={previewTab} onChange={(value) => setPreviewTab(value as typeof previewTab)} options={[{ value: "latest", label: "最新" }, { value: "history", label: `历史 ${artifacts.length}` }]} />
+<SegmentedControl size="sm" value={previewTab} onChange={(value) => setPreviewTab(value as typeof previewTab)} options={[{ value: "latest", label: "最新" }, { value: "history", label: `历史 ${artifacts.length}` }]} />
                         </div>
-                        <Segmented
+<SegmentedControl
                             block
-                            size="small"
+                            size="sm"
                             className="workflow-preview-stage-switch"
                             value={activeStage}
                             options={[{ value: "storyboard", label: "分镜图" }, { value: "previz", label: "动作预演" }, { value: "video", label: "镜头视频" }]}
@@ -570,13 +569,25 @@ export default function WorkflowProductionWorkbench(props: Props) {
                         />
                     </header>
                     <div className="workflow-preview-scroll thin-scrollbar">
-                        {previewTab === "latest" ? <LatestPreview artifact={previewArtifact} emptyText={stageCopy.empty} /> : <ArtifactHistory artifacts={artifacts} activeId={previewArtifact?.id} onSelect={(artifact) => { setPreviewArtifactId(artifact.id); setPreviewTab("latest"); }} />}
+                        {previewTab === "latest" ? <LatestPreview artifact={previewArtifact} emptyText={stageCopy.empty} onPreviewImage={setImagePreviewArtifact} /> : <ArtifactHistory artifacts={artifacts} activeId={previewArtifact?.id} onSelect={(artifact) => { setPreviewArtifactId(artifact.id); setPreviewTab("latest"); }} />}
                         <div className="workflow-preview-summary"><div className="flex items-center justify-between gap-2"><span className="text-xs font-medium">当前产物</span><ArtifactStatus artifact={newestArtifact} compact /></div><div className="mt-1 text-[var(--fs-micro)] text-foreground/45">{newestArtifact ? `${formatDuration(selectedShot.durationMs)} · ${resolution}p · v${newestArtifact.version}` : "当前镜头还没有生成产物"}</div></div>
                         <div className="workflow-preview-actions"><Button icon={<RefreshCcw className="size-3.5" />} loading={selectedShotSubmitting || shotTask?.status === "queued" || shotTask?.status === "running"} onClick={() => void generateArtifact()}>重新生成</Button><Button icon={<Download className="size-3.5" />} disabled={!previewArtifact?.resourceId} onClick={() => previewArtifact?.resourceId && void downloadArtifact(previewArtifact, selectedShot.title, message.error)}>下载{activeStage === "video" ? "视频" : "图片"}</Button></div>
                         <ArtifactHistory artifacts={artifacts.slice(0, 4)} activeId={previewArtifact?.id} onSelect={(artifact) => setPreviewArtifactId(artifact.id)} compact />
                     </div>
                 </aside>
             </div>
+
+            <AppModal
+                flush
+                open={Boolean(imagePreviewArtifact?.resourceId)}
+                title={imagePreviewArtifact?.type === "action_board" ? "动作预演预览" : "分镜图预览"}
+                footer={null}
+                centered
+                width="min(960px, calc(100vw - 32px))"
+                onCancel={() => setImagePreviewArtifact(null)}
+            >
+                {imagePreviewArtifact?.resourceId ? <img className={`workflow-image-preview-modal ${imagePreviewArtifact.type === "action_board" ? "grayscale" : ""}`} src={resourceFileUrl(imagePreviewArtifact.resourceId)} alt={imagePreviewArtifact.type === "action_board" ? "动作预演大图" : "分镜图大图"} /> : null}
+            </AppModal>
 
             <ShotTimeline activeStage={activeStage} detail={detail} shots={shots} selectedShotId={selectedShot.id} submittingShotIds={submittingShotIds} onSelectShot={requestShotSelection} onAddShot={requestAddShot} addingShot={addingShot} />
         </div>
@@ -602,12 +613,15 @@ function WorkflowDisclosure({ icon, title, description, summary, className = "",
 
 function AssetLibrary({ detail, referenceByVersionId, changing, onToggle }: { detail: ProjectDetail; referenceByVersionId: Map<string, ShotAssetReference>; changing: boolean; onToggle: (asset: ProjectAsset, reference?: ShotAssetReference) => void }) {
     const [category, setCategory] = useState("all");
+    const [keyword, setKeyword] = useState("");
+    const debouncedKeyword = useDebouncedValue(keyword.trim(), 250);
     const [page, setPage] = useState(1);
     const pageSize = 30;
     const assetsQuery = useQuery({
-        queryKey: ["project", detail.project.id, "assets", "workflow-library", category, page, pageSize],
-        queryFn: () => listProjectAssetsPage(detail.project.id, { page, pageSize, category: category === "all" ? undefined : category }),
+        queryKey: ["project", detail.project.id, "assets", "workflow-library", category, debouncedKeyword, page, pageSize],
+        queryFn: () => listProjectAssetsPage(detail.project.id, { page, pageSize, category: category === "all" ? undefined : category, query: debouncedKeyword || undefined }),
     });
+    useEffect(() => setPage(1), [debouncedKeyword]);
     const assetsPage = assetsQuery.data?.assets || [];
     const groups = useMemo(() => {
         const map = new Map<string, ProjectAsset[]>();
@@ -616,7 +630,7 @@ function AssetLibrary({ detail, referenceByVersionId, changing, onToggle }: { de
     }, [assetsPage]);
     const total = assetsQuery.data?.total || 0;
     const pages = Math.max(1, Math.ceil(total / pageSize));
-    return <div className="workflow-asset-groups"><Select size="small" className="mb-2 w-full" value={category} options={[{ value: "all", label: `全部资产（${Object.values(assetsQuery.data?.categoryCounts || {}).reduce((sum, count) => sum + count, 0)}）` }, ...Object.entries(assetsQuery.data?.categoryCounts || {}).filter(([, count]) => count > 0).map(([value, count]) => ({ value, label: `${assetCategoryLabel(value)}（${count}）` }))]} onChange={(value) => { setCategory(value); setPage(1); }} />{assetsQuery.isLoading ? <div className="py-6 text-center text-xs text-foreground/45">正在读取资产…</div> : groups.length ? groups.map(([groupCategory, assets]) => <section key={groupCategory}><h3>{assetCategoryLabel(groupCategory)} <span>({assets.length})</span></h3><div className="workflow-asset-list">{assets.map((asset) => { const reference = asset.primaryVersionId ? referenceByVersionId.get(asset.primaryVersionId) : undefined; const active = Boolean(reference); const previewUrl = assetPreviewUrl(asset); return <button key={asset.id} type="button" className={`workflow-asset-row ${active ? "is-active" : ""}`} disabled={changing || !asset.primaryVersionId} aria-pressed={active} onClick={() => onToggle(asset, reference)}><span className="workflow-asset-thumb">{previewUrl ? <img src={previewUrl} alt="" loading="lazy" /> : asset.category === "character" ? <UsersRound /> : asset.mediaType === "image" ? <ImageIcon /> : <Box />}</span><span className="min-w-0 flex-1"><strong>{asset.title}</strong><small>{active ? "已绑定 · 点击取消" : `${assetCategoryLabel(asset.category)} · v${Math.max(1, asset.versionCount)}`}</small></span>{active ? <span className="workflow-bound-dot" /> : null}</button>; })}</div></section>) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="项目还没有资产" />}{total > pageSize ? <div className="mt-3 flex items-center justify-between border-t border-border/60 pt-2 text-[var(--fs-micro)] text-foreground/45"><span>{page}/{pages} · 共 {total} 项</span><span className="flex gap-1"><Button type="text" size="small" icon={<ChevronLeft className="size-3.5" />} disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))} /><Button type="text" size="small" icon={<ChevronRight className="size-3.5" />} disabled={page >= pages} onClick={() => setPage((value) => Math.min(pages, value + 1))} /></span></div> : null}</div>;
+    return <div className="workflow-asset-groups"><Input allowClear size="small" className="mb-2 w-full" value={keyword} onChange={(event) => setKeyword(event.target.value)} prefix={<Search className="size-3.5 text-foreground/35" />} placeholder="搜索资产名称" aria-label="搜索镜头资产" /><Select size="small" className="mb-2 w-full" value={category} options={[{ value: "all", label: `全部资产（${Object.values(assetsQuery.data?.categoryCounts || {}).reduce((sum, count) => sum + count, 0)}）` }, ...Object.entries(assetsQuery.data?.categoryCounts || {}).filter(([, count]) => count > 0).map(([value, count]) => ({ value, label: `${assetCategoryLabel(value)}（${count}）` }))]} onChange={(value) => { setCategory(value); setPage(1); }} />{assetsQuery.isLoading ? <div className="py-6 text-center text-xs text-foreground/45">正在读取资产…</div> : groups.length ? groups.map(([groupCategory, assets]) => <section key={groupCategory}><h3>{assetCategoryLabel(groupCategory)} <span>({assets.length})</span></h3><div className="workflow-asset-list">{assets.map((asset) => { const reference = asset.primaryVersionId ? referenceByVersionId.get(asset.primaryVersionId) : undefined; const active = Boolean(reference); const previewUrl = assetPreviewUrl(asset); return <button key={asset.id} type="button" className={`workflow-asset-row ${active ? "is-active" : ""}`} disabled={changing || !asset.primaryVersionId} aria-pressed={active} onClick={() => onToggle(asset, reference)}><span className="workflow-asset-thumb">{previewUrl ? <img src={previewUrl} alt="" loading="lazy" /> : asset.category === "character" ? <UsersRound /> : asset.mediaType === "image" ? <ImageIcon /> : <Box />}</span><span className="min-w-0 flex-1"><strong>{asset.title}</strong><small>{active ? "已绑定 · 点击取消" : `${assetCategoryLabel(asset.category)} · v${Math.max(1, asset.versionCount)}`}</small></span>{active ? <span className="workflow-bound-dot" /> : null}</button>; })}</div></section>) : <EmptyState size="compact" title={debouncedKeyword ? "没有找到匹配资产" : "项目还没有资产"} />}{total > pageSize ? <div className="mt-3 flex items-center justify-between border-t border-border/60 pt-2 text-[var(--fs-micro)] text-foreground/45"><span>{page}/{pages} · 共 {total} 项</span><span className="flex gap-1"><Button type="text" size="small" icon={<ChevronLeft className="size-3.5" />} disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))} /><Button type="text" size="small" icon={<ChevronRight className="size-3.5" />} disabled={page >= pages} onClick={() => setPage((value) => Math.min(pages, value + 1))} /></span></div> : null}</div>;
 }
 
 function ShotAssetMentionTextarea({ value = "", onChange = () => undefined, references, variant = "motion" }: { value?: string; onChange?: (value: string) => void; references: ReturnType<typeof buildShotAssetReferenceContext>["mentionReferences"]; variant?: "scene" | "motion" }) {
@@ -642,7 +656,7 @@ function EpisodeLibrary({ detail, activeUnitId, projectId, activeStage }: { deta
 }
 
 function ShotLibrary({ detail, shots, selectedShotId, onSelectShot }: { detail: ProjectDetail; shots: ProjectShot[]; selectedShotId: string; onSelectShot: (id: string) => void }) {
-    return <div className="workflow-simple-list">{shots.map((shot, index) => { const video = currentArtifact(detail, shot.id, "video"); return <button key={shot.id} type="button" className={shot.id === selectedShotId ? "is-active" : ""} onClick={() => onSelectShot(shot.id)}><span>{String(index + 1).padStart(2, "0")}</span><span className="min-w-0 flex-1"><strong>{shot.title}</strong><small>{formatDuration(shot.durationMs)}</small></span><ArtifactStatus artifact={video} compact /></button>; })}</div>;
+    return <div className="workflow-simple-list">{shots.map((shot, index) => { const video = currentArtifact(detail, shot.id, "video"); return <button key={shot.id} type="button" className={shot.id === selectedShotId ? "is-active" : ""} onClick={() => onSelectShot(shot.id)}><span>{formatShotOrdinal(index)}</span><span className="min-w-0 flex-1"><strong>{customShotTitle(shot.title, index) || "未命名"}</strong><small>{formatDuration(shot.durationMs)}</small></span><ArtifactStatus artifact={video} compact /></button>; })}</div>;
 }
 
 function BoundAssets({ detail, shotId, changing, onUnlink }: { detail: ProjectDetail; shotId: string; changing: boolean; onUnlink: (reference: ShotAssetReference) => void }) {
@@ -669,15 +683,32 @@ function BoundAssets({ detail, shotId, changing, onUnlink }: { detail: ProjectDe
     );
 }
 
-function LatestPreview({ artifact, emptyText }: { artifact?: ShotArtifact; emptyText: string }) {
+function LatestPreview({ artifact, emptyText, onPreviewImage }: { artifact?: ShotArtifact; emptyText: string; onPreviewImage: (artifact: ShotArtifact) => void }) {
     if (!artifact?.resourceId) return <div className="workflow-media-empty"><span><Play className="size-7" /></span><p>{emptyText}</p></div>;
     const src = resourceFileUrl(artifact.resourceId);
-    if (artifact.type === "video") return <video className="workflow-preview-media" src={src} controls preload="metadata" />;
-    return <img className={`workflow-preview-media ${artifact.type === "action_board" ? "grayscale" : ""}`} src={src} alt="镜头生成预览" loading="eager" />;
+    if (artifact.type === "video") return <VideoArtifactPreview src={src} title="镜头视频" />;
+    return <button type="button" className="workflow-preview-media-button" onClick={() => onPreviewImage(artifact)} aria-label={artifact.type === "action_board" ? "点击预览动作预演" : "点击预览分镜图"}>
+        <img className={`workflow-preview-media ${artifact.type === "action_board" ? "grayscale" : ""}`} src={src} alt="镜头生成预览" loading="eager" />
+        <span className="workflow-preview-expand" aria-hidden="true"><Maximize2 className="size-4" /></span>
+    </button>;
+}
+
+function VideoArtifactPreview({ src, title }: { src: string; title: string }) {
+    const [playing, setPlaying] = useState(false);
+
+    useEffect(() => {
+        setPlaying(false);
+    }, [src]);
+
+    if (playing) return <video className="workflow-preview-media" src={src} controls autoPlay playsInline preload="metadata" aria-label={title} />;
+    return <button type="button" className="workflow-preview-media-button workflow-video-poster" onClick={() => setPlaying(true)} aria-label={`点击播放${title}`}>
+        <span className="workflow-preview-media workflow-video-placeholder" aria-hidden="true"><Film /></span>
+        <span className="workflow-video-play" aria-hidden="true"><Play className="size-6" fill="currentColor" /></span>
+    </button>;
 }
 
 function ArtifactHistory({ artifacts, activeId, onSelect, compact = false }: { artifacts: ShotArtifact[]; activeId?: string; onSelect: (artifact: ShotArtifact) => void; compact?: boolean }) {
-    if (!artifacts.length) return compact ? null : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无历史版本" />;
+    if (!artifacts.length) return compact ? null : <EmptyState size="compact" title="暂无历史版本" />;
     return <section className={`workflow-history ${compact ? "is-compact" : ""}`}><div className="workflow-history-title">历史版本</div>{artifacts.map((artifact) => <button key={artifact.id} type="button" className={artifact.id === activeId ? "is-active" : ""} onClick={() => onSelect(artifact)}>{artifact.resourceId ? artifact.type === "video" ? <video src={resourceFileUrl(artifact.resourceId)} muted preload="metadata" /> : <img src={resourceFileUrl(artifact.resourceId)} alt="" loading="lazy" /> : <span className="workflow-history-placeholder"><Layers3 /></span>}<span className="min-w-0 flex-1"><strong>v{artifact.version}{artifact.selected ? " · 当前" : ""}</strong><small>{new Date(artifact.createdAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small></span><ArtifactStatus artifact={artifact} compact /></button>)}</section>;
 }
 
@@ -705,7 +736,7 @@ function TimelineShot({ artifactType, detail, shot, task, submitting, index, sel
     const revision = currentRevision(detail, shot);
     const stageLabel = artifactType === "video" ? "镜头视频" : artifactType === "action_board" ? "动作预演" : "分镜画面";
     const cameraMeta = [revision?.shotSize, revision?.cameraMovement].filter(Boolean).join(" · ") || "等待补充镜头参数";
-    return <button type="button" className={`workflow-timeline-shot ${selected ? "is-active" : ""}`} onClick={onSelect}><span className="workflow-timeline-media">{preview?.resourceId ? preview.type === "video" ? <video src={resourceFileUrl(preview.resourceId)} muted preload="metadata" /> : <img src={resourceFileUrl(preview.resourceId)} alt="" loading="lazy" /> : <Film />}</span><span className="workflow-timeline-copy"><span className="workflow-timeline-heading"><strong>SC.{String(index + 1).padStart(2, "0")}</strong><b>{formatDuration(shot.durationMs)}</b></span><em className="workflow-timeline-title">{shot.title}</em><small className="workflow-timeline-meta">{cameraMeta}</small><span className="workflow-timeline-status"><span>{stageLabel}{stateArtifact ? ` · v${stateArtifact.version}` : ""}</span><ArtifactStatus artifact={stateArtifact} taskStatus={submitting ? "queued" : task?.status} compact /></span></span></button>;
+    return <button type="button" className={`workflow-timeline-shot ${selected ? "is-active" : ""}`} onClick={onSelect}><span className="workflow-timeline-media">{preview?.resourceId && preview.type !== "video" ? <img src={resourceFileUrl(preview.resourceId)} alt="" loading="lazy" /> : <Film />}</span><span className="workflow-timeline-copy"><span className="workflow-timeline-heading"><strong>{formatShotOrdinal(index)}</strong><b>{formatDuration(shot.durationMs)}</b></span>{customShotTitle(shot.title, index) ? <em className="workflow-timeline-title">{customShotTitle(shot.title, index)}</em> : null}<small className="workflow-timeline-meta">{cameraMeta}</small><span className="workflow-timeline-status"><span>{stageLabel}{stateArtifact ? ` · v${stateArtifact.version}` : ""}</span><ArtifactStatus artifact={stateArtifact} taskStatus={submitting ? "queued" : task?.status} compact /></span></span></button>;
 }
 
 function revisionInput(values: ShotEditorValues): ShotRevisionInput {

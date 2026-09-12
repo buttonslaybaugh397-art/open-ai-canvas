@@ -1,15 +1,34 @@
 import type { Asset } from "@/stores/use-asset-store";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
-import { apiClient, request } from "@/services/api/request";
+import { http, compactApiParams } from "@/services/api/request";
 
-const api = apiClient;
 
 export type RemoteUserDataSummary = {
     id: string;
+    folderId?: string;
     kind?: string;
     title: string;
     createdAt: string;
     updatedAt: string;
+};
+
+export type AssetFolder = {
+    id: string;
+    name: string;
+    position: number;
+    createdAt: string;
+    updatedAt: string;
+};
+
+export type RemoteAssetPage = {
+    assets: Asset[];
+    kindCounts: Record<string, number>;
+    categoryCounts: Record<string, number>;
+    folderCounts: Record<string, number>;
+    page: number;
+    pageSize: number;
+    total: number;
+    hasMore: boolean;
 };
 
 export type RemoteUserDataSnapshot = {
@@ -17,38 +36,90 @@ export type RemoteUserDataSnapshot = {
     projects: CanvasProject[];
 };
 
+export type CanvasLibrarySummary = Pick<CanvasProject, "id" | "projectId" | "title" | "createdAt" | "updatedAt"> & {
+    nodeCount: number;
+    previewNodes: CanvasProject["nodes"];
+};
+
+export function listRemoteCanvasProjectsPage(options: { page: number; pageSize: number; projectId?: string; query?: string; sort?: string; signal?: AbortSignal }) {
+    return http.get<{ projects: CanvasLibrarySummary[]; page: number; pageSize: number; total: number; hasMore: boolean }>("/canvas-projects", {
+        signal: options.signal,
+        params: compactApiParams({ page: options.page, pageSize: options.pageSize, projectId: options.projectId, q: options.query, sort: options.sort }),
+    });
+}
+
 export function getRemoteUserDataSnapshot() {
-    return request<RemoteUserDataSnapshot>(api.get("/user-data/snapshot"));
+    return http.get<RemoteUserDataSnapshot>("/user-data/snapshot");
 }
 
 export function listRemoteAssets() {
-    return request<{ assets: RemoteUserDataSummary[] }>(api.get("/assets"));
+    return http.get<{ assets: RemoteUserDataSummary[] }>("/assets");
+}
+
+export function listRemoteAssetsPage(options: { page: number; pageSize: number; kind?: string; category?: string; folderId?: string; uncategorized?: boolean; status?: string; query?: string; signal?: AbortSignal }) {
+    return http.get<RemoteAssetPage>("/assets", {
+        signal: options.signal,
+        params: compactApiParams({
+            page: options.page,
+            pageSize: options.pageSize,
+            kind: options.kind,
+            category: options.category,
+            folderId: options.folderId,
+            uncategorized: options.uncategorized ? 1 : undefined,
+            status: options.status,
+            q: options.query,
+        }),
+    });
+}
+
+export function listAssetFolders() {
+    return http.get<{ folders: AssetFolder[] }>("/asset-folders");
+}
+
+export function createAssetFolder(name: string) {
+    return http.post<{ folder: AssetFolder }>("/asset-folders", { name });
+}
+
+export function updateAssetFolder(id: string, name: string) {
+    return http.patch<{ folder: AssetFolder }>(`/asset-folders/${encodeURIComponent(id)}`, { name });
+}
+
+export function deleteAssetFolder(id: string) {
+    return http.delete<{ id: string }>(`/asset-folders/${encodeURIComponent(id)}`);
+}
+
+export function moveRemoteAssetsToFolder(assetIds: string[], folderId = "") {
+    return http.patch<{ assetIds: string[]; folderId: string }>("/assets/folder", { assetIds, folderId });
 }
 
 export function getRemoteAsset(id: string) {
-    return request<{ asset: Asset }>(api.get(`/assets/${encodeURIComponent(id)}`));
+    return http.get<{ asset: Asset }>(`/assets/${encodeURIComponent(id)}`);
+}
+
+export function getRemoteAssetsByIds(ids: string[]) {
+    return http.post<{ assets: Asset[] }>("/assets/batch", { ids });
 }
 
 export function upsertRemoteAsset(asset: Asset) {
-    return request<{ asset: RemoteUserDataSummary }>(api.put(`/assets/${encodeURIComponent(asset.id)}`, { asset }));
+    return http.put<{ asset: RemoteUserDataSummary }>(`/assets/${encodeURIComponent(asset.id)}`, { asset });
 }
 
 export function deleteRemoteAsset(id: string) {
-    return request<{ id: string }>(api.delete(`/assets/${encodeURIComponent(id)}`));
+    return http.delete<{ id: string }>(`/assets/${encodeURIComponent(id)}`);
 }
 
 export function listRemoteCanvasProjects() {
-    return request<{ projects: RemoteUserDataSummary[] }>(api.get("/canvas-projects"));
+    return http.get<{ projects: RemoteUserDataSummary[] }>("/canvas-projects");
 }
 
 export function getRemoteCanvasProject(id: string) {
-    return request<{ project: CanvasProject }>(api.get(`/canvas-projects/${encodeURIComponent(id)}`));
+    return http.get<{ project: CanvasProject }>(`/canvas-projects/${encodeURIComponent(id)}`);
 }
 
 export function upsertRemoteCanvasProject(project: CanvasProject) {
-    return request<{ project: RemoteUserDataSummary }>(api.put(`/canvas-projects/${encodeURIComponent(project.id)}`, { project }));
+    return http.put<{ project: RemoteUserDataSummary }>(`/canvas-projects/${encodeURIComponent(project.id)}`, { project });
 }
 
 export function deleteRemoteCanvasProject(id: string) {
-    return request<{ id: string }>(api.delete(`/canvas-projects/${encodeURIComponent(id)}`));
+    return http.delete<{ id: string }>(`/canvas-projects/${encodeURIComponent(id)}`);
 }

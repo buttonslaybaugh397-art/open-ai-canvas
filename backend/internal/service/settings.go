@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,6 +26,8 @@ import (
 const ossSettingKey = "oss"
 const encryptedSettingPrefix = "enc:v1:"
 const defaultOSSPathPrefix = "open-ai-canvas"
+
+var errSettingSecretDecryption = errors.New("OSS 密钥解密失败，请检查存储加密密钥")
 
 const (
 	aliyunOSSProvider  = "aliyun"
@@ -64,6 +67,7 @@ type PublicOSSSetting struct {
 	S3Preset                string     `json:"s3Preset"`
 	PathStyle               bool       `json:"pathStyle"`
 	HasSessionToken         bool       `json:"hasSessionToken"`
+	CredentialsRequireReset bool       `json:"credentialsRequireReset"`
 	StorageLocationID       string     `json:"storageLocationId"`
 	TestedAt                *time.Time `json:"testedAt,omitempty"`
 	TestedDigest            string     `json:"testedDigest,omitempty"`
@@ -73,6 +77,13 @@ type PublicOSSSetting struct {
 	UpdatedBy               string     `json:"updatedBy"`
 	CreatedAt               time.Time  `json:"createdAt"`
 	UpdatedAt               time.Time  `json:"updatedAt"`
+}
+
+type AdminOSSCredentials struct {
+	Provider        string `json:"provider"`
+	AccessKeyID     string `json:"accessKeyId"`
+	AccessKeySecret string `json:"accessKeySecret"`
+	SessionToken    string `json:"sessionToken"`
 }
 
 type ossSettingValue struct {
@@ -93,7 +104,6 @@ type ossSettingValue struct {
 	AllowUserS3       bool   `json:"allowUserS3"`
 	// 平台切换云厂商后仍需读取历史资源，因此仅归档非当前厂商的访问密钥。
 	ArchivedCredentials map[string]ossProviderCredentials `json:"archivedCredentials,omitempty"`
-	ArchivedSettings    map[string]ossProviderSetting     `json:"archivedSettings,omitempty"`
 }
 
 type ossProviderCredentials struct {
@@ -101,26 +111,11 @@ type ossProviderCredentials struct {
 	AccessKeySecret string `json:"accessKeySecret"`
 }
 
-type ossProviderSetting struct {
-	Region            string `json:"region"`
-	Endpoint          string `json:"endpoint"`
-	CDNBaseURL        string `json:"cdnBaseUrl"`
-	Bucket            string `json:"bucket"`
-	AccessKeyID       string `json:"accessKeyId"`
-	AccessKeySecret   string `json:"accessKeySecret"`
-	PublicBaseURL     string `json:"publicBaseUrl"`
-	PathPrefix        string `json:"pathPrefix"`
-	S3Preset          string `json:"s3Preset"`
-	PathStyle         bool   `json:"pathStyle"`
-	SessionToken      string `json:"sessionToken"`
-	StorageLocationID string `json:"storageLocationId"`
-}
-
 func (s *Service) AdminOSSSetting(actor *model.User) (*PublicOSSSetting, error) {
 	if err := s.RequireAdmin(actor); err != nil {
 		return nil, err
 	}
-	setting, value, err := s.readOSSSetting()
+	setting, value, credentialsRequireReset, err := s.readOSSSettingForAdmin()
 	if err != nil {
 		return nil, err
 	}
@@ -128,14 +123,40 @@ func (s *Service) AdminOSSSetting(actor *model.User) (*PublicOSSSetting, error) 
 	if err != nil {
 		return nil, err
 	}
+	public.CredentialsRequireReset = credentialsRequireReset
 	return &public, nil
+}
+
+func (s *Service) AdminOSSCredentials(actor *model.User) (*AdminOSSCredentials, error) {
+	if err := s.RequireAdmin(actor); err != nil {
+		return nil, err
+	}
+	_, value, err := s.readOSSSetting()
+	if errors.Is(err, errSettingSecretDecryption) {
+		return nil, WrapAppError(http.StatusConflict, "当前对象存储凭据无法解密，请重新填写 SecretKey 后保存", err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	result := &AdminOSSCredentials{
+		Provider:        value.Provider,
+		AccessKeyID:     value.AccessKeyID,
+		AccessKeySecret: value.AccessKeySecret,
+		SessionToken:    value.SessionToken,
+	}
+	if err := s.appendAdminAudit(actor, "storage.credentials.read", "system_setting", ossSettingKey, "管理员读取平台存储凭据", map[string]any{
+		"provider": value.Provider, "hasAccessKeySecret": value.AccessKeySecret != "", "hasSessionToken": value.SessionToken != "",
+	}); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (s *Service) UpdateOSSSetting(actor *model.User, req OSSSettingRequest) (*PublicOSSSetting, error) {
 	if err := s.RequireAdmin(actor); err != nil {
 		return nil, err
 	}
-	currentSetting, currentValue, err := s.readOSSSetting()
+	currentSetting, currentValue, _, err := s.readOSSSettingForAdmin()
 	if err != nil {
 		return nil, err
 	}
@@ -273,38 +294,60 @@ func (s *Service) UpdateUserOSSSetting(actor *model.User, req OSSSettingRequest)
 }
 
 func (s *Service) readOSSSetting() (*model.SystemSetting, ossSettingValue, error) {
+	setting, value, _, err := s.readOSSSettingValue(false)
+	return setting, value, err
+}
+
+func (s *Service) readOSSSettingForAdmin() (*model.SystemSetting, ossSettingValue, bool, error) {
+	return s.readOSSSettingValue(true)
+}
+
+func (s *Service) readOSSSettingValue(allowCredentialReset bool) (*model.SystemSetting, ossSettingValue, bool, error) {
 	setting, err := s.repo.SystemSetting(ossSettingKey)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, normalizeOSSSetting(defaultOSSSetting()), nil
+		return nil, normalizeOSSSetting(defaultOSSSetting()), false, nil
 	}
 	if err != nil {
-		return nil, ossSettingValue{}, err
+		return nil, ossSettingValue{}, false, err
 	}
 	value := defaultOSSSetting()
 	if strings.TrimSpace(setting.ValueJSON) != "" {
 		if err := json.Unmarshal([]byte(setting.ValueJSON), &value); err != nil {
-			return nil, ossSettingValue{}, errors.New("平台 OSS 配置格式无效")
+			return nil, ossSettingValue{}, false, errors.New("平台 OSS 配置格式无效")
 		}
 	}
 	needsMigration, err := s.decryptOSSSettingSecrets(&value)
 	if err != nil {
-		return nil, ossSettingValue{}, err
+		if !allowCredentialReset || !errors.Is(err, errSettingSecretDecryption) {
+			return nil, ossSettingValue{}, false, err
+		}
+		clearUnreadableOSSSecrets(&value)
+		return setting, normalizeOSSSetting(value), true, nil
 	}
 	if needsMigration {
 		migrated, err := s.encryptOSSSettingSecrets(value)
 		if err != nil {
-			return nil, ossSettingValue{}, err
+			return nil, ossSettingValue{}, false, err
 		}
 		encoded, err := json.Marshal(migrated)
 		if err != nil {
-			return nil, ossSettingValue{}, err
+			return nil, ossSettingValue{}, false, err
 		}
 		setting.ValueJSON = string(encoded)
 		if err := s.repo.SaveSystemSetting(setting); err != nil {
-			return nil, ossSettingValue{}, err
+			return nil, ossSettingValue{}, false, err
 		}
 	}
-	return setting, normalizeOSSSetting(value), nil
+	return setting, normalizeOSSSetting(value), false, nil
+}
+
+func clearUnreadableOSSSecrets(value *ossSettingValue) {
+	value.AccessKeySecret = ""
+	value.SessionToken = ""
+	for provider, credentials := range value.ArchivedCredentials {
+		credentials.AccessKeySecret = ""
+		value.ArchivedCredentials[provider] = credentials
+	}
 }
 
 func (s *Service) readUserOSSSetting(userID string) (*model.UserOSSSetting, ossSettingValue, error) {
@@ -360,18 +403,6 @@ func (s *Service) encryptOSSSettingSecrets(value ossSettingValue) (ossSettingVal
 		}
 		value.ArchivedCredentials[provider] = credentials
 	}
-	value.ArchivedSettings = cloneOSSProviderSettings(value.ArchivedSettings)
-	for provider, setting := range value.ArchivedSettings {
-		setting.AccessKeySecret, err = s.encryptSettingSecret(setting.AccessKeySecret)
-		if err != nil {
-			return ossSettingValue{}, err
-		}
-		setting.SessionToken, err = s.encryptSettingSecret(setting.SessionToken)
-		if err != nil {
-			return ossSettingValue{}, err
-		}
-		value.ArchivedSettings[provider] = setting
-	}
 	return value, nil
 }
 
@@ -399,24 +430,6 @@ func (s *Service) decryptOSSSettingSecrets(value *ossSettingValue) (bool, error)
 			return false, err
 		}
 		value.ArchivedCredentials[provider] = credentials
-	}
-	value.ArchivedSettings = cloneOSSProviderSettings(value.ArchivedSettings)
-	for provider, setting := range value.ArchivedSettings {
-		if setting.AccessKeySecret != "" && !strings.HasPrefix(setting.AccessKeySecret, encryptedSettingPrefix) {
-			needsMigration = true
-		}
-		setting.AccessKeySecret, err = s.decryptSettingSecret(setting.AccessKeySecret)
-		if err != nil {
-			return false, err
-		}
-		if setting.SessionToken != "" && !strings.HasPrefix(setting.SessionToken, encryptedSettingPrefix) {
-			needsMigration = true
-		}
-		setting.SessionToken, err = s.decryptSettingSecret(setting.SessionToken)
-		if err != nil {
-			return false, err
-		}
-		value.ArchivedSettings[provider] = setting
 	}
 	return needsMigration, nil
 }
@@ -470,7 +483,7 @@ func (s *Service) decryptSettingSecret(value string) (string, error) {
 	}
 	plaintext, err := gcm.Open(nil, payload[:gcm.NonceSize()], payload[gcm.NonceSize():], nil)
 	if err != nil {
-		return "", errors.New("OSS 密钥解密失败，请检查存储加密密钥")
+		return "", errSettingSecretDecryption
 	}
 	return string(plaintext), nil
 }
@@ -621,30 +634,12 @@ func ossSettingFromRequest(req OSSSettingRequest, current ossSettingValue) (ossS
 		}
 	}
 	current = normalizeOSSSetting(current)
-	if next.Provider != current.Provider {
-		next = restoreArchivedOSSProviderSetting(next, current)
-		next = normalizeOSSSetting(next)
-	}
 	// 同一云厂商修改存储位置时，留空仍表示保留现有密钥；切换厂商时不能复用。
 	if next.AccessKeySecret == "" && next.Provider == current.Provider {
 		next.AccessKeySecret = current.AccessKeySecret
 	}
 	if next.SessionToken == "" && next.Provider == current.Provider {
 		next.SessionToken = current.SessionToken
-	}
-	if !next.Enabled && next.Provider == current.Provider && !hasOSSProviderSettingRequest(req) {
-		next.Region = current.Region
-		next.Endpoint = current.Endpoint
-		next.CDNBaseURL = current.CDNBaseURL
-		next.Bucket = current.Bucket
-		next.AccessKeyID = current.AccessKeyID
-		next.AccessKeySecret = current.AccessKeySecret
-		next.PublicBaseURL = current.PublicBaseURL
-		next.PathPrefix = current.PathPrefix
-		next.S3Preset = current.S3Preset
-		next.PathStyle = current.PathStyle
-		next.SessionToken = current.SessionToken
-		next.StorageLocationID = current.StorageLocationID
 	}
 	if next.Enabled {
 		if next.Bucket == "" {
@@ -693,27 +688,15 @@ func ossSettingFromRequest(req OSSSettingRequest, current ossSettingValue) (ossS
 }
 
 func archiveOSSProviderCredentials(next ossSettingValue, current ossSettingValue) ossSettingValue {
-	next = normalizeOSSSetting(next)
-	current = normalizeOSSSetting(current)
 	next.ArchivedCredentials = cloneOSSProviderCredentials(current.ArchivedCredentials)
-	next.ArchivedSettings = cloneOSSProviderSettings(current.ArchivedSettings)
-	if current.Provider != next.Provider && hasOSSProviderSetting(current) {
+	if current.Provider != next.Provider && (current.AccessKeyID != "" || current.AccessKeySecret != "") {
 		if next.ArchivedCredentials == nil {
 			next.ArchivedCredentials = make(map[string]ossProviderCredentials)
 		}
 		next.ArchivedCredentials[current.Provider] = ossProviderCredentials{AccessKeyID: current.AccessKeyID, AccessKeySecret: current.AccessKeySecret}
-		if next.ArchivedSettings == nil {
-			next.ArchivedSettings = make(map[string]ossProviderSetting)
-		}
-		next.ArchivedSettings[current.Provider] = ossProviderSettingFromValue(current)
 	}
 	delete(next.ArchivedCredentials, next.Provider)
-	delete(next.ArchivedSettings, next.Provider)
 	return next
-}
-
-func archiveOSSProviderSettings(next ossSettingValue, current ossSettingValue) ossSettingValue {
-	return archiveOSSProviderCredentials(next, current)
 }
 
 func cloneOSSProviderCredentials(source map[string]ossProviderCredentials) map[string]ossProviderCredentials {
@@ -728,100 +711,6 @@ func cloneOSSProviderCredentials(source map[string]ossProviderCredentials) map[s
 		}
 	}
 	return cloned
-}
-
-func cloneOSSProviderSettings(source map[string]ossProviderSetting) map[string]ossProviderSetting {
-	if len(source) == 0 {
-		return nil
-	}
-	cloned := make(map[string]ossProviderSetting, len(source))
-	for provider, setting := range source {
-		cloned[strings.ToLower(strings.TrimSpace(provider))] = normalizeOSSProviderSetting(setting)
-	}
-	return cloned
-}
-
-func normalizeOSSProviderSetting(value ossProviderSetting) ossProviderSetting {
-	value.Region = strings.TrimSpace(value.Region)
-	value.Endpoint = strings.TrimRight(strings.TrimSpace(value.Endpoint), "/")
-	value.CDNBaseURL = strings.TrimRight(strings.TrimSpace(value.CDNBaseURL), "/")
-	value.Bucket = strings.TrimSpace(value.Bucket)
-	value.AccessKeyID = strings.TrimSpace(value.AccessKeyID)
-	value.AccessKeySecret = strings.TrimSpace(value.AccessKeySecret)
-	value.PublicBaseURL = strings.TrimRight(strings.TrimSpace(value.PublicBaseURL), "/")
-	value.PathPrefix = strings.Trim(strings.TrimSpace(value.PathPrefix), "/")
-	value.S3Preset = strings.ToLower(strings.TrimSpace(value.S3Preset))
-	if value.S3Preset == "" {
-		value.S3Preset = "custom"
-	}
-	value.SessionToken = strings.TrimSpace(value.SessionToken)
-	value.StorageLocationID = strings.TrimSpace(value.StorageLocationID)
-	return value
-}
-
-func ossProviderSettingFromValue(value ossSettingValue) ossProviderSetting {
-	return normalizeOSSProviderSetting(ossProviderSetting{Region: value.Region, Endpoint: value.Endpoint, CDNBaseURL: value.CDNBaseURL, Bucket: value.Bucket, AccessKeyID: value.AccessKeyID, AccessKeySecret: value.AccessKeySecret, PublicBaseURL: value.PublicBaseURL, PathPrefix: value.PathPrefix, S3Preset: value.S3Preset, PathStyle: value.PathStyle, SessionToken: value.SessionToken, StorageLocationID: value.StorageLocationID})
-}
-
-func ossSettingValueFromProviderSetting(provider string, value ossProviderSetting) ossSettingValue {
-	value = normalizeOSSProviderSetting(value)
-	return ossSettingValue{
-		Provider: provider, Region: value.Region, Endpoint: value.Endpoint, CDNBaseURL: value.CDNBaseURL,
-		Bucket: value.Bucket, AccessKeyID: value.AccessKeyID, AccessKeySecret: value.AccessKeySecret, PublicBaseURL: value.PublicBaseURL,
-		PathPrefix: value.PathPrefix, S3Preset: value.S3Preset, PathStyle: value.PathStyle, SessionToken: value.SessionToken,
-		StorageLocationID: value.StorageLocationID,
-	}
-}
-
-func hasOSSProviderSetting(value ossSettingValue) bool {
-	return value.Region != "" || value.Endpoint != "" || value.CDNBaseURL != "" || value.Bucket != "" ||
-		value.AccessKeyID != "" || value.AccessKeySecret != "" || value.PublicBaseURL != "" || value.PathPrefix != "" ||
-		value.S3Preset != "" || value.SessionToken != "" || value.StorageLocationID != ""
-}
-
-func hasOSSProviderSettingRequest(req OSSSettingRequest) bool {
-	return strings.TrimSpace(req.Region) != "" || strings.TrimSpace(req.Endpoint) != "" ||
-		strings.TrimSpace(req.CDNBaseURL) != "" || strings.TrimSpace(req.Bucket) != "" ||
-		strings.TrimSpace(req.AccessKeyID) != "" || strings.TrimSpace(req.AccessKeySecret) != "" ||
-		strings.TrimSpace(req.PublicBaseURL) != "" || strings.TrimSpace(req.PathPrefix) != "" ||
-		strings.TrimSpace(req.S3Preset) != "" || req.PathStyle || strings.TrimSpace(req.SessionToken) != ""
-}
-
-func archivedOSSProviderSetting(setting ossSettingValue, provider string) (ossProviderSetting, bool) {
-	provider = strings.ToLower(strings.TrimSpace(provider))
-	if value, ok := setting.ArchivedSettings[provider]; ok {
-		return normalizeOSSProviderSetting(value), true
-	}
-	if credentials, ok := setting.ArchivedCredentials[provider]; ok {
-		return normalizeOSSProviderSetting(ossProviderSetting{AccessKeyID: credentials.AccessKeyID, AccessKeySecret: credentials.AccessKeySecret}), true
-	}
-	return ossProviderSetting{}, false
-}
-
-func restoreArchivedOSSProviderSetting(next ossSettingValue, current ossSettingValue) ossSettingValue {
-	archived, ok := archivedOSSProviderSetting(current, next.Provider)
-	if !ok {
-		return next
-	}
-	next.Region = firstNonEmpty(next.Region, archived.Region)
-	next.Endpoint = firstNonEmpty(next.Endpoint, archived.Endpoint)
-	next.CDNBaseURL = firstNonEmpty(next.CDNBaseURL, archived.CDNBaseURL)
-	next.Bucket = firstNonEmpty(next.Bucket, archived.Bucket)
-	if next.PathPrefix == "" || next.PathPrefix == defaultOSSPathPrefix {
-		next.PathPrefix = archived.PathPrefix
-	}
-	next.AccessKeyID = firstNonEmpty(next.AccessKeyID, archived.AccessKeyID)
-	next.AccessKeySecret = firstNonEmpty(next.AccessKeySecret, archived.AccessKeySecret)
-	next.PublicBaseURL = firstNonEmpty(next.PublicBaseURL, archived.PublicBaseURL)
-	if next.S3Preset == "" || next.S3Preset == "custom" {
-		next.S3Preset = archived.S3Preset
-	}
-	if !next.PathStyle {
-		next.PathStyle = archived.PathStyle
-	}
-	next.SessionToken = firstNonEmpty(next.SessionToken, archived.SessionToken)
-	next.StorageLocationID = firstNonEmpty(next.StorageLocationID, archived.StorageLocationID)
-	return next
 }
 
 func normalizeOSSSetting(value ossSettingValue) ossSettingValue {

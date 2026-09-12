@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+
 	"os"
 	"path/filepath"
 	"strconv"
@@ -43,40 +44,6 @@ func TestSignedOSSObjectURLUsesExpiringQuerySignature(t *testing.T) {
 	}
 	if strings.Contains(value, "secret-value") {
 		t.Fatalf("signed URL leaked access key secret: %q", value)
-	}
-}
-
-func TestSignedOSSObjectDownloadURLUsesSingleEncodedDisposition(t *testing.T) {
-	fileName := "镜头一.mp4"
-	value, err := signedOSSObjectDownloadURL(ossSettingValue{
-		Endpoint: "https://oss-cn-test.aliyuncs.com", Bucket: "private-bucket",
-		AccessKeyID: "access-id", AccessKeySecret: "secret-value",
-	}, "users/u-1/video/test.mp4", time.Unix(1800000000, 0), fileName)
-	if err != nil {
-		t.Fatalf("signedOSSObjectDownloadURL() error = %v", err)
-	}
-	parsed, err := url.Parse(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expectedDisposition := resourceDownloadContentDisposition(fileName)
-	if got := parsed.Query().Get("response-content-disposition"); got != expectedDisposition {
-		t.Fatalf("response-content-disposition = %q, want %q", got, expectedDisposition)
-	}
-	if strings.Contains(parsed.RawQuery, "%253B") || !strings.Contains(parsed.RawQuery, "response-content-disposition=attachment%3B%20") {
-		t.Fatalf("response-content-disposition was not single encoded: %q", parsed.RawQuery)
-	}
-}
-
-func TestSafeResourceDownloadFileName(t *testing.T) {
-	if got := SafeResourceDownloadFileName("  镜头\r\n/:*?\"<>|.mp4  "); got != "镜头.mp4" {
-		t.Fatalf("SafeResourceDownloadFileName() = %q", got)
-	}
-	if got := SafeResourceDownloadFileName(" .. "); got != "download" {
-		t.Fatalf("SafeResourceDownloadFileName() fallback = %q", got)
-	}
-	if got := SafeResourceDownloadFileName(strings.Repeat("a", 181)); len([]rune(got)) != 180 {
-		t.Fatalf("SafeResourceDownloadFileName() length = %d", len([]rune(got)))
 	}
 }
 
@@ -128,6 +95,47 @@ func TestAliyunOSSUploadRequestStillUsesEndpointWhenCDNConfigured(t *testing.T) 
 	}
 	if req.URL.Host != "private-bucket.oss-cn-test.aliyuncs.com" || req.URL.Path != "/users/u-1/image/test.png" {
 		t.Fatalf("Aliyun OSS upload URL = %q", req.URL.String())
+	}
+}
+
+func TestNewOSSRequestBodyCloseDoesNotCloseCallerFile(t *testing.T) {
+	// 服务端提前返回 403（不读 body）时，http.Transport 会关闭 Request.Body。
+	// newOSSRequest 必须用 no-op close 包装请求体，否则调用方持有的 *os.File
+	// 会被关掉，OSS 失败后的“降级本地存储”Seek 重读将报 file already closed。
+	f, err := os.CreateTemp(t.TempDir(), "merged")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString("payload-bytes"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	req, err := newOSSRequest(http.MethodPut, ossSettingValue{
+		Provider: aliyunOSSProvider, Endpoint: "https://oss-cn-test.aliyuncs.com",
+		Bucket: "private-bucket", AccessKeyID: "access-id", AccessKeySecret: "secret-value",
+	}, "users/u-1/video/clip.mp4", "video/mp4", f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Body == nil {
+		t.Fatal("newOSSRequest() body is nil")
+	}
+	// 模拟 Transport 在服务端提前响应后关闭请求体：
+	if err := req.Body.Close(); err != nil {
+		t.Fatalf("close request body: %v", err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("caller file was closed by transport: %v", err)
+	}
+	got, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "payload-bytes" {
+		t.Fatalf("payload after body close = %q", got)
 	}
 }
 
@@ -367,75 +375,17 @@ func TestOSSCDNBaseURLRejectsNonDomainParts(t *testing.T) {
 }
 
 func TestPlatformProviderSwitchKeepsHistoricalCredentials(t *testing.T) {
-	current := ossSettingValue{
-		Provider: aliyunOSSProvider, Region: "cn-hangzhou", Endpoint: "https://oss-cn-hangzhou.aliyuncs.com",
-		CDNBaseURL: "https://aliyun.example.com", Bucket: "aliyun-bucket", PathPrefix: "projects/custom",
-		AccessKeyID: "aliyun-id", AccessKeySecret: "aliyun-secret", PublicBaseURL: "https://public.aliyun.example.com",
-		S3Preset: "r2", PathStyle: true, SessionToken: "aliyun-session", StorageLocationID: "aliyun-location",
-	}
-	next := archiveOSSProviderCredentials(ossSettingValue{
-		Provider: tencentCOSProvider, Region: "ap-guangzhou", Endpoint: "https://cos.ap-guangzhou.myqcloud.com",
-		CDNBaseURL: "https://tencent.example.com", Bucket: "tencent-bucket-1250000000", PathPrefix: "canvas",
-		AccessKeyID: "cos-id", AccessKeySecret: "cos-secret",
-	}, current)
+	current := ossSettingValue{Provider: aliyunOSSProvider, AccessKeyID: "aliyun-id", AccessKeySecret: "aliyun-secret"}
+	next := archiveOSSProviderCredentials(ossSettingValue{Provider: tencentCOSProvider, AccessKeyID: "cos-id", AccessKeySecret: "cos-secret"}, current)
 	historical, err := ossSettingForProvider(next, aliyunOSSProvider)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if historical.Provider != aliyunOSSProvider || historical.Region != current.Region || historical.Endpoint != current.Endpoint ||
-		historical.CDNBaseURL != current.CDNBaseURL || historical.Bucket != current.Bucket || historical.PathPrefix != current.PathPrefix ||
-		historical.AccessKeyID != current.AccessKeyID || historical.AccessKeySecret != current.AccessKeySecret {
+	if historical.Provider != aliyunOSSProvider || historical.AccessKeyID != "aliyun-id" || historical.AccessKeySecret != "aliyun-secret" {
 		t.Fatalf("historical setting = %#v", historical)
 	}
 	if _, ok := next.ArchivedCredentials[tencentCOSProvider]; ok {
 		t.Fatalf("active provider credentials were archived: %#v", next.ArchivedCredentials)
-	}
-}
-
-func TestPlatformProviderSwitchRestoresArchivedSettingWhenFormIsEmpty(t *testing.T) {
-	aliyun := ossSettingValue{
-		Provider: aliyunOSSProvider, Region: "cn-hangzhou", Endpoint: "https://oss-cn-hangzhou.aliyuncs.com",
-		CDNBaseURL: "https://example.com", Bucket: "aliyun-bucket", PathPrefix: "projects/custom",
-		AccessKeyID: "aliyun-id", AccessKeySecret: "aliyun-secret", PublicBaseURL: "https://public.aliyun.example.com",
-		S3Preset: "r2", PathStyle: true, SessionToken: "aliyun-session", StorageLocationID: "aliyun-location",
-	}
-	tencent, err := ossSettingFromRequest(OSSSettingRequest{
-		Enabled: true, Provider: tencentCOSProvider, Region: "ap-guangzhou",
-		Endpoint: "https://cos.ap-guangzhou.myqcloud.com", CDNBaseURL: "https://example.com",
-		Bucket: "tencent-bucket-1250000000", PathPrefix: "canvas", AccessKeyID: "cos-id", AccessKeySecret: "cos-secret",
-	}, aliyun)
-	if err != nil {
-		t.Fatalf("ossSettingFromRequest() error = %v", err)
-	}
-	tencent = archiveOSSProviderSettings(tencent, aliyun)
-	restored, err := ossSettingFromRequest(OSSSettingRequest{Enabled: true, Provider: aliyunOSSProvider}, tencent)
-	if err != nil {
-		t.Fatalf("restoring archived provider setting failed: %v", err)
-	}
-	if restored.Provider != aliyun.Provider || restored.Region != aliyun.Region || restored.Endpoint != aliyun.Endpoint ||
-		restored.CDNBaseURL != aliyun.CDNBaseURL || restored.Bucket != aliyun.Bucket || restored.PathPrefix != aliyun.PathPrefix ||
-		restored.AccessKeyID != aliyun.AccessKeyID || restored.AccessKeySecret != aliyun.AccessKeySecret || restored.PublicBaseURL != aliyun.PublicBaseURL ||
-		restored.S3Preset != aliyun.S3Preset || !restored.PathStyle || restored.SessionToken != aliyun.SessionToken || restored.StorageLocationID != aliyun.StorageLocationID {
-		t.Fatalf("restored setting = %#v", restored)
-	}
-}
-
-func TestPlatformStorageDisableKeepsCurrentProviderSetting(t *testing.T) {
-	current := ossSettingValue{
-		Enabled: true, Provider: qiniuKodoProvider, Region: "z1", Endpoint: "https://up-z1.qiniup.com",
-		CDNBaseURL: "https://qiniu.example.com", Bucket: "qiniu-bucket", PathPrefix: "canvas",
-		AccessKeyID: "qiniu-id", AccessKeySecret: "qiniu-secret",
-	}
-	disabled, err := ossSettingFromRequest(OSSSettingRequest{
-		Enabled: false, Provider: qiniuKodoProvider,
-	}, current)
-	if err != nil {
-		t.Fatalf("disabling storage failed: %v", err)
-	}
-	if disabled.Enabled || disabled.Provider != current.Provider || disabled.Region != current.Region || disabled.Endpoint != current.Endpoint ||
-		disabled.CDNBaseURL != current.CDNBaseURL || disabled.Bucket != current.Bucket || disabled.PathPrefix != current.PathPrefix ||
-		disabled.AccessKeyID != current.AccessKeyID || disabled.AccessKeySecret != current.AccessKeySecret {
-		t.Fatalf("disabled setting lost current provider config: %#v", disabled)
 	}
 }
 
@@ -446,12 +396,6 @@ func TestArchivedProviderCredentialsAreEncryptedAtRest(t *testing.T) {
 		ArchivedCredentials: map[string]ossProviderCredentials{
 			aliyunOSSProvider: {AccessKeyID: "aliyun-id", AccessKeySecret: "aliyun-secret"},
 		},
-		ArchivedSettings: map[string]ossProviderSetting{
-			aliyunOSSProvider: {
-				Region: "cn-hangzhou", Endpoint: "https://oss-cn-hangzhou.aliyuncs.com", Bucket: "aliyun-bucket",
-				AccessKeyID: "aliyun-id", AccessKeySecret: "aliyun-secret",
-			},
-		},
 	}
 	stored, err := svc.encryptOSSSettingSecrets(value)
 	if err != nil {
@@ -460,14 +404,10 @@ func TestArchivedProviderCredentialsAreEncryptedAtRest(t *testing.T) {
 	if !strings.HasPrefix(stored.AccessKeySecret, encryptedSettingPrefix) || !strings.HasPrefix(stored.ArchivedCredentials[aliyunOSSProvider].AccessKeySecret, encryptedSettingPrefix) {
 		t.Fatalf("stored credentials are not encrypted: %#v", stored)
 	}
-	if !strings.HasPrefix(stored.ArchivedSettings[aliyunOSSProvider].AccessKeySecret, encryptedSettingPrefix) {
-		t.Fatalf("stored provider setting secret is not encrypted: %#v", stored.ArchivedSettings)
-	}
 	if _, err := svc.decryptOSSSettingSecrets(&stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored.AccessKeySecret != "cos-secret" || stored.ArchivedCredentials[aliyunOSSProvider].AccessKeySecret != "aliyun-secret" ||
-		stored.ArchivedSettings[aliyunOSSProvider].AccessKeySecret != "aliyun-secret" {
+	if stored.AccessKeySecret != "cos-secret" || stored.ArchivedCredentials[aliyunOSSProvider].AccessKeySecret != "aliyun-secret" {
 		t.Fatalf("decrypted credentials = %#v", stored)
 	}
 }
@@ -796,13 +736,13 @@ func TestHydrateNewAPIChannel1ResourceUsesSignedOSSURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	media := providerMedia{StorageKey: "resource:resource-1", DataURL: "data:image/png;base64,old"}
-	if err := svc.hydrateProviderMedia("user-1", &media, true); err != nil {
+	if err := svc.hydrateProviderMedia("user-1", &media, providerMediaHydrationPolicy{requireURL: true}); err != nil {
 		t.Fatalf("hydrateProviderMedia() error = %v", err)
 	}
 	if !strings.HasPrefix(media.URL, "https://private-bucket.oss-cn-test.aliyuncs.com/") || media.DataURL != "" || !strings.Contains(media.URL, "Signature=") {
 		t.Fatalf("media = %#v", media)
 	}
-	if err := svc.hydrateProviderMedia("other-user", &providerMedia{StorageKey: "resource:resource-1"}, true); err == nil {
+	if err := svc.hydrateProviderMedia("other-user", &providerMedia{StorageKey: "resource:resource-1"}, providerMediaHydrationPolicy{requireURL: true}); err == nil {
 		t.Fatal("hydrateProviderMedia() allowed another user's resource")
 	}
 }
@@ -821,7 +761,7 @@ func TestHydrateNewAPIChannel1ResourceUsesSignedLocalURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	media := providerMedia{StorageKey: "resource:resource-local"}
-	if err := svc.hydrateProviderMedia("user-1", &media, true); err != nil {
+	if err := svc.hydrateProviderMedia("user-1", &media, providerMediaHydrationPolicy{requireURL: true}); err != nil {
 		t.Fatalf("hydrateProviderMedia() error = %v", err)
 	}
 	if !strings.HasPrefix(media.URL, server.URL+"/api/public/resources/resource-local/file/resource-local.png?") || !strings.Contains(media.URL, "signature=") || media.DataURL != "" {
@@ -830,6 +770,51 @@ func TestHydrateNewAPIChannel1ResourceUsesSignedLocalURL(t *testing.T) {
 	stored, err := svc.repo.Resource("resource-local")
 	if err != nil || stored.Provider != "local" {
 		t.Fatalf("resource provider changed: %#v, %v", stored, err)
+	}
+}
+
+func TestHydratePreferredURLUsesObjectStorageAndFallsBackLocal(t *testing.T) {
+	svc := newResourceTestService(t)
+	settingJSON, _ := json.Marshal(ossSettingValue{
+		Enabled: true, Provider: "aliyun", Endpoint: "https://oss-cn-test.aliyuncs.com", Bucket: "private-bucket",
+		AccessKeyID: "access-id", AccessKeySecret: "secret-value",
+	})
+	if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(settingJSON)}); err != nil {
+		t.Fatal(err)
+	}
+	objectResource := model.Resource{
+		ID: "resource-oss", UserID: "user-1", Kind: "image", Status: model.ResourceStatusReady,
+		Provider: "aliyun", Endpoint: "https://oss-cn-test.aliyuncs.com", Bucket: "private-bucket",
+		ObjectKey: "users/user-1/image/prefer.png", MimeType: "image/png",
+	}
+	if err := svc.repo.CreateResource(&objectResource); err != nil {
+		t.Fatal(err)
+	}
+	media := providerMedia{StorageKey: "resource:resource-oss", DataURL: "data:image/png;base64,old"}
+	if err := svc.hydrateProviderMedia("user-1", &media, providerMediaHydrationPolicy{preferURL: true}); err != nil {
+		t.Fatalf("hydrateProviderMedia(prefer object) error = %v", err)
+	}
+	if !strings.HasPrefix(media.URL, "https://private-bucket.oss-cn-test.aliyuncs.com/") || media.DataURL != "" || !strings.Contains(media.URL, "Signature=") {
+		t.Fatalf("object media = %#v", media)
+	}
+
+	localDir := filepath.Join(svc.dataDir, "resources", "users", "user-1", "image")
+	if err := os.MkdirAll(localDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "local.png"), []byte("png-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	localResource := model.Resource{ID: "resource-local-bytes", UserID: "user-1", Kind: "image", Status: model.ResourceStatusReady, Provider: "local", ObjectKey: "users/user-1/image/local.png", MimeType: "image/png"}
+	if err := svc.repo.CreateResource(&localResource); err != nil {
+		t.Fatal(err)
+	}
+	localMedia := providerMedia{StorageKey: "resource:resource-local-bytes"}
+	if err := svc.hydrateProviderMedia("user-1", &localMedia, providerMediaHydrationPolicy{preferURL: true}); err != nil {
+		t.Fatalf("hydrateProviderMedia(prefer local) error = %v", err)
+	}
+	if localMedia.URL != "" || !strings.HasPrefix(localMedia.DataURL, "data:image/png;base64,") {
+		t.Fatalf("local media = %#v", localMedia)
 	}
 }
 
@@ -940,11 +925,14 @@ func newResourceTestService(t *testing.T) *Service {
 func TestStoreResourceReusesReadyUploadIdentity(t *testing.T) {
 	svc := newResourceTestService(t)
 	uploadKey := normalizedResourceUploadKey([]string{"image:user-1:logical-upload"})
-	first, stored, err := svc.storeResource("user-1", "image", "first.png", "image/png", 7, 1, 1, 0, bytes.NewReader([]byte("payload")), uploadKey)
-	if err != nil || !stored {
-		t.Fatalf("first upload stored=%v error=%v", stored, err)
+	first, stored, err := svc.storeResource("user-1", "image", "first.png", "image/png", 7, 1, 1, 0, bytes.NewReader([]byte("payload")), uploadKey, false)
+	if err != nil {
+		t.Fatal(err)
 	}
-	second, stored, err := svc.storeResource("user-1", "image", "second.png", "image/png", 7, 1, 1, 0, bytes.NewReader([]byte("payload")), uploadKey)
+	if !stored {
+		t.Fatal("first upload was not stored")
+	}
+	second, stored, err := svc.storeResource("user-1", "image", "second.png", "image/png", 7, 1, 1, 0, bytes.NewReader([]byte("payload")), uploadKey, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -952,8 +940,11 @@ func TestStoreResourceReusesReadyUploadIdentity(t *testing.T) {
 		t.Fatalf("idempotent upload = %#v, stored=%v; first=%#v", second, stored, first)
 	}
 	resources, err := svc.repo.Resources("user-1", 10)
-	if err != nil || len(resources) != 1 {
-		t.Fatalf("resources=%d error=%v, want 1", len(resources), err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resources) != 1 {
+		t.Fatalf("resource count = %d, want 1", len(resources))
 	}
 }
 
@@ -968,16 +959,27 @@ func TestRetryStoredResourceKeepsOriginalObjectKey(t *testing.T) {
 	if err := svc.repo.CreateResource(failed); err != nil {
 		t.Fatal(err)
 	}
-	retried, err := svc.retryStoredResource("user-1", failed, "image", "fixed.png", "image/png", 7, bytes.NewReader([]byte("payload")))
+	retried, err := svc.retryStoredResource("user-1", failed, "image", "image/png", 7, bytes.NewReader([]byte("payload")))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if retried.ID != failed.ID || retried.ObjectKey != "users/user-1/image/fixed.png" || retried.Status != model.ResourceStatusReady {
 		t.Fatalf("retried resource = %#v", retried)
 	}
-	usage, err := svc.repo.DailyUploadBytes("user-1", time.Now().UTC().Format("2006-01-02"))
-	if err != nil || usage != 7 {
-		t.Fatalf("daily upload usage=%d error=%v, want 7", usage, err)
+	resources, err := svc.repo.Resources("user-1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resources) != 1 {
+		t.Fatalf("resource count = %d, want 1", len(resources))
+	}
+	day := time.Now().UTC().Format("2006-01-02")
+	usage, err := svc.repo.DailyUploadBytes("user-1", day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage != 7 {
+		t.Fatalf("daily upload usage = %d, want 7", usage)
 	}
 }
 
@@ -992,273 +994,17 @@ func TestRetryStoredResourceReleasesDailyQuotaAfterFailure(t *testing.T) {
 	if err := svc.repo.CreateResource(failed); err != nil {
 		t.Fatal(err)
 	}
-	_, err := svc.retryStoredResource("user-1", failed, "image", "failed.png", "image/png", 7, iotest.ErrReader(errors.New("write failed")))
+	_, err := svc.retryStoredResource("user-1", failed, "image", "image/png", 7, iotest.ErrReader(errors.New("write failed")))
 	if err == nil || !strings.Contains(err.Error(), "write failed") {
 		t.Fatalf("retryStoredResource() error = %v", err)
 	}
-	usage, usageErr := svc.repo.DailyUploadBytes("user-1", time.Now().UTC().Format("2006-01-02"))
-	if usageErr != nil || usage != 0 {
-		t.Fatalf("daily upload usage=%d error=%v, want 0", usage, usageErr)
+	day := time.Now().UTC().Format("2006-01-02")
+	usage, usageErr := svc.repo.DailyUploadBytes("user-1", day)
+	if usageErr != nil {
+		t.Fatal(usageErr)
 	}
-}
-
-func TestCloudUploadFailureKeepsResourceReadyWithLocalBackup(t *testing.T) {
-	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
-	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			t.Errorf("method = %s, want PUT", r.Method)
-		}
-		requests++
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte("storage unavailable"))
-	}))
-	defer server.Close()
-
-	svc := newResourceTestService(t)
-	settingJSON, _ := json.Marshal(ossSettingValue{
-		Enabled: true, Provider: tencentCOSProvider, Endpoint: server.URL, Region: "ap-shanghai",
-		Bucket: "private-bucket-1250000000", AccessKeyID: "secret-id", AccessKeySecret: "secret-key",
-	})
-	if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(settingJSON)}); err != nil {
-		t.Fatal(err)
-	}
-	payload := []byte("local disaster backup")
-	resource, _, err := svc.storeResource("user-1", "image", "sample.png", "image/png", int64(len(payload)), 0, 0, 0, bytes.NewReader(payload), nil)
-	if err != nil {
-		t.Fatalf("storeResource() error = %v", err)
-	}
-	if requests != resourceStorageRetryAttempts {
-		t.Fatalf("cloud upload attempts = %d, want %d", requests, resourceStorageRetryAttempts)
-	}
-	if resource.Status != model.ResourceStatusReady || resource.CloudSyncStatus != model.ResourceCloudSyncStatusPending {
-		t.Fatalf("resource status = %#v, want ready/pending", resource)
-	}
-	if resource.Provider != tencentCOSProvider || resource.ObjectKey == "" || resource.LocalBackupKey == "" || resource.CloudSyncError == "" {
-		t.Fatalf("resource lost cloud metadata or error: %#v", resource)
-	}
-	backupPath, err := svc.resourceLocalPath(resource.LocalBackupKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stored, err := os.ReadFile(backupPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(stored, payload) {
-		t.Fatalf("local backup = %q, want %q", stored, payload)
-	}
-	stream, err := svc.OpenResourceRange("user-1", resource.ID, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Body.Close()
-	readBack, err := io.ReadAll(stream.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !stream.Local || !bytes.Equal(readBack, payload) {
-		t.Fatalf("fallback stream local=%v body=%q", stream.Local, readBack)
-	}
-}
-
-func TestVideoCloudUploadSuccessDoesNotKeepLocalBackup(t *testing.T) {
-	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
-	var uploaded []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			t.Errorf("method = %s, want PUT", r.Method)
-		}
-		uploaded, _ = io.ReadAll(r.Body)
-		w.Header().Set("ETag", `"video-etag"`)
-		w.Header().Set("x-cos-hash-crc64ecma", strconv.FormatUint(crc64.Checksum(uploaded, crc64.MakeTable(crc64.ECMA)), 10))
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	svc := newResourceTestService(t)
-	settingJSON, _ := json.Marshal(ossSettingValue{
-		Enabled: true, Provider: tencentCOSProvider, Endpoint: server.URL, Region: "ap-shanghai",
-		Bucket: "private-bucket-1250000000", AccessKeyID: "secret-id", AccessKeySecret: "secret-key",
-	})
-	if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(settingJSON)}); err != nil {
-		t.Fatal(err)
-	}
-	payload := []byte("cloud first video")
-	resource, _, err := svc.storeResource("user-1", "video", "sample.mp4", "video/mp4", int64(len(payload)), 1280, 720, 0, bytes.NewReader(payload), nil)
-	if err != nil {
-		t.Fatalf("storeResource() error = %v", err)
-	}
-	if !bytes.Equal(uploaded, payload) {
-		t.Fatalf("uploaded payload = %q, want %q", uploaded, payload)
-	}
-	if resource.Status != model.ResourceStatusReady || resource.CloudSyncStatus != model.ResourceCloudSyncStatusSynced || resource.LocalBackupKey != "" {
-		t.Fatalf("video resource = %#v, want ready/synced without backup", resource)
-	}
-	if _, err := os.Stat(filepath.Join(svc.dataDir, "resources")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("local resources directory exists after cloud-first success: %v", err)
-	}
-}
-
-func TestVideoCloudUploadFailureKeepsLocalBackup(t *testing.T) {
-	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
-	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			t.Errorf("method = %s, want PUT", r.Method)
-		}
-		requests++
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte("storage unavailable"))
-	}))
-	defer server.Close()
-
-	svc := newResourceTestService(t)
-	settingJSON, _ := json.Marshal(ossSettingValue{
-		Enabled: true, Provider: tencentCOSProvider, Endpoint: server.URL, Region: "ap-shanghai",
-		Bucket: "private-bucket-1250000000", AccessKeyID: "secret-id", AccessKeySecret: "secret-key",
-	})
-	if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(settingJSON)}); err != nil {
-		t.Fatal(err)
-	}
-	payload := []byte("video local fallback")
-	resource, _, err := svc.storeResource("user-1", "video", "fallback.mp4", "video/mp4", int64(len(payload)), 1280, 720, 0, bytes.NewReader(payload), nil)
-	if err != nil {
-		t.Fatalf("storeResource() error = %v", err)
-	}
-	if requests != resourceStorageRetryAttempts {
-		t.Fatalf("cloud upload attempts = %d, want %d", requests, resourceStorageRetryAttempts)
-	}
-	if resource.Status != model.ResourceStatusReady || resource.CloudSyncStatus != model.ResourceCloudSyncStatusPending || resource.LocalBackupKey == "" {
-		t.Fatalf("video resource = %#v, want ready/pending with backup", resource)
-	}
-	backupPath, err := svc.resourceLocalPath(resource.LocalBackupKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stored, err := os.ReadFile(backupPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(stored, payload) {
-		t.Fatalf("local backup = %q, want %q", stored, payload)
-	}
-}
-
-func TestResourceStorageRecoveryUploadsLocalBackup(t *testing.T) {
-	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
-	requests := 0
-	var uploaded []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			t.Errorf("method = %s, want PUT", r.Method)
-		}
-		requests++
-		uploaded, _ = io.ReadAll(r.Body)
-		w.Header().Set("ETag", `"recovered-etag"`)
-		w.Header().Set("x-cos-hash-crc64ecma", strconv.FormatUint(crc64.Checksum(uploaded, crc64.MakeTable(crc64.ECMA)), 10))
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	svc := newResourceTestService(t)
-	settingJSON, _ := json.Marshal(ossSettingValue{
-		Enabled: true, Provider: tencentCOSProvider, Endpoint: server.URL, Region: "ap-shanghai",
-		Bucket: "private-bucket-1250000000", AccessKeyID: "secret-id", AccessKeySecret: "secret-key",
-	})
-	if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(settingJSON)}); err != nil {
-		t.Fatal(err)
-	}
-	payload := []byte("recovery payload")
-	resource := &model.Resource{
-		ID: "resource-recovery", UserID: "user-1", Kind: "video", Status: model.ResourceStatusReady,
-		Provider: tencentCOSProvider, Endpoint: server.URL, Bucket: "private-bucket-1250000000",
-		ObjectKey: "users/user-1/video/recovery.mp4", LocalBackupKey: "users/user-1/backup/recovery.mp4",
-		CloudSyncStatus: model.ResourceCloudSyncStatusPending, MimeType: "video/mp4", Size: int64(len(payload)),
-		CloudSyncNextAttemptAt: timePtr(time.Now().Add(-time.Second)),
-	}
-	if err := svc.repo.CreateResource(resource); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.writeLocalResourceObject(resource.LocalBackupKey, bytes.NewReader(payload)); err != nil {
-		t.Fatal(err)
-	}
-
-	svc.drainResourceStorageRecovery(1)
-	if requests < 1 || !bytes.Equal(uploaded, payload) {
-		t.Fatalf("recovery upload requests=%d body=%q", requests, uploaded)
-	}
-	stored, err := svc.repo.Resource(resource.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.CloudSyncStatus != model.ResourceCloudSyncStatusSynced || stored.CloudSyncError != "" || stored.ETag != "recovered-etag" {
-		t.Fatalf("recovered resource = %#v", stored)
-	}
-	backupPath, err := svc.resourceLocalPath(resource.LocalBackupKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(backupPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("local backup still exists after recovery: %v", err)
-	}
-	if stored.LocalBackupKey != "" {
-		t.Fatalf("recovered resource still references local backup: %#v", stored)
-	}
-}
-
-func TestCloudReadFailureFallsBackToLocalBackupAndSchedulesRecovery(t *testing.T) {
-	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
-	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("method = %s, want GET", r.Method)
-		}
-		requests++
-		w.WriteHeader(http.StatusBadGateway)
-	}))
-	defer server.Close()
-
-	svc := newResourceTestService(t)
-	settingJSON, _ := json.Marshal(ossSettingValue{
-		Enabled: true, Provider: tencentCOSProvider, Endpoint: server.URL, Region: "ap-shanghai",
-		Bucket: "private-bucket-1250000000", AccessKeyID: "secret-id", AccessKeySecret: "secret-key",
-	})
-	if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(settingJSON)}); err != nil {
-		t.Fatal(err)
-	}
-	payload := []byte("read fallback payload")
-	resource := &model.Resource{
-		ID: "resource-read-fallback", UserID: "user-1", Kind: "video", Status: model.ResourceStatusReady,
-		Provider: tencentCOSProvider, Endpoint: server.URL, Bucket: "private-bucket-1250000000",
-		ObjectKey: "users/user-1/video/fallback.mp4", LocalBackupKey: "users/user-1/backup/fallback.mp4",
-		CloudSyncStatus: model.ResourceCloudSyncStatusSynced, MimeType: "video/mp4", Size: int64(len(payload)),
-	}
-	if err := svc.repo.CreateResource(resource); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.writeLocalResourceObject(resource.LocalBackupKey, bytes.NewReader(payload)); err != nil {
-		t.Fatal(err)
-	}
-
-	stream, err := svc.OpenResourceRange("user-1", resource.ID, "bytes=0-3")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Body.Close()
-	readBack, err := io.ReadAll(stream.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if requests < resourceStorageRetryAttempts || !stream.Local || !bytes.Equal(readBack, payload) {
-		t.Fatalf("read fallback requests=%d local=%v body=%q", requests, stream.Local, readBack)
-	}
-	stored, err := svc.repo.Resource(resource.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.CloudSyncStatus != model.ResourceCloudSyncStatusPending || stored.CloudSyncError == "" {
-		t.Fatalf("read fallback did not schedule recovery: %#v", stored)
+	if usage != 0 {
+		t.Fatalf("daily upload usage = %d, want 0", usage)
 	}
 }
 
@@ -1305,7 +1051,7 @@ func TestPersistGeneratedMediaAppliesStoredFileQuota(t *testing.T) {
 	_, err := svc.persistGeneratedMediaResult("user-1", map[string]interface{}{
 		"image": map[string]interface{}{"dataUrl": "data:image/png;base64,YQ=="},
 	})
-	if err == nil || !strings.Contains(err.Error(), "2GB 上限") {
+	if err == nil || !strings.Contains(err.Error(), "20GB 上限") {
 		t.Fatalf("persistGeneratedMediaResult() error = %v", err)
 	}
 }

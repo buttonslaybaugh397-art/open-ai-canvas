@@ -1,30 +1,10 @@
 import { modelRequestOptions, resolveVideoOperation, type ModelRequirements } from "@/lib/model-selection";
 import { videoResolutionComparisonKey } from "@/lib/video-generation-options";
+import { buildImageResolutionOptions, imageResolutionOption } from "@/lib/image-resolution-tiers";
 import type { ModelRequestIntent } from "@/services/api/logical-models";
 import { modelOptionName, resolveModelChannel, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 
 export type ModelPriceTier = NonNullable<NonNullable<AiConfig["channels"][number]["modelCosts"]>[number]["logicalPriceTiers"]>[number];
-
-export function priceTierSummaryLabel(tiers: ModelPriceTier[]) {
-    const unitPrices = (billingMode: ModelPriceTier["billingMode"]) =>
-        tiers
-            .filter((tier) => tier.billingMode === billingMode)
-            .map((tier) => tier.unitPriceMicrocredits / 1_000_000)
-            .filter((value) => Number.isFinite(value) && value >= 0);
-    const fixedRequestValues = unitPrices("fixed_request");
-    const perSecondValues = unitPrices("per_second");
-    if (fixedRequestValues.length) return formatPriceRange(fixedRequestValues, "积分");
-    if (perSecondValues.length) return formatPriceRange(perSecondValues, "积分/秒");
-    return tiers.some((tier) => tier.billingMode === "token") ? "按量预估" : "未配置";
-}
-
-export function formatPriceRange(values: number[], suffix: string) {
-    const unique = Array.from(new Set(values)).sort((left, right) => left - right);
-    const format = (value: number) => value.toLocaleString("zh-CN", { maximumFractionDigits: 3 });
-    return unique.length === 1
-        ? `${format(unique[0])} ${suffix}`
-        : `${format(unique[0])}-${format(unique[unique.length - 1])} ${suffix}`;
-}
 
 type ModelCreditCost = {
     model: string;
@@ -40,12 +20,6 @@ export function requestCreditCost(options: { channelMode: string; modelCosts?: M
     if (!cost) return null;
     if (cost.pricePolicy === "channel") {
         if (!options.config) return null;
-        if (!cost.logicalPriceTiers?.length) {
-            // 兼容迁移前的系统渠道响应，避免旧标量价格被误报为未配置。
-            if (cost.billingMode === "token") return null;
-            if (Number.isFinite(cost.unitPriceMicrocredits) && cost.unitPriceMicrocredits >= 0) return creditAmount(cost.billingMode, cost.unitPriceMicrocredits, options.count, options.seconds);
-            return null;
-        }
         const tiers = priceTiersForCurrentSelection(cost.logicalPriceTiers || [], options.capability, options.config, options.requirements);
         if (!tiers.length) return null;
         const first = tiers[0];
@@ -78,6 +52,25 @@ export function priceTiersForCurrentSelection(tiers: ModelPriceTier[], capabilit
     return matched;
 }
 
+export function priceTierSummaryLabel(tiers: ModelPriceTier[]) {
+    const unitPrices = (billingMode: ModelPriceTier["billingMode"]) =>
+        tiers
+            .filter((tier) => tier.billingMode === billingMode)
+            .map((tier) => tier.unitPriceMicrocredits / 1_000_000)
+            .filter((value) => Number.isFinite(value) && value >= 0);
+    const fixedRequestValues = unitPrices("fixed_request");
+    const perSecondValues = unitPrices("per_second");
+    if (fixedRequestValues.length) return formatPriceRange(fixedRequestValues, "积分");
+    if (perSecondValues.length) return formatPriceRange(perSecondValues, "积分/秒");
+    return tiers.some((tier) => tier.billingMode === "token") ? "按量预估" : "未配置";
+}
+
+export function formatPriceRange(values: number[], suffix: string) {
+    const unique = Array.from(new Set(values)).sort((left, right) => left - right);
+    const format = (value: number) => value.toLocaleString("zh-CN", { maximumFractionDigits: 3 });
+    return unique.length === 1 ? `${format(unique[0])} ${suffix}` : `${format(unique[0])}-${format(unique[unique.length - 1])} ${suffix}`;
+}
+
 export function modelQuoteRequest(config: AiConfig, value: string, capability?: ModelCapability, requirements?: ModelRequirements): { logicalModelID: string; intent: ModelRequestIntent } | undefined {
     if (!capability || !value) return undefined;
     const channel = resolveModelChannel(config, value);
@@ -87,7 +80,7 @@ export function modelQuoteRequest(config: AiConfig, value: string, capability?: 
     const input = requirements?.input;
     const intent: ModelRequestIntent = {
         capability,
-        operation: capability === "video" && input ? resolveVideoOperation(input, requirements?.videoOperation) : requirements?.videoOperation,
+        operation: capability === "image" ? imagePriceOperation(requirements) : capability === "video" && input ? resolveVideoOperation(input, requirements?.videoOperation) : requirements?.videoOperation,
         inputs: {
             image: (input?.imageCount || 0) + (input?.characterCount || 0),
             video: input?.videoCount || 0,
@@ -112,31 +105,40 @@ function priceSelectorForRequest(capability: ModelCapability | undefined, config
     const requested: Record<string, string> = {};
     if (capability === "video") {
         const input = requirements?.input;
-        const optionValue = (name: string, fallback: unknown) => requirements?.options?.[name] ?? fallback;
         if (input) {
             const imageCount = (input.imageCount || 0) + (input.characterCount || 0);
             requested.operation = input.videoCount > 0 ? "video_to_video" : imageCount > 0 ? "image_to_video" : resolveVideoOperation(input, requirements?.videoOperation);
             if (imageCount > 0) requested.imageCount = String(imageCount);
         }
-        const resolution = normalizeTierResolution(String(optionValue("vquality", config.vquality)));
+        const resolution = normalizeTierResolution(config.vquality);
         if (resolution !== "*") requested.vquality = resolution;
-        const seconds = Math.max(0, Math.floor(Number(optionValue("videoSeconds", config.videoSeconds)) || 0));
+        const seconds = Math.max(0, Math.floor(Number(config.videoSeconds) || 0));
         if (seconds > 0) requested.videoSeconds = String(seconds);
     }
     if (capability === "image") {
-        const quality = String(requirements?.options?.quality ?? config.quality ?? "").trim().toLowerCase();
-        const size = String(requirements?.options?.size ?? requirements?.imageSize ?? config.size ?? "").trim().toLowerCase();
-        if (quality && quality !== "auto" && quality !== "any") requested.quality = quality;
-        if (size && size !== "auto" && size !== "any") requested.size = size;
+        requested.operation = imagePriceOperation(requirements);
+        const options = { ...modelRequestOptions(config, "image"), ...requirements?.options, ...(requirements?.imageSize ? { size: requirements.imageSize } : {}) };
+        const imageQuality = String(options.quality ?? "").trim().toLowerCase();
+        const imageSize = String(options.size ?? "").trim();
+        if ((imageQuality === "" || imageQuality === "auto" || imageQuality === "any") && imageSize) {
+            const resolution = imageResolutionOption(buildImageResolutionOptions([imageSize]), imageSize)?.tier;
+            if (resolution) requested.quality = resolution;
+        }
+        for (const key of ["quality", "size"] as const) {
+            const value = String(options[key] ?? "").trim().toLowerCase();
+            if (value && value !== "auto" && value !== "any" && !requested[key]) requested[key] = value;
+        }
     }
     return requested;
 }
 
+function imagePriceOperation(requirements?: ModelRequirements) {
+    const input = requirements?.input;
+    return (input?.imageCount || 0) + (input?.characterCount || 0) > 0 ? "image_to_image" : "text_to_image";
+}
+
 function priceSelectorForTier(tier: ModelPriceTier) {
-    const selector = Object.fromEntries(Object.entries(tier.selector || {}).map(([key, value]) => [
-        key === "resolution" ? "vquality" : key,
-        key === "vquality" || key === "resolution" ? normalizeTierResolution(String(value)) : String(value).trim().toLowerCase(),
-    ]));
+    const selector = { ...(tier.selector || {}) };
     if (!Object.keys(selector).length) {
         const resolution = normalizeTierResolution(tier.resolution);
         if (resolution !== "*") selector.vquality = resolution;

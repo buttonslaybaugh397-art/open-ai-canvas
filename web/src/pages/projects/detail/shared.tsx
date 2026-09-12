@@ -1,7 +1,8 @@
-import { Tag } from "antd";
+import { StatusBadge } from "@/components/ui/base/badges";
 import type { ReactNode } from "react";
 
 import type { ProjectDetail, ProjectUnit } from "@/services/api/projects";
+import { ASSET_CATEGORY_LABELS, assetCategoryLabel as sharedAssetCategoryLabel } from "@/lib/asset-category";
 
 export type ProjectDetailViewProps = {
     detail: ProjectDetail;
@@ -9,15 +10,7 @@ export type ProjectDetailViewProps = {
     onCreateCanvas: () => void;
 };
 
-export const categoryLabels: Record<string, string> = {
-    character: "角色",
-    environment: "场景",
-    wardrobe: "服饰",
-    prop: "道具",
-    weapon: "武器",
-    style: "画风",
-    other: "其他",
-};
+export const categoryLabels: Record<string, string> = ASSET_CATEGORY_LABELS;
 
 export const mediaLabels: Record<string, string> = {
     image: "图片",
@@ -64,7 +57,7 @@ const sourceTypeLabels: Record<string, string> = {
 };
 
 export function categoryLabel(value: string) {
-    return categoryLabels[value] || "其他";
+    return sharedAssetCategoryLabel(value);
 }
 
 export function statusLabel(value: string) {
@@ -80,8 +73,8 @@ export function sourceTypeLabel(value: string) {
 }
 
 export function StatusPill({ status }: { status: string }) {
-    const color = status === "completed" || status === "confirmed" || status === "succeeded" ? "success" : status === "failed" ? "error" : status === "running" || status === "active" ? "processing" : status === "review" || status === "pending_confirmation" ? "warning" : "default";
-    return <Tag color={color} className="m-0 !rounded-full !px-2 !text-[var(--fs-label)]">{statusLabel(status)}</Tag>;
+    const tone = status === "completed" || status === "confirmed" || status === "succeeded" ? "success" : status === "failed" ? "error" : status === "running" || status === "active" ? "loading" : status === "review" || status === "pending_confirmation" ? "warning" : "neutral";
+    return <StatusBadge tone={tone} label={statusLabel(status)} className="m-0" />;
 }
 
 export function SectionTitle({ eyebrow, title, description, action }: { eyebrow?: string; title: string; description?: string; action?: ReactNode }) {

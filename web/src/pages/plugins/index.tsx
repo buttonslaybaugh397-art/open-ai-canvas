@@ -1,16 +1,21 @@
-import { App, Button, Input, Modal, Select, Switch, Typography } from "antd";
-import { AudioLines, CalendarDays, CheckCircle2, Clock3, ExternalLink, Film, FolderOpen, Image as ImageIcon, MessageSquareText, PlugZap, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal } from "lucide-react";
+import { App, Button, Input, Modal, Select, Typography } from "antd";
+import { Switch } from "@/components/ui/base/switch";
+import { AudioLines, CalendarDays, CheckCircle2, Clock3, CreditCard, ExternalLink, Film, FolderOpen, Image as ImageIcon, MessageSquareText, PlugZap, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 
+import { EmptyState } from "@/components/ui/product/empty-state";
 import { listRegisteredPlugins } from "@/lib/plugins/plugin-registry";
 import "@/lib/plugins/builtin";
 import { EAGLE_PLUGIN_ID } from "@/lib/plugins/builtin/eagle";
 import { PROMPT_OPTIMIZER_PLUGIN_ID } from "@/lib/plugins/builtin/prompt-optimizer";
 import { COMFYUI_PLUGIN_ID, RUNNINGHUB_PLUGIN_ID } from "@/lib/plugins/builtin/workflows";
-import type { PluginManifest, RegisteredPlugin } from "@/lib/plugins/plugin-types";
+import { MEDIA_CONVERSION_PLUGIN_ID } from "@/lib/plugins/builtin/media-conversion";
+import { ART_CRITIQUE_PLUGIN_ID } from "@/lib/art-critique/contracts";
+import type { PluginManifest, PluginManifestV2, RegisteredPlugin } from "@/lib/plugins/plugin-types";
 import { getEagleLibrary, type EagleFolder } from "@/services/api/eagle";
 import { fetchPlugins, setUserPluginEnabled, type BackendPlugin, type PluginState } from "@/services/api/plugins";
+import { useAppearanceStore } from "@/stores/use-appearance-store";
 import { usePluginStore } from "@/stores/use-plugin-store";
 import { useUserStore } from "@/stores/use-user-store";
 
@@ -19,6 +24,7 @@ import "./plugins.css";
 
 const categoryLabels: Record<string, string> = {
     provider: "模型渠道",
+    "payment-provider": "支付协议",
     "canvas-node": "画布节点",
     workflow: "工作流",
     transform: "媒体转换",
@@ -45,6 +51,7 @@ const permissionLabels: Record<string, string> = {
     "asset.upload": "上传素材",
     "generation.run": "调用生成",
     "ai.text": "调用已配置的文本/视觉理解模型",
+    "media.read": "读取输入媒体",
     "external.open": "打开外部详情",
 };
 
@@ -55,11 +62,13 @@ const protocolSectionMeta = [
     { key: "image", label: "图片协议", description: "生成、编辑与参考图", icon: ImageIcon },
     { key: "video", label: "视频协议", description: "创建任务、轮询与媒体结果", icon: Film },
     { key: "audio", label: "音频协议", description: "语音与异步音频任务", icon: AudioLines },
+    { key: "payment", label: "支付协议", description: "支付、查单、关单与对账", icon: CreditCard },
 ] as const;
 
 export default function PluginsPage() {
     const { message } = App.useApp();
     const navigate = useNavigate();
+    const brandName = useAppearanceStore((state) => state.appearance.brandName);
     const user = useUserStore((state) => state.user);
     const features = useUserStore((state) => state.features);
     const installations = usePluginStore((state) => state.installations);
@@ -141,12 +150,7 @@ export default function PluginsPage() {
             const contributionKinds = contributionKindsFor(manifest);
             const searchableText = [manifest.name, manifest.description, manifest.author, manifest.id, ...contributionKinds.map((kind) => categoryLabels[kind] || kind)].filter(Boolean).join(" ").toLocaleLowerCase();
             if (normalizedSearch && !searchableText.includes(normalizedSearch)) return false;
-            if (categoryFilter !== "all") {
-                const providerCapabilities = providerCapabilitiesFor(manifest);
-                const matchesCapability = providerCapabilities.includes(categoryFilter as "text" | "image" | "video" | "audio");
-                const matchesApp = categoryFilter === "other" && contributionKinds.length > 0 && providerCapabilities.length === 0;
-                if (!matchesCapability && !matchesApp) return false;
-            }
+            if (categoryFilter !== "all" && !pluginMatchesCategory(manifest, categoryFilter)) return false;
             if (trustFilter === "trusted" && !manifest.trusted) return false;
             if (statusFilter === "enabled" && !enabled) return false;
             if (statusFilter === "disabled" && enabled) return false;
@@ -155,11 +159,12 @@ export default function PluginsPage() {
     }, [backendPluginById, categoryFilter, features.systemPluginsVisibleToUsers, installations, pluginStates, registeredPlugins, search, statusFilter, trustFilter, user?.role]);
 
     const pluginSections = useMemo(
-        () => [
-            ...protocolSectionMeta.map((section) => ({ ...section, plugins: filteredPlugins.filter((plugin) => providerCapabilitiesFor(plugin.manifest).includes(section.key)) })),
-            { key: "other", label: "应用插件", description: "画布、素材与工作流扩展", icon: PlugZap, plugins: filteredPlugins.filter((plugin) => !providerCapabilitiesFor(plugin.manifest).length) },
-        ],
-        [filteredPlugins],
+        () =>
+            [
+                ...protocolSectionMeta.map((section) => ({ ...section, plugins: filteredPlugins.filter((plugin) => pluginMatchesCategory(plugin.manifest, section.key)) })),
+                { key: "other", label: "应用插件", description: "画布、素材与工作流扩展", icon: PlugZap, plugins: filteredPlugins.filter((plugin) => pluginMatchesCategory(plugin.manifest, "other")) },
+            ].filter((section) => categoryFilter === "all" || section.key === categoryFilter),
+        [categoryFilter, filteredPlugins],
     );
 
     const selectCategory = (key: string) => {
@@ -182,13 +187,12 @@ export default function PluginsPage() {
 
     const categoryCounts = useMemo(() => {
         const visiblePlugins = registeredPlugins.filter((plugin) => user?.role === "admin" || features.systemPluginsVisibleToUsers || isOfficialApplicationPlugin(plugin.manifest.id));
-        const counts: Record<string, number> = { all: visiblePlugins.length, text: 0, image: 0, video: 0, audio: 0, other: 0 };
+        const counts: Record<string, number> = { all: visiblePlugins.length, text: 0, image: 0, video: 0, audio: 0, payment: 0, other: 0 };
         for (const plugin of visiblePlugins) {
-            const capabilities = providerCapabilitiesFor(plugin.manifest);
-            if (!capabilities.length) counts.other += 1;
-            for (const capability of capabilities) {
-                counts[capability] = (counts[capability] || 0) + 1;
+            for (const section of protocolSectionMeta) {
+                if (pluginMatchesCategory(plugin.manifest, section.key)) counts[section.key] += 1;
             }
+            if (pluginMatchesCategory(plugin.manifest, "other")) counts.other += 1;
         }
         return counts;
     }, [features.systemPluginsVisibleToUsers, registeredPlugins, user?.role]);
@@ -201,8 +205,7 @@ export default function PluginsPage() {
     const hasPluginConfiguration = (plugin: RegisteredPlugin) => Boolean(plugin.manifest.configuration?.fields?.length);
     const canConfigurePlugin = (plugin: RegisteredPlugin) => Boolean(pluginStates[plugin.manifest.id]?.canConfigure) && (hasPluginConfiguration(plugin) || plugin.manifest.id === RUNNINGHUB_PLUGIN_ID || plugin.manifest.id === COMFYUI_PLUGIN_ID);
 
-    const isPluginEnabled = (plugin: RegisteredPlugin, installation = installations.find((item) => item.manifest.id === plugin.manifest.id)) =>
-        pluginStates[plugin.manifest.id]?.effectiveEnabled ?? Boolean(installation?.enabled);
+    const isPluginEnabled = (plugin: RegisteredPlugin, installation = installations.find((item) => item.manifest.id === plugin.manifest.id)) => pluginStates[plugin.manifest.id]?.effectiveEnabled ?? Boolean(installation?.enabled);
 
     const togglePlugin = async (plugin: RegisteredPlugin, enabled: boolean) => {
         try {
@@ -325,7 +328,11 @@ export default function PluginsPage() {
                                 <Button icon={<RefreshCw className="size-4" />} loading={backendPluginsLoading} onClick={() => void reloadBackendPlugins()}>
                                     刷新插件
                                 </Button>
-                                {user?.role === "admin" ? <Button type="primary" onClick={() => navigate("/admin/plugins")}>管理员插件管理</Button> : null}
+                                {user?.role === "admin" ? (
+                                    <Button type="primary" onClick={() => navigate("/admin/plugins")}>
+                                        管理员插件管理
+                                    </Button>
+                                ) : null}
                             </div>
                         </div>
 
@@ -385,16 +392,18 @@ export default function PluginsPage() {
                                                                             <span className="plugin-version">v{plugin.manifest.version}</span>
                                                                         </div>
                                                                         <div className="plugin-card-labels">
-                                                                            <span className={`plugin-source-label${sourceLabel === "系统插件" ? " is-system" : ""}`}>
-                                                                                {sourceLabel}
-                                                                            </span>
+                                                                            <span className={`plugin-source-label${sourceLabel === "系统插件" ? " is-system" : ""}`}>{sourceLabel}</span>
                                                                             {trusted ? (
                                                                                 <span className="plugin-trust-label">
                                                                                     <ShieldCheck className="size-3.5" />
                                                                                     可信插件
                                                                                 </span>
                                                                             ) : null}
-                                                                            <span className="plugin-category-label">{contributionKindsFor(plugin.manifest).map((kind) => categoryLabels[kind] ?? kind).join(" · ")}</span>
+                                                                            <span className="plugin-category-label">
+                                                                                {contributionKindsFor(plugin.manifest)
+                                                                                    .map((kind) => categoryLabels[kind] ?? kind)
+                                                                                    .join(" · ")}
+                                                                            </span>
                                                                         </div>
                                                                     </div>
                                                                 </div>
@@ -429,7 +438,14 @@ export default function PluginsPage() {
                                                                     <i aria-hidden="true" />
                                                                     {!state?.platformAvailable && state?.blockedReason ? state.blockedReason : enabled ? "已启用" : "已停用"}
                                                                 </span>
-                                                                <Switch className="plugin-state-switch" disabled={!state?.canToggle} checked={enabled} aria-label={`${plugin.manifest.name}，当前${enabled ? "已启用，点击停用" : "已停用，点击启用"}`} title={state?.blockedReason} onChange={(checked) => void togglePlugin(plugin, checked)} />
+                                                                <Switch
+                                                                    className="plugin-state-switch"
+                                                                    disabled={!state?.canToggle}
+                                                                    checked={enabled}
+                                                                    aria-label={`${plugin.manifest.name}，当前${enabled ? "已启用，点击停用" : "已停用，点击启用"}`}
+                                                                    title={state?.blockedReason}
+                                                                    onChange={(checked) => void togglePlugin(plugin, checked)}
+                                                                />
                                                                 {canConfigure ? (
                                                                     <Button
                                                                         className="plugin-settings-button"
@@ -457,21 +473,24 @@ export default function PluginsPage() {
                                 })}
                             </div>
                         ) : (
-                            <div className="plugins-empty-state">
-                                <SlidersHorizontal className="size-7" aria-hidden="true" />
-                                <h3>没有匹配的插件</h3>
-                                <p>试试清空搜索词，或放宽筛选条件。</p>
-                                <Button
-                                    onClick={() => {
-                                        setSearch("");
-                                        setCategoryFilter("all");
-                                        setStatusFilter("all");
-                                        setTrustFilter("all");
-                                    }}
-                                >
-                                    清除筛选
-                                </Button>
-                            </div>
+                            <EmptyState
+                                className="min-h-[260px] rounded-[var(--plugins-card-radius)] bg-foreground/[0.03]"
+                                icon={SlidersHorizontal}
+                                title="没有匹配的插件"
+                                description="试试清空搜索词，或放宽筛选条件。"
+                                action={
+                                    <Button
+                                        onClick={() => {
+                                            setSearch("");
+                                            setCategoryFilter("all");
+                                            setStatusFilter("all");
+                                            setTrustFilter("all");
+                                        }}
+                                    >
+                                        清除筛选
+                                    </Button>
+                                }
+                            />
                         )}
 
                         <Modal
@@ -506,14 +525,14 @@ export default function PluginsPage() {
                                                 <div className="min-w-0">
                                                     <label htmlFor="eagle-base-url">Eagle 本地 API 地址</label>
                                                     <Input id="eagle-base-url" aria-label="Eagle 本地 API 地址" value={eagleBaseUrl} onChange={(event) => setEagleBaseUrl(event.target.value)} placeholder="http://localhost:41595" />
-                                                    <p>Eagle 必须在本机运行；影策通过插件直接读取和写入 Eagle 原始文件。</p>
+                                                    <p>Eagle 必须在本机运行；{brandName}通过插件直接读取和写入 Eagle 原始文件。</p>
                                                 </div>
                                                 <div className="min-w-0">
                                                     <div className="plugin-setting-label-row">
                                                         <label htmlFor="eagle-auto-upload-generated">自动归档生成结果</label>
                                                         <Switch id="eagle-auto-upload-generated" checked={eagleAutoUploadGenerated} onChange={setEagleAutoUploadGenerated} aria-label="自动归档生成结果到 Eagle" />
                                                     </div>
-                                                    <p>图片、视频和音频生成成功后，自动写入 Eagle；影策本地素材仍会保留。</p>
+                                                    <p>图片、视频和音频生成成功后，自动写入 Eagle；{brandName}本地素材仍会保留。</p>
                                                 </div>
                                                 <div className="min-w-0">
                                                     <div className="plugin-setting-label-row">
@@ -569,7 +588,11 @@ export default function PluginsPage() {
                                         </div>
                                     ) : (
                                         <div className="plugin-settings-empty">
-                                            {`贡献能力：${contributionKindsFor(settingsPlugin.manifest).map((kind) => categoryLabels[kind] || kind).join("、") || "未声明"}。当前接入位置和权限会根据插件清单自动生效。`}
+                                            {`贡献能力：${
+                                                contributionKindsFor(settingsPlugin.manifest)
+                                                    .map((kind) => categoryLabels[kind] || kind)
+                                                    .join("、") || "未声明"
+                                            }。当前接入位置和权限会根据插件清单自动生效。`}
                                         </div>
                                     )}
 
@@ -605,19 +628,21 @@ function toRegisteredPlugin(plugin: BackendPlugin): RegisteredPlugin {
 }
 
 function isOfficialApplicationPlugin(pluginId: string) {
-    return [RUNNINGHUB_PLUGIN_ID, COMFYUI_PLUGIN_ID, EAGLE_PLUGIN_ID, PROMPT_OPTIMIZER_PLUGIN_ID, "portrait-clearance"].includes(pluginId);
+    return [RUNNINGHUB_PLUGIN_ID, COMFYUI_PLUGIN_ID, EAGLE_PLUGIN_ID, PROMPT_OPTIMIZER_PLUGIN_ID, "portrait-clearance", ART_CRITIQUE_PLUGIN_ID, MEDIA_CONVERSION_PLUGIN_ID].includes(pluginId);
 }
 
 function pluginSourceLabel(plugin: RegisteredPlugin, state?: PluginState) {
     if (plugin.source === "uploaded") return "自定义插件";
+    if (plugin.source === "system") return "系统插件";
     if (state?.canToggle || isOfficialApplicationPlugin(plugin.manifest.id)) return "官方插件";
     return "系统插件";
 }
 
-function contributionKindsFor(manifest: PluginManifest): string[] {
+function contributionKindsFor(manifest: PluginManifest | PluginManifestV2): string[] {
     const contributions = manifest.contributes;
     const kinds: string[] = [];
     if (contributions.providers?.length) kinds.push("provider");
+    if (contributions.paymentProviders?.length) kinds.push("payment-provider");
     if (contributions.workflows?.length) kinds.push("workflow");
     if (contributions.canvasNodes?.length) kinds.push("canvas-node");
     if (contributions.transforms?.length) kinds.push("transform");
@@ -629,8 +654,16 @@ function contributionKindsFor(manifest: PluginManifest): string[] {
     return kinds;
 }
 
-function providerCapabilitiesFor(manifest: PluginManifest) {
+function providerCapabilitiesFor(manifest: PluginManifest | PluginManifestV2) {
     return [...new Set((manifest.contributes.providers || []).flatMap((provider) => provider.capabilities))];
+}
+
+function pluginMatchesCategory(manifest: PluginManifest | PluginManifestV2, category: string) {
+    const providerCapabilities = providerCapabilitiesFor(manifest);
+    const isPaymentProtocol = Boolean(manifest.contributes.paymentProviders?.length);
+    if (category === "payment") return isPaymentProtocol;
+    if (category === "other") return !isPaymentProtocol && providerCapabilities.length === 0;
+    return providerCapabilities.includes(category as "text" | "image" | "video" | "audio");
 }
 
 function capabilityLabel(value: string) {

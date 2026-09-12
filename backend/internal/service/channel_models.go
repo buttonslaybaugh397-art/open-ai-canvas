@@ -35,6 +35,8 @@ type ChannelModelRequest struct {
 	PriceTiers                   []ChannelModelPriceTierRequest `json:"priceTiers"`
 }
 
+const maxAdminChannelModelBatchDeleteCount = 100
+
 // ChannelModelPriceTierRequest 是系统渠道内某个规格的上游 SKU 与结算价格。
 // Resolution="*"、VideoSeconds=0 分别表示任意分辨率和任意时长。
 type ChannelModelPriceTierRequest struct {
@@ -57,6 +59,10 @@ type ChannelModelPriceTierRequest struct {
 type AdminChannelModelFetchResult struct {
 	Models []string `json:"models"`
 	Added  int64    `json:"added"`
+}
+
+type AdminChannelModelImportRequest struct {
+	Models []string `json:"models"`
 }
 
 type AdminChannelModelTestResult struct {
@@ -146,15 +152,9 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 		return nil, err
 	}
 	// 使用服务端保存的渠道密钥和请求头访问上游，避免敏感配置再次经过浏览器。
-	catalog, err := s.FetchChannelModelCatalog(ctx, actor, ChannelModelsRequest{BaseURL: channel.BaseURL, AllowLocalChannel: channel.AllowLocalChannel, APIKey: channel.APIKey, APIFormat: channel.APIFormat, ConnectionType: channelConnectionType(channel), Headers: headers})
+	models, err := s.FetchChannelModels(ctx, actor, ChannelModelsRequest{BaseURL: channel.BaseURL, AllowLocalChannel: channel.AllowLocalChannel, APIKey: channel.APIKey, APIFormat: channel.APIFormat, Headers: headers})
 	if err != nil {
 		return nil, err
-	}
-	models := make([]string, 0, len(catalog))
-	for _, item := range catalog {
-		if name := strings.TrimSpace(item.ID); name != "" {
-			models = append(models, name)
-		}
 	}
 	// 只按当前未删除记录去重；普通手动删除的模型仍可重新拉取，已合并进模型家族的 SKU 除外。
 	existing, err := s.repo.ChannelModels(channelID, true)
@@ -178,9 +178,7 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 		if idErr != nil {
 			return nil, idErr
 		}
-		discovered := discoveredChannelModel(*channel, name, nil, catalogItemByID(catalog, name))
-		discovered.ID = modelID
-		missing = append(missing, discovered)
+		missing = append(missing, model.ChannelModel{ID: modelID, ChannelID: channelID, ModelKey: name, ProviderModelKey: name, DisplayName: name, BillingMode: "fixed_request", Enabled: false, PriceVersion: 1})
 	}
 	added, err := s.repo.CreateMissingChannelModels(missing)
 	if err != nil {
@@ -192,313 +190,106 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 	return &AdminChannelModelFetchResult{Models: models, Added: added}, nil
 }
 
-func discoveredChannelModel(channel model.ModelChannel, name string, endpointTypes []string, catalogItems ...*ChannelModelCatalogItem) model.ChannelModel {
-	var catalog *ChannelModelCatalogItem
-	if len(catalogItems) > 0 {
-		catalog = catalogItems[0]
+// PreviewAdminChannelModels 只读取上游模型目录，不修改渠道模型配置。
+func (s *Service) PreviewAdminChannelModels(ctx context.Context, actor *model.User, channelID string) ([]string, error) {
+	if err := s.RequireAdmin(actor); err != nil {
+		return nil, err
 	}
-	displayName := name
-	if catalog != nil && strings.TrimSpace(catalog.DisplayName) != "" {
-		displayName = strings.TrimSpace(catalog.DisplayName)
-	}
-	item := model.ChannelModel{ID: newID(), ChannelID: channel.ID, ModelKey: name, DisplayName: displayName, BillingMode: "fixed_request", Enabled: false, PriceVersion: 1}
-	syncChannelModelContract(channel, &item, endpointTypes, catalog)
-	return item
+	return s.fetchAdminChannelModelCatalog(ctx, actor, channelID)
 }
 
-func catalogItemByID(items []ChannelModelCatalogItem, id string) *ChannelModelCatalogItem {
-	for index := range items {
-		if items[index].ID == id {
-			return &items[index]
-		}
+// ImportAdminChannelModels 只导入管理员明确选择、且仍存在于上游目录中的模型。
+func (s *Service) ImportAdminChannelModels(ctx context.Context, actor *model.User, channelID string, selected []string) (*AdminChannelModelFetchResult, error) {
+	if err := s.RequireAdmin(actor); err != nil {
+		return nil, err
 	}
-	return nil
-}
-
-func aiStarsLabCatalogItemForLegacyKey(items []ChannelModelCatalogItem, modelKey string) *ChannelModelCatalogItem {
-	modelName := strings.TrimSpace(modelKey)
-	if modelName == "" || strings.Contains(modelName, ":") {
-		return nil
+	channel, err := s.adminSystemChannel(channelID)
+	if err != nil {
+		return nil, err
 	}
-	var matched *ChannelModelCatalogItem
-	for index := range items {
-		route := items[index].AIStarsLab
-		if route == nil || !strings.EqualFold(strings.TrimSpace(route.Model), modelName) {
+	models, err := s.fetchAdminChannelModelCatalog(ctx, actor, channelID)
+	if err != nil {
+		return nil, err
+	}
+	if len(selected) == 0 {
+		return nil, BadAuthRequest("请至少选择一个要导入的模型")
+	}
+	if len(selected) > 500 {
+		return nil, BadAuthRequest("单次最多导入 500 个模型")
+	}
+	available := make(map[string]string, len(models))
+	for _, name := range models {
+		available[channelModelCatalogKey(name)] = name
+	}
+	chosen := make([]string, 0, len(selected))
+	seen := make(map[string]struct{}, len(selected))
+	for _, rawName := range selected {
+		name := strings.TrimPrefix(strings.TrimSpace(rawName), "models/")
+		key := channelModelCatalogKey(name)
+		if key == "" {
 			continue
 		}
-		if matched != nil {
-			return nil
+		canonical, ok := available[key]
+		if !ok {
+			return nil, BadAuthRequest("所选模型不在上游模型目录中：" + name)
 		}
-		matched = &items[index]
-	}
-	return matched
-}
-
-func channelConnectionType(channel *model.ModelChannel) string {
-	if channel != nil && isAiStarsLabBaseURL(channel.BaseURL) {
-		return "aistarslab"
-	}
-	if channel != nil && isWeijinBaseURL(channel.BaseURL) {
-		return "weijin"
-	}
-	return ""
-}
-
-func syncChannelModelContract(channel model.ModelChannel, item *model.ChannelModel, endpointTypes []string, catalog *ChannelModelCatalogItem) bool {
-	if item == nil {
-		return false
-	}
-	if catalog != nil && catalog.AIStarsLab != nil {
-		route := catalog.AIStarsLab
-		capability := "video"
-		protocol := model.ChannelInterfaceAIStarsLabVideo
-		if strings.EqualFold(strings.TrimSpace(route.Capability), "image") {
-			capability = "image"
-			protocol = model.ChannelInterfaceAIStarsLabImage
+		if _, ok := seen[key]; ok {
+			continue
 		}
-		changed := item.Protocol != protocol || item.Capability != capability
-		item.Protocol = protocol
-		item.Capability = capability
-		config := DefaultModelCapabilityConfigForModel(string(protocol), route.Model)
-		config.AIStarsLab = &AIStarsLabCapabilityConfig{
-			Channel: route.Channel, Capability: route.Capability, Model: route.Model,
-			Qualities: append([]string(nil), route.Qualities...), AspectRatios: append([]string(nil), route.AspectRatios...),
-			Duration: append([]int(nil), route.Duration...), DurationMin: route.DurationMin, DurationMax: route.DurationMax,
-			Modes: append([]string(nil), route.Modes...), InputImagesMax: route.InputImagesMax,
-			InputVideosMax: route.InputVideosMax, InputAudiosMax: route.InputAudiosMax,
+		seen[key] = struct{}{}
+		chosen = append(chosen, canonical)
+	}
+	if len(chosen) == 0 {
+		return nil, BadAuthRequest("请至少选择一个有效的模型")
+	}
+
+	existing, err := s.repo.ChannelModels(channelID, true)
+	if err != nil {
+		return nil, err
+	}
+	known := make(map[string]struct{}, len(existing))
+	for _, item := range existing {
+		providerKey := firstNonEmpty(item.ProviderModelKey, item.ModelKey)
+		known[channelModelCatalogKey(providerKey)] = struct{}{}
+	}
+	retired := retiredChannelModelKeys(channel.RetiredModelsJSON)
+	missing := make([]model.ChannelModel, 0, len(chosen))
+	for _, name := range chosen {
+		key := channelModelCatalogKey(name)
+		if _, ok := known[key]; ok || retired[key] {
+			continue
 		}
-		if capability == "video" && config.Video != nil {
-			config.Video.References.MaxImages = route.InputImagesMax
-			config.Video.References.MaxVideos = route.InputVideosMax
-			config.Video.References.MaxAudios = route.InputAudiosMax
-			if len(route.Qualities) > 0 {
-				config.Video.Resolutions = append([]string(nil), route.Qualities...)
-				config.Video.DefaultResolution = route.Qualities[0]
-			}
-			if len(route.Duration) > 0 {
-				config.Video.Duration = VideoDurationConfig{Selection: "enum", Values: append([]int(nil), route.Duration...), Default: route.Duration[0]}
-			} else if route.DurationMin > 0 && route.DurationMax >= route.DurationMin {
-				config.Video.Duration = VideoDurationConfig{Selection: "range", Min: route.DurationMin, Max: route.DurationMax, Step: 1, Default: route.DurationMin}
-			}
-			if len(route.AspectRatios) > 0 {
-				config.Video.Ratios = append([]string(nil), route.AspectRatios...)
-				config.Video.DefaultRatio = route.AspectRatios[0]
-			}
+		modelID, idErr := s.repo.NextPrefixedID("MODEL")
+		if idErr != nil {
+			return nil, idErr
 		}
-		encoded, err := json.Marshal(config)
-		if err == nil && item.CapabilityConfigJSON != string(encoded) {
-			item.CapabilityConfigJSON = string(encoded)
-			item.CapabilityVersion++
-			changed = true
-		}
-		return changed
+		missing = append(missing, model.ChannelModel{ID: modelID, ChannelID: channelID, ModelKey: name, DisplayName: name, BillingMode: "fixed_request", Enabled: false, PriceConfigured: false, PriceVersion: 1})
+		known[key] = struct{}{}
 	}
-	if catalog != nil && containsStringFold(catalog.SupportedEndpointTypes, string(model.ChannelInterfaceWeijinVideo)) {
-		changed := item.Protocol != model.ChannelInterfaceWeijinVideo || item.Capability != "video"
-		item.Protocol, item.Capability = model.ChannelInterfaceWeijinVideo, "video"
-		config := DefaultModelCapabilityConfigForModel(string(model.ChannelInterfaceWeijinVideo), item.ModelKey)
-		video := config.Video
-		video.References.MaxImages = pointerValue(catalog.MaxImages)
-		video.References.MaxVideos = pointerValue(catalog.MaxVideos)
-		video.References.MaxVideoDuration = pointerValue(catalog.MaxVideoDuration)
-		video.References.MaxAudios = pointerValue(catalog.MaxAudios)
-		video.Ratios = catalogOptionValues(catalog.Options.AspectRatio)
-		video.Resolutions = catalogOptionValues(catalog.Options.Resolution)
-		durations := catalogOptionInts(catalog.Options.DurationSeconds)
-		if len(durations) > 0 {
-			video.Duration = VideoDurationConfig{Selection: "enum", Values: durations, Default: durations[0]}
-		}
-		video.DefaultRatio = firstNonEmpty(catalog.DefaultParameters.AspectRatio, firstSliceValue(video.Ratios))
-		video.DefaultResolution = firstNonEmpty(catalog.DefaultParameters.Resolution, firstSliceValue(video.Resolutions))
-		encoded, err := json.Marshal(config)
-		if err == nil && item.CapabilityConfigJSON != string(encoded) {
-			item.CapabilityConfigJSON = string(encoded)
-			item.CapabilityVersion++
-			changed = true
-		}
-		return changed
+	added, err := s.repo.CreateMissingChannelModels(missing)
+	if err != nil {
+		return nil, err
 	}
-	return syncHuiQuYunModelContract(channel, item, endpointTypes)
+	if added > 0 {
+		s.invalidateRouteCatalog()
+	}
+	return &AdminChannelModelFetchResult{Models: chosen, Added: added}, nil
 }
 
-func containsStringFold(values []string, expected string) bool {
-	for _, value := range values {
-		if strings.EqualFold(strings.TrimSpace(value), expected) {
-			return true
-		}
+func (s *Service) fetchAdminChannelModelCatalog(ctx context.Context, actor *model.User, channelID string) ([]string, error) {
+	channel, err := s.adminSystemChannel(channelID)
+	if err != nil {
+		return nil, err
 	}
-	return false
-}
-
-func pointerValue(value *int) int {
-	if value == nil {
-		return 0
+	headers, err := ParseOutboundHeadersJSON(channel.HeadersJSON)
+	if err != nil {
+		return nil, err
 	}
-	return *value
-}
-
-func firstSliceValue(values []string) string {
-	if len(values) == 0 {
-		return ""
+	models, err := s.FetchChannelModels(ctx, actor, ChannelModelsRequest{BaseURL: channel.BaseURL, AllowLocalChannel: channel.AllowLocalChannel, APIKey: channel.APIKey, APIFormat: channel.APIFormat, Headers: headers})
+	if err != nil {
+		return nil, err
 	}
-	return values[0]
-}
-
-func catalogOptionValues(values []ChannelModelCatalogOption) []string {
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		if item := strings.TrimSpace(value.Value); item != "" {
-			result = append(result, item)
-		}
-	}
-	return result
-}
-
-func catalogOptionInts(values []ChannelModelCatalogOption) []int {
-	result := make([]int, 0, len(values))
-	for _, value := range values {
-		if item, err := strconv.Atoi(strings.TrimSpace(value.Value)); err == nil && item > 0 {
-			result = append(result, item)
-		}
-	}
-	return result
-}
-
-func syncHuiQuYunModelContract(channel model.ModelChannel, item *model.ChannelModel, endpointTypes []string) bool {
-	if item == nil || !isHuiQuYunBaseURL(channel.BaseURL) {
-		return false
-	}
-	if item.PriceConfigured && validHuiQuYunProtocol(item.Protocol) && capabilityForProtocolValue(item.Protocol) == item.Capability {
-		// 已定价模型保留管理员选择，但已知视频 SKU 的错误文本协议必须修复，
-		// 否则生成请求会走聊天接口并被上游拒绝。
-		expected := huiQuYunProtocolForModel(item.ModelKey, endpointTypes)
-		if expected != model.ChannelInterfaceHuiQuYunVideo || item.Protocol == expected {
-			return false
-		}
-	}
-	protocol := huiQuYunProtocolForModel(item.ModelKey, endpointTypes)
-	capability := capabilityForProtocolValue(protocol)
-	changed := item.Protocol != protocol || item.Capability != capability
-	item.Protocol = protocol
-	item.Capability = capability
-	if capability == "image" || capability == "video" {
-		if changed || strings.TrimSpace(item.CapabilityConfigJSON) == "" {
-			config := DefaultModelCapabilityConfigForModel(string(protocol), item.ModelKey)
-			if capability == "video" && isHuiQuYunMJSD933Model(item.ModelKey) && config.Video != nil {
-				config.Video.Resolutions = []string{"480p", "720p"}
-				config.Video.DefaultResolution = "720p"
-			}
-			encoded, err := json.Marshal(config)
-			if err == nil && item.CapabilityConfigJSON != string(encoded) {
-				item.CapabilityConfigJSON = string(encoded)
-				item.CapabilityVersion++
-				changed = true
-			}
-		}
-	} else if item.CapabilityConfigJSON != "" || item.CapabilityVersion != 0 {
-		item.CapabilityConfigJSON = ""
-		item.CapabilityVersion = 0
-		changed = true
-	}
-	return changed
-}
-
-func capabilityForProtocolValue(protocol model.ChannelInterfaceType) string {
-	switch protocol {
-	case model.ChannelInterfaceOpenAIImage, model.ChannelInterfaceAIStarsLabImage:
-		return "image"
-	case model.ChannelInterfaceOpenAIAudio:
-		return "audio"
-	case model.ChannelInterfaceHuiQuYunVideo, model.ChannelInterfaceAIStarsLabVideo, model.ChannelInterfaceWeijinVideo, model.ChannelInterfaceVolcengineJiMengVideo, model.ChannelInterfaceVolcengineArkVideo:
-		return "video"
-	case model.ChannelInterfaceChatCompletion, model.ChannelInterfaceOpenAIResponse:
-		return "text"
-	default:
-		return ""
-	}
-}
-
-func validHuiQuYunProtocol(protocol model.ChannelInterfaceType) bool {
-	return capabilityForProtocolValue(protocol) != ""
-}
-
-func isHuiQuYunBaseURL(value string) bool {
-	normalized := strings.ToLower(strings.TrimRight(strings.TrimSpace(value), "/"))
-	return normalized == "https://api.bjhuiqu.net" || normalized == "https://api.bjhuiqu.net/v1"
-}
-
-func isAiStarsLabBaseURL(value string) bool {
-	normalized := strings.ToLower(strings.TrimRight(strings.TrimSpace(value), "/"))
-	return normalized == "https://api.video.aistarslab.com/openapi"
-}
-
-func isWeijinBaseURL(value string) bool {
-	normalized := strings.ToLower(strings.TrimRight(strings.TrimSpace(value), "/"))
-	return normalized == "https://www.weijinapi.top" || normalized == "https://www.weijinapi.top/v1"
-}
-
-func huiQuYunProtocolForModel(name string, endpointTypes []string) model.ChannelInterfaceType {
-	for _, endpointType := range endpointTypes {
-		switch strings.ToLower(strings.TrimSpace(endpointType)) {
-		case "openai-chat", "chat-completion", "chat":
-			return model.ChannelInterfaceChatCompletion
-		case "openai-response", "responses":
-			return model.ChannelInterfaceOpenAIResponse
-		case "openai-image", "image":
-			return model.ChannelInterfaceOpenAIImage
-		case "openai-video", "video":
-			return model.ChannelInterfaceHuiQuYunVideo
-		case "openai-audio", "audio":
-			return model.ChannelInterfaceOpenAIAudio
-		}
-	}
-	normalized := strings.ToLower(strings.TrimSpace(name))
-	if huiQuYunModelContainsAny(normalized, "tts", "speech", "voice", "audio", "music", "sound") {
-		return model.ChannelInterfaceOpenAIAudio
-	}
-	if huiQuYunModelContainsAny(normalized, "mx933", "mj-sd", "seedance", "grok-video", "sora", "veo", "kling", "hailuo", "vidu", "wan-video", "jimeng-video", "doubao-video", "minimax-video", "video") {
-		return model.ChannelInterfaceHuiQuYunVideo
-	}
-	if huiQuYunModelContainsAny(normalized, "gpt-image", "nano-banana", "nanobanana", "seedream", "image", "dall-e", "dalle", "imagen", "flux", "sdxl", "stable-diffusion", "midjourney", "ideogram", "recraft") {
-		return model.ChannelInterfaceOpenAIImage
-	}
-	return model.ChannelInterfaceChatCompletion
-}
-
-func huiQuYunModelContainsAny(value string, markers ...string) bool {
-	for _, marker := range markers {
-		if strings.Contains(value, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func isHuiQuYunMJSD933Model(modelName string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(modelName))
-	return strings.Contains(normalized, "mj-sd2.0-933-720p")
-}
-
-func isHuiQuYunMX933VideoModel(modelName string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(modelName))
-	return strings.HasPrefix(normalized, "sd2-mx933-720-") || strings.HasPrefix(normalized, "sd2-mx933-720-fast-")
-}
-
-func isHuiQuYun933MultipartVideoModel(modelName string) bool {
-	return isHuiQuYunMX933VideoModel(modelName) || isHuiQuYunMJSD933Model(modelName)
-}
-
-func huiQuYunFixedVideoDuration(modelName string) int {
-	normalized := strings.ToLower(strings.TrimSpace(modelName))
-	idx := strings.LastIndex(normalized, "-")
-	if idx < 0 || idx == len(normalized)-1 || !strings.HasSuffix(normalized, "s") {
-		return 0
-	}
-	value, err := strconv.Atoi(strings.TrimSuffix(normalized[idx+1:], "s"))
-	if err != nil || value <= 0 {
-		return 0
-	}
-	return value
+	return uniqueNonEmpty(models), nil
 }
 
 func (s *Service) SaveAdminChannelModel(actor *model.User, channelID string, id string, req ChannelModelRequest) (*model.ChannelModel, error) {
@@ -880,13 +671,25 @@ func (s *Service) TestAdminChannelModel(ctx context.Context, actor *model.User, 
 	}
 	imageSize, imageQuality := "", ""
 	var imageProfile *ImageCapabilityConfig
-	if capability == "image" {
+	videoRatio, videoResolution := videoTestDefaults(nil)
+	var videoProfile *VideoCapabilityConfig
+	switch capability {
+	case "image":
 		profile, normalizeErr := NormalizeModelCapabilityConfigForModel(capability, string(protocol), providerModelKey, req.CapabilityConfig)
 		if normalizeErr != nil {
 			return nil, normalizeErr
 		}
 		imageProfile = profile.Image
 		imageSize, imageQuality = imageTestDefaults(imageProfile)
+	case "video":
+		// 视频测试必须带上模型能力画像：声明式协议只按画像里的枚举回填分辨率名（如 480 -> 480p），
+		// 没有画像时会把裸数字发给上游，火山方舟等供应商会直接拒绝。
+		profile, normalizeErr := NormalizeModelCapabilityConfigForModel(capability, string(protocol), providerModelKey, req.CapabilityConfig)
+		if normalizeErr != nil {
+			return nil, normalizeErr
+		}
+		videoProfile = profile.Video
+		videoRatio, videoResolution = videoTestDefaults(videoProfile)
 	}
 	input := canvasGenerationInput{
 		Mode:   capability,
@@ -902,11 +705,11 @@ func (s *Service) TestAdminChannelModel(ctx context.Context, actor *model.User, 
 			Headers:            headers,
 			Model:              providerModelKey,
 			ChannelModelKey:    modelKey,
-			Size:               map[string]string{"image": imageSize, "video": "16:9"}[capability],
+			Size:               map[string]string{"image": imageSize, "video": videoRatio}[capability],
 			Quality:            imageQuality,
 			Count:              "1",
 			VideoSeconds:       videoSeconds,
-			VQuality:           "720",
+			VQuality:           videoResolution,
 			VideoGenerateAudio: "false",
 			VideoWatermark:     "false",
 			AudioVoice:         "alloy",
@@ -917,6 +720,9 @@ func (s *Service) TestAdminChannelModel(ctx context.Context, actor *model.User, 
 	}
 	if capability == "image" {
 		input.ImageCapability = imageProfile
+	}
+	if capability == "video" {
+		input.VideoCapability = videoProfile
 	}
 
 	// 测试复用真实生成协议、运行时并发和熔断策略，但不创建用户任务或计费订单。
@@ -950,6 +756,28 @@ func (s *Service) TestAdminChannelModel(ctx context.Context, actor *model.User, 
 }
 
 // 模型测试必须使用当前模型声明的默认参数，避免固定分辨率 SKU 被通用 1K 测试值误伤。
+// videoTestDefaults 从模型能力画像取测试用的比例和分辨率；画像缺失时回退到最通用的 16:9 / 720。
+func videoTestDefaults(profile *VideoCapabilityConfig) (string, string) {
+	if profile == nil {
+		return "16:9", "720"
+	}
+	ratio := strings.TrimSpace(profile.DefaultRatio)
+	if ratio == "" && len(profile.Ratios) > 0 {
+		ratio = strings.TrimSpace(profile.Ratios[0])
+	}
+	if ratio == "" {
+		ratio = "16:9"
+	}
+	resolution := strings.TrimSpace(profile.DefaultResolution)
+	if resolution == "" && len(profile.Resolutions) > 0 {
+		resolution = strings.TrimSpace(profile.Resolutions[0])
+	}
+	if resolution == "" {
+		resolution = "720"
+	}
+	return ratio, resolution
+}
+
 func imageTestDefaults(profile *ImageCapabilityConfig) (string, string) {
 	if profile == nil {
 		return "1024x1024", "auto"
@@ -987,20 +815,11 @@ func normalizeChannelModelContractWithRegistry(registry *protocol.Registry, chan
 		return "", "", "", "", BadAuthRequest("请选择模型能力")
 	}
 	adapter, ok := registry.Resolve(strings.TrimSpace(req.Protocol))
-	requestedProtocol := model.ChannelInterfaceType(strings.TrimSpace(req.Protocol))
-	if !ok && !isHostBackedChannelProtocol(requestedProtocol) {
+	if !ok || !adapter.Metadata().Enabled || adapter.Metadata().UnavailableReason != "" {
 		return "", "", "", "", BadAuthRequest("请选择有效的模型请求协议")
 	}
-	protocol := requestedProtocol
-	expectedCapability := capabilityForProtocolValue(protocol)
-	if ok {
-		if !adapter.Metadata().Enabled || adapter.Metadata().UnavailableReason != "" {
-			return "", "", "", "", BadAuthRequest("请选择有效的模型请求协议")
-		}
-		protocol = model.ChannelInterfaceType(adapter.Metadata().ID)
-		expectedCapability = protocolCapabilityFromMetadata(adapter.Metadata())
-	}
-	if expectedCapability != "" && expectedCapability != capability {
+	protocol := model.ChannelInterfaceType(adapter.Metadata().ID)
+	if expected := protocolCapabilityFromMetadata(adapter.Metadata()); expected != "" && expected != capability {
 		return "", "", "", "", BadAuthRequest("模型能力与请求协议不匹配")
 	}
 	if (protocol == model.ChannelInterfaceVolcengineJiMengImage || protocol == model.ChannelInterfaceVolcengineJiMengVideo) && (strings.TrimSpace(channel.APIKey) == "" || strings.TrimSpace(channel.SecretKey) == "") {
@@ -1009,57 +828,77 @@ func normalizeChannelModelContractWithRegistry(registry *protocol.Registry, chan
 	return modelKey, providerModelKey, capability, protocol, nil
 }
 
-func isHostBackedChannelProtocol(protocol model.ChannelInterfaceType) bool {
-	switch protocol {
-	case model.ChannelInterfaceGlobalAiOpcImage, model.ChannelInterfaceGlobalAiOpcVideo, model.ChannelInterfaceHuiQuYunVideo, model.ChannelInterfaceAIStarsLabImage, model.ChannelInterfaceAIStarsLabVideo, model.ChannelInterfaceWeijinVideo:
-		return true
-	default:
-		return false
-	}
+func (s *Service) DeleteAdminChannelModel(actor *model.User, channelID string, id string) error {
+	_, err := s.DeleteAdminChannelModels(actor, channelID, []string{id})
+	return err
 }
 
-func (s *Service) DeleteAdminChannelModel(actor *model.User, channelID string, id string) error {
+// DeleteAdminChannelModels validates the complete selection before asking the
+// repository to remove it atomically. This deliberately rejects partial success:
+// administrators can safely correct an in-use model and retry the same selection.
+func (s *Service) DeleteAdminChannelModels(actor *model.User, channelID string, ids []string) (int64, error) {
 	if err := s.RequireAdmin(actor); err != nil {
-		return err
+		return 0, err
 	}
 	if _, err := s.repo.AdminSystemChannel(channelID); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return BadAuthRequest("系统渠道不存在或已删除")
+			return 0, BadAuthRequest("系统渠道不存在或已删除")
 		}
-		return err
+		return 0, err
 	}
-	if _, err := s.repo.ChannelModelByID(channelID, id); err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return BadAuthRequest("渠道模型不存在或已删除")
-		}
-		return err
-	}
-	items, err := s.repo.ChannelModels(channelID, false)
+	modelIDs, err := normalizeAdminChannelModelDeleteIDs(ids)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	names := make([]string, 0, len(items))
+	items, err := s.repo.ChannelModels(channelID, true)
+	if err != nil {
+		return 0, err
+	}
+	selected := make(map[string]bool, len(modelIDs))
+	for _, id := range modelIDs {
+		selected[id] = true
+	}
+	found := 0
 	for _, item := range items {
-		if item.ID != id {
-			names = append(names, item.ModelKey)
+		if selected[item.ID] {
+			found++
 		}
 	}
-	encoded, err := json.Marshal(names)
-	if err != nil {
-		return err
+	if found != len(modelIDs) {
+		return 0, BadAuthRequest("所选渠道模型中存在已删除或不属于当前渠道的记录，请刷新后重试")
 	}
 	// 删除模型与渠道的兼容模型清单必须同事务提交，避免接口报错但列表已部分变化。
-	err = s.repo.DeleteChannelModel(channelID, id, string(encoded), time.Now())
+	deleted, err := s.repo.DeleteChannelModels(channelID, modelIDs, time.Now())
 	if errors.Is(err, repository.ErrChannelModelInUse) {
-		return BadAuthRequest("渠道模型仍被前台模型供应线路或进行中任务使用，请先移除线路并等待任务结束")
+		return 0, BadAuthRequest("所选渠道模型中有模型仍被前台模型供应线路或进行中任务使用，本次未删除任何模型")
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return BadAuthRequest("渠道模型不存在或已删除")
+		return 0, BadAuthRequest("所选渠道模型中存在已删除或不属于当前渠道的记录，请刷新后重试")
 	}
 	if err == nil {
 		s.invalidateRouteCatalog()
 	}
-	return err
+	return deleted, err
+}
+
+func normalizeAdminChannelModelDeleteIDs(values []string) ([]string, error) {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		id := strings.TrimSpace(value)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		result = append(result, id)
+	}
+	if len(result) == 0 {
+		return nil, BadAuthRequest("请至少选择一个要删除的渠道模型")
+	}
+	if len(result) > maxAdminChannelModelBatchDeleteCount {
+		return nil, BadAuthRequest("单次最多删除 100 个渠道模型")
+	}
+	return result, nil
 }
 
 func (s *Service) syncInitialChannelModels(channel *model.ModelChannel, names []string) error {
@@ -1138,20 +977,7 @@ func (s *Service) ensureChannelModels(channelID string, includeDisabled bool) ([
 }
 
 func (s *Service) syncChannelModelNames(channel *model.ModelChannel) error {
-	items, err := s.repo.ChannelModels(channel.ID, false)
-	if err != nil {
-		return err
-	}
-	names := make([]string, 0, len(items))
-	for _, item := range items {
-		names = append(names, item.ModelKey)
-	}
-	encoded, err := json.Marshal(names)
-	if err != nil {
-		return err
-	}
-	channel.ModelsJSON = string(encoded)
-	return s.repo.Save(channel)
+	return s.repo.SyncChannelModelNames(channel.ID, time.Now())
 }
 
 func (s *Service) capabilityForProtocol(protocol model.ChannelInterfaceType) string {

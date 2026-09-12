@@ -3,8 +3,6 @@ import type { ComponentProps } from "react";
 import { isVideoProvider, MediaPlayer, MediaProvider, type MediaPlayerInstance, type VideoMimeType } from "@vidstack/react";
 import { DefaultVideoLayout, defaultLayoutIcons, type DefaultLayoutTranslations } from "@vidstack/react/player/layouts/default";
 import { detectVideoAudioTrack, detectVideoAudioTrackFromUrl } from "@/lib/video-poster";
-import { isResourceKnownMissing, resourceIdFromStorageKey, resourceIdFromUrl, resourceProxyFileUrl, resourceStorageKey } from "@/services/api/resources";
-import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
 import "@vidstack/react/player/styles/base.css";
 import "@vidstack/react/player/styles/default/theme.css";
 import "@vidstack/react/player/styles/default/layouts/video.css";
@@ -24,9 +22,8 @@ type VideoPlayerProps = {
     compactControls?: boolean;
     /** Explicitly marks videos known to have an audio track (or not). */
     hasAudio?: boolean;
-    /** Resource storage key used when the original provider URL cannot play. */
-    fallbackStorageKey?: string;
     onCanPlay?: MediaPlayerProps["onCanPlay"];
+    onPlay?: MediaPlayerProps["onPlay"];
 };
 
 const zhCNTranslations = {
@@ -71,38 +68,17 @@ const zhCNTranslations = {
     Volume: "音量",
 } satisfies Partial<DefaultLayoutTranslations>;
 
-function videoMimeType(value: string | undefined, source: string): VideoMimeType {
-    const declared = String(value || "")
-        .split(";", 1)[0]
-        .trim()
-        .toLowerCase();
-    if (declared.startsWith("video/")) return declared as VideoMimeType;
-    const path = source.split(/[?#]/, 1)[0].toLowerCase();
-    if (path.endsWith(".webm")) return "video/webm";
-    if (path.endsWith(".mov") || path.endsWith(".qt")) return "video/quicktime" as VideoMimeType;
-    if (path.endsWith(".mkv")) return "video/x-matroska" as VideoMimeType;
-    if (path.endsWith(".avi")) return "video/x-msvideo" as VideoMimeType;
-    if (path.endsWith(".ogv") || path.endsWith(".ogg")) return "video/ogg";
-    if (path.endsWith(".m4v")) return "video/x-m4v" as VideoMimeType;
-    if (path.endsWith(".mpeg") || path.endsWith(".mpg")) return "video/mpeg";
-    return "video/mp4";
-}
+const supportedVideoMimeTypes = new Set<VideoMimeType>(["video/mp4", "video/webm", "video/3gp", "video/ogg", "video/avi", "video/mpeg", "video/object"]);
 
 /**
  * 统一视频播放表面，保留原生媒体 URL 契约，同时提供可访问的完整控件布局。
  * 画布节点需要隔离播放器手势，避免拖动进度条时被误判为拖动画布。
  */
-export function VideoPlayer({ src, mimeType, title = "视频", className, brandColor = "#f5f5f5", preload = "metadata", autoPlay = false, dataCanvasNoZoom = false, compactControls = false, hasAudio, fallbackStorageKey, onCanPlay }: VideoPlayerProps) {
+export function VideoPlayer({ src, mimeType, title = "视频", className, brandColor = "#f5f5f5", preload = "metadata", autoPlay = false, dataCanvasNoZoom = false, compactControls = false, hasAudio, onCanPlay, onPlay }: VideoPlayerProps) {
     const [detectedHasAudio, setDetectedHasAudio] = useState<boolean | undefined>(undefined);
     const autoPlayAttemptedRef = useRef(false);
     const audioProbeGenerationRef = useRef(0);
     const mediaPlayerRef = useRef<MediaPlayerInstance>(null);
-    const resourceId = resourceIdFromStorageKey(fallbackStorageKey) || resourceIdFromUrl(src);
-    const proxyFallbackUrl = resourceId ? resourceProxyFileUrl(resourceId) : "";
-    const [activeSrc, setActiveSrc] = useState(src);
-    const fallbackAttemptedRef = useRef(false);
-    const cacheFallbackAttemptedRef = useRef(false);
-    const sourceVersionRef = useRef(0);
     // Match LibTV's conservative rule: only explicit/container-confirmed
     // silence mutes the player. Runtime probes are used to confirm audio and
     // correct stale persisted `false`, but a negative/unknown probe never
@@ -131,11 +107,7 @@ export function VideoPlayer({ src, mimeType, title = "视频", className, brandC
         setDetectedHasAudio(undefined);
         autoPlayAttemptedRef.current = false;
         audioProbeGenerationRef.current += 1;
-        fallbackAttemptedRef.current = false;
-        cacheFallbackAttemptedRef.current = false;
-        sourceVersionRef.current += 1;
-        setActiveSrc(src);
-    }, [fallbackStorageKey, src]);
+    }, [src]);
 
     useEffect(() => {
         const player = mediaPlayerRef.current?.el;
@@ -150,7 +122,6 @@ export function VideoPlayer({ src, mimeType, title = "视频", className, brandC
         }
         const volumeSlider = player.querySelector<HTMLElement>(".vds-volume-slider");
         if (volumeSlider) {
-            (volumeSlider as HTMLElement & { disabled?: boolean }).disabled = noAudio;
             volumeSlider.setAttribute("aria-disabled", String(noAudio));
         }
     }, [noAudio]);
@@ -181,8 +152,8 @@ export function VideoPlayer({ src, mimeType, title = "视频", className, brandC
         }
         if (dataCanvasNoZoom) event.stopPropagation();
     };
-    const type = videoMimeType(mimeType, src);
-    const mediaSource = useMemo(() => ({ src: activeSrc, type }), [activeSrc, type]);
+    const type = mimeType && supportedVideoMimeTypes.has(mimeType as VideoMimeType) ? (mimeType as VideoMimeType) : "video/mp4";
+    const mediaSource = useMemo(() => ({ src, type }), [src, type]);
     const handleCanPlay = (detail: Parameters<NonNullable<MediaPlayerProps["onCanPlay"]>>[0], event: Parameters<NonNullable<MediaPlayerProps["onCanPlay"]>>[1]) => {
         const provider = event.target.provider;
         const media = isVideoProvider(provider) ? provider.media : undefined;
@@ -197,25 +168,6 @@ export function VideoPlayer({ src, mimeType, title = "视频", className, brandC
             void event.target.play().catch(() => undefined);
         }
         onCanPlay?.(detail, event);
-    };
-
-    const handleError: MediaPlayerProps["onError"] = (event) => {
-        // Provider URLs can be expired or blocked by CORS. Retry through the
-        // authenticated resource endpoint, then use the cached blob as a final fallback.
-        if (resourceId && isResourceKnownMissing(fallbackStorageKey || resourceStorageKey(resourceId))) return event;
-        if (proxyFallbackUrl && activeSrc !== proxyFallbackUrl && !fallbackAttemptedRef.current) {
-            fallbackAttemptedRef.current = true;
-            setActiveSrc(proxyFallbackUrl);
-            return event;
-        }
-        if (resourceId && !cacheFallbackAttemptedRef.current) {
-            cacheFallbackAttemptedRef.current = true;
-            const version = sourceVersionRef.current;
-            void cacheResourceObjectUrl(fallbackStorageKey || resourceStorageKey(resourceId)).then((cachedUrl) => {
-                if (version === sourceVersionRef.current && cachedUrl) setActiveSrc(cachedUrl);
-            });
-        }
-        return event;
     };
 
     return (
@@ -236,7 +188,7 @@ export function VideoPlayer({ src, mimeType, title = "视频", className, brandC
             data-no-audio={noAudio ? "true" : undefined}
             style={{ "--video-brand": brandColor }}
             onCanPlay={handleCanPlay}
-            onError={handleError}
+            onPlay={onPlay}
             onLoadedMetadata={(event) => {
                 const provider = event.target.provider;
                 const media = isVideoProvider(provider) ? provider.media : undefined;

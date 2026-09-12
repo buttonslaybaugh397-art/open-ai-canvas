@@ -16,6 +16,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"log"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -39,16 +40,12 @@ import (
 
 const providerResourceURLTTL = 4 * time.Hour
 const directResourceURLTTL = 5 * time.Minute
-const resourceStorageRetryAttempts = 3
-const resourceStorageRetryDelay = 200 * time.Millisecond
-const resourceRecoveryInitialDelay = 15 * time.Second
 
 var errInvalidGeneratedDataURL = errors.New("生成内容 data URL 无效")
 
 type ResourceStream struct {
 	Resource      *model.Resource
 	Body          io.ReadCloser
-	Local         bool
 	StatusCode    int
 	ContentLength int64
 	ContentRange  string
@@ -91,30 +88,6 @@ func (s *Service) DirectResourceURL(userID string, id string) (string, error) {
 	return s.directResourceURL(resource, time.Now().Add(directResourceURLTTL))
 }
 
-func (s *Service) DirectResourceDownloadURL(userID string, id string, fileName string) (string, error) {
-	resource, err := s.repo.ResourceForUser(userID, id)
-	if err != nil {
-		return "", err
-	}
-	if resource.Status != model.ResourceStatusReady {
-		return "", BadAuthRequest("资源尚未上传完成")
-	}
-	if resource.Provider == "local" || (s.resourceCloudBackupAvailable(resource) && resourceNeedsCloudRecovery(resource)) {
-		return "", errors.New("云端直连暂不可用")
-	}
-	setting, err := s.ossSettingForResource(resource.UserID, resource)
-	if err != nil {
-		return "", err
-	}
-	setting.Provider = firstNonEmpty(resource.Provider, setting.Provider)
-	setting.Endpoint = firstNonEmpty(resource.Endpoint, setting.Endpoint)
-	setting.Bucket = firstNonEmpty(resource.Bucket, setting.Bucket)
-	if setting.Provider == s3Provider && !publicHTTPSStorageEndpoint(setting.Endpoint) {
-		return "", errors.New("当前 S3 存储不能提供浏览器直连下载")
-	}
-	return signedOSSObjectDownloadURL(setting, resource.ObjectKey, time.Now().Add(directResourceURLTTL), SafeResourceDownloadFileName(fileName))
-}
-
 func (s *Service) directResourceURL(resource *model.Resource, expiresAt time.Time) (string, error) {
 	if resource == nil {
 		return "", errors.New("资源不存在")
@@ -142,18 +115,12 @@ func (s *Service) directResourceURL(resource *model.Resource, expiresAt time.Tim
 func (s *Service) PrepareResourceDelivery(userID string, id string, options ResourceDeliveryOptions) (*ResourceDelivery, error) {
 	resource, err := s.repo.ResourceForUser(userID, id)
 	if err != nil {
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, err
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, NotFound("资源不存在")
 		}
-		resource, err = s.repo.TeamSharedResourceForUser(userID, id)
-		if err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil, NotFound("资源不存在")
-			}
-			return nil, err
-		}
+		return nil, err
 	}
-	return s.prepareResourceDelivery(resource.UserID, resource, options)
+	return s.prepareResourceDelivery(userID, resource, options)
 }
 
 func (s *Service) prepareResourceDelivery(userID string, resource *model.Resource, options ResourceDeliveryOptions) (*ResourceDelivery, error) {
@@ -302,6 +269,17 @@ func validatePublicResourceBaseURL(raw string) (*url.URL, error) {
 }
 
 func (s *Service) UploadResource(userID string, header *multipart.FileHeader, kind string, width int, height int, durationMs int64, uploadIdentity ...string) (*model.Resource, error) {
+	return s.uploadResource(userID, header, kind, width, height, durationMs, false, uploadIdentity...)
+}
+
+// uploadLocalResource keeps small system-owned assets on the server even when
+// the uploader or platform has enabled object storage. The resource still uses
+// the normal database record and persistent data directory lifecycle.
+func (s *Service) uploadLocalResource(userID string, header *multipart.FileHeader, kind string, width int, height int, durationMs int64, uploadIdentity ...string) (*model.Resource, error) {
+	return s.uploadResource(userID, header, kind, width, height, durationMs, true, uploadIdentity...)
+}
+
+func (s *Service) uploadResource(userID string, header *multipart.FileHeader, kind string, width int, height int, durationMs int64, forceLocal bool, uploadIdentity ...string) (*model.Resource, error) {
 	if header == nil {
 		return nil, BadAuthRequest("请选择要上传的文件")
 	}
@@ -325,13 +303,13 @@ func (s *Service) UploadResource(userID string, header *multipart.FileHeader, ki
 	mimeType := strings.TrimSpace(header.Header.Get("Content-Type"))
 	mimeType = detectUploadedMimeType(file, header.Filename, mimeType)
 	if existing != nil {
-		return s.retryStoredResource(userID, existing, kind, header.Filename, mimeType, header.Size, file)
+		return s.retryStoredResource(userID, existing, kind, mimeType, header.Size, file)
 	}
 	day, err := s.reserveUserUploadQuota(userID, header.Size)
 	if err != nil {
 		return nil, err
 	}
-	resource, stored, err := s.storeResource(userID, kind, header.Filename, mimeType, header.Size, width, height, durationMs, file, uploadKey)
+	resource, stored, err := s.storeResource(userID, kind, header.Filename, mimeType, header.Size, width, height, durationMs, file, uploadKey, forceLocal)
 	if err != nil {
 		s.releaseUserUploadQuota(userID, day, header.Size)
 	} else if stored {
@@ -342,7 +320,44 @@ func (s *Service) UploadResource(userID string, header *multipart.FileHeader, ki
 	return resource, err
 }
 
-func detectUploadedMimeType(file multipart.File, fileName string, declared string) string {
+// UploadResourceFile 接收已完整落盘的本地文件（分片上传合并后调用）。
+// 它与 UploadResource 共享资源幂等、媒体探测、配额和持久化语义，唯一差异是分片会话已在 handler 校验单文件上限，
+// 因而此处不再重复该上限检查；uploadIdentity 用于跨请求重试时复用同一逻辑资源，避免重复对象。
+func (s *Service) UploadResourceFile(userID string, fileName string, size int64, kind string, width int, height int, durationMs int64, file io.ReadSeeker, uploadIdentity ...string) (*model.Resource, error) {
+	if file == nil || size <= 0 {
+		return nil, BadAuthRequest("请选择要上传的文件")
+	}
+	uploadKey := normalizedResourceUploadKey(uploadIdentity)
+	existing, err := s.resourceForUploadKey(userID, uploadKey)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil && existing.Status == model.ResourceStatusReady {
+		return existing, nil
+	}
+	if existing != nil && existing.Status == model.ResourceStatusPending {
+		return nil, resourceUploadInProgress()
+	}
+	mimeType := detectUploadedMimeType(file, fileName, "")
+	if existing != nil {
+		return s.retryStoredResource(userID, existing, kind, mimeType, size, file)
+	}
+	day, err := s.reserveChunkedUploadQuota(userID, size)
+	if err != nil {
+		return nil, err
+	}
+	resource, stored, err := s.storeResource(userID, kind, fileName, mimeType, size, width, height, durationMs, file, uploadKey, false)
+	if err != nil {
+		s.releaseUserUploadQuota(userID, day, size)
+	} else if stored {
+		s.commitUserUploadQuota(userID, size)
+	} else {
+		s.releaseUserUploadQuota(userID, day, size)
+	}
+	return resource, err
+}
+
+func detectUploadedMimeType(file io.ReadSeeker, fileName string, declared string) string {
 	declared = strings.TrimSpace(strings.Split(declared, ";")[0])
 	if declared != "" && declared != "application/octet-stream" {
 		return declared
@@ -388,13 +403,13 @@ func (s *Service) ImportResourceURL(userID string, rawURL string, kind string, w
 	}
 	size := int64(len(payload.data))
 	if existing != nil {
-		return s.retryStoredResource(userID, existing, kind, payload.fileName, payload.mimeType, size, bytes.NewReader(payload.data))
+		return s.retryStoredResource(userID, existing, kind, payload.mimeType, size, bytes.NewReader(payload.data))
 	}
 	day, err := s.reserveUserUploadQuota(userID, size)
 	if err != nil {
 		return nil, err
 	}
-	resource, stored, err := s.storeResource(userID, kind, payload.fileName, payload.mimeType, size, width, height, durationMs, bytes.NewReader(payload.data), uploadKey)
+	resource, stored, err := s.storeResource(userID, kind, payload.fileName, payload.mimeType, size, width, height, durationMs, bytes.NewReader(payload.data), uploadKey, false)
 	if err != nil {
 		s.releaseUserUploadQuota(userID, day, size)
 	} else if stored {
@@ -442,15 +457,9 @@ func (s *Service) OpenResource(userID string, id string) (*model.Resource, io.Re
 func (s *Service) OpenResourceRange(userID string, id string, rangeHeader string) (*ResourceStream, error) {
 	resource, err := s.repo.ResourceForUser(userID, id)
 	if err != nil {
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, err
-		}
-		resource, err = s.repo.TeamSharedResourceForUser(userID, id)
-		if err != nil {
-			return nil, err
-		}
+		return nil, err
 	}
-	return s.openResourceRange(resource.UserID, resource, rangeHeader)
+	return s.openResourceRange(userID, resource, rangeHeader)
 }
 
 func (s *Service) OpenPublicResourceRange(id string, expires string, signature string, rangeHeader string) (*ResourceStream, error) {
@@ -458,7 +467,7 @@ func (s *Service) OpenPublicResourceRange(id string, expires string, signature s
 	if err != nil {
 		return nil, Forbidden("匿名下载链接无效")
 	}
-	if resource.Provider != "local" && !s.resourceCloudBackupAvailable(resource) {
+	if resource.Provider != "local" && resource.Provider != s3Provider {
 		return nil, Forbidden("匿名下载链接无效")
 	}
 	if err := s.verifyPublicResourceSignature(resource.ID, expires, signature); err != nil {
@@ -472,43 +481,30 @@ func (s *Service) openResourceRange(userID string, resource *model.Resource, ran
 		return nil, BadAuthRequest("资源尚未上传完成")
 	}
 	if resource.Provider == "local" {
-		return s.openLocalResourceStream(resource, resource.ObjectKey)
-	}
-	if resourceNeedsCloudRecovery(resource) && s.resourceCloudBackupAvailable(resource) {
-		return s.openLocalResourceStream(resource, resource.LocalBackupKey)
-	}
-	rangeHeader = normalizeSingleByteRange(rangeHeader)
-	setting, settingErr := s.ossSettingForResource(userID, resource)
-	var cloudErr error
-	if settingErr == nil {
-		setting.Provider = firstNonEmpty(resource.Provider, setting.Provider)
-		setting.Endpoint = firstNonEmpty(resource.Endpoint, setting.Endpoint)
-		setting.Bucket = firstNonEmpty(resource.Bucket, setting.Bucket)
-		stream, err := getOSSObjectRangeWithRetry(setting, resource.ObjectKey, rangeHeader)
-		if err == nil {
-			return &ResourceStream{Resource: resource, Body: stream.body, StatusCode: stream.statusCode, ContentLength: stream.contentLength, ContentRange: stream.contentRange, AcceptRanges: stream.acceptRanges}, nil
+		body, err := os.Open(filepath.Join(s.dataDir, "resources", filepath.FromSlash(resource.ObjectKey)))
+		if err != nil {
+			return nil, err
 		}
-		cloudErr = err
-		if setting.CDNBaseURL != "" {
-			originSetting := setting
-			originSetting.CDNBaseURL = ""
-			stream, originErr := getOSSObjectRangeWithRetry(originSetting, resource.ObjectKey, rangeHeader)
-			if originErr == nil {
-				return &ResourceStream{Resource: resource, Body: stream.body, StatusCode: stream.statusCode, ContentLength: stream.contentLength, ContentRange: stream.contentRange, AcceptRanges: stream.acceptRanges}, nil
-			}
-			cloudErr = errors.Join(cloudErr, originErr)
-		}
-	} else {
-		cloudErr = settingErr
+		return &ResourceStream{Resource: resource, Body: body, StatusCode: http.StatusOK, ContentLength: resource.Size, AcceptRanges: "bytes"}, nil
 	}
-	if s.resourceCloudBackupAvailable(resource) {
-		_ = s.repo.MarkResourceCloudSyncPending(resource.ID, storageErrorText(cloudErr), time.Now().Add(resourceRecoveryInitialDelay))
-		return s.openLocalResourceStream(resource, resource.LocalBackupKey)
+	setting, err := s.ossSettingForResource(userID, resource)
+	if err != nil {
+		return nil, err
 	}
-	return nil, cloudErr
+	if setting.AccessKeyID == "" || setting.AccessKeySecret == "" {
+		return nil, errors.New("对象存储访问密钥不可用")
+	}
+	setting.Provider = firstNonEmpty(resource.Provider, setting.Provider)
+	setting.Endpoint = firstNonEmpty(resource.Endpoint, setting.Endpoint)
+	setting.Bucket = firstNonEmpty(resource.Bucket, setting.Bucket)
+	stream, err := getOSSObjectRange(setting, resource.ObjectKey, normalizeSingleByteRange(rangeHeader))
+	if err != nil {
+		return nil, err
+	}
+	return &ResourceStream{Resource: resource, Body: stream.body, StatusCode: stream.statusCode, ContentLength: stream.contentLength, ContentRange: stream.contentRange, AcceptRanges: stream.acceptRanges}, nil
 }
 
-func (s *Service) storeResource(userID string, kind string, fileName string, mimeType string, size int64, width int, height int, durationMs int64, body io.Reader, uploadKey *string) (*model.Resource, bool, error) {
+func (s *Service) storeResource(userID string, kind string, fileName string, mimeType string, size int64, width int, height int, durationMs int64, body io.Reader, uploadKey *string, forceLocal bool) (*model.Resource, bool, error) {
 	if existing, err := s.resourceForUploadKey(userID, uploadKey); err != nil {
 		return nil, false, err
 	} else if existing != nil {
@@ -519,9 +515,15 @@ func (s *Service) storeResource(userID string, kind string, fileName string, mim
 	}
 	now := time.Now()
 	kind = normalizeResourceKind(kind, mimeType)
-	setting, storageSettingID, useOSS, err := s.activeResourceOSSSetting(userID)
-	if err != nil {
-		return nil, false, err
+	var setting ossSettingValue
+	var storageSettingID string
+	var useOSS bool
+	var err error
+	if !forceLocal {
+		setting, storageSettingID, useOSS, err = s.activeResourceOSSSetting(userID)
+		if err != nil {
+			return nil, false, err
+		}
 	}
 	provider := "local"
 	objectKey := localObjectKey(userID, kind, fileName, mimeType, now)
@@ -534,10 +536,6 @@ func (s *Service) storeResource(userID string, kind string, fileName string, mim
 		resource.Bucket = setting.Bucket
 		resource.StorageSettingID = storageSettingID
 		resource.ObjectKey = objectKey
-		if kind != "video" {
-			resource.LocalBackupKey = localObjectKey(userID, "backup", fileName, mimeType, now)
-		}
-		resource.CloudSyncStatus = model.ResourceCloudSyncStatusPending
 	}
 	if err := s.repo.CreateResource(&resource); err != nil {
 		if existing, lookupErr := s.resourceForUploadKey(userID, uploadKey); lookupErr == nil && existing != nil {
@@ -548,7 +546,8 @@ func (s *Service) storeResource(userID string, kind string, fileName string, mim
 		}
 		return nil, false, err
 	}
-	etag, err := s.writeStoredResourceBody(&resource, setting, fileName, body)
+	var etag string
+	etag, err = s.storeResourceObject(&resource, fileName, body)
 	resource.UpdatedAt = time.Now()
 	if err != nil {
 		resource.Status = model.ResourceStatusFailed
@@ -578,61 +577,69 @@ func (s *Service) storeResource(userID string, kind string, fileName string, mim
 		return nil, true, errors.Join(err, fmt.Errorf("清理已上传资源对象失败：%w", cleanupErr))
 	}
 	s.recordActivity(userID, "resource", 1)
+	s.maybeStartPlaybackTranscode(&resource)
 	return &resource, true, nil
 }
 
-func (s *Service) writeStoredResourceBody(resource *model.Resource, setting ossSettingValue, fileName string, body io.Reader) (string, error) {
+func writeLocalResourceObject(filePath string, body io.Reader) error {
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o750); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(file, body)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
+}
+
+// storeResourceObject 写入资源物理对象。对象存储不可用（配置错误、密钥失效、网络
+// 故障、设置被删）时自动降级为本地存储并同步改写资源记录，保证上传写路径不因外部
+// 存储故障整体失败。对象存储失败后 body 会被重新读取，须支持 Seek。
+func (s *Service) storeResourceObject(resource *model.Resource, fileName string, body io.Reader) (string, error) {
+	if resource == nil {
+		return "", errors.New("资源不存在")
+	}
 	if resource.Provider == "local" {
-		return "", s.writeLocalResourceObject(resource.ObjectKey, body)
+		return "", writeLocalResourceObject(filepath.Join(s.dataDir, "resources", filepath.FromSlash(resource.ObjectKey)), body)
 	}
-	if resource.Kind == "video" {
-		stagedPath, err := stageResourceBody(s.dataDir, body)
-		if err != nil {
-			return "", err
-		}
-		defer func() {
-			_ = os.Remove(stagedPath)
-			_ = os.Remove(filepath.Dir(stagedPath))
-		}()
-		etag, cloudErr := s.putOSSObjectFromFileWithRetry(setting, resource.ObjectKey, resource.MimeType, resource.Size, stagedPath)
-		if cloudErr == nil {
-			resource.CloudSyncStatus = model.ResourceCloudSyncStatusSynced
-			resource.LocalBackupKey = ""
-			resource.CloudSyncError = ""
-			resource.CloudSyncNextAttemptAt = nil
-			return etag, nil
-		}
-		if resource.LocalBackupKey == "" {
-			resource.LocalBackupKey = localObjectKey(resource.UserID, "backup", fileName, resource.MimeType, time.Now())
-		}
-		if err := copyResourceFileToLocal(s, stagedPath, resource.LocalBackupKey); err != nil {
-			return "", err
-		}
-		resource.CloudSyncStatus = model.ResourceCloudSyncStatusPending
-		resource.CloudSyncError = storageErrorText(cloudErr)
-		resource.CloudSyncNextAttemptAt = timePtr(time.Now().Add(resourceRecoveryInitialDelay))
-		return "", nil
+	setting, settingErr := s.ossSettingForResource(resource.UserID, resource)
+	var etag string
+	var putErr error
+	if settingErr == nil {
+		etag, putErr = putOSSObject(setting, resource.ObjectKey, resource.MimeType, resource.Size, body)
 	}
-	if resource.LocalBackupKey == "" {
-		resource.LocalBackupKey = localObjectKey(resource.UserID, "backup", fileName, resource.MimeType, time.Now())
-	}
-	if err := s.writeLocalResourceObject(resource.LocalBackupKey, body); err != nil {
-		return "", err
-	}
-	etag, cloudErr := s.putOSSObjectWithRetry(setting, resource.ObjectKey, resource.MimeType, resource.Size, resource.LocalBackupKey)
-	if cloudErr == nil {
-		resource.CloudSyncStatus = model.ResourceCloudSyncStatusSynced
-		resource.CloudSyncError = ""
-		resource.CloudSyncNextAttemptAt = nil
+	if putErr == nil && settingErr == nil {
 		return etag, nil
 	}
-	resource.CloudSyncStatus = model.ResourceCloudSyncStatusPending
-	resource.CloudSyncError = storageErrorText(cloudErr)
-	resource.CloudSyncNextAttemptAt = timePtr(time.Now().Add(resourceRecoveryInitialDelay))
+	fallbackErr := putErr
+	if fallbackErr == nil {
+		fallbackErr = settingErr
+	}
+	if seeker, ok := body.(io.Seeker); ok {
+		if _, seekErr := seeker.Seek(0, io.SeekStart); seekErr != nil {
+			return "", errors.Join(fallbackErr, fmt.Errorf("降级本地存储时重置读取位置失败：%w", seekErr))
+		}
+	}
+	localKey := localObjectKey(resource.UserID, resource.Kind, fileName, resource.MimeType, time.Now())
+	resource.Provider = "local"
+	resource.ObjectKey = localKey
+	resource.Endpoint = ""
+	resource.Bucket = ""
+	resource.StorageSettingID = ""
+	resource.ETag = ""
+	if localErr := writeLocalResourceObject(filepath.Join(s.dataDir, "resources", filepath.FromSlash(localKey)), body); localErr != nil {
+		return "", errors.Join(fallbackErr, fmt.Errorf("降级本地存储失败：%w", localErr))
+	}
+	log.Printf("object storage upload degraded to local storage: resource=%s error=%v", resource.ID, fallbackErr)
 	return "", nil
 }
 
-func (s *Service) retryStoredResource(userID string, resource *model.Resource, kind string, fileName string, mimeType string, size int64, body io.Reader) (*model.Resource, error) {
+func (s *Service) retryStoredResource(userID string, resource *model.Resource, kind string, mimeType string, size int64, body io.Reader) (*model.Resource, error) {
 	if resource == nil {
 		return nil, errors.New("资源不存在")
 	}
@@ -662,187 +669,44 @@ func (s *Service) retryStoredResource(userID string, resource *model.Resource, k
 	resource.UpdatedAt = time.Now()
 	day, err := s.reserveRetryUploadQuota(userID, size)
 	if err != nil {
-		return nil, s.restoreFailedResourceUpload(resource, err, "恢复资源重试失败状态失败")
-	}
-	setting := ossSettingValue{}
-	if resource.Provider != "local" {
-		setting, err = s.ossSettingForResource(userID, resource)
+		resource.Status = model.ResourceStatusFailed
+		resource.Error = err.Error()
+		resource.UpdatedAt = time.Now()
+		if saveErr := s.repo.SaveResource(resource); saveErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("恢复资源重试失败状态失败：%w", saveErr))
+		}
+		return nil, err
 	}
 	var etag string
-	if err == nil {
-		etag, err = s.writeStoredResourceBody(resource, setting, fileName, body)
-	}
+	etag, err = s.storeResourceObject(resource, "", body)
 	resource.UpdatedAt = time.Now()
 	if err != nil {
 		s.releaseRetryUploadQuota(userID, day, size)
-		return nil, s.restoreFailedResourceUpload(resource, err, "记录资源重试失败状态失败")
+		resource.Status = model.ResourceStatusFailed
+		resource.Error = err.Error()
+		if saveErr := s.repo.SaveResource(resource); saveErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("记录资源重试失败状态失败：%w", saveErr))
+		}
+		return nil, err
 	}
 	resource.Status = model.ResourceStatusReady
 	resource.ETag = etag
 	if err := s.repo.SaveResource(resource); err != nil {
 		s.releaseRetryUploadQuota(userID, day, size)
-		return nil, s.restoreFailedResourceUpload(resource, fmt.Errorf("保存资源重试就绪状态失败：%w", err), "记录资源重试失败状态失败")
+		resource.Status = model.ResourceStatusFailed
+		resource.Error = "保存资源重试就绪状态失败"
+		if saveErr := s.repo.SaveResource(resource); saveErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("记录资源重试失败状态失败：%w", saveErr))
+		}
+		return nil, fmt.Errorf("保存资源重试就绪状态失败：%w", err)
 	}
 	s.recordActivity(userID, "resource", 1)
 	return resource, nil
 }
 
-func (s *Service) restoreFailedResourceUpload(resource *model.Resource, cause error, context string) error {
-	resource.Status = model.ResourceStatusFailed
-	resource.Error = cause.Error()
-	resource.UpdatedAt = time.Now()
-	if saveErr := s.repo.SaveResource(resource); saveErr != nil {
-		return errors.Join(cause, fmt.Errorf("%s：%w", context, saveErr))
-	}
-	return cause
-}
-
 func localObjectKey(userID string, kind string, fileName string, mimeType string, now time.Time) string {
 	ext := resourceFileExtension(fileName, mimeType, kind)
 	return path.Join("users", safeObjectSegment(userID), kind, now.Format("2006/01/02"), newID()+ext)
-}
-
-func stageResourceBody(dataDir string, body io.Reader) (string, error) {
-	stagingDir := filepath.Join(dataDir, "resource-staging")
-	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
-		return "", fmt.Errorf("创建资源临时目录失败：%w", err)
-	}
-	file, err := os.CreateTemp(stagingDir, "infinite-canvas-resource-*")
-	if err != nil {
-		return "", fmt.Errorf("创建资源临时文件失败：%w", err)
-	}
-	filePath := file.Name()
-	cleanup := func(cause error) (string, error) {
-		_ = file.Close()
-		_ = os.Remove(filePath)
-		return "", cause
-	}
-	if _, err := io.Copy(file, body); err != nil {
-		return cleanup(fmt.Errorf("写入资源临时文件失败：%w", err))
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(filePath)
-		return "", fmt.Errorf("关闭资源临时文件失败：%w", err)
-	}
-	return filePath, nil
-}
-
-func copyResourceFileToLocal(s *Service, sourcePath string, objectKey string) error {
-	file, err := os.Open(sourcePath)
-	if err != nil {
-		return fmt.Errorf("打开资源临时文件失败：%w", err)
-	}
-	defer file.Close()
-	return s.writeLocalResourceObject(objectKey, file)
-}
-
-func (s *Service) resourceLocalPath(objectKey string) (string, error) {
-	root, err := filepath.Abs(filepath.Join(s.dataDir, "resources"))
-	if err != nil {
-		return "", fmt.Errorf("解析服务器本地资源目录失败：%w", err)
-	}
-	cleanKey := strings.TrimLeft(objectKey, "/\\")
-	if strings.TrimSpace(cleanKey) == "" {
-		return "", errors.New("本地资源路径为空")
-	}
-	convertedKey := filepath.FromSlash(cleanKey)
-	if filepath.IsAbs(convertedKey) || filepath.VolumeName(convertedKey) != "" {
-		return "", errors.New("本地资源路径不允许使用绝对路径")
-	}
-	target, err := filepath.Abs(filepath.Join(root, convertedKey))
-	if err != nil {
-		return "", fmt.Errorf("解析服务器本地资源路径失败：%w", err)
-	}
-	relative, err := filepath.Rel(root, target)
-	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return "", errors.New("本地资源路径超出允许目录")
-	}
-	return target, nil
-}
-
-func (s *Service) writeLocalResourceObject(objectKey string, body io.Reader) error {
-	filePath, err := s.resourceLocalPath(objectKey)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(filePath), 0o750); err != nil {
-		return fmt.Errorf("创建服务器本地资源目录失败：%w", err)
-	}
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
-	if err != nil {
-		return fmt.Errorf("创建服务器本地资源文件失败：%w", err)
-	}
-	_, copyErr := io.Copy(file, body)
-	closeErr := file.Close()
-	if copyErr != nil {
-		return fmt.Errorf("写入服务器本地资源失败：%w", copyErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("关闭服务器本地资源文件失败：%w", closeErr)
-	}
-	return nil
-}
-
-func (s *Service) openLocalResourceStream(resource *model.Resource, objectKey string) (*ResourceStream, error) {
-	body, err := s.openVerifiedLocalResource(objectKey)
-	if err != nil {
-		return nil, err
-	}
-	info, err := body.Stat()
-	if err != nil {
-		_ = body.Close()
-		return nil, err
-	}
-	return &ResourceStream{Resource: resource, Body: body, Local: true, StatusCode: http.StatusOK, ContentLength: info.Size(), AcceptRanges: "bytes"}, nil
-}
-
-func (s *Service) openVerifiedLocalResource(objectKey string) (*os.File, error) {
-	filePath, err := s.resourceLocalPath(objectKey)
-	if err != nil {
-		return nil, err
-	}
-	body, err := os.Open(filePath)
-	if err != nil {
-		return nil, err
-	}
-	info, err := body.Stat()
-	if err != nil || info.IsDir() {
-		_ = body.Close()
-		if err != nil {
-			return nil, err
-		}
-		return nil, errors.New("本地资源路径指向目录")
-	}
-	return body, nil
-}
-
-func (s *Service) resourceCloudBackupAvailable(resource *model.Resource) bool {
-	if resource == nil || resource.Provider == "local" || strings.TrimSpace(resource.LocalBackupKey) == "" {
-		return false
-	}
-	body, err := s.openVerifiedLocalResource(resource.LocalBackupKey)
-	if err != nil {
-		return false
-	}
-	_ = body.Close()
-	return true
-}
-
-func resourceNeedsCloudRecovery(resource *model.Resource) bool {
-	return resource != nil && resource.CloudSyncStatus != model.ResourceCloudSyncStatusSynced
-}
-
-func timePtr(value time.Time) *time.Time { return &value }
-
-func storageErrorText(err error) string {
-	if err == nil {
-		return "对象存储操作失败"
-	}
-	message := strings.TrimSpace(err.Error())
-	if len(message) > 1000 {
-		message = message[:1000] + "..."
-	}
-	return message
 }
 
 func (s *Service) persistGeneratedMediaResult(userID string, result map[string]interface{}) (map[string]interface{}, error) {
@@ -906,7 +770,7 @@ func (s *Service) persistGeneratedMediaValueMode(userID string, value interface{
 						return nil, err
 					}
 				}
-				resource, _, err := s.storeResource(userID, kind, "generated."+extensionFromMimeType(mimeType), mimeType, int64(len(data)), width, height, int64(intValue(item["durationMs"])), bytes.NewReader(data), nil)
+				resource, _, err := s.storeResource(userID, kind, "generated."+extensionFromMimeType(mimeType), mimeType, int64(len(data)), width, height, int64(intValue(item["durationMs"])), bytes.NewReader(data), nil, false)
 				if err != nil {
 					if enforceQuota {
 						s.releaseUserUploadQuota(userID, quotaDay, int64(len(data)))
@@ -916,7 +780,7 @@ func (s *Service) persistGeneratedMediaValueMode(userID string, value interface{
 				if enforceQuota {
 					s.commitUserUploadQuota(userID, int64(len(data)))
 				}
-				resourceURL := "/api/resources/" + resource.ID + "/file"
+				resourceURL := resourceFileURL(resource.ID)
 				for _, key := range []string{"dataUrl", "content", "url", "coverUrl"} {
 					if text, ok := item[key].(string); ok && (text == raw || strings.HasPrefix(text, "blob:")) {
 						item[key] = resourceURL
@@ -1223,9 +1087,6 @@ func ossSettingForProvider(setting ossSettingValue, provider string) (ossSetting
 	if provider == "" || provider == setting.Provider {
 		return setting, nil
 	}
-	if archived, ok := archivedOSSProviderSetting(setting, provider); ok {
-		return ossSettingValueFromProviderSetting(provider, archived), nil
-	}
 	credentials, ok := setting.ArchivedCredentials[provider]
 	if !ok || credentials.AccessKeyID == "" || credentials.AccessKeySecret == "" {
 		return ossSettingValue{}, errors.New("历史对象存储访问密钥不可用")
@@ -1289,46 +1150,6 @@ func putOSSObject(setting ossSettingValue, objectKey string, mimeType string, si
 	return putAliyunOSSObject(setting, objectKey, mimeType, size, body)
 }
 
-func (s *Service) putOSSObjectWithRetry(setting ossSettingValue, objectKey string, mimeType string, size int64, localBackupKey string) (string, error) {
-	var lastErr error
-	for attempt := 0; attempt < resourceStorageRetryAttempts; attempt++ {
-		body, err := s.openVerifiedLocalResource(localBackupKey)
-		if err != nil {
-			return "", fmt.Errorf("打开本地灾备副本失败：%w", err)
-		}
-		etag, putErr := putOSSObject(setting, objectKey, mimeType, size, body)
-		_ = body.Close()
-		if putErr == nil {
-			return etag, nil
-		}
-		lastErr = putErr
-		if attempt+1 < resourceStorageRetryAttempts {
-			time.Sleep(resourceStorageRetryDelay * time.Duration(attempt+1))
-		}
-	}
-	return "", lastErr
-}
-
-func (s *Service) putOSSObjectFromFileWithRetry(setting ossSettingValue, objectKey string, mimeType string, size int64, filePath string) (string, error) {
-	var lastErr error
-	for attempt := 0; attempt < resourceStorageRetryAttempts; attempt++ {
-		file, err := os.Open(filePath)
-		if err != nil {
-			return "", fmt.Errorf("打开资源临时文件失败：%w", err)
-		}
-		etag, putErr := putOSSObject(setting, objectKey, mimeType, size, file)
-		_ = file.Close()
-		if putErr == nil {
-			return etag, nil
-		}
-		lastErr = putErr
-		if attempt+1 < resourceStorageRetryAttempts {
-			time.Sleep(resourceStorageRetryDelay * time.Duration(attempt+1))
-		}
-	}
-	return "", lastErr
-}
-
 // 阿里云 OSS 继续沿用原有 V1 签名和请求路径，避免已有部署行为发生变化。
 func putAliyunOSSObject(setting ossSettingValue, objectKey string, mimeType string, size int64, body io.Reader) (string, error) {
 	if mimeType == "" {
@@ -1376,21 +1197,6 @@ func getOSSObjectRange(setting ossSettingValue, objectKey string, rangeHeader st
 		return getQiniuObjectRange(setting, objectKey, rangeHeader)
 	}
 	return getAliyunOSSObjectRange(setting, objectKey, rangeHeader)
-}
-
-func getOSSObjectRangeWithRetry(setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
-	var lastErr error
-	for attempt := 0; attempt < resourceStorageRetryAttempts; attempt++ {
-		stream, err := getOSSObjectRange(setting, objectKey, rangeHeader)
-		if err == nil {
-			return stream, nil
-		}
-		lastErr = err
-		if attempt+1 < resourceStorageRetryAttempts {
-			time.Sleep(resourceStorageRetryDelay * time.Duration(attempt+1))
-		}
-	}
-	return nil, lastErr
 }
 
 func getAliyunOSSObjectRange(setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
@@ -1451,20 +1257,6 @@ func signedOSSObjectURL(setting ossSettingValue, objectKey string, expiresAt tim
 	return signedAliyunOSSObjectURL(setting, objectKey, expiresAt)
 }
 
-func signedOSSObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
-	setting = normalizeOSSSetting(setting)
-	switch setting.Provider {
-	case s3Provider:
-		return signedS3ObjectDownloadURL(setting, objectKey, expiresAt, fileName)
-	case qiniuKodoProvider:
-		return signedQiniuObjectDownloadURL(setting, objectKey, expiresAt, fileName)
-	case tencentCOSProvider:
-		return signedCOSObjectDownloadURL(setting, objectKey, expiresAt, fileName)
-	default:
-		return signedAliyunOSSObjectDownloadURL(setting, objectKey, expiresAt, fileName)
-	}
-}
-
 func signedAliyunOSSObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time) (string, error) {
 	baseURL, err := ossBucketBaseURL(setting)
 	if err != nil {
@@ -1488,103 +1280,6 @@ func signedAliyunOSSObjectURL(setting ossSettingValue, objectKey string, expires
 	query.Set("Signature", base64.StdEncoding.EncodeToString(mac.Sum(nil)))
 	baseURL.RawQuery = query.Encode()
 	return baseURL.String(), nil
-}
-
-func signedAliyunOSSObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
-	baseURL, err := ossBucketBaseURL(setting)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(setting.AccessKeyID) == "" || strings.TrimSpace(setting.AccessKeySecret) == "" {
-		return "", errors.New("OSS 访问密钥不可用")
-	}
-	objectKey = strings.TrimLeft(strings.TrimSpace(objectKey), "/")
-	if objectKey == "" {
-		return "", errors.New("OSS 对象路径为空")
-	}
-	baseURL.Path = strings.TrimRight(baseURL.Path, "/") + "/" + escapeObjectKey(objectKey)
-	expires := strconv.FormatInt(expiresAt.UTC().Unix(), 10)
-	contentDisposition := resourceDownloadContentDisposition(fileName)
-	canonicalResource := "/" + setting.Bucket + "/" + objectKey + "?response-content-disposition=" + ossResponseHeaderQueryValue(contentDisposition)
-	stringToSign := strings.Join([]string{http.MethodGet, "", "", expires, canonicalResource}, "\n")
-	mac := hmac.New(sha1.New, []byte(setting.AccessKeySecret))
-	_, _ = mac.Write([]byte(stringToSign))
-	query := baseURL.Query()
-	query.Set("response-content-disposition", contentDisposition)
-	query.Set("OSSAccessKeyId", setting.AccessKeyID)
-	query.Set("Expires", expires)
-	query.Set("Signature", base64.StdEncoding.EncodeToString(mac.Sum(nil)))
-	baseURL.RawQuery = strings.ReplaceAll(query.Encode(), "+", "%20")
-	return baseURL.String(), nil
-}
-
-func signedCOSObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
-	if strings.TrimSpace(setting.AccessKeyID) == "" || strings.TrimSpace(setting.AccessKeySecret) == "" {
-		return "", errors.New("COS 访问密钥不可用")
-	}
-	expires := time.Until(expiresAt)
-	if expires <= 0 {
-		return "", errors.New("COS 签名有效期必须晚于当前时间")
-	}
-	client, err := newCOSClient(setting, 2*time.Minute)
-	if err != nil {
-		return "", err
-	}
-	options := &cos.ObjectGetOptions{ResponseContentDisposition: resourceDownloadContentDisposition(fileName)}
-	signedURL, err := client.Object.GetPresignedURL(context.Background(), http.MethodGet, strings.TrimLeft(strings.TrimSpace(objectKey), "/"), setting.AccessKeyID, setting.AccessKeySecret, expires, options)
-	if err != nil {
-		return "", err
-	}
-	return signedURL.String(), nil
-}
-
-func signedQiniuObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
-	if setting.CDNBaseURL == "" {
-		return signedQiniuS3ObjectDownloadURL(setting, objectKey, expiresAt, fileName)
-	}
-	if setting.AccessKeyID == "" || setting.AccessKeySecret == "" {
-		return "", errors.New("七牛云 Kodo 访问密钥不可用")
-	}
-	query := url.Values{}
-	query.Set("attname", SafeResourceDownloadFileName(fileName))
-	return qiniuStorage.MakePrivateURLv2WithQuery(qiniuAuth.New(setting.AccessKeyID, setting.AccessKeySecret), strings.TrimRight(setting.CDNBaseURL, "/"), strings.TrimLeft(strings.TrimSpace(objectKey), "/"), query, expiresAt.Unix()), nil
-}
-
-func signedS3ObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
-	return signedS3ObjectURL(setting, objectKey, expiresAt)
-}
-
-func signedQiniuS3ObjectDownloadURL(setting ossSettingValue, objectKey string, expiresAt time.Time, fileName string) (string, error) {
-	return signedQiniuS3ObjectURL(setting, objectKey, expiresAt)
-}
-
-func ossResponseHeaderQueryValue(value string) string {
-	if strings.TrimSpace(value) == "" {
-		return ""
-	}
-	return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
-}
-
-func SafeResourceDownloadFileName(value string) string {
-	value = strings.TrimSpace(value)
-	value = strings.Map(func(char rune) rune {
-		if char < 0x20 || char == 0x7f || strings.ContainsRune("\\/:*?\"<>|", char) {
-			return -1
-		}
-		return char
-	}, value)
-	value = strings.Trim(value, ". ")
-	if value == "" {
-		return "download"
-	}
-	if runes := []rune(value); len(runes) > 180 {
-		return string(runes[:180])
-	}
-	return value
-}
-
-func resourceDownloadContentDisposition(fileName string) string {
-	return mime.FormatMediaType("attachment", map[string]string{"filename": SafeResourceDownloadFileName(fileName)})
 }
 
 func putCOSObject(setting ossSettingValue, objectKey string, mimeType string, size int64, body io.Reader) (string, error) {
@@ -1879,7 +1574,17 @@ func newOSSRequest(method string, setting ossSettingValue, objectKey string, con
 		return nil, err
 	}
 	baseURL.Path = strings.TrimRight(baseURL.Path, "/") + "/" + escapeObjectKey(objectKey)
-	req, err := http.NewRequest(method, baseURL.String(), body)
+	// 请求体必须用 no-op close 包装：服务端提前返回（如 OSS 签名 403）时
+	// http.Transport 会关闭未发完的 Request.Body，若直接传入 *os.File 等
+	// 调用方持有的文件，后续“降级本地存储”的 Seek 重读将因 file already
+	// closed 失败。NopCloser 让 Transport 的关闭成为空操作，底层文件保持可用。
+	// GET/HEAD/DELETE 等无请求体的调用传入 nil body；NopCloser(nil) 会产生非 nil 的
+	// Body 包装 nil reader，Go 1.26 发送前 body 探测会直接 nil 解引用崩溃。
+	var reqBody io.Reader
+	if body != nil {
+		reqBody = io.NopCloser(body)
+	}
+	req, err := http.NewRequest(method, baseURL.String(), reqBody)
 	if err != nil {
 		return nil, err
 	}

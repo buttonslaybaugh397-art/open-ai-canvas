@@ -10,6 +10,7 @@ export type CanvasBatchConnectionPreview = {
     targetNodeId: string | null;
     targetHandleId?: string;
     targetAnchorRatio?: number;
+    snapToHandle?: boolean;
     mouseWorld: Position;
     status: "idle" | "valid" | "partial" | "invalid";
 };

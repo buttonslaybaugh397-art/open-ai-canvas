@@ -31,7 +31,7 @@ type TaskSummary struct {
 	ErrorCode                 string                     `json:"errorCode,omitempty"`
 	PreviewURL                string                     `json:"previewUrl,omitempty"`
 	PreviewKind               string                     `json:"previewKind,omitempty"`
-	PreviewStorageKey         string                     `json:"previewStorageKey,omitempty"`
+	PreviewPosterURL          string                     `json:"previewPosterUrl,omitempty"`
 	Attempts                  int                        `json:"attempts"`
 	StartedAt                 *time.Time                 `json:"startedAt"`
 	CompletedAt               *time.Time                 `json:"completedAt"`
@@ -42,6 +42,7 @@ type TaskSummary struct {
 }
 
 type TaskClientContext struct {
+	NodeID           string `json:"nodeId,omitempty"`
 	ConversationID   string `json:"conversationId,omitempty"`
 	MessageID        string `json:"messageId,omitempty"`
 	BatchIndex       int    `json:"batchIndex,omitempty"`
@@ -99,8 +100,7 @@ func taskSummaryForOutput(task model.Task) TaskSummary {
 	if isContentModerationFailure(task.Error) {
 		errorCode = contentModerationErrorCode
 	}
-	previewURL, previewKind := taskMediaPreview(task.ResultJSON, task.Type)
-	previewStorageKey := taskMediaPreviewStorageKey(task.ResultJSON, previewURL)
+	previewURL, previewKind, previewPosterURL := taskMediaPreviewWithPoster(task.ResultJSON, task.Type)
 	return TaskSummary{
 		ID:                        task.ID,
 		SessionID:                 task.SessionID,
@@ -122,7 +122,7 @@ func taskSummaryForOutput(task model.Task) TaskSummary {
 		ErrorCode:                 errorCode,
 		PreviewURL:                previewURL,
 		PreviewKind:               previewKind,
-		PreviewStorageKey:         previewStorageKey,
+		PreviewPosterURL:          previewPosterURL,
 		Attempts:                  task.Attempts,
 		StartedAt:                 task.StartedAt,
 		CompletedAt:               task.CompletedAt,
@@ -132,66 +132,12 @@ func taskSummaryForOutput(task model.Task) TaskSummary {
 	}
 }
 
-func taskMediaPreviewStorageKey(raw string, previewURL string) string {
-	if strings.TrimSpace(raw) == "" || strings.TrimSpace(previewURL) == "" {
-		return ""
-	}
-	var payload any
-	if json.Unmarshal([]byte(raw), &payload) != nil {
-		return ""
-	}
-	return findTaskMediaStorageKey(payload, previewURL)
-}
-
-func findTaskMediaStorageKey(value any, previewURL string) string {
-	switch item := value.(type) {
-	case []any:
-		for _, child := range item {
-			if storageKey := findTaskMediaStorageKey(child, previewURL); storageKey != "" {
-				return storageKey
-			}
-		}
-	case map[string]any:
-		storageKey := taskMediaStorageKey(item)
-		if storageKey != "" && previewURL == taskMediaResourcePreviewURL(storageKey) {
-			return storageKey
-		}
-		for _, key := range []string{"url", "videoUrl", "video_url", "imageUrl", "image_url", "outputUrl", "output_url", "mediaUrl", "media_url", "dataUrl", "data_url", "content", "coverUrl", "cover_url", "resultUrl", "result_url", "downloadUrl", "download_url", "fileUrl", "file_url", "uri", "src"} {
-			if candidate, _ := item[key].(string); candidate == previewURL && storageKey != "" {
-				return storageKey
-			}
-		}
-		for _, child := range item {
-			if found := findTaskMediaStorageKey(child, previewURL); found != "" {
-				return found
-			}
-		}
-	}
-	return ""
-}
-
-func taskMediaStorageKey(item map[string]any) string {
-	for _, key := range []string{"storageKey", "storage_key", "resourceKey", "resource_key", "providerArtifactRef", "provider_artifact_ref"} {
-		if value, ok := item[key].(string); ok && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
-}
-
-func taskMediaResourcePreviewURL(storageKey string) string {
-	resourceID := canvasResourceID(storageKey)
-	if resourceID == "" {
-		return ""
-	}
-	return "/api/resources/" + resourceID + "/file"
-}
-
 // 列表只暴露页面恢复所需的非敏感关联 ID，不下发完整任务输入或其他 metadata。
 func taskClientContext(raw string) *TaskClientContext {
 	var input struct {
 		Metadata struct {
 			Source          string `json:"source"`
+			NodeID          string `json:"nodeId"`
 			ConversationID  string `json:"conversationId"`
 			MessageID       string `json:"messageId"`
 			BatchIndex      int    `json:"batchIndex"`
@@ -208,16 +154,20 @@ func taskClientContext(raw string) *TaskClientContext {
 		return nil
 	}
 	metadata := input.Metadata
+	context := &TaskClientContext{NodeID: metadata.NodeID}
 	if metadata.Source == "create-page" && metadata.ConversationID != "" && metadata.MessageID != "" {
-		return &TaskClientContext{
-			ConversationID: metadata.ConversationID,
-			MessageID:      metadata.MessageID,
-			BatchIndex:     metadata.BatchIndex,
-			BatchCount:     metadata.BatchCount,
-		}
+		context.ConversationID = metadata.ConversationID
+		context.MessageID = metadata.MessageID
+		context.BatchIndex = metadata.BatchIndex
+		context.BatchCount = metadata.BatchCount
+		return context
 	}
 	if metadata.ShotID != "" && metadata.WorkflowStepID != "" {
-		return &TaskClientContext{DomainProjectID: metadata.DomainProjectID, ShotID: metadata.ShotID, WorkflowStepID: metadata.WorkflowStepID, ArtifactType: metadata.ArtifactType}
+		context.DomainProjectID = metadata.DomainProjectID
+		context.ShotID = metadata.ShotID
+		context.WorkflowStepID = metadata.WorkflowStepID
+		context.ArtifactType = metadata.ArtifactType
+		return context
 	}
 	chapterOperation := ""
 	if metadata.Operation == "chapter_character_breakdown" {
@@ -226,41 +176,80 @@ func taskClientContext(raw string) *TaskClientContext {
 		chapterOperation = "storyboard"
 	}
 	if chapterOperation == "" || metadata.DomainProjectID == "" || metadata.ChapterID == "" {
-		return nil
+		if context.NodeID == "" {
+			return nil
+		}
+		return context
 	}
-	return &TaskClientContext{
-		DomainProjectID:  metadata.DomainProjectID,
-		ChapterID:        metadata.ChapterID,
-		ChapterOperation: chapterOperation,
-	}
+	context.DomainProjectID = metadata.DomainProjectID
+	context.ChapterID = metadata.ChapterID
+	context.ChapterOperation = chapterOperation
+	return context
 }
 
 // 列表只暴露首个可访问媒体地址，避免把完整生成结果和内嵌数据带回前端。
 func taskMediaPreview(raw string, taskType string) (string, string) {
+	previewURL, previewKind, _ := taskMediaPreviewWithPoster(raw, taskType)
+	return previewURL, previewKind
+}
+
+func taskMediaPreviewWithPoster(raw string, taskType string) (string, string, string) {
 	if strings.TrimSpace(raw) == "" {
-		return "", ""
+		return "", "", ""
 	}
 	var payload any
 	if json.Unmarshal([]byte(raw), &payload) != nil {
-		return "", ""
+		return "", "", ""
 	}
 	defaultKind := "image"
 	if strings.Contains(strings.ToLower(taskType), "video") {
 		defaultKind = "video"
 	}
-	return findTaskMediaPreview(payload, defaultKind)
+	previewURL, previewKind := findTaskMediaPreview(payload, defaultKind)
+	posterURL := findTaskMediaPoster(payload)
+	if previewKind == "image" && posterURL == "" {
+		posterURL = previewURL
+	}
+	return previewURL, previewKind, posterURL
+}
+
+func findTaskMediaPoster(value any) string {
+	switch item := value.(type) {
+	case []any:
+		for _, child := range item {
+			if posterURL := findTaskMediaPoster(child); posterURL != "" {
+				return posterURL
+			}
+		}
+	case map[string]any:
+		for _, key := range []string{"posterUrl", "posterURL", "thumbnailUrl", "thumbnailURL", "coverUrl", "coverURL", "poster", "thumbnail", "cover"} {
+			child, exists := item[key]
+			if !exists {
+				continue
+			}
+			if previewURL, previewKind := findTaskMediaPreview(child, "image"); previewURL != "" && previewKind == "image" {
+				return previewURL
+			}
+		}
+		for _, child := range item {
+			if posterURL := findTaskMediaPoster(child); posterURL != "" {
+				return posterURL
+			}
+		}
+	}
+	return ""
 }
 
 func findTaskMediaPreview(value any, hint string) (string, string) {
 	switch item := value.(type) {
 	case string:
 		text := strings.TrimSpace(item)
-		if !strings.HasPrefix(text, "/api/resources/") && !strings.HasPrefix(text, "http://") && !strings.HasPrefix(text, "https://") {
+		if !isResourceFileURL(text) && !strings.HasPrefix(text, "http://") && !strings.HasPrefix(text, "https://") {
 			return "", ""
 		}
 		kind := hint
 		lower := strings.ToLower(text)
-		if strings.Contains(lower, ".mp4") || strings.Contains(lower, ".webm") || strings.Contains(lower, ".mov") || strings.Contains(lower, ".m4v") || strings.Contains(lower, ".mkv") || strings.Contains(lower, ".avi") || strings.Contains(lower, ".mpeg") || strings.Contains(lower, ".mpg") || strings.Contains(lower, ".ts") {
+		if strings.Contains(lower, ".mp4") || strings.Contains(lower, ".webm") || strings.Contains(lower, ".mov") {
 			kind = "video"
 		} else if kind != "video" {
 			kind = "image"
@@ -273,30 +262,13 @@ func findTaskMediaPreview(value any, hint string) (string, string) {
 			}
 		}
 	case map[string]any:
-		objectHint := hint
-		mediaType := strings.ToLower(strings.TrimSpace(firstTaskMediaString(item, "mimeType", "mime_type", "contentType", "content_type")))
-		mediaTypeHint := strings.ToLower(strings.TrimSpace(firstTaskMediaString(item, "type", "mediaType", "media_type", "kind")))
-		if strings.HasPrefix(mediaType, "video/") || strings.Contains(mediaTypeHint, "video") {
-			objectHint = "video"
-		} else if strings.HasPrefix(mediaType, "image/") || strings.Contains(mediaTypeHint, "image") {
-			objectHint = "image"
-		} else if strings.HasPrefix(mediaType, "audio/") || strings.Contains(mediaTypeHint, "audio") {
-			objectHint = "audio"
-		}
-		keys := []string{"video", "videos", "video_url", "videoUrl", "video_uri", "videoUri", "download_url", "downloadUrl", "download_uri", "downloadUri", "result", "output", "outputs", "results", "result_url", "resultUrl", "output_url", "outputUrl", "content", "media", "file", "url", "dataUrl", "data_url", "file_url", "fileUrl", "uri", "src", "images", "image", "data"}
-		if objectHint != "video" {
-			keys = []string{"images", "image", "video", "videos", "video_url", "videoUrl", "video_uri", "videoUri", "download_url", "downloadUrl", "download_uri", "downloadUri", "result", "output", "outputs", "results", "result_url", "resultUrl", "output_url", "outputUrl", "content", "media", "file", "url", "dataUrl", "data_url", "file_url", "fileUrl", "uri", "src", "data"}
-		}
-		for _, key := range keys {
-			if objectHint == "video" && (key == "images" || key == "image") {
-				continue
-			}
+		for _, key := range []string{"images", "image", "video", "dataUrl", "url", "resultUrl", "outputUrl"} {
 			child, exists := item[key]
 			if !exists {
 				continue
 			}
-			childHint := objectHint
-			if key == "video" || key == "videos" || key == "video_url" || key == "videoUrl" || key == "video_uri" || key == "videoUri" {
+			childHint := hint
+			if key == "video" {
 				childHint = "video"
 			} else if key == "images" || key == "image" {
 				childHint = "image"
@@ -305,20 +277,8 @@ func findTaskMediaPreview(value any, hint string) (string, string) {
 				return previewURL, previewKind
 			}
 		}
-		if storageKey := taskMediaStorageKey(item); storageKey != "" && canvasResourceID(storageKey) != "" {
-			return taskMediaResourcePreviewURL(storageKey), objectHint
-		}
 	}
 	return "", ""
-}
-
-func firstTaskMediaString(item map[string]any, keys ...string) string {
-	for _, key := range keys {
-		if value, ok := item[key].(string); ok && strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func truncateRunes(value string, limit int) string {

@@ -1,9 +1,10 @@
-import { App, Button, Drawer, Form, Input, Select } from "antd";
+import { App, Button, Drawer, Form, Input } from "antd";
+import { Select } from "@/components/ui/base/select";
 import { useEffect, useState } from "react";
 
 import { createAdminUser, updateAdminUser, type AdminUser, type LocalUser } from "@/services/api/auth";
 
-type UserFormValues = Pick<LocalUser, "displayName" | "email" | "role" | "status">;
+type UserFormValues = Pick<LocalUser, "username" | "displayName" | "email" | "role" | "status">;
 
 export function AdminUserEditDrawer({
     user,
@@ -25,6 +26,7 @@ export function AdminUserEditDrawer({
         if (!user) return;
         form.resetFields();
         form.setFieldsValue({
+            username: user.username,
             displayName: user.displayName,
             email: user.email || "",
             role: user.role,
@@ -49,11 +51,17 @@ export function AdminUserEditDrawer({
     };
 
     const save = async () => {
-        if (!user) return;
-        const values = await form.validateFields();
+        if (!user || saving) return;
+        let values: UserFormValues;
+        try {
+            values = await form.validateFields();
+        } catch {
+            return;
+        }
         setSaving(true);
         try {
             const result = await updateAdminUser(user.id, {
+                username: values.username.trim(),
                 displayName: values.displayName.trim(),
                 email: values.email?.trim() || "",
                 role: values.role,
@@ -80,9 +88,16 @@ export function AdminUserEditDrawer({
             destroyOnHidden
             extra={<Button type="primary" loading={saving} onClick={() => void save()}>保存</Button>}
         >
-            <Form form={form} layout="vertical" requiredMark={false}>
-                <Form.Item label="用户名">
-                    <Input value={user ? `@${user.username}` : ""} disabled />
+            <Form form={form} layout="vertical" requiredMark={false} disabled={saving}>
+                <Form.Item
+                    name="username"
+                    label="用户名"
+                    rules={[
+                        { required: true, whitespace: true, message: "请输入用户名" },
+                        { pattern: /^[a-zA-Z0-9_-]{3,32}$/, transform: (value?: string) => value?.trim(), message: "用户名需为 3-32 位字母、数字、下划线或连字符" },
+                    ]}
+                >
+                    <Input autoComplete="off" spellCheck={false} maxLength={32} prefix="@" />
                 </Form.Item>
                 <Form.Item name="displayName" label="显示名称" rules={[{ required: true, whitespace: true, message: "请填写显示名称" }]}>
                     <Input placeholder="用户在产品内显示的名称" />

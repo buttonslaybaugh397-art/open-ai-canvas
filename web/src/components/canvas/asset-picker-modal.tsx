@@ -2,6 +2,7 @@ import { useMemo } from "react";
 
 import { AssetLibraryPickerModal, type AssetLibraryPickerItem } from "@/components/assets/asset-library-picker-modal";
 import { useExternalAssetSources } from "@/hooks/use-external-asset-sources";
+import { ASSET_CATEGORY_LABELS, normalizeAssetCategory } from "@/lib/asset-category";
 import type { ExternalAssetPickerReference } from "@/lib/plugins/plugin-types";
 import { useAssetStore, type Asset } from "@/stores/use-asset-store";
 
@@ -9,67 +10,74 @@ type InsertableAsset = Extract<Asset, { kind: "text" | "image" | "video" | "audi
 
 export type InsertAssetPayload =
     | { kind: "text"; content: string; title: string; assetId?: string }
-    | { kind: "image"; dataUrl: string; title: string; url?: string; storageKey?: string; volcengineAssetUri?: string; width?: number; height?: number; bytes?: number; mimeType?: string; assetId?: string }
-    | { kind: "video"; url: string; title: string; storageKey?: string; volcengineAssetUri?: string; width?: number; height?: number; durationMs?: number; hasAudio?: boolean; bytes?: number; mimeType?: string; assetId?: string }
+    | { kind: "image"; dataUrl: string; title: string; url?: string; storageKey?: string; width?: number; height?: number; bytes?: number; mimeType?: string; assetId?: string }
+    | { kind: "video"; url: string; title: string; storageKey?: string; width?: number; height?: number; durationMs?: number; hasAudio?: boolean; bytes?: number; mimeType?: string; assetId?: string }
     | { kind: "audio"; url: string; title: string; storageKey?: string; durationMs?: number; bytes?: number; mimeType?: string; assetId?: string }
-    | { kind: "character"; title: string; assetId: string; versionId: string; prompt: string; aliases: string[]; definition: Record<string, unknown>; coverUrl?: string; visualStatus: string; voiceStatus: string; voiceName?: string; voiceProfile?: { name: string; provider: string; language: string; timbre: string }; voiceInstructions?: string };
+    | {
+          kind: "character";
+          title: string;
+          assetId: string;
+          versionId: string;
+          prompt: string;
+          aliases: string[];
+          definition: Record<string, unknown>;
+          coverUrl?: string;
+          visualStatus: string;
+          voiceStatus: string;
+          voiceName?: string;
+          voiceProfile?: { name: string; provider: string; language: string; timbre: string };
+          voiceInstructions?: string;
+      };
 
 type Props = {
     open: boolean;
     multiple?: boolean;
-    teamAssetKinds?: Array<"text" | "image" | "video" | "audio">;
     onInsert: (payloads: InsertAssetPayload[]) => Promise<void> | void;
     onClose: () => void;
 };
 
-const categoryLabels: Record<string, string> = { all: "全部素材", character: "角色", environment: "场景", wardrobe: "服饰", prop: "道具", weapon: "武器", style: "画风", other: "其他" };
+const categoryLabels: Record<string, string> = { all: "全部素材", ...ASSET_CATEGORY_LABELS, archived: "回收站" };
 
-export function AssetPickerModal({ open, multiple = true, teamAssetKinds, onInsert, onClose }: Props) {
+export function AssetPickerModal({ open, multiple = true, onInsert, onClose }: Props) {
     const assets = useAssetStore((state) => state.assets);
     const externalAssetSources = useExternalAssetSources(open);
-    const insertableAssets = useMemo(() => assets.filter((asset): asset is InsertableAsset => asset.status !== "archived" && (asset.kind === "text" || asset.kind === "image" || asset.kind === "video" || asset.kind === "audio")), [assets]);
-    const items = useMemo<AssetLibraryPickerItem[]>(() => [
-        ...insertableAssets.map((asset) => ({
-            id: asset.id,
-            title: asset.title,
-            category: asset.category || "other",
-            kindLabel: asset.kind === "image" ? "图片" : asset.kind === "video" ? "视频" : asset.kind === "audio" ? "音频" : "文本",
-            asset,
-            searchText: (asset.tags || []).join(" "),
-        })),
-        ...externalAssetSources.items,
-    ], [externalAssetSources.items, insertableAssets]);
+    const insertableAssets = useMemo(() => assets.filter((asset): asset is InsertableAsset => asset.kind === "text" || asset.kind === "image" || asset.kind === "video" || asset.kind === "audio"), [assets]);
+    const items = useMemo<AssetLibraryPickerItem[]>(
+        () => [
+            ...insertableAssets.map((asset) => ({
+                id: asset.id,
+                title: asset.title,
+                category: normalizeAssetCategory(asset.category),
+                archived: asset.status === "archived",
+                kindLabel: asset.kind === "image" ? "图片" : asset.kind === "video" ? "视频" : asset.kind === "audio" ? "音频" : "文本",
+                mediaKind: asset.kind,
+                asset,
+                searchText: (asset.tags || []).join(" "),
+            })),
+            ...externalAssetSources.items,
+        ],
+        [externalAssetSources.items, insertableAssets],
+    );
 
     return (
         <AssetLibraryPickerModal
+            remoteLibrary
             open={open}
+            mediaKinds={["image", "video", "audio", "text"]}
             items={items}
             categoryLabels={{ ...categoryLabels, ...externalAssetSources.categoryLabels }}
             folders={externalAssetSources.folders}
             footerNote={externalAssetSources.error || undefined}
             multiple={multiple}
-            teamAssetKinds={teamAssetKinds}
             confirmLabel={(count) => `插入已选素材${count ? `（${count}）` : ""}`}
             emptyDescription="先在素材库中添加图片、视频、音频或文本。"
             onClose={onClose}
-            onConfirm={async (ids, { materializedAssets }) => {
-                const materializedItems = materializedAssets.map(assetToPickerItem);
-                await onInsert(assetPickerItemsToInsertPayloads(ids, [...items, ...materializedItems]));
+            onConfirm={async (ids) => {
+                await onInsert(assetPickerItemsToInsertPayloads(ids, items));
                 onClose();
             }}
         />
     );
-}
-
-function assetToPickerItem(asset: Asset): AssetLibraryPickerItem {
-    return {
-        id: asset.id,
-        title: asset.title,
-        category: asset.category || "other",
-        kindLabel: asset.kind === "image" ? "图片" : asset.kind === "video" ? "视频" : asset.kind === "audio" ? "音频" : asset.kind === "text" ? "文本" : "素材",
-        asset,
-        searchText: (asset.tags || []).join(" "),
-    };
 }
 
 export function assetPickerItemsToInsertPayloads(ids: string[], items: AssetLibraryPickerItem[]): InsertAssetPayload[] {
@@ -82,7 +90,6 @@ export function assetPickerItemsToInsertPayloads(ids: string[], items: AssetLibr
         if (!asset || (asset.kind !== "text" && asset.kind !== "image" && asset.kind !== "video" && asset.kind !== "audio")) {
             throw new Error(`“${pickerItem.title}”不是可插入画布的素材`);
         }
-        if (asset.status === "archived") throw new Error(`“${pickerItem.title}”已在回收站，请先还原`);
         return localAssetToInsertPayload(asset);
     });
 }
@@ -90,7 +97,20 @@ export function assetPickerItemsToInsertPayloads(ids: string[], items: AssetLibr
 function localAssetToInsertPayload(asset: InsertableAsset): InsertAssetPayload {
     if (asset.kind === "text") return { kind: "text", content: asset.data.content, title: asset.title, assetId: asset.id };
     if (asset.kind === "audio") return { kind: "audio", url: asset.data.url, storageKey: asset.data.storageKey, title: asset.title, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
-    if (asset.kind === "video") return { kind: "video", url: asset.data.url, storageKey: asset.data.storageKey, title: asset.title, width: asset.data.width, height: asset.data.height, durationMs: asset.data.durationMs, hasAudio: asset.data.hasAudio, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
+    if (asset.kind === "video")
+        return {
+            kind: "video",
+            url: asset.data.url,
+            storageKey: asset.data.storageKey,
+            title: asset.title,
+            width: asset.data.width,
+            height: asset.data.height,
+            durationMs: asset.data.durationMs,
+            hasAudio: asset.data.hasAudio,
+            bytes: asset.data.bytes,
+            mimeType: asset.data.mimeType,
+            assetId: asset.id,
+        };
     return { kind: "image", dataUrl: asset.data.dataUrl, storageKey: asset.data.storageKey, title: asset.title, width: asset.data.width, height: asset.data.height, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
 }
 

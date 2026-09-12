@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
-import { resolveActiveCanvasMediaNodeId } from "../src/lib/canvas/canvas-performance-mode";
+import { canvasNodeRenderPadding, resolveActiveCanvasMediaNodeId } from "../src/lib/canvas/canvas-performance-mode";
 import { videoMetadata } from "../src/lib/canvas/canvas-generation-task-sync";
 import { canvasNodeVideoPreviewUrl, canvasVideoAssetPreviewUrl } from "../src/lib/canvas/canvas-media-preview";
 import { collectImageStorageKeys } from "../src/services/image-storage";
@@ -14,7 +14,10 @@ const canvasNodeContentSource = readFileSync(resolve(import.meta.dir, "../src/co
 const canvasAudioPlayerSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/canvas-audio-player.tsx"), "utf8");
 const canvasMentionSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/canvas-resource-mention-textarea.tsx"), "utf8");
 const canvasNodeSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/canvas-node.tsx"), "utf8");
+const canvasVideoPreviewSource = readFileSync(resolve(import.meta.dir, "../src/services/canvas-video-preview.ts"), "utf8");
 const videoPlayerSource = readFileSync(resolve(import.meta.dir, "../src/components/video-player.tsx"), "utf8");
+const canvasProjectSource = readFileSync(resolve(import.meta.dir, "../src/pages/canvas/project.tsx"), "utf8");
+const globalStylesSource = readFileSync(resolve(import.meta.dir, "../src/styles/globals.css"), "utf8");
 
 function node(id: string, type: CanvasNodeType): CanvasNodeData {
     return { id, type, title: id, position: { x: 0, y: 0 }, width: 320, height: 180, metadata: {} };
@@ -41,6 +44,46 @@ describe("canvas dimension header rendering", () => {
     test("tracks live viewport scale without React width commits", () => {
         expect(canvasNodeSource).toContain("calc(var(--canvas-node-width) * var(--canvas-live-scale, 1))");
         expect(canvasNodeSource).toContain('"--canvas-node-width": `${node.width}px`');
+    });
+});
+
+describe("large canvas media rendering", () => {
+    test("keeps rendered nodes mounted longer than newly entering nodes", () => {
+        expect(canvasNodeRenderPadding(true, false)).toBe(128);
+        expect(canvasNodeRenderPadding(true, true)).toBe(640);
+        expect(canvasNodeRenderPadding(false, true)).toBeGreaterThan(canvasNodeRenderPadding(false, false));
+    });
+
+    test("does not eagerly load or resize LibTV thumbnails", () => {
+        expect(canvasNodeContentSource).toContain('loading="lazy"');
+        expect(canvasNodeContentSource).not.toContain('importedFromLibTV ? "eager"');
+        expect(canvasNodeContentSource).toContain("if (importedFromLibTV) return;");
+    });
+
+    test("keeps canvas node action context stable across viewport renders", () => {
+        expect(canvasProjectSource).toContain("const canvasNodeActions = useMemo<CanvasNodeActionContextValue>");
+        expect(canvasProjectSource).toContain("<CanvasNodeActionContext.Provider value={canvasNodeActions}>");
+    });
+
+    test("keeps node shells visible while panning and zooming", () => {
+        expect(globalStylesSource).not.toMatch(/\[data-canvas-viewport-interacting="true"\]\s+\.canvas-node-shell\s*\{[^}]*content-visibility:\s*hidden/);
+    });
+
+    test("keeps inactive video nodes on a viewport-gated static first frame", () => {
+        const inactivePreviewSource = canvasNodeContentSource.match(/function InactiveVideoPreview[\s\S]*?\n}\n\nfunction VideoPreviewPlayButton/)?.[0] || "";
+        expect(canvasNodeContentSource).toContain("if (previewUrl || !nearViewport || !node.metadata?.content || !updateMetadataRef.current)");
+        expect(canvasNodeContentSource).not.toContain("hydrateMediaPreview");
+        expect(inactivePreviewSource).not.toContain("<video");
+        expect(inactivePreviewSource).toContain("<VideoPreviewPlayButton");
+        expect(canvasNodeContentSource).toContain("useVideoPlaybackUrl(node, mediaActive)");
+        expect(canvasNodeContentSource).toContain("onMediaPlayRequest?.(node.id)");
+        expect(canvasNodeContentSource).toContain('autoPlay preload="metadata"');
+        expect(canvasNodeContentSource).toContain("scheduleResourceBlobCache(node.metadata?.storageKey || \"\")");
+    });
+
+    test("allows failed or empty first-frame requests to retry", () => {
+        expect(canvasVideoPreviewSource).toContain("if (!preview) previewRequests.delete(requestKey)");
+        expect(canvasVideoPreviewSource).toContain("previewRequests.delete(requestKey);");
     });
 });
 
@@ -134,13 +177,14 @@ describe("video canvas controls", () => {
         expect(videoPlayerSource).toContain("VolumeLow: defaultLayoutIcons.MuteButton.Mute");
         expect(videoPlayerSource).toContain("VolumeHigh: defaultLayoutIcons.MuteButton.Mute");
         expect(videoPlayerSource).toContain("muteButton.disabled = noAudio;");
-        expect(videoPlayerSource).toContain("(volumeSlider as HTMLElement & { disabled?: boolean }).disabled = noAudio;");
+        expect(videoPlayerSource).not.toContain("volumeSlider as HTMLElement & { disabled?: boolean }");
+        expect(videoPlayerSource).toContain('volumeSlider.setAttribute("aria-disabled", String(noAudio))');
         expect(videoPlayerSource).toContain('event.target.closest(".vds-volume,.vds-mute-button,.vds-volume-slider")');
         expect(videoPlayerSource).toContain("onKeyDown={stopCanvasControlInteraction}");
         expect(videoPlayerSource).not.toContain("onPointerDownCapture={stopCanvasControlInteraction}");
         expect(videoPlayerSource).not.toContain("onMouseDownCapture={stopCanvasControlInteraction}");
         expect(videoPlayerSource).not.toContain("onClickCapture={stopCanvasControlClick}");
-        expect(canvasNodeContentSource).toContain("hasAudio={inferVideoHasAudio(node.metadata)} autoPlay={mediaActive}");
+        expect(canvasNodeContentSource).toContain('hasAudio={inferVideoHasAudio(node.metadata)} autoPlay preload="metadata"');
         expect(canvasNodeContentSource).toContain('if (["false", "0", "off", "no", "disabled"].includes(value || "")) return false;');
     });
 
@@ -185,6 +229,8 @@ describe("video canvas controls", () => {
     });
 
     test("keeps the first activation click from being treated as a node drag", () => {
+        expect(canvasNodeContentSource).toContain("onPointerDown={(event) => event.stopPropagation()}");
+        expect(canvasNodeContentSource).toContain("onMouseDown={(event) => event.stopPropagation()}");
         expect(videoPlayerSource).toContain("onClick={stopCanvasControlClick}");
         expect(videoPlayerSource).toContain('event.target.closest(".vds-controls,.vds-menu-items")');
         expect(videoPlayerSource).toContain("event.nativeEvent?.composedPath?.()");

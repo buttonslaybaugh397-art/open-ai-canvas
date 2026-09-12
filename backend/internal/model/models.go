@@ -13,7 +13,6 @@ type ChannelScope string
 type ChannelInterfaceType string
 type ApiCallStatus string
 type ResourceStatus string
-type ResourceCloudSyncStatus string
 type ResourceDeletionStatus string
 type BillingStatus string
 type CreditLedgerType string
@@ -25,8 +24,6 @@ type ProjectUnitKind string
 type ProjectUnitStatus string
 type AssetCategory string
 type AssetVersionStatus string
-type TeamMemberRole string
-type TeamMemberStatus string
 type WorkflowStatus string
 type WorkflowStepStatus string
 
@@ -80,7 +77,6 @@ const (
 	ChannelInterfaceNewAPIVideo           ChannelInterfaceType = "newapi"
 	ChannelInterfaceNewAPIChannel1        ChannelInterfaceType = "newapi-channel-1"
 	ChannelInterfaceNewAPIChannel2        ChannelInterfaceType = "newapi-channel-2"
-	ChannelInterfaceSeedanceVideos        ChannelInterfaceType = "seedance-videos"
 	ChannelInterfaceGlobalAiOpcVideo      ChannelInterfaceType = "globalaiopc-video"
 	ChannelInterfaceHuiQuYunVideo         ChannelInterfaceType = "huiquyun-video"
 	ChannelInterfaceAIStarsLabImage       ChannelInterfaceType = "aistarslab-image"
@@ -108,9 +104,11 @@ const (
 	ResourceStatusFailed  ResourceStatus = "failed"
 	ResourceStatusDeleted ResourceStatus = "deleted"
 
-	ResourceCloudSyncStatusSynced     ResourceCloudSyncStatus = "synced"
-	ResourceCloudSyncStatusPending    ResourceCloudSyncStatus = "pending"
-	ResourceCloudSyncStatusRecovering ResourceCloudSyncStatus = "recovering"
+	// 播放副本转码状态：空串/"none" = 无需转码（H.264 等可直接播放）。
+	PlaybackStatusNone       = "none"
+	PlaybackStatusProcessing = "processing"
+	PlaybackStatusReady      = "ready"
+	PlaybackStatusFailed     = "failed"
 
 	ResourceDeletionStatusPending    ResourceDeletionStatus = "pending"
 	ResourceDeletionStatusProcessing ResourceDeletionStatus = "processing"
@@ -133,6 +131,7 @@ const (
 	CreditLedgerAdminAdjust  CreditLedgerType = "admin_adjustment"
 	CreditLedgerSignupBonus  CreditLedgerType = "signup_bonus"
 	CreditLedgerCheckinBonus CreditLedgerType = "checkin_bonus"
+	CreditLedgerPaymentTopup CreditLedgerType = "payment_topup"
 
 	RedeemCodeUnused   RedeemCodeStatus = "unused"
 	RedeemCodeRedeemed RedeemCodeStatus = "redeemed"
@@ -158,24 +157,14 @@ const (
 
 	AssetCategoryCharacter   AssetCategory = "character"
 	AssetCategoryEnvironment AssetCategory = "environment"
-	AssetCategoryWardrobe    AssetCategory = "wardrobe"
 	AssetCategoryProp        AssetCategory = "prop"
-	AssetCategoryWeapon      AssetCategory = "weapon"
-	AssetCategoryStyle       AssetCategory = "style"
+	AssetCategoryMaterial    AssetCategory = "material"
 	AssetCategoryOther       AssetCategory = "other"
 
 	AssetVersionStatusDraft     AssetVersionStatus = "draft"
 	AssetVersionStatusReview    AssetVersionStatus = "review"
 	AssetVersionStatusConfirmed AssetVersionStatus = "confirmed"
 	AssetVersionStatusArchived  AssetVersionStatus = "archived"
-
-	TeamMemberRoleOwner  TeamMemberRole = "owner"
-	TeamMemberRoleAdmin  TeamMemberRole = "admin"
-	TeamMemberRoleEditor TeamMemberRole = "editor"
-	TeamMemberRoleViewer TeamMemberRole = "viewer"
-
-	TeamMemberStatusActive  TeamMemberStatus = "active"
-	TeamMemberStatusRemoved TeamMemberStatus = "removed"
 
 	WorkflowStatusActive    WorkflowStatus = "active"
 	WorkflowStatusCompleted WorkflowStatus = "completed"

@@ -1,0 +1,563 @@
+openapi: 3.0.3
+info:
+  title: 影策 HTTP API
+  version: "1.0.0"
+  description: |
+    路径前缀是 `/api`。前后端一起发布，不按路径做 API 版本。
+
+    业务 JSON 信封为 `{ code, data, msg, reason }`。`code === 0` 表示成功；失败时 HTTP status 与
+    `code` 都表达失败。`code` 默认等于 HTTP 状态；同一状态下的细分原因使用 `status*100+n`
+    （例如 40301 配额、42901 限流）。机器判断请用 `reason`，不要解析 `msg`。
+
+    TypeScript 调用面仍是 `web/src/services/api` 的 `http` 模块，不从本规范生成客户端。
+servers:
+  - url: /api
+security:
+  - sessionCookie: []
+tags:
+  - name: meta
+  - name: auth
+  - name: projects
+  - name: resources
+  - name: tasks
+  - name: assets
+  - name: admin-storage
+  - name: admin-analytics
+  - name: admin-users
+paths:
+  /openapi.yaml:
+    get:
+      tags: [meta]
+      security: []
+      summary: 本 OpenAPI 文档
+      responses:
+        "200":
+          description: OpenAPI 3.0 YAML
+          content:
+            application/yaml:
+              schema:
+                type: string
+  /auth/session:
+    get:
+      tags: [auth]
+      summary: 当前登录会话
+      responses:
+        "200":
+          $ref: "#/components/responses/Envelope"
+        "401":
+          $ref: "#/components/responses/Error"
+  /auth/login:
+    post:
+      tags: [auth]
+      security: []
+      summary: 登录并设置会话 Cookie
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        "200":
+          $ref: "#/components/responses/Envelope"
+        "401":
+          $ref: "#/components/responses/Error"
+  /admin/users/{id}:
+    patch:
+      tags: [admin-users]
+      summary: 管理员修改用户资料和登录用户名
+      description: |
+        username 可省略，省略时不变。提供时去除首尾空白，并校验 3-32 位字母、数字、下划线或连字符；
+        不允许与其他账号的用户名重复（忽略大小写）。仅改名不改变用户 ID、积分、历史数据或现有会话。
+        同时修改密码会撤销现有会话。资料修改及审计写入在同一事务中完成。
+        管理员可只提交 password 来找回账号，无需旧密码；密码至少 8 个字符、UTF-8 最多 72 字节。
+        不返回密码明文或哈希，不改变积分和历史记录；重置本人密码时清除会话 Cookie。
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                  description: 去除首尾空白后匹配 ^[A-Za-z0-9_-]{3,32}$
+                displayName: { type: string }
+                email: { type: string }
+                password: { type: string, writeOnly: true }
+                role: { type: string, enum: [admin, user] }
+                status: { type: string, enum: [active, disabled] }
+      responses:
+        "200":
+          $ref: "#/components/responses/Envelope"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /projects:
+    get:
+      tags: [projects]
+      summary: 短剧项目列表
+      responses:
+        "200":
+          $ref: "#/components/responses/Envelope"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [projects]
+      summary: 创建短剧项目
+      responses:
+        "200":
+          $ref: "#/components/responses/Envelope"
+        "400":
+          $ref: "#/components/responses/Error"
+  /resources:
+    get:
+      tags: [resources]
+      summary: 当前用户资源列表
+      responses:
+        "200":
+          $ref: "#/components/responses/Envelope"
+    post:
+      tags: [resources]
+      summary: 上传资源文件
+      responses:
+        "200":
+          $ref: "#/components/responses/Envelope"
+        "403":
+          description: 配额用尽（code=40301, reason=quota_exceeded）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /resources/{id}/file:
+    get:
+      tags: [resources]
+      summary: 读取资源二进制（非 JSON 信封）
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: 文件流
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /tasks:
+    post:
+      tags: [tasks]
+      summary: 创建生成任务
+      responses:
+        "200":
+          $ref: "#/components/responses/Envelope"
+        "400":
+          $ref: "#/components/responses/Error"
+  /tasks/{id}/text-events:
+    get:
+      tags: [tasks]
+      summary: 文本任务 SSE
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: after
+          schema: { type: integer }
+          description: 递增事件游标，不要用任务 ID
+      responses:
+        "200":
+          description: text/event-stream
+  /assets:
+    get:
+      tags: [assets]
+      summary: 用户素材库
+      responses:
+        "200":
+          $ref: "#/components/responses/Envelope"
+  /admin/settings/oss/credentials:
+    get:
+      tags: [admin-storage]
+      summary: 显式读取当前平台对象存储凭据
+      description: |
+        仅管理员可调用。成功响应包含当前厂商的 AccessKey ID、SecretKey 和可选 Session Token，
+        响应禁止缓存并记录不含明文的管理员审计事件。普通存储设置接口始终保持脱敏。
+      responses:
+        "200":
+          description: 当前平台对象存储凭据信封
+          headers:
+            Cache-Control:
+              schema: { type: string, example: "private, no-store" }
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [credentials]
+                        properties:
+                          credentials: { $ref: "#/components/schemas/AdminOSSCredentials" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409":
+          description: 数据库密文与当前 `.settings-key` 不匹配，旧凭据不可恢复
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "429": { $ref: "#/components/responses/Error" }
+  /admin/analytics/overview:
+    get:
+      tags: [admin-analytics]
+      summary: 管理员用量统计总览
+      description: |
+        返回 KPI、逐日趋势、模型、渠道、逐用户和失败分类。任务、逻辑上游请求与已结算账单采用独立事实口径；
+        成功媒体只按任务计一次，轮询和下载不计为逻辑请求。用户行包含 models、channels、daily 三组个人明细。
+      parameters:
+        - $ref: "#/components/parameters/AnalyticsFrom"
+        - $ref: "#/components/parameters/AnalyticsTo"
+        - $ref: "#/components/parameters/AnalyticsUserID"
+        - $ref: "#/components/parameters/AnalyticsModel"
+        - $ref: "#/components/parameters/AnalyticsChannelID"
+        - $ref: "#/components/parameters/AnalyticsCapability"
+      responses:
+        "200":
+          description: 统计总览信封，data 为 AnalyticsOverview
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data: { $ref: "#/components/schemas/AnalyticsOverview" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /admin/analytics/models:
+    get:
+      tags: [admin-analytics]
+      summary: 管理员模型用量明细
+      parameters:
+        - $ref: "#/components/parameters/AnalyticsFrom"
+        - $ref: "#/components/parameters/AnalyticsTo"
+        - $ref: "#/components/parameters/AnalyticsUserID"
+        - $ref: "#/components/parameters/AnalyticsModel"
+        - $ref: "#/components/parameters/AnalyticsChannelID"
+        - $ref: "#/components/parameters/AnalyticsCapability"
+      responses:
+        "200":
+          description: data.models 为按逻辑模型和能力聚合的 AnalyticsModelRow 数组
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Envelope" }
+        "403": { $ref: "#/components/responses/Error" }
+  /admin/analytics/channels:
+    get:
+      tags: [admin-analytics]
+      summary: 管理员渠道用量明细
+      parameters:
+        - $ref: "#/components/parameters/AnalyticsFrom"
+        - $ref: "#/components/parameters/AnalyticsTo"
+        - $ref: "#/components/parameters/AnalyticsUserID"
+        - $ref: "#/components/parameters/AnalyticsModel"
+        - $ref: "#/components/parameters/AnalyticsChannelID"
+        - $ref: "#/components/parameters/AnalyticsCapability"
+      responses:
+        "200":
+          description: data.channels 为按最终归属渠道聚合的 AnalyticsChannelRow 数组
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Envelope" }
+        "403": { $ref: "#/components/responses/Error" }
+  /admin/analytics/users:
+    get:
+      tags: [admin-analytics]
+      summary: 管理员逐用户用量明细
+      description: |
+        data.users 中每位用户都有完整总账，并继续拆分 models、channels 和 daily；data.dau、data.wau、data.mau
+        是截至筛选结束时间的滚动活跃人数。零任务但有登录或创作活动的用户仍会出现。
+      parameters:
+        - $ref: "#/components/parameters/AnalyticsFrom"
+        - $ref: "#/components/parameters/AnalyticsTo"
+        - $ref: "#/components/parameters/AnalyticsUserID"
+        - $ref: "#/components/parameters/AnalyticsModel"
+        - $ref: "#/components/parameters/AnalyticsChannelID"
+        - $ref: "#/components/parameters/AnalyticsCapability"
+      responses:
+        "200":
+          description: 逐用户统计以及 DAU、WAU、MAU
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Envelope" }
+        "403": { $ref: "#/components/responses/Error" }
+  /admin/analytics/export.csv:
+    get:
+      tags: [admin-analytics]
+      summary: 导出逐用户完整统计 CSV
+      description: 每位用户一行，UTF-8 BOM；模型、渠道和每日明细以 JSON 列保留，筛选参数与总览一致。
+      parameters:
+        - $ref: "#/components/parameters/AnalyticsFrom"
+        - $ref: "#/components/parameters/AnalyticsTo"
+        - $ref: "#/components/parameters/AnalyticsUserID"
+        - $ref: "#/components/parameters/AnalyticsModel"
+        - $ref: "#/components/parameters/AnalyticsChannelID"
+        - $ref: "#/components/parameters/AnalyticsCapability"
+      responses:
+        "200":
+          description: CSV 文件流
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+        "403": { $ref: "#/components/responses/Error" }
+components:
+  parameters:
+    AnalyticsFrom:
+      in: query
+      name: from
+      schema: { type: string, format: date }
+      description: 起始自然日（含）；缺省为结束日前 30 天，最长统计 366 天。
+    AnalyticsTo:
+      in: query
+      name: to
+      schema: { type: string, format: date }
+      description: 结束自然日（含）；服务端查询内部转换为次日零点的开区间。
+    AnalyticsUserID:
+      in: query
+      name: userId
+      schema: { type: string }
+      description: 精确筛选用户 ID。
+    AnalyticsModel:
+      in: query
+      name: model
+      schema: { type: string }
+      description: 精确筛选归一后的逻辑模型。
+    AnalyticsChannelID:
+      in: query
+      name: channelId
+      schema: { type: string }
+      description: 精确筛选最终归属渠道 ID。
+    AnalyticsCapability:
+      in: query
+      name: capability
+      schema: { type: string, enum: [text, image, video, audio] }
+      description: 筛选生成能力。
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: open_ai_canvas_session
+  schemas:
+    Envelope:
+      type: object
+      required: [code, msg]
+      properties:
+        code:
+          type: integer
+          description: 0 成功；失败时默认等于 HTTP 状态，或 status*100+n 的细分码
+        data: {}
+        msg:
+          type: string
+        reason:
+          type: string
+          description: 仅失败时出现。稳定机器可读原因。
+    ErrorEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            code:
+              type: integer
+              enum: [400, 401, 403, 404, 409, 429, 500, 502, 503, 504, 40301, 40901, 42901]
+            data:
+              nullable: true
+            reason:
+              type: string
+              enum:
+                - invalid_argument
+                - unauthorized
+                - forbidden
+                - not_found
+                - conflict
+                - failed_precondition
+                - quota_exceeded
+                - rate_limited
+                - unavailable
+                - timeout
+                - internal
+                - bad_gateway
+                - model_capability_not_supported
+                - model_price_not_configured
+                - model_route_unavailable
+                - provider_request_failed
+                - model_catalog_mismatch
+                - invalid_model_selection
+    AdminOSSCredentials:
+      type: object
+      required: [provider, accessKeyId, accessKeySecret, sessionToken]
+      properties:
+        provider: { type: string, enum: [aliyun, tencent, qiniu, s3] }
+        accessKeyId: { type: string }
+        accessKeySecret: { type: string, format: password, writeOnly: false }
+        sessionToken: { type: string, format: password, writeOnly: false }
+    AnalyticsOverview:
+      type: object
+      required: [from, to, kpi, trend, models, channels, users, failures]
+      properties:
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time, description: 开区间结束时间 }
+        kpi: { $ref: "#/components/schemas/AnalyticsKPI" }
+        trend:
+          type: array
+          items: { $ref: "#/components/schemas/AnalyticsTrendPoint" }
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/AnalyticsDimensionRow" }
+        channels:
+          type: array
+          items: { $ref: "#/components/schemas/AnalyticsDimensionRow" }
+        users:
+          type: array
+          items: { $ref: "#/components/schemas/AnalyticsUserRow" }
+        failures:
+          type: array
+          items: { type: object }
+    AnalyticsKPI:
+      allOf:
+        - $ref: "#/components/schemas/AnalyticsUsageMetrics"
+        - type: object
+          properties:
+            activeUsers: { type: integer }
+            dau: { type: integer }
+            wau: { type: integer }
+            mau: { type: integer }
+            generationTasks: { type: integer }
+            averageTaskDurationMs: { type: integer, format: int64 }
+            currentQueuedTasks: { type: integer, format: int64 }
+    AnalyticsTrendPoint:
+      allOf:
+        - $ref: "#/components/schemas/AnalyticsUsageMetrics"
+        - type: object
+          properties:
+            day: { type: string, format: date }
+            activeUsers: { type: integer }
+    AnalyticsDimensionRow:
+      allOf:
+        - $ref: "#/components/schemas/AnalyticsUsageMetrics"
+        - type: object
+          properties:
+            model: { type: string }
+            capability: { type: string }
+            channelId: { type: string }
+            name: { type: string }
+            uniqueUsers: { type: integer }
+            uniqueModels: { type: integer }
+    AnalyticsUserRow:
+      allOf:
+        - $ref: "#/components/schemas/AnalyticsUsageMetrics"
+        - type: object
+          required: [userId, name, models, channels, daily]
+          properties:
+            userId: { type: string }
+            name: { type: string }
+            activeDays: { type: integer }
+            loginCount: { type: integer }
+            firstActiveAt: { type: string, format: date-time }
+            lastActiveAt: { type: string, format: date-time }
+            averageTaskDurationMs: { type: integer, format: int64 }
+            p95TaskDurationMs: { type: integer, format: int64 }
+            agentMessages: { type: integer }
+            canvasDays: { type: integer }
+            assets: { type: integer }
+            resources: { type: integer }
+            commonModel: { type: string }
+            models:
+              type: array
+              items: { $ref: "#/components/schemas/AnalyticsDimensionRow" }
+            channels:
+              type: array
+              items: { $ref: "#/components/schemas/AnalyticsDimensionRow" }
+            daily:
+              type: array
+              items:
+                allOf:
+                  - $ref: "#/components/schemas/AnalyticsUsageMetrics"
+                  - type: object
+                    properties:
+                      day: { type: string, format: date }
+                      loginCount: { type: integer }
+                      agentMessages: { type: integer }
+                      canvasActive: { type: boolean }
+                      assets: { type: integer }
+                      resources: { type: integer }
+    AnalyticsUsageMetrics:
+      type: object
+      description: 所有字段均为当前筛选区间和当前维度内的值；费用微单位仅在 costAvailable=true 时有效。
+      properties:
+        tasks: { type: integer }
+        textTasks: { type: integer }
+        imageTasks: { type: integer }
+        videoTasks: { type: integer }
+        audioTasks: { type: integer }
+        succeededTasks: { type: integer }
+        failedTasks: { type: integer }
+        cancelledTasks: { type: integer }
+        queuedTasks: { type: integer }
+        runningTasks: { type: integer }
+        taskSuccessRate: { type: number, format: double }
+        requests: { type: integer }
+        upstreamRequests: { type: integer }
+        succeededRequests: { type: integer }
+        failedRequests: { type: integer }
+        requestSuccessRate: { type: number, format: double }
+        successRate: { type: number, format: double }
+        p50DurationMs: { type: integer, format: int64 }
+        p95DurationMs: { type: integer, format: int64 }
+        p95RequestDurationMs: { type: integer, format: int64 }
+        mediaCount: { type: integer }
+        generatedImages: { type: integer }
+        generatedVideos: { type: integer }
+        generatedAudio: { type: integer }
+        videoSeconds: { type: integer }
+        inputTokens: { type: integer, format: int64 }
+        outputTokens: { type: integer, format: int64 }
+        cachedTokens: { type: integer, format: int64 }
+        usageAvailable: { type: boolean }
+        creditsConsumedMicrocredits: { type: integer, format: int64 }
+        estimatedCostMicros: { type: integer, format: int64 }
+        costAvailable: { type: boolean }
+        currency: { type: string }
+  responses:
+    Envelope:
+      description: 业务成功信封
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Envelope"
+    Error:
+      description: 业务失败信封
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"

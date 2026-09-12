@@ -8,19 +8,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
 
 type recordingRunner struct {
 	calls [][]string
-}
-
-func TestDefaultRepositoryUsesProjectOrigin(t *testing.T) {
-	if DefaultRepository != "buttonslaybaugh397-art/open-ai-canvas" {
-		t.Fatalf("DefaultRepository=%q", DefaultRepository)
-	}
 }
 
 func (r *recordingRunner) Run(_ context.Context, _ string, args, _ []string, stdout, _ io.Writer) error {
@@ -51,10 +44,6 @@ func TestSetEnvValuePreservesOtherSettings(t *testing.T) {
 	stat, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if runtime.GOOS == "windows" {
-		// Windows reports the effective ACL through os.Stat rather than POSIX mode bits.
-		return
 	}
 	if stat.Mode().Perm() != 0o640 {
 		t.Fatalf("mode=%o, want 640", stat.Mode().Perm())

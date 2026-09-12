@@ -251,7 +251,7 @@ func (s *Service) CompleteLinuxDOLogin(stateValue string, code string) (*LinuxDO
 	now := time.Now()
 	user.LastLoginAt = &now
 	user.UpdatedAt = now
-	if err := s.repo.Save(user); err != nil {
+	if err := s.repo.RecordUserLogin(user.ID, now); err != nil {
 		return nil, err
 	}
 	s.recordActivity(user.ID, "login", 1)

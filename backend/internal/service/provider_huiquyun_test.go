@@ -2,86 +2,74 @@ package service
 
 import (
 	"context"
-	"io"
-	"mime"
-	"mime/multipart"
 	"testing"
 
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/protocol"
 )
 
-func TestHuiQuYun933ReferencesUseMultipartFiles(t *testing.T) {
+func TestHuiQuYun933ReferencesUseProtocolMultipartFiles(t *testing.T) {
+	adapter, ok := protocol.Builtins().Get(string(model.ChannelInterfaceHuiQuYunVideo))
+	if !ok {
+		t.Fatal("HuiQuYun adapter is missing")
+	}
 	for _, modelName := range []string{"sd2-mx933-720-5s", "sd2-mx933-720-fast-10s", "mj-sd2.0-933-720p", "mj-sd2.0-933-720p-10s"} {
 		input := canvasGenerationInput{
-			Config:          providerConfig{InterfaceType: string(model.ChannelInterfaceHuiQuYunVideo), Model: modelName},
-			ReferenceImages: []providerMedia{{ID: "reference-1"}},
+			Mode: "video", Config: providerConfig{InterfaceType: string(model.ChannelInterfaceHuiQuYunVideo), Model: modelName, VideoSeconds: "8", VQuality: "720"},
+			ReferenceImages: []providerMedia{{ID: "reference-1", Name: "reference.png", DataURL: "data:image/png;base64,aW1hZ2U="}},
 		}
-		if !huiQuYunUsesMultipartVideoRequest(input) {
-			t.Fatalf("model %q did not use multipart", modelName)
-		}
-		if generationRequiresPublicReferenceURL(context.Background(), input) {
+		policy := providerMediaHydrationPolicyFor(context.Background(), input)
+		if policy.requireURL || policy.preferURL {
 			t.Fatalf("model %q discarded local multipart media", modelName)
+		}
+		request, err := prepareCustomProtocolRequest(input)
+		if err != nil {
+			t.Fatalf("prepare request for %q: %v", modelName, err)
+		}
+		spec, err := adapter.BuildCreate(context.Background(), protocol.RequestContext{Request: request})
+		if err != nil {
+			t.Fatalf("build create for %q: %v", modelName, err)
+		}
+		if spec.ContentType != "multipart/form-data" || len(spec.Files) != 1 || spec.Files[0].Name != "images" {
+			t.Fatalf("model %q spec = %#v", modelName, spec)
+		}
+		if spec.Body.(map[string]any)["resolution"] != "720p" {
+			t.Fatalf("model %q resolution = %#v", modelName, spec.Body)
 		}
 	}
 }
 
 func TestHuiQuYunOrdinaryReferenceUsesPublicURL(t *testing.T) {
 	input := canvasGenerationInput{
-		Config:          providerConfig{InterfaceType: string(model.ChannelInterfaceHuiQuYunVideo), Model: "seedance-video"},
+		Mode: "video", Config: providerConfig{InterfaceType: string(model.ChannelInterfaceHuiQuYunVideo), Model: "seedance-video"},
 		ReferenceImages: []providerMedia{{ID: "reference-1"}},
 	}
-	if huiQuYunUsesMultipartVideoRequest(input) {
-		t.Fatal("ordinary HuiQuYun model unexpectedly used multipart")
-	}
-	if !generationRequiresPublicReferenceURL(context.Background(), input) {
+	policy := providerMediaHydrationPolicyFor(context.Background(), input)
+	if !policy.requireURL || !policy.preferURL {
 		t.Fatal("ordinary HuiQuYun JSON request did not require public media URL")
 	}
 }
 
-func TestHuiQuYunMjSd933MultipartBodyKeepsReferenceFiles(t *testing.T) {
+func TestHuiQuYunMultipartKeepsFrameRoles(t *testing.T) {
+	adapter, _ := protocol.Builtins().Get(string(model.ChannelInterfaceHuiQuYunVideo))
 	input := canvasGenerationInput{
-		Prompt: "two frames",
-		Config: providerConfig{
-			InterfaceType: string(model.ChannelInterfaceHuiQuYunVideo),
-			Model:         "mj-sd2.0-933-720p",
-			Size:          "16:9",
-			VQuality:      "720",
-			VideoSeconds:  "8",
-		},
+		Mode: "video", Config: providerConfig{InterfaceType: string(model.ChannelInterfaceHuiQuYunVideo), Model: "mj-sd2.0-933-720p", Size: "16:9", VQuality: "720", VideoSeconds: "8"},
 		ReferenceImages: []providerMedia{
-			{ID: "reference-1", DataURL: "data:image/png;base64,iVBORw0KGgo="},
-			{ID: "reference-2", DataURL: "data:image/png;base64,iVBORw0KGgo="},
+			{ID: "first", Name: "first.png", DataURL: "data:image/png;base64,aW1hZ2U="},
+			{ID: "last", Name: "last.png", DataURL: "data:image/png;base64,aW1hZ2U="},
 		},
+		Metadata: map[string]interface{}{"videoStartFrameNodeId": "first", "videoEndFrameNodeId": "last"},
 	}
-	body, contentType, err := huiQuYunMX933MultipartBody(input)
+	request, err := prepareCustomProtocolRequest(input)
 	if err != nil {
-		t.Fatalf("huiQuYunMX933MultipartBody() error = %v", err)
+		t.Fatal(err)
 	}
-	_, params, err := mime.ParseMediaType(contentType)
+	spec, err := adapter.BuildCreate(context.Background(), protocol.RequestContext{Request: request})
 	if err != nil {
-		t.Fatalf("ParseMediaType() error = %v", err)
+		t.Fatal(err)
 	}
-	reader := multipart.NewReader(body, params["boundary"])
-	fields := map[string][]string{}
-	for {
-		part, nextErr := reader.NextPart()
-		if nextErr == io.EOF {
-			break
-		}
-		if nextErr != nil {
-			t.Fatalf("NextPart() error = %v", nextErr)
-		}
-		value, readErr := io.ReadAll(part)
-		if readErr != nil {
-			t.Fatalf("ReadAll() error = %v", readErr)
-		}
-		fields[part.FormName()] = append(fields[part.FormName()], string(value))
-	}
-	if len(fields["images"]) != 2 {
-		t.Fatalf("multipart images = %d", len(fields["images"]))
-	}
-	if values := fields["resolution"]; len(values) != 1 || values[0] != "720p" {
-		t.Fatalf("multipart resolution = %#v", values)
+	if len(spec.Files) != 2 || spec.Files[0].Name != "first_frame" || spec.Files[1].Name != "last_frame" {
+		t.Fatalf("multipart files = %#v", spec.Files)
 	}
 }
 

@@ -2,9 +2,9 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,6 +17,27 @@ import (
 )
 
 func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
+	r.POST("/assets/batch", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 16<<10)
+		var req struct {
+			IDs []string `json:"ids"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		assets, err := svc.UserAssetsByIDs(user.ID, req.IDs)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"assets": assets})
+	})
 	r.GET("/settings/prompt-templates", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {
@@ -121,8 +142,12 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
-		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "200"))
-		resources, err := svc.Resources(user.ID, limit)
+		pageSize, err := parsePositiveQueryInt(c.Query("pageSize"), 200)
+		if err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		resources, err := svc.Resources(user.ID, pageSize)
 		if err != nil {
 			failService(c, err)
 			return
@@ -172,6 +197,12 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, (policy.Resource.ResourceUploadMB<<20)+(1<<20))
 		file, err := c.FormFile("file")
 		if err != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				// 超 MaxBytesReader 上限时 FormFile 返回英文 http 错误，转成与 service 配额校验一致的中文文案。
+				fail(c, http.StatusBadRequest, fmt.Errorf("单个上传文件必须小于 %dMB", policy.Resource.ResourceUploadMB))
+				return
+			}
 			fail(c, http.StatusBadRequest, err)
 			return
 		}
@@ -238,13 +269,7 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			fail(c, http.StatusNotFound, err)
 			return
 		}
-		downloadName := strings.TrimSpace(c.Query("downloadName"))
-		var ossURL string
-		if downloadName != "" {
-			ossURL, err = svc.DirectResourceDownloadURL(user.ID, resource.ID, downloadName)
-		} else {
-			ossURL, err = svc.DirectResourceURL(user.ID, resource.ID)
-		}
+		ossURL, err := svc.DirectResourceURL(user.ID, resource.ID)
 		if err != nil {
 			failService(c, err)
 			return
@@ -278,27 +303,56 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		resource := delivery.Resource
 		etag := resourceResponseETag(resource)
+		// variant=playback：serve 浏览器兼容播放副本（H.265→H.264 转码）。
+		// 副本就绪时用独立 ETag 后缀，避免浏览器拿原件缓存命中 304 而继续黑屏。
+		usePlayback := c.Query("variant") == "playback" && resource.Provider == "local" &&
+			resource.PlaybackStatus == model.PlaybackStatusReady && resource.PlaybackObjectKey != ""
+		serveETag := etag
+		if usePlayback {
+			serveETag = etag + ":pb"
+		}
 		// 私有资源允许浏览器保存响应，但每次复用前必须重新鉴权；304 会在读取 OSS 前返回。
 		c.Header("Cache-Control", "private, no-cache")
-		c.Header("ETag", etag)
+		c.Header("ETag", serveETag)
 		c.Header("Accept-Ranges", "bytes")
 		c.Header("X-Content-Type-Options", "nosniff")
 		if resource.Kind == "file" {
 			c.Header("Content-Disposition", "attachment")
 			c.Header("Content-Security-Policy", "sandbox")
 		}
-		if downloadName := strings.TrimSpace(c.Query("downloadName")); downloadName != "" {
-			c.Header("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": service.SafeResourceDownloadFileName(downloadName)}))
-		}
-		if ifNoneMatch(c.GetHeader("If-None-Match"), etag) {
+		if ifNoneMatch(c.GetHeader("If-None-Match"), serveETag) {
 			c.Status(http.StatusNotModified)
 			return
 		}
 		rangeHeader := c.GetHeader("Range")
-		if ifRange := strings.TrimSpace(c.GetHeader("If-Range")); ifRange != "" && ifRange != etag {
+		if ifRange := strings.TrimSpace(c.GetHeader("If-Range")); ifRange != "" && ifRange != serveETag {
 			rangeHeader = ""
 		}
-		stream, err := svc.OpenResourceRange(user.ID, resource.ID, rangeHeader)
+		var stream *service.ResourceStream
+		if usePlayback {
+			stream, err = svc.OpenResourcePlaybackRange(user.ID, resource.ID)
+			if err == nil {
+				resource = stream.Resource // MimeType 已置 video/mp4
+			} else if errors.Is(err, service.ErrPlaybackNotReady) {
+				// 副本尚未就绪：回退原件，并撤销 :pb 后缀，保证副本就绪后
+				// 浏览器不会拿原件缓存命中 304 而继续黑屏。
+				c.Header("ETag", etag)
+				stream, err = svc.OpenResourceRange(user.ID, resource.ID, rangeHeader)
+				if err != nil {
+					failService(c, err)
+					return
+				}
+			} else {
+				failService(c, err)
+				return
+			}
+		} else {
+			stream, err = svc.OpenResourceRange(user.ID, resource.ID, rangeHeader)
+			if err != nil {
+				failService(c, err)
+				return
+			}
+		}
 		if err != nil {
 			failService(c, err)
 			return
@@ -307,7 +361,7 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		if resource.MimeType == "" {
 			resource.MimeType = "application/octet-stream"
 		}
-		if stream.Local {
+		if resource.Provider == "local" {
 			if seeker, ok := stream.Body.(io.ReadSeeker); ok {
 				c.Header("Content-Type", resource.MimeType)
 				http.ServeContent(c.Writer, c.Request, resource.ID, resource.UpdatedAt, seeker)
@@ -355,12 +409,111 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
+		if _, paged := c.GetQuery("page"); paged || hasUserAssetPageFilters(c) {
+			page, pageSize, pageErr := parsePaginationQuery(c, 40)
+			if pageErr != nil {
+				fail(c, http.StatusBadRequest, pageErr)
+				return
+			}
+			var folderID *string
+			if value, present := c.GetQuery("folderId"); present {
+				folderID = &value
+			}
+			assets, pageErr := svc.UserAssetsPage(user.ID, page, pageSize, service.UserAssetPageFilter{
+				Kind: c.Query("kind"), Category: c.Query("category"), FolderID: folderID,
+				Uncategorized: c.Query("uncategorized") == "1", Status: c.Query("status"), Query: c.Query("q"),
+			})
+			if pageErr != nil {
+				failService(c, pageErr)
+				return
+			}
+			ok(c, assets)
+			return
+		}
 		assets, err := svc.UserAssetSummaries(user.ID)
 		if err != nil {
 			failService(c, err)
 			return
 		}
 		ok(c, gin.H{"assets": assets})
+	})
+	r.GET("/asset-folders", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		folders, err := svc.AssetFolders(user.ID)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"folders": folders})
+	})
+	r.POST("/asset-folders", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		var req service.CreateAssetFolderRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		folder, err := svc.CreateAssetFolder(user.ID, req)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"folder": folder})
+	})
+	r.PATCH("/asset-folders/:id", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		var req service.UpdateAssetFolderRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		folder, err := svc.UpdateAssetFolder(user.ID, c.Param("id"), req)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"folder": folder})
+	})
+	r.DELETE("/asset-folders/:id", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		if err := svc.DeleteAssetFolder(user.ID, c.Param("id")); err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"id": c.Param("id")})
+	})
+	r.PATCH("/assets/folder", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		var req service.MoveUserAssetsRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		if err := svc.MoveUserAssetsToFolder(user.ID, req); err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"assetIds": req.AssetIDs, "folderId": req.FolderID})
 	})
 	r.GET("/user-data/snapshot", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
@@ -438,6 +591,20 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
+		if c.Query("page") != "" {
+			page, pageSize, pageErr := parsePaginationQuery(c, 40)
+			if pageErr != nil {
+				fail(c, http.StatusBadRequest, pageErr)
+				return
+			}
+			result, pageErr := svc.UserCanvasProjectsPage(user.ID, page, pageSize, c.Query("projectId"), c.Query("q"), c.Query("sort"))
+			if pageErr != nil {
+				failService(c, pageErr)
+				return
+			}
+			ok(c, result)
+			return
+		}
 		projects, err := svc.UserCanvasProjectSummaries(user.ID)
 		if err != nil {
 			failService(c, err)
@@ -502,6 +669,15 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"id": c.Param("id")})
 	})
+}
+
+func hasUserAssetPageFilters(c *gin.Context) bool {
+	for _, key := range []string{"pageSize", "kind", "category", "folderId", "uncategorized", "status", "q"} {
+		if _, present := c.GetQuery(key); present {
+			return true
+		}
+	}
+	return false
 }
 
 func resourceResponseETag(resource *model.Resource) string {

@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { App, Button, ColorPicker, Input, InputNumber, Modal, Progress, Segmented, Switch } from "antd";
+import { App, Button, ColorPicker, Input, InputNumber, Progress, Segmented } from "antd";
+import { AppModal } from "@/components/ui/product/app-modal";
+import { Switch } from "@/components/ui/base/switch";
 import { Captions, FileDown, FileUp, ListPlus, LoaderCircle, Plus, Scissors, Sparkles, Trash2 } from "lucide-react";
 import { saveAs } from "file-saver";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useConfigStore, type AiConfig } from "@/stores/use-config-store";
-import { resolveReadableMediaUrl, resolveMediaUrl } from "@/services/file-storage";
+import { resolveMediaUrl } from "@/services/file-storage";
+import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
 import { resourceIdFromStorageKey } from "@/services/api/resources";
 import { parseSrt, serializeSrtEntries } from "@/lib/timeline/srt-parser";
 import { DEFAULT_MAX_CHARS_PER_ENTRY, MAX_CHARS_PER_ENTRY_LIMIT, MIN_CHARS_PER_ENTRY, resegmentSrtEntries, splitLongEntry } from "@/lib/timeline/srt-resegment";
@@ -73,7 +76,18 @@ export function CanvasSubtitleDialog({ node, open, projectId, config, onClose, o
             if (!cancelled) setVideoUrl(url);
         };
         if (resourceIdFromStorageKey(storageKey)) {
-            setVideoUrl(resolveReadableMediaUrl(storageKey));
+            void cacheResourceObjectUrl(storageKey)
+                .then((cached) => {
+                    if (cancelled) return;
+                    if (cached) {
+                        setVideoUrl(cached);
+                    } else {
+                        void resolveMediaUrl(storageKey, fallback).then(applyUrl);
+                    }
+                })
+                .catch(() => {
+                    if (!cancelled) void resolveMediaUrl(storageKey, fallback).then(applyUrl);
+                });
         } else {
             void resolveMediaUrl(storageKey, fallback).then(applyUrl);
         }
@@ -382,7 +396,7 @@ export function CanvasSubtitleDialog({ node, open, projectId, config, onClose, o
             <div className="border-t pt-3" style={{ borderColor: theme.toolbar.border }}>
                 <div className="mb-2 flex items-center justify-between text-xs font-medium opacity-55">
                     <span>关键词高亮</span>
-                    <Switch size="small" checked={style.highlightEnabled} onChange={(highlightEnabled) => setStyle((current) => ({ ...current, highlightEnabled }))} />
+                    <Switch size="sm" checked={style.highlightEnabled} onChange={(highlightEnabled) => setStyle((current) => ({ ...current, highlightEnabled }))} />
                 </div>
                 <div className="space-y-2.5">
                     <label className="flex items-center justify-between gap-2 text-xs opacity-70">
@@ -488,12 +502,11 @@ export function CanvasSubtitleDialog({ node, open, projectId, config, onClose, o
     );
 
     return (
-        <Modal className="canvas-subtitle-dialog" title={title} open={open} centered footer={null} width={1120} destroyOnHidden onCancel={onClose} styles={{ container: { padding: 0, overflow: "hidden" }, body: { padding: 0 } }}>
+        <AppModal className="canvas-subtitle-dialog" title={title} open={open} centered footer={null} width={1120} destroyOnHidden onCancel={onClose} flush>
             <div className="flex h-[min(72vh,680px)] min-h-[420px] flex-col text-sm" style={{ color: theme.node.text }}>
                 <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3" style={{ borderColor: theme.toolbar.border, background: theme.toolbar.panel }}>
                     <input
                         ref={fileInputRef}
-                        name="canvas-subtitle-srt-upload"
                         type="file"
                         accept=".srt"
                         className="hidden"
@@ -505,7 +518,6 @@ export function CanvasSubtitleDialog({ node, open, projectId, config, onClose, o
                     />
                     <input
                         ref={textInputRef}
-                        name="canvas-subtitle-text-upload"
                         type="file"
                         accept=".txt,text/plain"
                         className="hidden"
@@ -601,6 +613,6 @@ export function CanvasSubtitleDialog({ node, open, projectId, config, onClose, o
                     </div>
                 </div>
             </div>
-        </Modal>
+        </AppModal>
     );
 }

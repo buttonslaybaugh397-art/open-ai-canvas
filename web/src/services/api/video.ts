@@ -1,5 +1,4 @@
 import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
-import { importResourceFromUrl } from "@/services/api/resources";
 import { uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
@@ -46,6 +45,7 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     if (requestConfig.interfaceType === "minimax-video") return createMiniMaxVideoTask(deps, requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
     if (isAgnesConfig(requestConfig)) return createAgnesVideoTask(deps, requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
     if (isSeedanceConfig(requestConfig)) return createSeedanceTask(deps, requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
+    if (videoReferences.length || audioReferences.length) throw new Error("当前视频接口不支持参考视频或参考音频，请切换到 Seedance 2.0 / 火山 Agent Plan 模型，或移除参考素材");
     return createOpenAIVideoTask(deps, requestConfig, selectedModel, prompt, references, options);
 }
 
@@ -63,49 +63,9 @@ export async function pollVideoGenerationTask(config: AiConfig, task: VideoGener
 }
 
 export async function storeGeneratedVideo(result: VideoGenerationResult): Promise<UploadedFile> {
-    if (!result.blob && result.dataUrl && /^https?:\/\//i.test(result.dataUrl)) {
-        return importGeneratedVideo(result.dataUrl, result.url || result.dataUrl, result.mimeType);
-    }
-    const backupBlob =
-        result.blob ||
-        (result.dataUrl
-            ? await fetch(result.dataUrl).then((response) => {
-                  if (!response.ok) throw new Error(`视频备份读取失败（${response.status}）`);
-                  return response.blob();
-              })
-            : undefined);
-    if (backupBlob) {
-        // Generated videos must have a server resource record. The backend can
-        // still keep a local disaster-recovery copy when OSS is unavailable.
-        const uploaded = await uploadMediaFile(backupBlob, "video", { allowLocalFallback: false });
-        return { ...uploaded, url: result.url || uploaded.url };
-    }
-    if (result.url) {
-        let lastError: unknown = null;
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-            try {
-                return await importGeneratedVideo(result.url, result.url, result.mimeType);
-            } catch (error) {
-                lastError = error;
-            }
-            if (attempt < 2) await new Promise((resolve) => window.setTimeout(resolve, 300 * (attempt + 1)));
-        }
-        throw lastError instanceof Error ? lastError : new Error("视频同步到服务器资源存储失败");
-    }
+    if (result.blob) return uploadMediaFile(result.blob, "video");
+    if (result.url) return { url: result.url, storageKey: "", bytes: 0, mimeType: result.mimeType || "video/mp4" };
     throw new Error("视频接口没有返回可播放的视频");
-}
-
-async function importGeneratedVideo(sourceUrl: string, previewUrl: string, mimeType?: string): Promise<UploadedFile> {
-    const resource = await importResourceFromUrl(sourceUrl, "video");
-    return {
-        url: previewUrl,
-        storageKey: `resource:${resource.id}`,
-        bytes: resource.size || 0,
-        mimeType: resource.mimeType || mimeType || "video/mp4",
-        width: resource.width,
-        height: resource.height,
-        durationMs: resource.durationMs,
-    };
 }
 
 export type { VideoProviderDeps } from "./video-provider-deps";

@@ -2,15 +2,31 @@ import { expect, test } from "bun:test";
 
 import { createModelChannel, defaultConfig } from "../src/stores/use-config-store";
 import { runBackendGenerationTask, runBackendGenerationTaskBatch } from "../src/services/api/generation-task";
-import { deleteGenerationTask, formatTaskLog, listGenerationTasks, localGenerationTaskListingReady, projectBackendSafeTaskLog, splitGenerationTaskObservationIds, type GenerationTask } from "../src/services/api/task-center";
+import { deleteGenerationTask, formatTaskLog, listGenerationTasks, projectBackendSafeTaskLog, splitGenerationTaskObservationIds, type GenerationTask } from "../src/services/api/task-center";
 import { isLocalDreaminaBackgroundTask, localDreaminaCancellationCopy, localDreaminaDetachOutcome, projectLocalDreaminaTask } from "../src/services/local-dreamina-task-projection";
 import { LocalDreaminaGenerationClientError, runLocalDreaminaGenerationTask, type LocalDreaminaGenerationInput } from "../src/services/local-dreamina-generation";
 import { createGenerationBatchRetryContexts, createGenerationRetryContext, generationTaskMetadata, runBackendCanvasGenerationTask, runCanvasGenerationTaskToConsumer } from "../src/lib/canvas/canvas-project-generation";
 import { runCanvasAgentGenerationOps } from "../src/pages/canvas/use-canvas-agent-operations";
 import { CanvasNodeType, type CanvasNodeData } from "../src/types/canvas";
-import { onlineToolToOps } from "../src/components/canvas/canvas-assistant-panel";
+import { buildToolAgentMessages, onlineToolToOps } from "../src/components/canvas/canvas-assistant-online-tools";
 import { generationTaskShowsProgress, generationTaskStageLabel, generationTaskStatusLabel } from "../src/lib/generation-task-display";
 import { generationErrorMessage } from "../src/lib/generation-error";
+import { generationTaskNodeId, syncGenerationTaskToCanvasStore } from "../src/lib/canvas/canvas-generation-task-sync";
+
+test("业务项目任务和无节点任务不会读取画布项目", async () => {
+    const task = { id: "chapter-task", type: "canvas_text", status: "succeeded", projectId: "domain-project", clientContext: { domainProjectId: "domain-project", nodeId: "chapter_character_breakdown:chapter" } } as GenerationTask;
+    expect(await syncGenerationTaskToCanvasStore(task)).toBe(false);
+    expect(await syncGenerationTaskToCanvasStore({ ...task, clientContext: undefined, inputJson: JSON.stringify({ metadata: { domainProjectId: "domain-project", nodeId: "chapter-node" } }) })).toBe(false);
+    expect(await syncGenerationTaskToCanvasStore({ ...task, clientContext: undefined })).toBe(false);
+});
+
+test("canvas recovery reads node identity from task summaries without full task input", () => {
+    const task: GenerationTask = { id: "task-summary", type: "canvas_image", status: "running", prompt: "", attempts: 1, createdAt: "", updatedAt: "", clientContext: { nodeId: "node-summary" } };
+    expect(generationTaskNodeId(task)).toBe("node-summary");
+    expect(generationTaskNodeId({ ...task, inputJson: "invalid json" })).toBe("node-summary");
+    expect(generationTaskNodeId({ ...task, clientContext: undefined, inputJson: JSON.stringify({ metadata: { nodeId: "node-detail" } }) })).toBe("node-detail");
+    expect(generationTaskNodeId({ ...task, clientContext: undefined })).toBe("");
+});
 
 function compactSource(source: string) {
     return source.replace(/\s+/g, " ").trim();
@@ -275,6 +291,104 @@ test("a selected Dreamina local model never creates a Backend task", async () =>
     expect((localInput as unknown as { clientOperationId?: string }).clientOperationId).toBe("dreamina-task-route-0001");
     expect((localInput as unknown as { context?: unknown }).context).toEqual({ scope: "scoped" });
     expect(backendCalls).toBe(0);
+});
+
+test("backend text generation forwards streaming callbacks and thinking options", async () => {
+    let createdInput: Parameters<NonNullable<Parameters<typeof runBackendGenerationTask>[1]>["createTask"]>[0] | undefined;
+    let streamedText = "";
+    const running: GenerationTask = {
+        id: "text-stream-task-0001",
+        type: "canvas_text",
+        status: "running",
+        prompt: "写一个开场",
+        attempts: 1,
+        createdAt: "2026-09-04T00:00:00.000Z",
+        updatedAt: "2026-09-04T00:00:00.000Z",
+    };
+
+    const result = await runBackendGenerationTask(
+        {
+            mode: "text",
+            prompt: running.prompt,
+            config: backendModelConfig("reasoning-text-model"),
+            streamText: true,
+            enableThinking: true,
+            onTextDelta: (value) => {
+                streamedText = value;
+            },
+        },
+        {
+            createTask: async (input) => {
+                createdInput = input;
+                return running;
+            },
+            waitTask: async (_id, options) => {
+                options?.onTextDelta?.("实时正文");
+                return { ...running, status: "succeeded", resultJson: JSON.stringify({ mode: "text", text: "完整正文", reasoning: "思考摘要" }) };
+            },
+            runLocal: async () => {
+                throw new Error("must not use local Runtime");
+            },
+            createId: () => "unused-text-id",
+            now: () => "2026-09-04T00:00:00.000Z",
+        },
+    );
+
+    expect(createdInput?.input?.textOptions).toEqual({ stream: true, thinking: true });
+    expect(streamedText).toBe("实时正文");
+    expect(result).toEqual({ mode: "text", text: "完整正文", reasoning: "思考摘要" });
+});
+
+test("online node retry creates a backend task and preserves retry identity in task metadata", async () => {
+    let createdInput: Parameters<NonNullable<Parameters<typeof runBackendGenerationTask>[1]>["createTask"]>[0] | undefined;
+    const running: GenerationTask = { id: "retry-task-new", type: "canvas_image", status: "running", prompt: "retry", attempts: 1, createdAt: "", updatedAt: "" };
+    await runBackendGenerationTask(
+        {
+            projectId: "canvas-retry",
+            mode: "image",
+            prompt: "retry",
+            config: backendModelConfig("retry-image-model"),
+            clientOperationId: "retry:operation-0000000000000001",
+            retryOf: "retry-task-old",
+            attemptGroupId: "retry-group",
+        },
+        {
+            createTask: async (input) => {
+                createdInput = input;
+                return running;
+            },
+            waitTask: async () => ({ ...running, status: "succeeded", resultJson: JSON.stringify({ mode: "image", images: [] }) }),
+            runLocal: async () => { throw new Error("must not use local Runtime"); },
+            createId: () => "unused-retry-id",
+            now: () => "2026-09-10T00:00:00.000Z",
+        },
+    );
+    expect(createdInput?.input?.metadata).toMatchObject({
+        clientOperationId: "retry:operation-0000000000000001",
+        retryOf: "retry-task-old",
+        attemptGroupId: "retry-group",
+    });
+});
+
+test("online canvas Agent sends resource references instead of inline image bodies", async () => {
+    const snapshot = { projectId: "canvas-agent", title: "Agent", nodes: [], connections: [], selectedNodeIds: [], viewport: { x: 0, y: 0, zoom: 1 } };
+    const messages = await buildToolAgentMessages(snapshot, [], {
+        id: "message",
+        role: "user",
+        text: "分析图片",
+        references: [{ id: "image", type: CanvasNodeType.Image, title: "参考图", dataUrl: `data:image/png;base64,${"A".repeat(1024)}`, storageKey: "resource:image-remote" }],
+    });
+    const serialized = JSON.stringify(messages);
+    expect(serialized).toContain("resource:image-remote");
+    expect(serialized).not.toContain("data:image/png");
+    expect(serialized.length).toBeLessThan(20_000);
+
+    await expect(buildToolAgentMessages(snapshot, [], {
+        id: "local-message",
+        role: "user",
+        text: "分析本地图片",
+        references: [{ id: "local-image", type: CanvasNodeType.Image, title: "未上传图片", dataUrl: "data:image/png;base64,AAAA" }],
+    })).rejects.toThrow("引用图片尚未同步到服务器");
 });
 
 test("the shared local generation entry projects pre-receipt work as submitting without fake progress", async () => {
@@ -1016,34 +1130,6 @@ test("task center merges durable local Dreamina summaries without creating Backe
     expect(tasks[0]).toMatchObject({ provider: "dreamina-cli", prompt: "", status: "running" });
 });
 
-test("task center reads local history only after the configured Dreamina runtime is ready", async () => {
-    const readyState = {
-        desktopLocalChannelsEnabled: true,
-        channels: [{ transport: "local-runtime", enabled: true }],
-        connection: "connected",
-        modules: [{ id: "dreamina", scopes: ["dreamina:generate"] }],
-    };
-    expect(localGenerationTaskListingReady(readyState)).toBe(true);
-    expect(localGenerationTaskListingReady({ ...readyState, desktopLocalChannelsEnabled: false })).toBe(false);
-    expect(localGenerationTaskListingReady({ ...readyState, channels: [] })).toBe(false);
-    expect(localGenerationTaskListingReady({ ...readyState, connection: "unreachable" })).toBe(false);
-    expect(localGenerationTaskListingReady({ ...readyState, modules: [{ id: "dreamina", scopes: ["dreamina:models"] }] })).toBe(false);
-
-    let localReads = 0;
-    const tasks = await listGenerationTasks(30, undefined, {
-        async listBackend() {
-            return [];
-        },
-        async listLocal() {
-            localReads += 1;
-            return [];
-        },
-        shouldListLocal: () => false,
-    });
-    expect(tasks).toEqual([]);
-    expect(localReads).toBe(0);
-});
-
 test("project task lists include only durably scoped local Dreamina summaries", async () => {
     let localReads = 0;
     const tasks = await listGenerationTasks(
@@ -1353,7 +1439,8 @@ test("remote provider keeps Create resolution semantics and still creates one Ba
         },
     );
 
-    expect(backendInput?.input.config).toMatchObject({ vquality: "720", quality: "auto" });
+    expect(backendInput?.input.config).toMatchObject({ vquality: "720" });
+    expect(backendInput?.input.config.quality).toBeUndefined();
     expect(localCalls).toBe(0);
 });
 

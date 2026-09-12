@@ -26,23 +26,21 @@ type Resource struct {
 	Endpoint string         `json:"endpoint"`
 	Bucket   string         `json:"bucket" gorm:"size:160"`
 	// 用户 OSS 每次修改都会生成新版本，资源固定引用创建时的存储与密钥；只有同一存储位置才可复用当前 CDN。
-	StorageSettingID        string                  `json:"-" gorm:"index;size:36"`
-	ObjectKey               string                  `json:"objectKey" gorm:"index"`
-	LocalBackupKey          string                  `json:"-" gorm:"index"`
-	CloudSyncStatus         ResourceCloudSyncStatus `json:"cloudSyncStatus,omitempty" gorm:"index;size:24"`
-	CloudSyncAttempts       int                     `json:"cloudSyncAttempts,omitempty"`
-	CloudSyncError          string                  `json:"cloudSyncError,omitempty" gorm:"type:text"`
-	CloudSyncNextAttemptAt  *time.Time              `json:"-" gorm:"index"`
-	CloudSyncLeaseOwner     string                  `json:"-" gorm:"index;size:120"`
-	CloudSyncLeaseExpiresAt *time.Time              `json:"-" gorm:"index"`
-	PublicURL               string                  `json:"publicUrl"`
-	MimeType                string                  `json:"mimeType" gorm:"size:120"`
-	Size                    int64                   `json:"size"`
-	Width                   int                     `json:"width"`
-	Height                  int                     `json:"height"`
-	DurationMs              int64                   `json:"durationMs"`
-	ETag                    string                  `json:"etag" gorm:"size:160"`
-	// UploadKey stores a digest of the client upload identity. NULL opts out of idempotency.
+	StorageSettingID string `json:"-" gorm:"index;size:36"`
+	ObjectKey        string `json:"objectKey" gorm:"index"`
+	PublicURL        string `json:"publicUrl"`
+	MimeType         string `json:"mimeType" gorm:"size:120"`
+	Size             int64  `json:"size"`
+	Width            int    `json:"width"`
+	Height           int    `json:"height"`
+	DurationMs       int64  `json:"durationMs"`
+	ETag             string `json:"etag" gorm:"size:160"`
+	// 浏览器兼容播放副本（HEVC/H.265 原片在 Chrome 等无法解码，由 ffmpeg 转 H.264）：
+	// PlaybackStatus: none|processing|ready|failed；PlaybackObjectKey 为本地播放目录下的文件名。
+	PlaybackStatus    string `json:"playbackStatus" gorm:"index;size:24"`
+	PlaybackObjectKey string `json:"playbackObjectKey"`
+	PlaybackError     string `json:"playbackError" gorm:"type:text"`
+	// UploadKey 是客户端逻辑上传身份的摘要；NULL 表示不参与幂等约束。
 	UploadKey *string   `json:"-" gorm:"size:64;uniqueIndex:idx_resources_user_upload_key,priority:2"`
 	Error     string    `json:"error"`
 	CreatedAt time.Time `json:"createdAt" gorm:"index:idx_resources_user_created,priority:2"`
@@ -61,7 +59,6 @@ type ResourceDeletionJob struct {
 	Bucket           string                 `json:"bucket" gorm:"size:160"`
 	StorageSettingID string                 `json:"-" gorm:"index;size:36"`
 	ObjectKey        string                 `json:"objectKey" gorm:"index"`
-	LocalBackupKey   string                 `json:"-" gorm:"index"`
 	Status           ResourceDeletionStatus `json:"status" gorm:"index:idx_resource_deletion_jobs_due,priority:1;size:24"`
 	Attempts         int                    `json:"attempts"`
 	LastError        string                 `json:"lastError" gorm:"type:text"`
@@ -83,6 +80,7 @@ type AnnouncementImageDraft struct {
 type Asset struct {
 	ID               string             `json:"id" gorm:"primaryKey;size:80"`
 	UserID           string             `json:"userId" gorm:"index;size:36;index:idx_assets_user_updated,priority:1"`
+	FolderID         string             `json:"folderId,omitempty" gorm:"index;size:36"`
 	Kind             string             `json:"kind" gorm:"index;size:24"`
 	Category         AssetCategory      `json:"category" gorm:"index;size:32"`
 	Status           AssetVersionStatus `json:"status" gorm:"index;size:24"`
@@ -93,82 +91,15 @@ type Asset struct {
 	UpdatedAt        time.Time          `json:"updatedAt" gorm:"index:idx_assets_user_updated,priority:2"`
 }
 
-type Team struct {
-	ID              string    `json:"id" gorm:"primaryKey;size:36"`
-	Name            string    `json:"name" gorm:"size:120"`
-	Description     string    `json:"description,omitempty" gorm:"size:500"`
-	AssetLimit      int64     `json:"assetLimit" gorm:"not null;default:5000"`
-	StorageLimit    int64     `json:"storageLimitBytes" gorm:"not null;default:107374182400"`
-	CreatedByUserID string    `json:"createdByUserId" gorm:"index;size:36"`
-	CreatedAt       time.Time `json:"createdAt"`
-	UpdatedAt       time.Time `json:"updatedAt" gorm:"index"`
-}
-
-type TeamMember struct {
-	TeamID    string           `json:"teamId" gorm:"primaryKey;size:36;index:idx_team_members_user_status,priority:2"`
-	UserID    string           `json:"userId" gorm:"primaryKey;size:36;index:idx_team_members_user_status,priority:1"`
-	Role      TeamMemberRole   `json:"role" gorm:"index;size:24"`
-	Status    TeamMemberStatus `json:"status" gorm:"index:idx_team_members_user_status,priority:3;size:24"`
-	CreatedAt time.Time        `json:"createdAt"`
-	UpdatedAt time.Time        `json:"updatedAt"`
-}
-
-type TeamAsset struct {
-	ID            string             `json:"id" gorm:"primaryKey;size:36"`
-	TeamID        string             `json:"teamId" gorm:"index;size:36;uniqueIndex:idx_team_assets_source,priority:1;index:idx_team_assets_team_updated,priority:1"`
-	OwnerUserID   string             `json:"ownerUserId" gorm:"index;size:36;index:idx_team_assets_owner_updated,priority:1"`
-	SourceAssetID string             `json:"sourceAssetId" gorm:"size:80;uniqueIndex:idx_team_assets_source,priority:2"`
-	FolderID      string             `json:"folderId,omitempty" gorm:"index;size:36"`
-	Kind          string             `json:"kind" gorm:"index;size:24"`
-	Category      AssetCategory      `json:"category" gorm:"index;size:32"`
-	Status        AssetVersionStatus `json:"status" gorm:"index;size:24"`
-	Title         string             `json:"title" gorm:"size:240"`
-	PayloadJSON   string             `json:"payloadJson" gorm:"type:text"`
-	CreatedAt     time.Time          `json:"createdAt"`
-	UpdatedAt     time.Time          `json:"updatedAt" gorm:"index;index:idx_team_assets_owner_updated,priority:2;index:idx_team_assets_team_updated,priority:2"`
-}
-
-type TeamAssetFolder struct {
-	ID          string    `json:"id" gorm:"primaryKey;size:36"`
-	TeamID      string    `json:"teamId" gorm:"index;size:36"`
-	OwnerUserID string    `json:"ownerUserId" gorm:"index;size:36"`
-	Name        string    `json:"name" gorm:"size:120"`
-	NameKey     string    `json:"-" gorm:"size:120"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt" gorm:"index"`
-}
-
-// TeamAssetResource 只授予登录成员读取团队素材所引用资源的权限，不公开资源本身。
-type TeamAssetResource struct {
-	TeamAssetID string    `json:"teamAssetId" gorm:"primaryKey;size:36"`
-	ResourceID  string    `json:"resourceId" gorm:"primaryKey;index;size:36"`
-	CreatedAt   time.Time `json:"createdAt"`
-}
-
-// TeamAuditEvent is append-only and intentionally excludes request payloads and resource URLs.
-type TeamAuditEvent struct {
-	ID          string    `json:"id" gorm:"primaryKey;size:36"`
-	TeamID      string    `json:"teamId" gorm:"index:idx_team_audit_events_team_created,priority:1;size:36"`
-	ActorUserID string    `json:"actorUserId" gorm:"index;size:36"`
-	Action      string    `json:"action" gorm:"index;size:64"`
-	TargetType  string    `json:"targetType,omitempty" gorm:"size:32"`
-	TargetID    string    `json:"targetId,omitempty" gorm:"size:80"`
-	Summary     string    `json:"summary" gorm:"size:500"`
-	CreatedAt   time.Time `json:"createdAt" gorm:"index:idx_team_audit_events_team_created,priority:2"`
-}
-
-// TeamInvitation stores only a token digest. The plaintext invite token is returned once at creation.
-type TeamInvitation struct {
-	ID               string         `json:"id" gorm:"primaryKey;size:36"`
-	TeamID           string         `json:"teamId" gorm:"index:idx_team_invitations_team_created,priority:1;size:36"`
-	Role             TeamMemberRole `json:"role" gorm:"size:24"`
-	TokenHash        string         `json:"-" gorm:"uniqueIndex;size:64"`
-	CreatedByUserID  string         `json:"createdByUserId" gorm:"index;size:36"`
-	ExpiresAt        time.Time      `json:"expiresAt" gorm:"index"`
-	ConsumedAt       *time.Time     `json:"consumedAt,omitempty" gorm:"index"`
-	ConsumedByUserID string         `json:"consumedByUserId,omitempty" gorm:"size:36"`
-	RevokedAt        *time.Time     `json:"revokedAt,omitempty" gorm:"index"`
-	CreatedAt        time.Time      `json:"createdAt" gorm:"index:idx_team_invitations_team_created,priority:2"`
+// AssetFolder 是用户素材库的一层自定义分类；业务分类仍由 Asset.Category 表达。
+type AssetFolder struct {
+	ID        string    `json:"id" gorm:"primaryKey;size:36"`
+	UserID    string    `json:"userId" gorm:"index;size:36;uniqueIndex:idx_asset_folders_user_name,priority:1"`
+	Name      string    `json:"name" gorm:"size:80"`
+	NameKey   string    `json:"-" gorm:"size:80;uniqueIndex:idx_asset_folders_user_name,priority:2"`
+	Position  int       `json:"position" gorm:"index"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 type ProjectAssetLink struct {
@@ -200,8 +131,10 @@ type ProjectAssetCandidate struct {
 	UnitID          string        `json:"unitId,omitempty" gorm:"index;size:36;index:idx_project_asset_candidates_project_unit_status,priority:2"`
 	ShotID          string        `json:"shotId,omitempty" gorm:"index;size:36"`
 	Name            string        `json:"name" gorm:"size:240"`
+	NameKey         string        `json:"-" gorm:"index;size:240"`
 	Category        AssetCategory `json:"category" gorm:"index;size:32;index:idx_project_asset_candidates_project_status_category,priority:3"`
 	Status          string        `json:"status" gorm:"index;size:32;index:idx_project_asset_candidates_project_unit_status,priority:3;index:idx_project_asset_candidates_project_status_category,priority:2"`
+	Source          string        `json:"source,omitempty" gorm:"index;size:48"`
 	DetailsJSON     string        `json:"detailsJson" gorm:"type:text"`
 	ResolvedAssetID string        `json:"resolvedAssetId,omitempty" gorm:"index;size:80"`
 	CreatedAt       time.Time     `json:"createdAt"`

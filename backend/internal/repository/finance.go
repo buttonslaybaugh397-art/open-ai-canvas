@@ -3,6 +3,7 @@ package repository
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -69,7 +70,7 @@ type AdminRedeemCodeRow struct {
 
 func (r *Repository) ChannelModels(channelID string, includeDisabled bool) ([]model.ChannelModel, error) {
 	var items []model.ChannelModel
-	query := r.db.Where("channel_id = ?", channelID).Order("created_at asc")
+	query := r.db.Where("channel_id = ?", channelID).Order("sort_order asc, created_at asc, id asc")
 	if !includeDisabled {
 		query = query.Where("enabled = ?", true)
 	}
@@ -230,12 +231,43 @@ func (r *Repository) PopulateChannelModelPriceTier(item *model.ChannelModel) err
 	return r.attachChannelModelPriceTiers([]*model.ChannelModel{item})
 }
 
-func (r *Repository) DeleteChannelModel(channelID string, id string, modelsJSON string, now time.Time) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
+func (r *Repository) DeleteChannelModel(channelID string, id string, now time.Time) error {
+	deleted, err := r.DeleteChannelModels(channelID, []string{id}, now)
+	if err != nil {
+		return err
+	}
+	if deleted != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+// DeleteChannelModels atomically removes a selection and refreshes the channel's
+// compatibility model list. Any active route or task reference aborts the whole
+// transaction so a bulk action cannot leave the administrator with a partial result.
+func (r *Repository) DeleteChannelModels(channelID string, ids []string, now time.Time) (int64, error) {
+	ids = uniqueStrings(ids)
+	if len(ids) == 0 {
+		return 0, gorm.ErrRecordNotFound
+	}
+	var deleted int64
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockSystemChannelForModelMutation(tx, channelID); err != nil {
+			return err
+		}
+		var existing int64
+		if err := tx.Model(&model.ChannelModel{}).
+			Where("channel_id = ? AND id IN ?", channelID, ids).
+			Count(&existing).Error; err != nil {
+			return err
+		}
+		if existing != int64(len(ids)) {
+			return gorm.ErrRecordNotFound
+		}
 		var activeReferences int64
 		if err := tx.Table("logical_model_routes AS route").
 			Joins("JOIN logical_models AS logical_model ON logical_model.active_revision_id = route.logical_model_revision_id").
-			Where("route.channel_model_id = ?", id).
+			Where("route.channel_model_id IN ?", ids).
 			Count(&activeReferences).Error; err != nil {
 			return err
 		}
@@ -243,7 +275,7 @@ func (r *Repository) DeleteChannelModel(channelID string, id string, modelsJSON 
 			return ErrChannelModelInUse
 		}
 		if err := tx.Model(&model.Task{}).
-			Where("channel_model_id = ? AND status IN ?", id, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).
+			Where("channel_model_id IN ? AND status IN ?", ids, []model.TaskStatus{model.TaskStatusQueued, model.TaskStatusRunning}).
 			Count(&activeReferences).Error; err != nil {
 			return err
 		}
@@ -251,28 +283,63 @@ func (r *Repository) DeleteChannelModel(channelID string, id string, modelsJSON 
 			return ErrChannelModelInUse
 		}
 		result := tx.Model(&model.ChannelModel{}).
-			Where("id = ? AND channel_id = ?", id, channelID).
+			Where("id IN ? AND channel_id = ?", ids, channelID).
 			Updates(map[string]any{"enabled": false, "price_version": gorm.Expr("price_version + 1"), "updated_at": now})
 		if result.Error != nil {
 			return result.Error
 		}
-		if result.RowsAffected != 1 {
+		if result.RowsAffected != int64(len(ids)) {
 			return gorm.ErrRecordNotFound
 		}
-		if err := tx.Where("id = ? AND channel_id = ?", id, channelID).Delete(&model.ChannelModel{}).Error; err != nil {
+		if err := tx.Where("id IN ? AND channel_id = ?", ids, channelID).Delete(&model.ChannelModel{}).Error; err != nil {
 			return err
 		}
-		channelResult := tx.Model(&model.ModelChannel{}).
-			Where("id = ? AND scope = ?", channelID, model.ChannelScopeSystem).
-			Updates(map[string]any{"models_json": modelsJSON, "updated_at": now})
-		if channelResult.Error != nil {
-			return channelResult.Error
+		if err := refreshChannelModelNames(tx, channelID, now); err != nil {
+			return err
 		}
-		if channelResult.RowsAffected != 1 {
-			return gorm.ErrRecordNotFound
-		}
+		deleted = result.RowsAffected
 		return nil
 	})
+	return deleted, err
+}
+
+// SyncChannelModelNames serializes compatibility-list refreshes for a system
+// channel and derives the list from the committed channel_models rows. Callers
+// must not pass a previously-read snapshot because concurrent administrator
+// writes could otherwise overwrite a newer catalog.
+func (r *Repository) SyncChannelModelNames(channelID string, now time.Time) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := r.lockSystemChannelForModelMutation(tx, channelID); err != nil {
+			return err
+		}
+		return refreshChannelModelNames(tx, channelID, now)
+	})
+}
+
+func (r *Repository) lockSystemChannelForModelMutation(tx *gorm.DB, channelID string) error {
+	query := tx.Select("id").Where("id = ? AND scope = ?", channelID, model.ChannelScopeSystem)
+	if r.Dialect() == "postgres" {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	var channel model.ModelChannel
+	return query.First(&channel).Error
+}
+
+func refreshChannelModelNames(tx *gorm.DB, channelID string, now time.Time) error {
+	var names []string
+	if err := tx.Model(&model.ChannelModel{}).
+		Where("channel_id = ? AND enabled = ?", channelID, true).
+		Order("sort_order asc, created_at asc, id asc").
+		Pluck("model_key", &names).Error; err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(names)
+	if err != nil {
+		return err
+	}
+	return tx.Model(&model.ModelChannel{}).
+		Where("id = ? AND scope = ?", channelID, model.ChannelScopeSystem).
+		Updates(map[string]any{"models_json": string(encoded), "updated_at": now}).Error
 }
 
 func (r *Repository) CreateMissingChannelModels(items []model.ChannelModel) (int64, error) {
@@ -304,65 +371,6 @@ func (r *Repository) CreditAccounts(userIDs []string) ([]model.CreditAccount, er
 	return accounts, err
 }
 
-type CreditConsumptionWindow struct {
-	TodayFrom     time.Time
-	YesterdayFrom time.Time
-	TodayTo       time.Time
-	WeekFrom      time.Time
-	MonthFrom     time.Time
-}
-
-type CreditConsumptionTotals struct {
-	Today     int64
-	Yesterday int64
-	Week      int64
-	Month     int64
-}
-
-func (r *Repository) CreditConsumptions(userIDs []string, window CreditConsumptionWindow) (map[string]CreditConsumptionTotals, error) {
-	result := make(map[string]CreditConsumptionTotals, len(userIDs))
-	if len(userIDs) == 0 {
-		return result, nil
-	}
-
-	var rows []struct {
-		UserID    string `gorm:"column:user_id"`
-		Today     int64  `gorm:"column:today"`
-		Yesterday int64  `gorm:"column:yesterday"`
-		Week      int64  `gorm:"column:week"`
-		Month     int64  `gorm:"column:month"`
-	}
-	amountExpression := "CASE WHEN usage_available = TRUE OR actual_amount_microcredits > 0 THEN actual_amount_microcredits ELSE amount_microcredits END"
-	settledAtExpression := "COALESCE(settled_at, updated_at, created_at)"
-	comparisonExpression := settledAtExpression
-	parameterExpression := "?"
-	if r.db.Dialector.Name() == "sqlite" {
-		comparisonExpression = "julianday(" + settledAtExpression + ")"
-		parameterExpression = "julianday(?)"
-	}
-	query := r.db.Model(&model.BillingOrder{}).
-		Select(
-			"user_id, "+
-				"COALESCE(SUM(CASE WHEN "+comparisonExpression+" >= "+parameterExpression+" AND "+comparisonExpression+" < "+parameterExpression+" THEN "+amountExpression+" ELSE 0 END), 0) AS today, "+
-				"COALESCE(SUM(CASE WHEN "+comparisonExpression+" >= "+parameterExpression+" AND "+comparisonExpression+" < "+parameterExpression+" THEN "+amountExpression+" ELSE 0 END), 0) AS yesterday, "+
-				"COALESCE(SUM(CASE WHEN "+comparisonExpression+" >= "+parameterExpression+" AND "+comparisonExpression+" < "+parameterExpression+" THEN "+amountExpression+" ELSE 0 END), 0) AS week, "+
-				"COALESCE(SUM(CASE WHEN "+comparisonExpression+" >= "+parameterExpression+" AND "+comparisonExpression+" < "+parameterExpression+" THEN "+amountExpression+" ELSE 0 END), 0) AS month",
-			window.TodayFrom, window.TodayTo,
-			window.YesterdayFrom, window.TodayFrom,
-			window.WeekFrom, window.TodayTo,
-			window.MonthFrom, window.TodayTo,
-		).
-		Where("user_id IN ? AND status = ? AND (usage_available = TRUE OR actual_amount_microcredits > 0 OR amount_microcredits > 0)", userIDs, model.BillingStatusSettled).
-		Group("user_id")
-	if err := query.Find(&rows).Error; err != nil {
-		return nil, err
-	}
-	for _, row := range rows {
-		result[row.UserID] = CreditConsumptionTotals{Today: row.Today, Yesterday: row.Yesterday, Week: row.Week, Month: row.Month}
-	}
-	return result, nil
-}
-
 func (r *Repository) CreditLedger(userID string, entryType string, limit int, offset int) ([]model.CreditLedgerEntry, int64, error) {
 	var items []model.CreditLedgerEntry
 	var total int64
@@ -386,6 +394,30 @@ func (r *Repository) CreditLedger(userID string, entryType string, limit int, of
 	}
 	err := query.Order("created_at desc").Limit(limit).Offset(offset).Find(&items).Error
 	return items, total, err
+}
+
+type CreditConsumptionDay struct {
+	Day                string `json:"day" gorm:"column:day"`
+	AmountMicrocredits int64  `json:"amountMicrocredits" gorm:"column:amount_microcredits"`
+	Count              int64  `json:"count" gorm:"column:count"`
+}
+
+// CreditConsumptionDaily groups settled consumption ledger rows into Shanghai
+// calendar days. The dialect-specific expression is kept here so callers share
+// one timezone contract across SQLite development and PostgreSQL deployment.
+func (r *Repository) CreditConsumptionDaily(userID string, start time.Time, end time.Time) ([]CreditConsumptionDay, error) {
+	dayExpression := "strftime('%Y-%m-%d', created_at, '+8 hours')"
+	if r.Dialect() == "postgres" {
+		dayExpression = "to_char(created_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD')"
+	}
+	var items []CreditConsumptionDay
+	err := r.db.Model(&model.CreditLedgerEntry{}).
+		Select(dayExpression+" AS day, COALESCE(SUM(CASE WHEN amount_microcredits < 0 THEN -amount_microcredits ELSE amount_microcredits END), 0) AS amount_microcredits, COUNT(*) AS count").
+		Where("user_id = ? AND type = ? AND created_at >= ? AND created_at < ?", userID, model.CreditLedgerConsume, start, end).
+		Group(dayExpression).
+		Order(dayExpression + " ASC").
+		Scan(&items).Error
+	return items, err
 }
 
 func (r *Repository) CreditLedgerReferenceExists(referenceKey string) (bool, error) {
@@ -816,6 +848,111 @@ func (r *Repository) SettleBillingOrder(id string, providerRequestID string) err
 		}
 	}
 	return err
+}
+
+// RestoreRefundedBillingOrder compensates a billing order that was refunded
+// before an operator confirmed the upstream task had actually succeeded.
+//
+// The original reservation has already been returned to available credits, so
+// this transition charges the final amount directly from available credits.
+// The conditional refunded -> settled update keeps concurrent/repeated manual
+// recovery requests idempotent.
+func (r *Repository) RestoreRefundedBillingOrder(id string, providerRequestID string) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		var order model.BillingOrder
+		if err := tx.First(&order, "id = ?", id).Error; err != nil {
+			return err
+		}
+		if order.Status == model.BillingStatusSettled {
+			return nil
+		}
+		if order.Status != model.BillingStatusRefunded {
+			return ErrBillingStateConflict
+		}
+
+		actual := order.AmountMicrocredits
+		var usage *BillingUsage
+		if order.BillingMode == "token" {
+			if zeroPricedTokenOrder(order) {
+				actual = 0
+			} else {
+				var err error
+				usage, err = billingUsage(tx, id)
+				if err != nil {
+					return err
+				}
+				actual, err = tokenUsageAmount(order, usage)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		if actual < 0 {
+			return errors.New("invalid restored billing amount")
+		}
+
+		updated := tx.Model(&model.CreditAccount{}).
+			Where("user_id = ?", order.UserID).
+			Updates(map[string]any{
+				"available_microcredits": gorm.Expr("available_microcredits - ?", actual),
+				"version":                gorm.Expr("version + 1"),
+				"updated_at":             time.Now(),
+			})
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected != 1 {
+			return errors.New("credit account does not exist")
+		}
+
+		var account model.CreditAccount
+		if err := tx.First(&account, "user_id = ?", order.UserID).Error; err != nil {
+			return err
+		}
+		now := time.Now()
+		orderUpdates := map[string]any{
+			"status":                       model.BillingStatusSettled,
+			"actual_amount_microcredits":   actual,
+			"refunded_amount_microcredits": max(order.AmountMicrocredits-actual, int64(0)),
+			"refunded_at":                  nil,
+			"settled_at":                   &now,
+			"error":                        "",
+			"updated_at":                   now,
+		}
+		if providerRequestID != "" {
+			orderUpdates["provider_request_id"] = providerRequestID
+		}
+		if usage != nil {
+			orderUpdates["input_tokens"] = usage.InputTokens
+			orderUpdates["output_tokens"] = usage.OutputTokens
+			orderUpdates["cached_tokens"] = usage.CachedTokens
+			orderUpdates["usage_available"] = true
+		}
+		orderUpdate := tx.Model(&model.BillingOrder{}).
+			Where("id = ? AND status = ?", order.ID, model.BillingStatusRefunded).
+			Updates(orderUpdates)
+		if orderUpdate.Error != nil {
+			return orderUpdate.Error
+		}
+		if orderUpdate.RowsAffected != 1 {
+			return ErrBillingStateConflict
+		}
+
+		return tx.Create(&model.CreditLedgerEntry{
+			ID:                         newRepositoryID(),
+			UserID:                     order.UserID,
+			Type:                       model.CreditLedgerConsume,
+			AmountMicrocredits:         -actual,
+			AvailableDeltaMicrocredits: -actual,
+			AvailableAfterMicrocredits: account.AvailableMicrocredits,
+			ReservedAfterMicrocredits:  account.ReservedMicrocredits,
+			BillingOrderID:             order.ID,
+			Model:                      order.Model,
+			ChannelID:                  order.ChannelID,
+			Scene:                      order.Scene,
+			Note:                       "人工查询确认上游成功，退款订单重新扣费",
+		}).Error
+	})
 }
 
 func zeroPricedTokenOrder(order model.BillingOrder) bool {

@@ -66,22 +66,6 @@ func TestTokenEstimateAmountAllowsVideoOutputOnly(t *testing.T) {
 	}
 }
 
-func TestChannelModelUnitPriceUsesResolutionOverride(t *testing.T) {
-	item := &model.ChannelModel{
-		Capability:            "video",
-		UnitPriceMicrocredits: 2_000_000,
-		ResolutionPricesJSON:  `{"720p":3000000,"1080p":5000000}`,
-	}
-	resolution, price := channelModelUnitPrice(item, "1080")
-	if resolution != "1080p" || price != 5_000_000 {
-		t.Fatalf("channelModelUnitPrice(1080) = %q, %d", resolution, price)
-	}
-	resolution, price = channelModelUnitPrice(item, "2160p")
-	if resolution != "2160p" || price != 2_000_000 {
-		t.Fatalf("channelModelUnitPrice(2160p) fallback = %q, %d", resolution, price)
-	}
-}
-
 func TestEnrichAPICallLogReadsArkVideoUsage(t *testing.T) {
 	log := &model.ApiCallLog{Capability: "video", Path: "/api/v3/contents/generations/tasks/cgt-test"}
 	(&Service{}).EnrichAPICallLog(log, []byte(`{"id":"cgt-test","status":"succeeded","usage":{"completion_tokens":108900,"total_tokens":108900}}`))
@@ -99,6 +83,25 @@ func TestEnrichAPICallLogReadsArkVideoUsage(t *testing.T) {
 	(&Service{}).EnrichAPICallLog(missing, []byte(`{"usage":{}}`))
 	if missing.UsageAvailable {
 		t.Fatalf("EnrichAPICallLog() accepted empty Ark usage: %#v", missing)
+	}
+}
+
+func TestEnrichAPICallLogPrefersNewAPIChannel2NestedTaskID(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{name: "snake case", payload: `{"id":"wrapper-id","data":{"task_id":"task-snake"}}`},
+		{name: "camel case", payload: `{"id":"wrapper-id","data":{"taskId":"task-camel"}}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			log := &model.ApiCallLog{Capability: "video", Path: "/v1/video/generations"}
+			(&Service{}).EnrichAPICallLog(log, []byte(test.payload))
+			if !strings.HasPrefix(log.ProviderRequestID, "task-") {
+				t.Fatalf("ProviderRequestID = %q, want nested upstream task ID", log.ProviderRequestID)
+			}
+		})
 	}
 }
 

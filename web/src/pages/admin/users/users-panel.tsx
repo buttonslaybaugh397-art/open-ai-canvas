@@ -1,4 +1,5 @@
-import { App, Button, Checkbox, Dropdown, Input, Select } from "antd";
+import { App, Button, Dropdown, Input, Select } from "antd";
+import { Checkbox } from "@/components/ui/base/checkbox";
 import { Ban, Search, Settings2, UserPlus } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -11,6 +12,7 @@ import { useTableUrlState } from "../lib/use-table-url-state";
 import { AdminUserDetailDrawer } from "../components/admin-user-detail-drawer";
 import { createUserColumns, userColumnOptions, type UserColumnKey } from "./users-columns";
 import { AdminUserCreateDrawer, AdminUserEditDrawer } from "./users-drawer";
+import { AdminUserPasswordModal } from "./users-password-modal";
 
 const columnStorageKey = "admin-users-visible-columns";
 const allColumnKeys = userColumnOptions.map((item) => item.key);
@@ -25,6 +27,7 @@ export default function UsersPanel({ onUserChanged }: { onUserChanged?: (user: L
     const [loading, setLoading] = useState(true);
     const [detailUserId, setDetailUserId] = useState<string | null>(null);
     const [editingUser, setEditingUser] = useState<AdminUser | null>(null);
+    const [passwordUser, setPasswordUser] = useState<AdminUser | null>(null);
     const [createUserOpen, setCreateUserOpen] = useState(false);
     const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
     const [bulkDisabling, setBulkDisabling] = useState(false);
@@ -56,7 +59,7 @@ export default function UsersPanel({ onUserChanged }: { onUserChanged?: (user: L
             role: state.role === "all" ? undefined : state.role,
             status: state.status === "all" ? undefined : state.status,
             page: state.page,
-            limit: state.pageSize,
+            pageSize: state.pageSize,
         })
             .then((result) => {
                 if (sequence !== requestSequence.current) return;
@@ -75,6 +78,10 @@ export default function UsersPanel({ onUserChanged }: { onUserChanged?: (user: L
 
     const replaceUser = useCallback((nextUser: LocalUser) => {
         setUsers((items) => items.map((item) => item.id === nextUser.id ? { ...item, ...nextUser } : item));
+        const currentUser = useUserStore.getState().user;
+        if (currentUser?.id === nextUser.id) {
+            useUserStore.getState().setUser({ ...currentUser, ...nextUser });
+        }
         onUserChanged?.(nextUser);
     }, [onUserChanged]);
 
@@ -106,6 +113,7 @@ export default function UsersPanel({ onUserChanged }: { onUserChanged?: (user: L
         visibleColumns,
         onView: (user) => setDetailUserId(user.id),
         onEdit: (user) => { setCreateUserOpen(false); setEditingUser(user); },
+        onResetPassword: (user) => { setCreateUserOpen(false); setEditingUser(null); setPasswordUser(user); },
         onToggleStatus: toggleStatus,
     }), [actor?.id, toggleStatus, visibleColumns]);
 
@@ -182,6 +190,7 @@ export default function UsersPanel({ onUserChanged }: { onUserChanged?: (user: L
                                         {userColumnOptions.map((option) => (
                                             <label key={option.key} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted/60">
                                                 <Checkbox
+                                                    bare
                                                     checked={visibleColumns.has(option.key)}
                                                     disabled={option.locked}
                                                     onChange={(event) => setVisibleColumns((current) => {
@@ -227,6 +236,7 @@ export default function UsersPanel({ onUserChanged }: { onUserChanged?: (user: L
             <AdminUserDetailDrawer userId={detailUserId} previousUserId={previousUserId} nextUserId={nextUserId} onNavigate={setDetailUserId} onClose={() => setDetailUserId(null)} />
             <AdminUserCreateDrawer open={createUserOpen} onClose={() => setCreateUserOpen(false)} onCreated={addUser} />
             <AdminUserEditDrawer user={editingUser} actorId={actor?.id} onClose={() => setEditingUser(null)} onSaved={replaceUser} />
+            <AdminUserPasswordModal user={passwordUser} actorId={actor?.id} onClose={() => setPasswordUser(null)} onSelfReset={() => window.location.replace("/login?next=%2Fadmin%2Fusers")} />
         </>
     );
 }

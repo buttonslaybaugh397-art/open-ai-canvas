@@ -21,11 +21,12 @@ type AnalyticsFilter struct {
 
 type APICallLogFilter struct {
 	AnalyticsFilter
-	Keyword string
-	Status  string
-	IDs     []string
-	Page    int
-	Limit   int
+	RecordType string
+	Keyword    string
+	Status     string
+	IDs        []string
+	Page       int
+	Limit      int
 }
 
 func (r *Repository) RecordUserActivity(userID string, event string, count int, now time.Time) error {
@@ -60,12 +61,10 @@ func (r *Repository) RecordUserActivity(userID string, event string, count int, 
 	default:
 		return nil
 	}
-	if event != "login" {
-		activity.FirstActiveAt = &now
-		activity.LastActiveAt = &now
-		updates["first_active_at"] = gorm.Expr("COALESCE(user_daily_activities.first_active_at, ?)", now)
-		updates["last_active_at"] = now
-	}
+	activity.FirstActiveAt = &now
+	activity.LastActiveAt = &now
+	updates["first_active_at"] = gorm.Expr("COALESCE(user_daily_activities.first_active_at, ?)", now)
+	updates["last_active_at"] = now
 	return r.db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "day"}, {Name: "user_id"}},
 		DoUpdates: clause.Assignments(updates),
@@ -74,7 +73,7 @@ func (r *Repository) RecordUserActivity(userID string, event string, count int, 
 
 func (r *Repository) AnalyticsTasks(filter AnalyticsFilter) ([]model.Task, error) {
 	var tasks []model.Task
-	query := r.db.Select("id", "user_id", "type", "status", "operation", "provider", "model", "started_at", "completed_at", "created_at").Where("created_at >= ? AND created_at < ?", filter.From, filter.To)
+	query := r.db.Select("id", "user_id", "type", "status", "operation", "provider", "model", "billing_order_id", "input_json", "result_json", "started_at", "completed_at", "created_at").Where("created_at >= ? AND created_at < ?", filter.From, filter.To)
 	if filter.UserID != "" {
 		query = query.Where("user_id = ?", filter.UserID)
 	}
@@ -93,8 +92,27 @@ func (r *Repository) AnalyticsTasks(filter AnalyticsFilter) ([]model.Task, error
 
 func (r *Repository) AnalyticsAPICallLogs(filter AnalyticsFilter) ([]model.ApiCallLog, error) {
 	var logs []model.ApiCallLog
-	query := r.apiCallLogQuery(filter)
+	query := visibleAPICallLogQuery(r.apiCallLogQuery(filter)).Where("COALESCE(api_call_logs.request_kind, '') <> ?", "download")
 	return logs, query.Omit("RequestBody", "ResponseBody").Find(&logs).Error
+}
+
+func (r *Repository) AnalyticsBillingOrders(filter AnalyticsFilter) ([]model.BillingOrder, error) {
+	var orders []model.BillingOrder
+	query := r.db.Select("id", "user_id", "task_id", "channel_id", "model", "capability", "actual_amount_microcredits", "status", "settled_at", "created_at").
+		Where("status = ? AND COALESCE(settled_at, created_at) >= ? AND COALESCE(settled_at, created_at) < ?", model.BillingStatusSettled, filter.From, filter.To)
+	if filter.UserID != "" {
+		query = query.Where("user_id = ?", filter.UserID)
+	}
+	if filter.Model != "" {
+		query = query.Where("model = ?", filter.Model)
+	}
+	if filter.ChannelID != "" {
+		query = query.Where("channel_id = ?", filter.ChannelID)
+	}
+	if filter.Capability != "" {
+		query = query.Where("capability = ?", filter.Capability)
+	}
+	return orders, query.Find(&orders).Error
 }
 
 func (r *Repository) AnalyticsActivities(filter AnalyticsFilter) ([]model.UserDailyActivity, error) {
@@ -137,7 +155,14 @@ func (r *Repository) ExportAPICallLogs(filter APICallLogFilter, limit int) ([]mo
 }
 
 func (r *Repository) filteredAPICallLogQuery(filter APICallLogFilter) *gorm.DB {
-	query := visibleAPICallLogQuery(r.apiCallLogQuery(filter.AnalyticsFilter))
+	query := r.apiCallLogQuery(filter.AnalyticsFilter)
+	switch filter.RecordType {
+	case "download":
+		query = query.Where("api_call_logs.request_kind = ?", "download")
+	case "all":
+	default:
+		query = visibleAPICallLogQuery(query).Where("COALESCE(api_call_logs.request_kind, '') <> ?", "download")
+	}
 	if value := strings.TrimSpace(filter.Keyword); value != "" {
 		pattern := "%" + strings.ToLower(value) + "%"
 		query = query.
@@ -159,7 +184,7 @@ func (r *Repository) APICallLogTasks(ids []string) ([]model.Task, error) {
 		return []model.Task{}, nil
 	}
 	var tasks []model.Task
-	err := r.db.Select("id", "user_id", "type", "status", "result_json").Where("id IN ?", ids).Find(&tasks).Error
+	err := r.db.Select("id", "user_id", "type", "status", "model", "result_json").Where("id IN ?", ids).Find(&tasks).Error
 	return tasks, err
 }
 
@@ -182,8 +207,8 @@ func (r *Repository) HasAPICallLogForTask(taskID string) (bool, error) {
 }
 
 func visibleAPICallLogQuery(query *gorm.DB) *gorm.DB {
-	// 视频轮询属于一次生成调用的内部阶段，管理端只展示聚合后的创建主记录。
-	return query.Where("NOT (api_call_logs.capability = ? AND api_call_logs.request_kind IN ?)", "video", []string{"poll", "download"})
+	// 轮询属于一次生成调用的内部状态查询，管理端不单独展示。
+	return query.Where("COALESCE(api_call_logs.request_kind, '') <> ?", "poll")
 }
 
 func (r *Repository) VideoAPICallRoot(log model.ApiCallLog) (*model.ApiCallLog, error) {

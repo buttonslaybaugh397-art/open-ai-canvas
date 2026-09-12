@@ -2,7 +2,6 @@ package handler
 
 import (
 	"net/http"
-	"strconv"
 	"time"
 
 	"infinite-canvas/backend/internal/service"
@@ -17,8 +16,11 @@ func RegisterFinanceRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
-		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "30"))
+		page, limit, err := parsePaginationQuery(c, 30)
+		if err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
 		wallet, err := svc.Wallet(user, c.Query("type"), page, limit)
 		if err != nil {
 			failService(c, err)
@@ -65,27 +67,6 @@ func RegisterFinanceRoutes(r *gin.RouterGroup, svc *service.Service) {
 			return
 		}
 		ok(c, gin.H{"account": account, "granted": true})
-	})
-	r.GET("/admin/credit-consumption", func(c *gin.Context) {
-		user, err := currentUser(c, svc)
-		if err != nil {
-			failService(c, err)
-			return
-		}
-		userPage, _ := strconv.Atoi(c.DefaultQuery("userPage", "1"))
-		userLimit, _ := strconv.Atoi(c.DefaultQuery("userLimit", "20"))
-		modelPage, _ := strconv.Atoi(c.DefaultQuery("modelPage", "1"))
-		modelLimit, _ := strconv.Atoi(c.DefaultQuery("modelLimit", "20"))
-		result, err := svc.AdminCreditConsumption(user, service.AdminCreditConsumptionQuery{
-			From: c.Query("from"), To: c.Query("to"), UserID: c.Query("userId"), Model: c.Query("model"), Capability: c.Query("capability"),
-			UserPage: userPage, UserLimit: userLimit, ModelPage: modelPage, ModelLimit: modelLimit,
-		})
-		if err != nil {
-			failService(c, err)
-			return
-		}
-		c.Header("Cache-Control", "no-store")
-		ok(c, result)
 	})
 
 	r.GET("/admin/settings/linuxdo", func(c *gin.Context) {
@@ -235,8 +216,30 @@ func RegisterFinanceRoutes(r *gin.RouterGroup, svc *service.Service) {
 		if !enforceRateLimit(c, "admin-channel-models-fetch:"+user.ID+":"+c.Param("id"), 10, time.Minute) {
 			return
 		}
-		// 上游密钥只在 service 内使用，handler 仅返回去重后的模型标识和新增数量。
-		result, err := svc.FetchAdminChannelModels(c.Request.Context(), user, c.Param("id"))
+		// 上游密钥只在 service 内使用；点击拉取时仅返回目录，确认后才写入渠道模型。
+		models, err := svc.PreviewAdminChannelModels(c.Request.Context(), user, c.Param("id"))
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"models": models})
+	})
+	r.POST("/admin/channels/:id/models/import", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		if !enforceRateLimit(c, "admin-channel-models-import:"+user.ID+":"+c.Param("id"), 10, time.Minute) {
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10)
+		var req service.AdminChannelModelImportRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		result, err := svc.ImportAdminChannelModels(c.Request.Context(), user, c.Param("id"), req.Models)
 		if err != nil {
 			failService(c, err)
 			return
@@ -268,8 +271,46 @@ func RegisterFinanceRoutes(r *gin.RouterGroup, svc *service.Service) {
 	r.POST("/admin/channels/:id/models", func(c *gin.Context) {
 		saveChannelModel(c, svc, "")
 	})
+	r.POST("/admin/channels/:id/models/batch-delete", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<10)
+		var req struct {
+			ModelIDs []string `json:"modelIds"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		deleted, err := svc.DeleteAdminChannelModels(user, c.Param("id"), req.ModelIDs)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"deleted": deleted})
+	})
 	r.PATCH("/admin/channels/:id/models/:modelId", func(c *gin.Context) {
 		saveChannelModel(c, svc, c.Param("modelId"))
+	})
+	r.PATCH("/admin/channels/:id/models/:modelId/sort", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		var req service.ChannelModelSortRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		if err := svc.UpdateAdminChannelModelSort(user, c.Param("id"), c.Param("modelId"), req); err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"updated": true})
 	})
 	r.DELETE("/admin/channels/:id/models/:modelId", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
@@ -290,8 +331,11 @@ func RegisterFinanceRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
-		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+		page, limit, err := parsePaginationQuery(c, 20)
+		if err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
 		items, err := svc.AdminRedeemBatchPage(user, service.AdminListQuery{Keyword: c.Query("keyword"), Status: c.Query("validity"), Page: page, Limit: limit})
 		if err != nil {
 			failService(c, err)
@@ -328,8 +372,11 @@ func RegisterFinanceRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
-		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+		page, limit, err := parsePaginationQuery(c, 50)
+		if err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
 		result, err := svc.AdminRedeemCodePage(user, c.Param("id"), c.Query("status"), page, limit)
 		if err != nil {
 			failService(c, err)
@@ -387,8 +434,11 @@ func RegisterFinanceRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
-		page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+		page, limit, err := parsePaginationQuery(c, 20)
+		if err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
 		items, err := svc.AdminBillingOrderPage(user, service.AdminListQuery{Keyword: c.Query("keyword"), Status: c.DefaultQuery("status", "review"), Page: page, Limit: limit})
 		if err != nil {
 			failService(c, err)

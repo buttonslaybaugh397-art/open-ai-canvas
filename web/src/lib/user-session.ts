@@ -1,5 +1,5 @@
 import { getFeatureAvailability, type AuthSessionPayload } from "@/services/api/auth";
-import { getModelCatalog, listLogicalModels, type CapabilitySpec, type ModelCatalogResponse, type OptionConstraint, type PublicChannelCatalog, type PublicLogicalModel } from "@/services/api/logical-models";
+import { getModelCatalog, type CapabilitySpec, type ModelCatalogResponse, type OptionConstraint, type PublicChannelCatalog, type PublicLogicalModel } from "@/services/api/logical-models";
 import { localForageStorage } from "@/lib/localforage-storage";
 import { appQueryClient } from "@/lib/query-client";
 import { scopedLocalStorage, setActiveUserScope } from "@/lib/user-scope";
@@ -7,10 +7,11 @@ import { CANVAS_STORE_KEY, flushCanvasStorePersistence, useCanvasStore } from "@
 import { CANVAS_HISTORY_STORE_KEY, useCanvasHistoryStore } from "@/stores/canvas/use-canvas-history-store";
 import { ASSET_STORE_KEY, flushAssetStorePersistence, useAssetStore } from "@/stores/use-asset-store";
 import { CONFIG_STORE_KEY, PUBLIC_MODEL_CATALOG_ID, defaultConfig, normalizeConfigSnapshot, useConfigStore, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
+import { CREATION_PREFERENCES_STORE_KEY, useCreationPreferencesStore } from "@/stores/use-creation-preferences-store";
 import { defaultModelCapabilityConfig, STANDARD_IMAGE_SIZE_VALUES, type ModelCapabilityConfig } from "@/lib/model-capabilities";
 import { useUserStore } from "@/stores/use-user-store";
 import { PLUGIN_STORE_KEY, usePluginStore } from "@/stores/use-plugin-store";
-import { installRemoteUserDataAutoSync, resetRemoteUserDataSync, syncRemoteUserData, withRemoteUserDataSyncExclusive } from "@/services/user-data-sync";
+import { initializeRemoteUserDataSession, installRemoteUserDataAutoSync, resetRemoteUserDataSync, withRemoteUserDataSyncExclusive } from "@/services/user-data-sync";
 import { withGenerationConsumersPaused } from "@/services/generation-consumer-lifecycle";
 
 export async function switchUserStorageScope(userId?: string | null) {
@@ -38,30 +39,32 @@ export async function applyUserSession(payload: AuthSessionPayload) {
             localForageStorage.getItem(PLUGIN_STORE_KEY),
         ]);
         const persistedConfig = scopedLocalStorage.getItem(CONFIG_STORE_KEY);
+        const persistedCreationPreferences = scopedLocalStorage.getItem(CREATION_PREFERENCES_STORE_KEY);
         usePluginStore.setState({ hydrated: false, runtimeStatuses: {}, pluginStates: {} });
         useUserStore.getState().setUser(payload.user);
         useUserStore.getState().setRuntimeLimits(payload.runtimeLimits);
         useUserStore.getState().setDrawingEngine(payload.drawingEngine);
         useUserStore.getState().setFeatures(payload.features);
-        await Promise.all([useCanvasStore.persist.rehydrate(), useCanvasHistoryStore.persist.rehydrate(), useAssetStore.persist.rehydrate(), useConfigStore.persist.rehydrate(), usePluginStore.persist.rehydrate()]);
+        await Promise.all([
+            useCanvasStore.persist.rehydrate(),
+            useCanvasHistoryStore.persist.rehydrate(),
+            useAssetStore.persist.rehydrate(),
+            useConfigStore.persist.rehydrate(),
+            usePluginStore.persist.rehydrate(),
+            useCreationPreferencesStore.persist.rehydrate(),
+        ]);
         // Zustand 在目标 scope 没有快照时会保留旧内存，必须显式恢复该 scope 的空状态。
         if (!persistedCanvas) useCanvasStore.setState({ projects: [] });
         if (!persistedCanvasHistory) useCanvasHistoryStore.setState({ deletedProjects: [] });
         if (!persistedAssets) useAssetStore.setState({ assets: [] });
         if (!persistedPlugins) usePluginStore.setState({ installations: [], runtimeStatuses: {}, pluginStates: {} });
+        if (!persistedCreationPreferences) useCreationPreferencesStore.setState({ preferences: {} });
         if (!persistedConfig) {
             // 只有首次配置缺失时才生成能力推荐；已有配置中的空数组代表用户明确清空。
-            // 使用统一模型目录接口
             const catalog = await getModelCatalog();
-            let channels: ModelChannel[] = [];
-            if (catalog.source === "frontend" && catalog.models) {
-                channels = managedModelChannels(catalog.models);
-            } else if (catalog.source === "system" && catalog.channels) {
-                channels = systemChannelModelChannels(catalog.channels);
-            }
             const initialSystemConfig = {
                 ...defaultConfig,
-                channels,
+                channels: modelCatalogChannels(catalog),
                 imageModels: undefined,
                 videoModels: undefined,
                 textModels: undefined,
@@ -69,19 +72,12 @@ export async function applyUserSession(payload: AuthSessionPayload) {
             };
             useConfigStore.getState().replaceConfig(normalizeConfigSnapshot({ config: initialSystemConfig }).config);
         } else {
-            // 已有配置时也需要合并最新的系统渠道
             const catalog = await getModelCatalog();
-            if (catalog.source === "frontend" && catalog.models) {
-                useConfigStore.getState().mergeSystemChannels(managedModelChannels(catalog.models));
-            } else if (catalog.source === "system" && catalog.channels) {
-                useConfigStore.getState().mergeSystemChannels(systemChannelModelChannels(catalog.channels));
-            }
+            useConfigStore.getState().mergeSystemChannels(modelCatalogChannels(catalog));
         }
         installRemoteUserDataAutoSync();
         if (payload.user?.id) {
-            // 登录后的服务端快照是实体基线；基线完成前不开放工作区写操作。
-            // 拉取失败时保留本地缓存供只读降级，但远端写入口会明确拒绝，不能把旧缓存上传成真相。
-            await syncRemoteUserData(payload.user.id).catch((error) => console.warn("登录后云端数据基线建立失败，已停止远端写入", error));
+            await initializeRemoteUserDataSession(payload.user.id);
         } else resetRemoteUserDataSync();
     } finally {
         useUserStore.getState().setHydrated(true);
@@ -89,16 +85,21 @@ export async function applyUserSession(payload: AuthSessionPayload) {
 }
 
 export async function refreshSystemChannels() {
-    // 使用统一模型目录接口，根据 frontendModelsEnabled 自动返回前台模型或系统渠道模型
     const catalog = await getModelCatalog();
+    useConfigStore.getState().mergeSystemChannels(modelCatalogChannels(catalog));
+}
 
-    if (catalog.source === "frontend" && catalog.models) {
-        // 前台模型模式
-        useConfigStore.getState().mergeSystemChannels(managedModelChannels(catalog.models));
-    } else if (catalog.source === "system" && catalog.channels) {
-        // 系统渠道模式
-        useConfigStore.getState().mergeSystemChannels(systemChannelModelChannels(catalog.channels));
+// 模型目录来源决定数据形状；这里统一做运行时收口，避免畸形响应被当成“空目录”写入用户配置。
+function modelCatalogChannels(catalog: ModelCatalogResponse): ModelChannel[] {
+    if (catalog.source === "frontend") {
+        if (!Array.isArray(catalog.models)) throw new Error("模型目录响应缺少前台模型列表");
+        return managedModelChannels(catalog.models);
     }
+    if (catalog.source === "system") {
+        if (!Array.isArray(catalog.channels)) throw new Error("模型目录响应缺少系统渠道列表");
+        return systemChannelModelChannels(catalog.channels);
+    }
+    throw new Error("模型目录响应来源无效");
 }
 
 function managedModelChannels(models: PublicLogicalModel[]) {
@@ -113,9 +114,7 @@ function managedModelChannels(models: PublicLogicalModel[]) {
         scope: "system",
         enabled: true,
         models: availableModels.map((item) => item.id),
-        modelAliases: Object.fromEntries(
-            availableModels.flatMap((item) => (item.legacyModelIds || []).map((legacyID) => [legacyID, item.id])),
-        ),
+        modelAliases: Object.fromEntries(availableModels.flatMap((item) => (item.legacyModelIds || []).map((legacyID) => [legacyID, item.id]))),
         modelCosts: availableModels.map((item) => ({
             model: item.id,
             displayName: item.name,
@@ -132,7 +131,7 @@ function managedModelChannels(models: PublicLogicalModel[]) {
             logicalModelId: item.id,
             logicalCapabilitySpec: item.capabilitySpec,
             logicalCapabilityProfiles: item.capabilityProfiles,
-			logicalPriceTiers: item.priceTiers,
+            logicalPriceTiers: item.priceTiers,
             defaultOptions: item.defaultOptions,
         })),
     };
@@ -140,12 +139,13 @@ function managedModelChannels(models: PublicLogicalModel[]) {
 }
 
 // 系统渠道模型转换为前端配置格式
-function systemChannelModelChannels(channels: PublicChannelCatalog[]): ModelChannel[] {
+export function systemChannelModelChannels(channels: PublicChannelCatalog[]): ModelChannel[] {
     return channels.map((channel) => {
         const availableModels = channel.models.filter((m) => m.available);
         return {
             id: channel.id,
             name: channel.displayName,
+            sortOrder: channel.sortOrder,
             // 系统渠道必须走带渠道 ID 的站内代理；/api 只是业务 API 根路径，
             // 不能作为模型请求的运行时 Base URL 传给 channelRequest。
             baseUrl: `/api/${channel.id}`,

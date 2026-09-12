@@ -3,7 +3,6 @@ package service
 import (
 	"encoding/json"
 	"errors"
-	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -23,6 +22,7 @@ type CanvasProjectsSyncRequest struct {
 
 type UserDataSummary struct {
 	ID        string    `json:"id"`
+	FolderID  string    `json:"folderId,omitempty"`
 	Kind      string    `json:"kind,omitempty"`
 	Category  string    `json:"category,omitempty"`
 	Status    string    `json:"status,omitempty"`
@@ -55,7 +55,7 @@ func (s *Service) UserAssetSummaries(userID string) ([]UserDataSummary, error) {
 	}
 	result := make([]UserDataSummary, 0, len(assets))
 	for _, asset := range assets {
-		result = append(result, UserDataSummary{ID: asset.ID, Kind: asset.Kind, Category: string(asset.Category), Status: string(asset.Status), Title: asset.Title, CreatedAt: asset.CreatedAt, UpdatedAt: asset.UpdatedAt})
+		result = append(result, UserDataSummary{ID: asset.ID, FolderID: asset.FolderID, Kind: asset.Kind, Category: string(asset.Category), Status: string(asset.Status), Title: asset.Title, CreatedAt: asset.CreatedAt, UpdatedAt: asset.UpdatedAt})
 	}
 	return result, nil
 }
@@ -65,7 +65,7 @@ func (s *Service) UserAsset(userID string, id string) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	return json.RawMessage(asset.PayloadJSON), nil
+	return clientAssetPayload(*asset), nil
 }
 
 func (s *Service) UpsertUserAsset(userID string, raw json.RawMessage) (UserDataSummary, error) {
@@ -79,9 +79,22 @@ func (s *Service) UpsertUserAsset(userID string, raw json.RawMessage) (UserDataS
 	}
 	s.storageMu.Lock()
 	defer s.storageMu.Unlock()
+	if asset.FolderID != "" {
+		if _, err := s.repo.AssetFolderForUser(userID, asset.FolderID); err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return UserDataSummary{}, BadAuthRequest("素材分类不存在")
+			}
+			return UserDataSummary{}, err
+		}
+	}
 	existing, existingErr := s.repo.AssetForUser(userID, asset.ID)
 	if existingErr != nil && !errors.Is(existingErr, gorm.ErrRecordNotFound) {
 		return UserDataSummary{}, existingErr
+	}
+	if existing != nil && existing.PayloadJSON != asset.PayloadJSON {
+		if err := s.validateAssetCanvasReferences(userID, asset); err != nil {
+			return UserDataSummary{}, err
+		}
 	}
 	existingBytes := int64(0)
 	if existing != nil {
@@ -100,7 +113,7 @@ func (s *Service) UpsertUserAsset(userID string, raw json.RawMessage) (UserDataS
 	if existingErr != nil {
 		s.recordActivity(userID, "asset", 1)
 	}
-	return UserDataSummary{ID: asset.ID, Kind: asset.Kind, Category: string(asset.Category), Status: string(asset.Status), Title: asset.Title, CreatedAt: asset.CreatedAt, UpdatedAt: asset.UpdatedAt}, nil
+	return UserDataSummary{ID: asset.ID, FolderID: asset.FolderID, Kind: asset.Kind, Category: string(asset.Category), Status: string(asset.Status), Title: asset.Title, CreatedAt: asset.CreatedAt, UpdatedAt: asset.UpdatedAt}, nil
 }
 
 func (s *Service) DeleteUserAsset(userID string, id string) error {
@@ -116,8 +129,8 @@ func (s *Service) UserAssets(userID string) ([]json.RawMessage, error) {
 	}
 	result := make([]json.RawMessage, 0, len(assets))
 	for _, asset := range assets {
-		if strings.TrimSpace(asset.PayloadJSON) != "" {
-			result = append(result, json.RawMessage(asset.PayloadJSON))
+		if payload := clientAssetPayload(asset); len(payload) > 0 {
+			result = append(result, payload)
 		}
 	}
 	return result, nil
@@ -140,6 +153,9 @@ func (s *Service) ReplaceUserAssets(userID string, req AssetsSyncRequest) ([]jso
 	}
 	s.storageMu.Lock()
 	defer s.storageMu.Unlock()
+	if err := s.validateAssetReplacementCanvasReferences(userID, assets); err != nil {
+		return nil, err
+	}
 	usage, err := s.repo.UserStorageUsage(userID)
 	if err != nil {
 		return nil, err
@@ -201,6 +217,9 @@ func (s *Service) UpsertUserCanvasProject(userID string, raw json.RawMessage) (U
 	}
 	s.storageMu.Lock()
 	defer s.storageMu.Unlock()
+	if err := s.validateCanvasMediaAssets(userID, raw); err != nil {
+		return UserDataSummary{}, err
+	}
 	existing, existingErr := s.repo.CanvasProjectForUser(userID, project.ID)
 	if existingErr != nil && !errors.Is(existingErr, gorm.ErrRecordNotFound) {
 		return UserDataSummary{}, existingErr
@@ -216,12 +235,8 @@ func (s *Service) UpsertUserCanvasProject(userID string, raw json.RawMessage) (U
 	if err := validateStructuredStorageQuotaWithPolicy(usage, "canvas", errors.Is(existingErr, gorm.ErrRecordNotFound), int64(len(raw))-existingBytes, policy.Resource); err != nil {
 		return UserDataSummary{}, err
 	}
-	accepted, err := s.repo.UpsertCanvasProject(&project)
-	if err != nil {
+	if err := s.repo.UpsertCanvasProject(&project); err != nil {
 		return UserDataSummary{}, err
-	}
-	if !accepted {
-		return UserDataSummary{}, NewAppError(http.StatusConflict, "画布已在其他页面更新，请刷新后继续编辑")
 	}
 	if existingErr != nil || existing.PayloadJSON != project.PayloadJSON || existing.Title != project.Title {
 		s.recordActivity(userID, "canvas", 1)
@@ -250,6 +265,11 @@ func (s *Service) ReplaceUserCanvasProjects(userID string, req CanvasProjectsSyn
 	}
 	s.storageMu.Lock()
 	defer s.storageMu.Unlock()
+	for _, raw := range req.Projects {
+		if err := s.validateCanvasMediaAssets(userID, raw); err != nil {
+			return nil, err
+		}
+	}
 	usage, err := s.repo.UserStorageUsage(userID)
 	if err != nil {
 		return nil, err
@@ -272,6 +292,7 @@ func assetFromJSON(userID string, raw json.RawMessage) (model.Asset, error) {
 	}
 	var payload struct {
 		ID               string `json:"id"`
+		FolderID         string `json:"folderId"`
 		Kind             string `json:"kind"`
 		Category         string `json:"category"`
 		Status           string `json:"status"`
@@ -297,10 +318,10 @@ func assetFromJSON(userID string, raw json.RawMessage) (model.Asset, error) {
 	if utf8.RuneCountInString(primaryVersionID) > 36 {
 		return model.Asset{}, BadAuthRequest("素材主版本 ID 不能超过 36 个字符")
 	}
-	category := model.AssetCategory(strings.TrimSpace(payload.Category))
-	if category == "" {
-		category = model.AssetCategoryOther
+	if err := validateUserAssetDocument(raw); err != nil {
+		return model.Asset{}, err
 	}
+	category := model.NormalizeAssetCategory(model.AssetCategory(payload.Category), payload.Kind)
 	status := model.AssetVersionStatus(strings.TrimSpace(payload.Status))
 	if status == "" {
 		status = model.AssetVersionStatusConfirmed
@@ -308,6 +329,7 @@ func assetFromJSON(userID string, raw json.RawMessage) (model.Asset, error) {
 	return model.Asset{
 		ID:               id,
 		UserID:           userID,
+		FolderID:         strings.TrimSpace(payload.FolderID),
 		Kind:             strings.TrimSpace(payload.Kind),
 		Category:         category,
 		Status:           status,

@@ -61,8 +61,8 @@ const rateFields: PolicyField[] = [
     { group: "request", name: "sessionFilePerMinute", label: "会话附件", extra: "每账号每分钟上传会话附件的次数。", unit: "次/分钟", max: 999_999 },
     { group: "request", name: "assetWritePerMinute", label: "素材写入", extra: "每账号每分钟写入素材的次数。", unit: "次/分钟", max: 999_999 },
     { group: "request", name: "canvasWritePerMinute", label: "画布写入", extra: "每账号每分钟写入画布的次数。", unit: "次/分钟", max: 999_999 },
-    { group: "request", name: "registerPerHour", label: "账号注册", extra: "每 IP 每小时允许注册的次数。", unit: "次/小时", max: 999_999 },
-    { group: "request", name: "emailCodePerHour", label: "邮箱验证码", extra: "每 IP 每小时允许请求验证码的次数。", unit: "次/小时", max: 999_999 },
+    { group: "request", name: "registerPerHour", label: "账号注册", extra: "每 IP 每小时允许的注册请求次数，包含失败尝试；多人共用网络时建议至少 30 次。", unit: "次/小时", max: 999_999 },
+    { group: "request", name: "emailCodePerHour", label: "邮箱验证码", extra: "每 IP 每小时的验证码请求次数，建议至少 60 次；单邮箱另限每小时 10 次，发送后需间隔 60 秒。", unit: "次/小时", max: 999_999 },
     { group: "request", name: "loginIPPerTenMinutes", label: "登录 IP", extra: "每 IP 每 10 分钟允许登录的次数。", unit: "次/10分钟", max: 999_999 },
     { group: "request", name: "loginAccountPerTenMinutes", label: "登录账号组合", extra: "同一 IP 与账号组合每 10 分钟的登录次数。", unit: "次/10分钟", max: 999_999 },
     { group: "request", name: "systemRelayPerMinute", label: "系统渠道中转", extra: "每账号每分钟使用系统渠道的请求数。", unit: "次/分钟", max: 999_999 },
@@ -70,10 +70,10 @@ const rateFields: PolicyField[] = [
 ];
 
 const relayFields: PolicyField[] = [
-    { group: "request", name: "customRelayConcurrency", label: "自定义渠道并发", extra: "单账号同时进行的自定义渠道中转请求数。", unit: "个", max: 999 },
-    { group: "request", name: "customRelayRequestMB", label: "自定义渠道请求体", extra: "中转到自定义渠道的请求体上限。", unit: "MB", max: 999 },
-    { group: "request", name: "customRelayResponseMB", label: "自定义渠道响应体", extra: "自定义渠道上游响应的读取上限。", unit: "MB", max: 999 },
-    { group: "request", name: "customRelayTimeoutMinutes", label: "自定义渠道超时", extra: "自定义渠道单次中转请求的最长等待时间。", unit: "分钟", max: 9_999 },
+    { group: "request", name: "customRelayConcurrency", label: "自定义渠道并发", extra: "单账号同时进行的自定义渠道请求数。", unit: "个", max: 999 },
+    { group: "request", name: "customRelayRequestMB", label: "自定义渠道请求体", extra: "中转到自定义上游的请求体上限。", unit: "MB", max: 999 },
+    { group: "request", name: "customRelayResponseMB", label: "自定义渠道响应体", extra: "自定义上游 JSON 与流式响应的读取上限。", unit: "MB", max: 999 },
+    { group: "request", name: "customRelayTimeoutMinutes", label: "自定义渠道超时", extra: "自定义渠道连接与响应的最长等待时间。", unit: "分钟", max: 9_999 },
     { group: "request", name: "systemRelayRequestMB", label: "系统渠道请求体", extra: "中转到系统渠道的请求体上限。", unit: "MB", max: 999 },
     { group: "request", name: "systemRelayResponseMB", label: "系统渠道响应体", extra: "系统渠道上游响应的读取上限。", unit: "MB", max: 999 },
     { group: "request", name: "channelCircuitFailureCount", label: "熔断失败次数", extra: "一分钟内连续失败达到该值后打开熔断。", unit: "次", max: 999 },

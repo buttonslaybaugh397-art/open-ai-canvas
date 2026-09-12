@@ -19,89 +19,38 @@ import (
 
 const CreditScale int64 = 1_000_000
 
+var walletConsumptionLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
+
+type WalletConsumptionDay struct {
+	Day                string `json:"day"`
+	AmountMicrocredits int64  `json:"amountMicrocredits"`
+	Count              int64  `json:"count"`
+}
+
+type WalletConsumptionSummary struct {
+	Timezone              string                 `json:"timezone"`
+	TodayMicrocredits     int64                  `json:"todayMicrocredits"`
+	YesterdayMicrocredits int64                  `json:"yesterdayMicrocredits"`
+	WeekMicrocredits      int64                  `json:"weekMicrocredits"`
+	MonthMicrocredits     int64                  `json:"monthMicrocredits"`
+	Daily                 []WalletConsumptionDay `json:"daily"`
+}
+
 type WalletSummary struct {
 	Account     model.CreditAccount       `json:"account"`
 	Entries     []model.CreditLedgerEntry `json:"entries"`
 	Total       int64                     `json:"total"`
 	Page        int                       `json:"page"`
-	Limit       int                       `json:"limit"`
-	Consumption CreditConsumptionStats    `json:"consumption"`
+	Limit       int                       `json:"pageSize"`
 	Policy      PublicCreditPolicy        `json:"policy"`
-}
-
-type CreditConsumptionStats struct {
-	TodayMicrocredits     int64 `json:"todayMicrocredits"`
-	YesterdayMicrocredits int64 `json:"yesterdayMicrocredits"`
-	WeekMicrocredits      int64 `json:"weekMicrocredits"`
-	MonthMicrocredits     int64 `json:"monthMicrocredits"`
-}
-
-var creditConsumptionLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
-
-func creditConsumptionWindow(now time.Time) repository.CreditConsumptionWindow {
-	localNow := now.In(creditConsumptionLocation)
-	todayStart := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, creditConsumptionLocation)
-	daysSinceMonday := (int(todayStart.Weekday()) + 6) % 7
-	weekStart := todayStart.AddDate(0, 0, -daysSinceMonday)
-	monthStart := time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, creditConsumptionLocation)
-	return repository.CreditConsumptionWindow{TodayFrom: todayStart, YesterdayFrom: todayStart.AddDate(0, 0, -1), TodayTo: localNow, WeekFrom: weekStart, MonthFrom: monthStart}
-}
-
-func creditConsumptionStatsFromTotals(totals repository.CreditConsumptionTotals) CreditConsumptionStats {
-	return CreditConsumptionStats{TodayMicrocredits: totals.Today, YesterdayMicrocredits: totals.Yesterday, WeekMicrocredits: totals.Week, MonthMicrocredits: totals.Month}
-}
-
-func (s *Service) creditConsumptionStatsForUsers(userIDs []string) (map[string]CreditConsumptionStats, error) {
-	totals, err := s.repo.CreditConsumptions(userIDs, creditConsumptionWindow(time.Now()))
-	if err != nil {
-		return nil, err
-	}
-	result := make(map[string]CreditConsumptionStats, len(totals))
-	for userID, value := range totals {
-		result[userID] = creditConsumptionStatsFromTotals(value)
-	}
-	return result, nil
-}
-
-func decodeResolutionPrices(encoded string) map[string]int64 {
-	prices := make(map[string]int64)
-	if strings.TrimSpace(encoded) == "" {
-		return prices
-	}
-	if err := json.Unmarshal([]byte(encoded), &prices); err != nil {
-		return map[string]int64{}
-	}
-	return prices
-}
-
-func channelModelUnitPrice(item *model.ChannelModel, requestedResolution string) (string, int64) {
-	if item == nil {
-		return "", 0
-	}
-	if item.Capability != "video" {
-		return "", item.UnitPriceMicrocredits
-	}
-	resolution := strings.TrimSpace(requestedResolution)
-	if resolution == "" || strings.EqualFold(resolution, "auto") || strings.EqualFold(resolution, "default") {
-		if profile, err := DecodeModelCapabilityConfig(item.CapabilityConfigJSON); err == nil && profile != nil && profile.Video != nil {
-			resolution = profile.Video.DefaultResolution
-		}
-	}
-	if strings.TrimSpace(resolution) == "" {
-		return "", item.UnitPriceMicrocredits
-	}
-	resolution = normalizeResolution(resolution)
-	if price, ok := decodeResolutionPrices(item.ResolutionPricesJSON)[resolution]; ok {
-		return resolution, price
-	}
-	return resolution, item.UnitPriceMicrocredits
+	Consumption WalletConsumptionSummary  `json:"consumption"`
 }
 
 type RedeemBatchPage struct {
 	Batches []model.RedeemBatch `json:"batches"`
 	Total   int64               `json:"total"`
 	Page    int                 `json:"page"`
-	Limit   int                 `json:"limit"`
+	Limit   int                 `json:"pageSize"`
 }
 
 type AdminRedeemCodeDetail struct {
@@ -124,14 +73,14 @@ type AdminRedeemCodePage struct {
 	PlaintextAvailable bool                    `json:"plaintextAvailable"`
 	Total              int64                   `json:"total"`
 	Page               int                     `json:"page"`
-	Limit              int                     `json:"limit"`
+	Limit              int                     `json:"pageSize"`
 }
 
 type BillingOrderPage struct {
 	Orders []model.BillingOrder `json:"orders"`
 	Total  int64                `json:"total"`
 	Page   int                  `json:"page"`
-	Limit  int                  `json:"limit"`
+	Limit  int                  `json:"pageSize"`
 }
 
 type CreateRedeemBatchRequest struct {
@@ -198,18 +147,65 @@ func (s *Service) Wallet(user *model.User, entryType string, page int, limit int
 	if err != nil {
 		return nil, err
 	}
+	consumption, err := s.walletConsumption(user.ID, time.Now())
+	if err != nil {
+		return nil, err
+	}
 	policy, err := s.publicCreditPolicy(user.ID)
 	if err != nil {
 		return nil, err
 	}
-	consumptionByUserID, err := s.creditConsumptionStatsForUsers([]string{user.ID})
-	if err != nil {
-		return nil, err
+	return &WalletSummary{Account: *account, Entries: entries, Total: total, Page: page, Limit: limit, Policy: policy, Consumption: consumption}, nil
+}
+
+func (s *Service) walletConsumption(userID string, now time.Time) (WalletConsumptionSummary, error) {
+	localNow := now.In(walletConsumptionLocation)
+	todayStart := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, walletConsumptionLocation)
+	yesterdayStart := todayStart.AddDate(0, 0, -1)
+	weekStart := todayStart.AddDate(0, 0, -((int(todayStart.Weekday()) + 6) % 7))
+	monthStart := time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, walletConsumptionLocation)
+	queryStart := monthStart
+	for _, candidate := range []time.Time{yesterdayStart, weekStart} {
+		if candidate.Before(queryStart) {
+			queryStart = candidate
+		}
 	}
-	return &WalletSummary{
-		Account: *account, Entries: entries, Total: total, Page: page, Limit: limit,
-		Consumption: consumptionByUserID[user.ID], Policy: policy,
-	}, nil
+	rows, err := s.repo.CreditConsumptionDaily(userID, queryStart, todayStart.AddDate(0, 0, 1))
+	if err != nil {
+		return WalletConsumptionSummary{}, err
+	}
+	return buildWalletConsumptionSummary(localNow, rows), nil
+}
+
+func buildWalletConsumptionSummary(now time.Time, rows []repository.CreditConsumptionDay) WalletConsumptionSummary {
+	localNow := now.In(walletConsumptionLocation)
+	todayStart := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, walletConsumptionLocation)
+	yesterdayStart := todayStart.AddDate(0, 0, -1)
+	weekStart := todayStart.AddDate(0, 0, -((int(todayStart.Weekday()) + 6) % 7))
+	monthStart := time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, walletConsumptionLocation)
+	amountByDay := make(map[string]repository.CreditConsumptionDay, len(rows))
+	for _, row := range rows {
+		amountByDay[row.Day] = row
+	}
+	summary := WalletConsumptionSummary{Timezone: walletConsumptionLocation.String(), Daily: make([]WalletConsumptionDay, 0, todayStart.Day())}
+	for day := monthStart; !day.After(todayStart); day = day.AddDate(0, 0, 1) {
+		key := day.Format("2006-01-02")
+		row := amountByDay[key]
+		summary.Daily = append(summary.Daily, WalletConsumptionDay{Day: key, AmountMicrocredits: row.AmountMicrocredits, Count: row.Count})
+		summary.MonthMicrocredits += row.AmountMicrocredits
+	}
+	for _, row := range rows {
+		if row.Day == todayStart.Format("2006-01-02") {
+			summary.TodayMicrocredits += row.AmountMicrocredits
+		}
+		if row.Day == yesterdayStart.Format("2006-01-02") {
+			summary.YesterdayMicrocredits += row.AmountMicrocredits
+		}
+		if row.Day >= weekStart.Format("2006-01-02") && row.Day <= todayStart.Format("2006-01-02") {
+			summary.WeekMicrocredits += row.AmountMicrocredits
+		}
+	}
+	return summary
 }
 
 func (s *Service) RedeemCredits(user *model.User, code string, redeemedIP string) (*model.CreditAccount, error) {

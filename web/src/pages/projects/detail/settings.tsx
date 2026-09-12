@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { App, Button, Input, Modal, Select } from "antd";
+import { App, Button, Input, Modal } from "antd";
+import { Select } from "@/components/ui/base/select";
 import { Archive, Check, Eye, FolderOpen, Image as ImageIcon, Palette, Pencil, Save, ShieldAlert, Trash2 } from "lucide-react";
 
 import { AssetLibraryPickerModal, type AssetLibraryPickerItem } from "@/components/assets/asset-library-picker-modal";
@@ -165,13 +166,13 @@ export default function ProjectSettingsView({ detail, refreshProject }: ProjectD
             <AssetLibraryPickerModal
                 open={coverPickerOpen}
                 items={coverPickerItems}
+                mediaKinds={["image"]}
                 categoryLabels={{ all: "全部图片", image: "图片" }}
                 initialCategory="image"
                 initialSelectedIds={currentCoverItemId ? [currentCoverItemId] : []}
                 multiple={false}
                 eyebrow="项目设置"
                 title="选择项目主图"
-                teamAssetKinds={["image"]}
                 confirmLabel={() => "设为项目主图"}
                 emptyTitle="素材库还没有图片"
                 emptyDescription="可以从底部上传一张新图片，上传后会自动选中。"

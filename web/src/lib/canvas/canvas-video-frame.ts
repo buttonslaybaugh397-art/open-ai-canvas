@@ -1,7 +1,4 @@
-import { getMediaBlobFromSource } from "@/services/file-storage";
-
 const VIDEO_FRAME_TIMEOUT_MS = 20_000;
-const LAST_FRAME_EPSILON_SECONDS = 0.001;
 const LAST_FRAME_EPSILON_MS = 1;
 
 export type CapturedVideoFrame = {
@@ -27,54 +24,8 @@ export function normalizeVideoFrameTimes(timesMs: number[], durationMs: number) 
     return Array.from(new Set(timesMs.filter(Number.isFinite).map((timeMs) => Math.min(lastFrameMs, Math.max(0, Math.round(timeMs)))))).sort((left, right) => left - right);
 }
 
-export function formatVideoFrameTime(timeMs: number) {
-    const totalMs = Math.max(0, Math.round(timeMs));
-    const minutes = Math.floor(totalMs / 60_000);
-    const seconds = Math.floor((totalMs % 60_000) / 1000);
-    const milliseconds = totalMs % 1000;
-    return String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0") + "." + String(milliseconds).padStart(3, "0");
-}
-
-export async function captureVideoLastFrame(source: Blob | string, storageKey?: string) {
-    const blob = await readVideoBlob(source, storageKey);
-    const objectUrl = URL.createObjectURL(blob);
-    const video = document.createElement("video");
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = "auto";
-
-    try {
-        const loaded = waitForVideoEvent(video, "loadeddata", "视频读取超时或编码不受浏览器支持");
-        video.src = objectUrl;
-        video.load();
-        await loaded;
-
-        if (!Number.isFinite(video.duration) || video.duration <= 0) throw new Error("无法确定视频时长");
-        const targetTime = Math.max(0, video.duration - LAST_FRAME_EPSILON_SECONDS);
-        if (targetTime > 0) {
-            const seeked = waitForVideoEvent(video, "seeked", "无法定位到视频最后一帧");
-            video.currentTime = targetTime;
-            await seeked;
-        }
-
-        if (!video.videoWidth || !video.videoHeight) throw new Error("无法读取视频画面尺寸");
-        const canvas = document.createElement("canvas");
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const context = canvas.getContext("2d");
-        if (!context) throw new Error("浏览器无法创建图片画布");
-        context.drawImage(video, 0, 0, canvas.width, canvas.height);
-        return canvasToPngBlob(canvas);
-    } finally {
-        video.pause();
-        video.removeAttribute("src");
-        video.load();
-        URL.revokeObjectURL(objectUrl);
-    }
-}
-
-export async function captureVideoFrames(source: Blob | string, timesMs: number[], storageKey?: string): Promise<VideoFrameCaptureResult> {
-    const blob = await readVideoBlob(source, storageKey);
+export async function captureVideoFrames(source: Blob | string, timesMs: number[]): Promise<VideoFrameCaptureResult> {
+    const blob = await readVideoBlob(source);
     const objectUrl = URL.createObjectURL(blob);
     const video = document.createElement("video");
     video.muted = true;
@@ -96,14 +47,13 @@ export async function captureVideoFrames(source: Blob | string, timesMs: number[
         canvas.height = video.videoHeight;
         const context = canvas.getContext("2d");
         if (!context) throw new Error("浏览器无法创建图片画布");
-
         const frames: CapturedVideoFrame[] = [];
         const failures: VideoFrameCaptureFailure[] = [];
         for (const timeMs of normalizedTimes) {
             try {
                 const targetSeconds = timeMs / 1000;
                 if (Math.abs(video.currentTime - targetSeconds) > 0.0005) {
-                    const seeked = waitForVideoEvent(video, "seeked", "无法定位到 " + formatVideoFrameTime(timeMs));
+                    const seeked = waitForVideoEvent(video, "seeked", `无法定位到 ${formatVideoFrameTime(timeMs)}`);
                     video.currentTime = targetSeconds;
                     await seeked;
                 }
@@ -123,15 +73,23 @@ export async function captureVideoFrames(source: Blob | string, timesMs: number[
     }
 }
 
-async function readVideoBlob(source: Blob | string, storageKey?: string) {
+async function readVideoBlob(source: Blob | string) {
     if (source instanceof Blob) return source;
     try {
-        const blob = await getMediaBlobFromSource(source, storageKey);
-        if (!blob) throw new Error("媒体资源为空");
-        return blob;
+        const response = await fetch(source, { credentials: "same-origin" });
+        if (!response.ok) throw new Error(String(response.status));
+        return await response.blob();
     } catch {
         throw new Error("无法读取视频文件，请重新上传视频后再提取画面");
     }
+}
+
+export function formatVideoFrameTime(timeMs: number) {
+    const totalMs = Math.max(0, Math.round(timeMs));
+    const minutes = Math.floor(totalMs / 60_000);
+    const seconds = Math.floor((totalMs % 60_000) / 1000);
+    const milliseconds = totalMs % 1000;
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(milliseconds).padStart(3, "0")}`;
 }
 
 function waitForVideoEvent(video: HTMLVideoElement, eventName: "loadeddata" | "seeked", errorMessage: string) {

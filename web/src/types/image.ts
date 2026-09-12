@@ -7,7 +7,6 @@ export type ReferenceImage = {
     dataUrl: string;
     url?: string;
     storageKey?: string;
-    volcengineAssetUri?: string;
     bytes?: number;
     width?: number;
     height?: number;

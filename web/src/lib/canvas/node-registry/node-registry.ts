@@ -13,6 +13,12 @@ const FALLBACK_MIN_SIZE = { width: 220, height: 160 } as const;
 
 /** 批量注册节点定义 */
 export function registerNodeDefinitions(defs: CanvasNodeDefinition[], ownerId = "builtin") {
+    const ids = new Set<string>();
+    for (const def of defs) {
+        const owner = ownerByType.get(def.type);
+        if (ids.has(def.type) || (owner && owner !== ownerId)) throw new Error(`节点类型重复或归属冲突：${def.type}`);
+        ids.add(def.type);
+    }
     for (const def of defs) {
         definitions.set(def.type, def);
         ownerByType.set(def.type, ownerId);
@@ -95,4 +101,18 @@ export function getNodeGenerationMode(node: CanvasNodeData) {
 /** 该节点作为上游输入被计数时的类别，不参与计数返回 undefined */
 export function getNodeInputKind(type: CanvasNodeTypeId) {
     return definitions.get(type)?.inputKind;
+}
+
+export function getNodeAcceptedInputKind(type: CanvasNodeTypeId) {
+    return definitions.get(type)?.acceptsInputKind;
+}
+
+export function getNodeAcceptedInputKinds(type: CanvasNodeTypeId) {
+    const accepted = definitions.get(type)?.acceptsInputKind;
+    if (!accepted) return [];
+    return Array.isArray(accepted) ? accepted : [accepted];
+}
+
+export function getNodeMaxInputCount(type: CanvasNodeTypeId) {
+    return definitions.get(type)?.maxInputCount;
 }

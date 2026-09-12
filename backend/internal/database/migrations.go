@@ -10,15 +10,26 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 7
+const CurrentSchemaVersion int64 = 10
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
-const teamAssetIsolationChecksum = "sha256:team-asset-isolation-v3-20260901"
-const teamSettingsQuotaChecksum = "sha256:team-settings-quota-v4-20260901"
-const teamAuditEventsChecksum = "sha256:team-audit-events-v5-20260901"
-const teamInvitationsChecksum = "sha256:team-invitations-v6-20260901"
-const resourceUploadKeyChecksum = "sha256:resource-upload-key-v7-20260901"
+const assetTaxonomyCandidateIdentityChecksum = "sha256:asset-taxonomy-candidate-identity-v3-20260831-r1"
+const resourceUploadKeyChecksum = "sha256:resource-upload-key-v4-20260901"
+const paymentTopupChecksum = "sha256:payment-topup-v5-20260902"
+const resourcePlaybackChecksum = "sha256:resource-playback-v6-20260902"
+const assetLibraryFoldersChecksum = "sha256:asset-library-folders-v6-20260902"
+const logicalModelActiveCodeChecksum = "sha256:logical-model-active-code-v8-20260905"
+const creationRuntimeChecksum = "sha256:creation-runtime-v10-20260909"
+
+const legacyTeamAssetIsolationChecksum = "sha256:team-asset-isolation-v3-20260901"
+const legacyTeamSettingsQuotaChecksum = "sha256:team-settings-quota-v4-20260901"
+const legacyTeamAuditEventsChecksum = "sha256:team-audit-events-v5-20260901"
+const legacyTeamInvitationsChecksum = "sha256:team-invitations-v6-20260901"
+const legacyResourceUploadKeyChecksum = "sha256:resource-upload-key-v7-20260901"
+const legacyAssetTaxonomyCandidateIdentityChecksum = "sha256:asset-taxonomy-candidate-identity-v8-20260902-r1"
+const legacyPaymentTopupChecksum = "sha256:payment-topup-v9-20260902"
+const legacyAssetLibraryFoldersChecksum = "sha256:asset-library-folders-v10-20260902"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -47,20 +58,164 @@ type migration struct {
 var schemaMigrations = []migration{
 	{version: 1, name: "baseline_gorm_schema", checksum: baselineSchemaChecksum, apply: migrateSchemaV1},
 	{version: 2, name: "schema_migrations_applied_at_index", checksum: schemaMigrationAppliedAtIndexChecksum, apply: migrateSchemaV2},
-	{version: 3, name: "team_asset_isolation", checksum: teamAssetIsolationChecksum, apply: migrateTeamAssetIsolation},
-	{version: 4, name: "team_settings_quota", checksum: teamSettingsQuotaChecksum, apply: migrateTeamSettingsQuota},
-	{version: 5, name: "team_audit_events", checksum: teamAuditEventsChecksum, apply: migrateTeamAuditEvents},
-	{version: 6, name: "team_invitations", checksum: teamInvitationsChecksum, apply: migrateTeamInvitations},
-	{version: 7, name: "resource_upload_key", checksum: resourceUploadKeyChecksum, apply: migrateResourceUploadKey},
+	{version: 3, name: "asset_taxonomy_candidate_identity", checksum: assetTaxonomyCandidateIdentityChecksum, apply: migrateSchemaV3},
+	{version: 4, name: "resource_upload_key", checksum: resourceUploadKeyChecksum, apply: migrateSchemaV4},
+	{version: 5, name: "payment_topup", checksum: paymentTopupChecksum, apply: migrateSchemaV5},
+	{version: 6, name: "resource_playback_variant", checksum: resourcePlaybackChecksum, apply: migrateSchemaV6},
+	{version: 7, name: "asset_library_folders", checksum: assetLibraryFoldersChecksum, apply: migrateSchemaV7},
+	{version: 8, name: "logical_model_active_code", checksum: logicalModelActiveCodeChecksum, apply: migrateSchemaV8},
+	{version: 9, name: "channel_presentation", checksum: "sha256:channel-presentation-v9-20260908", apply: migrateChannelPresentation},
+	{version: 10, name: "creation_runtime", checksum: creationRuntimeChecksum, apply: migrateSchemaV10},
+}
+
+var legacyStableSchemaMigrations = []migration{
+	{version: 1, name: "baseline_gorm_schema", checksum: baselineSchemaChecksum},
+	{version: 2, name: "schema_migrations_applied_at_index", checksum: schemaMigrationAppliedAtIndexChecksum},
+	{version: 3, name: "team_asset_isolation", checksum: legacyTeamAssetIsolationChecksum},
+	{version: 4, name: "team_settings_quota", checksum: legacyTeamSettingsQuotaChecksum},
+	{version: 5, name: "team_audit_events", checksum: legacyTeamAuditEventsChecksum},
+	{version: 6, name: "team_invitations", checksum: legacyTeamInvitationsChecksum},
+	{version: 7, name: "resource_upload_key", checksum: legacyResourceUploadKeyChecksum},
+	{version: 8, name: "asset_taxonomy_candidate_identity", checksum: legacyAssetTaxonomyCandidateIdentityChecksum},
+	{version: 9, name: "payment_topup", checksum: legacyPaymentTopupChecksum},
+	{version: 10, name: "asset_library_folders", checksum: legacyAssetLibraryFoldersChecksum},
+}
+
+func migrateChannelPresentation(tx *gorm.DB) error {
+	for _, column := range []struct {
+		model any
+		field string
+	}{{&model.ModelChannel{}, "PublicAlias"}, {&model.ModelChannel{}, "SortOrder"}, {&model.ChannelModel{}, "SortOrder"}} {
+		if !tx.Migrator().HasColumn(column.model, column.field) {
+			if err := tx.Migrator().AddColumn(column.model, column.field); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func migrationsForDatabase(db *gorm.DB) ([]migration, error) {
+	var applied schemaMigration
+	err := db.First(&applied, "version = ?", 6).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return schemaMigrations, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("读取数据库迁移 6：%w", err)
+	}
+	if applied.Name != "asset_library_folders" {
+		return schemaMigrations, nil
+	}
+	legacy := migration{version: 6, name: "asset_library_folders", checksum: assetLibraryFoldersChecksum, apply: migrateSchemaV7}
+	if err := validateMigrationRecord(applied, legacy); err != nil {
+		return nil, err
+	}
+	plan := append([]migration(nil), schemaMigrations...)
+	for index, item := range plan {
+		switch item.version {
+		case 6:
+			plan[index] = legacy
+		case 7:
+			plan[index] = migration{version: 7, name: "resource_playback_variant", checksum: resourcePlaybackChecksum, apply: migrateSchemaV6}
+		}
+	}
+	return plan, nil
+}
+
+// migrateLegacyStableLineage bridges the pre-plugin stable schema whose
+// migration numbers overlap the current upstream lineage. Only the exact,
+// contiguous historical records are accepted before the current migrations
+// are applied and recorded atomically.
+func migrateLegacyStableLineage(tx *gorm.DB) (bool, error) {
+	var marker schemaMigration
+	err := tx.First(&marker, "version = ?", 3).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("读取旧稳定版数据库迁移谱系：%w", err)
+	}
+	if marker.Name != "team_asset_isolation" {
+		return false, nil
+	}
+
+	var maxVersion int64
+	if err := tx.Model(&schemaMigration{}).Select("COALESCE(MAX(version), 0)").Scan(&maxVersion).Error; err != nil {
+		return false, fmt.Errorf("读取旧稳定版数据库版本：%w", err)
+	}
+	if maxVersion < 3 || maxVersion > int64(len(legacyStableSchemaMigrations)) {
+		return false, fmt.Errorf("旧稳定版数据库迁移版本 %d 不受支持", maxVersion)
+	}
+	for _, expected := range legacyStableSchemaMigrations[:maxVersion] {
+		var applied schemaMigration
+		if err := tx.First(&applied, "version = ?", expected.version).Error; err != nil {
+			return false, fmt.Errorf("旧稳定版数据库缺少迁移记录 %d（%s）", expected.version, expected.name)
+		}
+		if err := validateMigrationRecord(applied, expected); err != nil {
+			return false, err
+		}
+	}
+
+	now := time.Now().UTC()
+	for _, item := range schemaMigrations[2:] {
+		if err := item.apply(tx); err != nil {
+			return false, fmt.Errorf("升级旧稳定版数据库迁移 %d（%s）：%w", item.version, item.name, err)
+		}
+		record := schemaMigration{Version: item.version, Name: item.name, Checksum: item.checksum, AppliedAt: now}
+		if err := tx.Save(&record).Error; err != nil {
+			return false, fmt.Errorf("记录旧稳定版数据库升级 %d：%w", item.version, err)
+		}
+	}
+	return true, nil
 }
 
 func migrateSchemaV2(tx *gorm.DB) error {
 	return tx.Exec("CREATE INDEX IF NOT EXISTS idx_schema_migrations_applied_at ON schema_migrations (applied_at)").Error
 }
 
-func migrateResourceUploadKey(tx *gorm.DB) error {
+func migrateSchemaV3(tx *gorm.DB) error {
+	if err := tx.AutoMigrate(&model.ProjectAssetCandidate{}); err != nil {
+		return fmt.Errorf("扩展资产候选身份字段：%w", err)
+	}
+	if err := tx.Exec("UPDATE assets SET category = 'prop' WHERE category IN ('wardrobe', 'weapon', 'accessory')").Error; err != nil {
+		return fmt.Errorf("合并资产道具分类：%w", err)
+	}
+	if err := tx.Exec("UPDATE assets SET category = 'material' WHERE category = 'style' OR (category = 'other' AND kind IN ('image', 'video', 'audio', 'model'))").Error; err != nil {
+		return fmt.Errorf("迁移资产素材分类：%w", err)
+	}
+	if err := tx.Exec("UPDATE project_asset_candidates SET category = 'prop' WHERE category IN ('wardrobe', 'weapon', 'accessory')").Error; err != nil {
+		return fmt.Errorf("合并候选道具分类：%w", err)
+	}
+	if err := tx.Exec("UPDATE project_asset_candidates SET category = 'material' WHERE category = 'style'").Error; err != nil {
+		return fmt.Errorf("迁移候选素材分类：%w", err)
+	}
+	var candidates []model.ProjectAssetCandidate
+	if err := tx.Order("created_at asc, id asc").Find(&candidates).Error; err != nil {
+		return fmt.Errorf("读取资产候选身份：%w", err)
+	}
+	seenPending := make(map[string]string, len(candidates))
+	for _, candidate := range candidates {
+		nameKey := model.AssetCandidateNameKey(candidate.Name)
+		updates := map[string]any{"name_key": nameKey}
+		identity := candidate.ProjectID + ":" + string(candidate.Category) + ":" + nameKey
+		if candidate.Status == "pending_confirmation" && nameKey != "" {
+			if _, exists := seenPending[identity]; exists {
+				updates["status"] = "ignored"
+			} else {
+				seenPending[identity] = candidate.ID
+			}
+		}
+		if err := tx.Model(&model.ProjectAssetCandidate{}).Where("id = ?", candidate.ID).Updates(updates).Error; err != nil {
+			return fmt.Errorf("回填资产候选身份 %s：%w", candidate.ID, err)
+		}
+	}
+	return tx.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_project_asset_candidates_pending_identity ON project_asset_candidates(project_id, category, name_key) WHERE status = 'pending_confirmation' AND name_key <> ''").Error
+}
+
+func migrateSchemaV4(tx *gorm.DB) error {
 	if !tx.Migrator().HasTable(&model.Resource{}) {
-		return nil
+		return fmt.Errorf("资源表不存在")
 	}
 	if !tx.Migrator().HasColumn(&model.Resource{}, "upload_key") {
 		if err := tx.Migrator().AddColumn(&model.Resource{}, "UploadKey"); err != nil {
@@ -69,6 +224,70 @@ func migrateResourceUploadKey(tx *gorm.DB) error {
 	}
 	if err := tx.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_user_upload_key ON resources (user_id, upload_key)").Error; err != nil {
 		return fmt.Errorf("创建资源上传幂等索引：%w", err)
+	}
+	return nil
+}
+func migrateSchemaV5(tx *gorm.DB) error {
+	if err := tx.AutoMigrate(
+		&model.CreditLedgerEntry{},
+		&model.TopupProduct{},
+		&model.PaymentProviderConfig{},
+		&model.PaymentOrder{},
+		&model.PaymentNotification{},
+		&model.PaymentReconciliationRun{},
+		&model.PaymentReconciliationItem{},
+	); err != nil {
+		return fmt.Errorf("创建积分支付与对账结构：%w", err)
+	}
+	return nil
+}
+
+func migrateSchemaV6(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.Resource{}) {
+		return fmt.Errorf("资源表不存在")
+	}
+	if !tx.Migrator().HasColumn(&model.Resource{}, "playback_status") {
+		if err := tx.Migrator().AddColumn(&model.Resource{}, "PlaybackStatus"); err != nil {
+			return fmt.Errorf("增加播放副本状态列：%w", err)
+		}
+	}
+	if !tx.Migrator().HasColumn(&model.Resource{}, "playback_object_key") {
+		if err := tx.Migrator().AddColumn(&model.Resource{}, "PlaybackObjectKey"); err != nil {
+			return fmt.Errorf("增加播放副本对象键列：%w", err)
+		}
+	}
+	if !tx.Migrator().HasColumn(&model.Resource{}, "playback_error") {
+		if err := tx.Migrator().AddColumn(&model.Resource{}, "PlaybackError"); err != nil {
+			return fmt.Errorf("增加播放副本错误列：%w", err)
+		}
+	}
+	return nil
+}
+
+func migrateSchemaV7(tx *gorm.DB) error {
+	if err := tx.AutoMigrate(&model.Asset{}, &model.AssetFolder{}); err != nil {
+		return fmt.Errorf("创建个人素材分类并扩展素材目录字段：%w", err)
+	}
+	return nil
+}
+
+func migrateSchemaV8(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.LogicalModel{}) {
+		return nil
+	}
+	if err := tx.Exec("DROP INDEX IF EXISTS idx_logical_models_code").Error; err != nil {
+		return fmt.Errorf("移除前台模型旧 code 唯一索引：%w", err)
+	}
+	if err := tx.Exec("CREATE UNIQUE INDEX idx_logical_models_code ON logical_models(code) WHERE archived_at IS NULL").Error; err != nil {
+		return fmt.Errorf("创建前台模型活动 code 唯一索引：%w", err)
+	}
+	return nil
+}
+
+// migrateSchemaV10 只增加创作运行时表和任务幂等关联；旧任务的空 submission ID 必须继续合法。
+func migrateSchemaV10(tx *gorm.DB) error {
+	if err := tx.AutoMigrate(&model.CreationRun{}, &model.CreationSubmission{}, &model.Task{}); err != nil {
+		return fmt.Errorf("创建创作运行时结构：%w", err)
 	}
 	return nil
 }
@@ -83,7 +302,14 @@ func MigrateSchema(db *gorm.DB) error {
 		if err := tx.AutoMigrate(&schemaMigration{}); err != nil {
 			return fmt.Errorf("初始化数据库迁移记录：%w", err)
 		}
-		for _, item := range schemaMigrations {
+		if _, err := migrateLegacyStableLineage(tx); err != nil {
+			return err
+		}
+		plan, err := migrationsForDatabase(tx)
+		if err != nil {
+			return err
+		}
+		for _, item := range plan {
 			var applied schemaMigration
 			err := tx.First(&applied, "version = ?", item.version).Error
 			if err == nil {
@@ -126,7 +352,11 @@ func ReadSchemaStatus(db *gorm.DB) (SchemaStatus, error) {
 }
 
 func validateMigrationRecords(db *gorm.DB) error {
-	for _, item := range schemaMigrations {
+	plan, err := migrationsForDatabase(db)
+	if err != nil {
+		return err
+	}
+	for _, item := range plan {
 		var applied schemaMigration
 		if err := db.First(&applied, "version = ?", item.version).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {

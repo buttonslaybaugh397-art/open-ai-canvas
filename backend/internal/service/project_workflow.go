@@ -550,14 +550,8 @@ func findTaskOutputResource(value any, mediaType string) (string, string) {
 				if strings.HasPrefix(text, "resource:") {
 					return strings.TrimPrefix(text, "resource:"), mediaType
 				}
-				if strings.HasPrefix(text, "/api/resources/") {
-					id := strings.TrimPrefix(text, "/api/resources/")
-					if slash := strings.IndexByte(id, '/'); slash >= 0 {
-						id = id[:slash]
-					}
-					if id != "" {
-						return id, mediaType
-					}
+				if id := resourceIDFromFileURL(text); id != "" {
+					return id, mediaType
 				}
 			}
 		}
@@ -603,13 +597,37 @@ func (s *Service) ensureGeneratedProjectAsset(task model.Task, projectID string,
 		title = "镜头产物"
 	}
 	title += " · " + label
+	width := resource.Width
+	height := resource.Height
+	if width <= 0 {
+		width = 1
+	}
+	if height <= 0 {
+		height = 1
+	}
+	resourceURL := "/api/resources/" + resourceID + "/file"
+	data := map[string]any{
+		"storageKey": "resource:" + resourceID,
+		"mimeType":   resource.MimeType,
+		"bytes":      resource.Size,
+		"width":      width,
+		"height":     height,
+	}
+	if mediaType == "image" {
+		data["dataUrl"] = resourceURL
+	} else {
+		data["url"] = resourceURL
+		if resource.DurationMs > 0 {
+			data["durationMs"] = resource.DurationMs
+		}
+	}
 	payload, _ := json.Marshal(map[string]any{
-		"id": assetID, "kind": mediaType, "category": model.AssetCategoryOther, "status": model.AssetVersionStatusConfirmed,
-		"primaryVersionId": versionID, "title": title,
-		"data":     map[string]any{"storageKey": "resource:" + resourceID, "url": "/api/resources/" + resourceID + "/file", "mimeType": resource.MimeType, "bytes": resource.Size},
-		"metadata": map[string]any{"source": "short-drama-workflow", "taskId": task.ID, "shotId": shot.ID, "projectIds": []string{projectID}},
+		"id": assetID, "kind": mediaType, "category": model.AssetCategoryMaterial, "status": model.AssetVersionStatusConfirmed,
+		"primaryVersionId": versionID, "title": title, "coverUrl": resourceURL, "tags": []string{},
+		"createdAt": now.UTC().Format(time.RFC3339Nano), "updatedAt": now.UTC().Format(time.RFC3339Nano),
+		"data": data, "metadata": map[string]any{"source": "short-drama-workflow", "taskId": task.ID, "shotId": shot.ID, "projectIds": []string{projectID}},
 	})
-	asset := &model.Asset{ID: assetID, UserID: task.UserID, Kind: mediaType, Category: model.AssetCategoryOther, Status: model.AssetVersionStatusConfirmed, PrimaryVersionID: versionID, Title: title, PayloadJSON: string(payload), CreatedAt: now, UpdatedAt: now}
+	asset := &model.Asset{ID: assetID, UserID: task.UserID, Kind: mediaType, Category: model.AssetCategoryMaterial, Status: model.AssetVersionStatusConfirmed, PrimaryVersionID: versionID, Title: title, PayloadJSON: string(payload), CreatedAt: now, UpdatedAt: now}
 	version := &model.AssetVersion{ID: versionID, AssetID: assetID, Version: 1, Status: model.AssetVersionStatusConfirmed, DefinitionJSON: "{}", Prompt: task.Prompt, Note: "工作流生成产物", CreatedAt: now, UpdatedAt: now}
 	folderID, err := s.resolveProjectAssetFolderID(projectID, nil)
 	if err != nil {
@@ -629,7 +647,7 @@ func (s *Service) ensureGeneratedProjectAsset(task model.Task, projectID string,
 	return versionID, nil
 }
 
-// 重试时复用同一工作流产物 ID，同时满足素材表 varchar(36) 的约束。
+// 工作流产物重试必须复用同一实体 ID，同时需要满足素材版本及外键的 varchar(36) 约束。
 func workflowGeneratedEntityID(namespace string, taskID string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(namespace) + ":" + strings.TrimSpace(taskID)))
 	return hex.EncodeToString(sum[:16])

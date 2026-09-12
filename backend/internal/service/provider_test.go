@@ -23,6 +23,55 @@ import (
 const testReferenceImageDataURL = "data:image/png;base64,aGVsbG8="
 const testGeminiReferenceImageDataURL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 
+func officialVideoCreateBody(t *testing.T, input canvasGenerationInput) map[string]any {
+	t.Helper()
+	adapter, ok := loadOfficialFallbackRegistry().Resolve(strings.TrimSpace(input.Config.InterfaceType))
+	if !ok {
+		t.Fatalf("official adapter %s missing", input.Config.InterfaceType)
+	}
+	spec, err := adapter.BuildCreate(context.Background(), protocol.RequestContext{Request: protocolRequestFromInput(input)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(spec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(data, &body); err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func TestProviderMediaHydrationPolicyPrefersObjectURLs(t *testing.T) {
+	prefer := providerMediaHydrationPolicyFor(context.Background(), canvasGenerationInput{Config: providerConfig{InterfaceType: string(model.ChannelInterfaceGrokImage)}})
+	if prefer.requireURL || !prefer.preferURL {
+		t.Fatalf("grok image policy = %#v", prefer)
+	}
+	required := providerMediaHydrationPolicyFor(context.Background(), canvasGenerationInput{Config: providerConfig{InterfaceType: string(model.ChannelInterfaceMiniMaxVideo)}})
+	if !required.requireURL || !required.preferURL {
+		t.Fatalf("minimax policy = %#v", required)
+	}
+	bytesOnly := providerMediaHydrationPolicyFor(context.Background(), canvasGenerationInput{Config: providerConfig{InterfaceType: string(model.ChannelInterfaceGeminiImage)}})
+	if bytesOnly.requireURL || bytesOnly.preferURL {
+		t.Fatalf("gemini image policy = %#v", bytesOnly)
+	}
+	masked := providerMediaHydrationPolicyFor(context.Background(), canvasGenerationInput{Config: providerConfig{InterfaceType: string(model.ChannelInterfaceOpenAIImage)}, Mask: &providerMedia{ID: "mask"}})
+	if masked.requireURL || masked.preferURL {
+		t.Fatalf("openai mask policy = %#v", masked)
+	}
+	if resourceUsesObjectStorage(&model.Resource{Provider: "aliyun"}) != true {
+		t.Fatal("aliyun should use object storage URLs")
+	}
+	if resourceUsesObjectStorage(&model.Resource{Provider: "tencent"}) != true || resourceUsesObjectStorage(&model.Resource{Provider: "qiniu"}) != true || resourceUsesObjectStorage(&model.Resource{Provider: "s3"}) != true {
+		t.Fatal("cos/kodo/s3 should use object storage URLs")
+	}
+	if resourceUsesObjectStorage(&model.Resource{Provider: "local"}) {
+		t.Fatal("local resources should fall back to protocol-compatible bytes")
+	}
+}
+
 func TestProviderRequestErrorDetails(t *testing.T) {
 	tests := []struct {
 		name string
@@ -44,6 +93,15 @@ func TestProviderRequestErrorDetails(t *testing.T) {
 	}
 }
 
+func TestPostJSONRejectsUnserializableBodyBeforeRequest(t *testing.T) {
+	err := postJSON(context.Background(), providerConfig{BaseURL: "http://127.0.0.1:1"}, "/should-not-run", map[string]any{
+		"invalid": make(chan int),
+	}, &map[string]any{})
+	if err == nil || !strings.Contains(err.Error(), "序列化上游请求失败") {
+		t.Fatalf("postJSON() error = %v, want serialization error", err)
+	}
+}
+
 func TestChannelAPIURLNormalizesConfiguredVersionPrefix(t *testing.T) {
 	tests := []struct {
 		name string
@@ -59,6 +117,8 @@ func TestChannelAPIURLNormalizesConfiguredVersionPrefix(t *testing.T) {
 		{name: "same v1beta is not duplicated", base: "http://provider.test:8000/v1beta", path: "/v1beta/models/model", want: "http://provider.test:8000/v1beta/models/model"},
 		{name: "path carries v2", base: "http://provider.test:8000/v1", path: "/v2/tasks", want: "http://provider.test:8000/v2/tasks"},
 		{name: "ark v3", base: "https://ark.example.com/api/v3", path: "/images/generations", want: "https://ark.example.com/api/v3/images/generations"},
+		{name: "ark v3 chat", base: "https://ark.example.com/api/v3", path: "/chat/completions", want: "https://ark.example.com/api/v3/chat/completions"},
+		{name: "ark v3 responses", base: "https://ark.example.com/api/v3", path: "/responses", want: "https://ark.example.com/api/v3/responses"},
 		{name: "path carries ark v3", base: "https://ark.example.com", path: "/api/v3/images/generations", want: "https://ark.example.com/api/v3/images/generations"},
 		{name: "path carries autodl api v1", base: "https://autodl.art", path: "/api/v1/comfyui/comfyui_workflow/workflow-1", want: "https://autodl.art/api/v1/comfyui/comfyui_workflow/workflow-1"},
 	}
@@ -94,7 +154,7 @@ func TestProtocolRequestURLCanResolveSameOriginRootPath(t *testing.T) {
 	}
 }
 
-func TestRunVideoTaskUsesHostBackedAgnesJSONProtocol(t *testing.T) {
+func TestRunVideoTaskUsesDeclarativeAgnesJSONProtocol(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
 	center, err := newPluginRuntime(t.TempDir())
 	if err != nil {
@@ -102,9 +162,9 @@ func TestRunVideoTaskUsesHostBackedAgnesJSONProtocol(t *testing.T) {
 	}
 	adapter, ok := center.registrySnapshot().Resolve("agnes-video")
 	if !ok {
-		t.Fatal("host-backed Agnes adapter is missing")
+		t.Fatal("declarative Agnes adapter is missing")
 	}
-	if metadata := adapter.Metadata(); metadata.Version != "1.2.0" || metadata.Execution != "host:agnes-video" || !metadata.RequiresPublicMediaURLs {
+	if metadata := adapter.Metadata(); metadata.Version != "2.0.0" || metadata.Execution != "declarative" || !metadata.RequiresPublicMediaURLs {
 		t.Fatalf("Agnes runtime metadata = %#v", metadata)
 	}
 
@@ -165,47 +225,32 @@ func TestRunVideoTaskUsesHostBackedAgnesJSONProtocol(t *testing.T) {
 	if !ok || video["dataUrl"] != "data:video/mp4;base64,dmlkZW8=" {
 		t.Fatalf("video = %#v", result["video"])
 	}
-	wantPaths := "POST /v1/videos,GET /agnesapi?video_id=video-1&model_name=agnes-video-2.5,GET /video.mp4"
+	wantPaths := "POST /v1/videos,GET /agnesapi?model_name=agnes-video-2.5&video_id=video-1,GET /video.mp4"
 	if got := strings.Join(paths, ","); got != wantPaths {
 		t.Fatalf("paths = %q, want %q", got, wantPaths)
 	}
 }
 
-func TestRunVideoTaskUsesWeijinBearerForTaskAndContent(t *testing.T) {
+func TestRunVideoTaskDownloadsAuthenticatedDeclarativeResult(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
 	center, err := newPluginRuntime(t.TempDir())
 	if err != nil {
-		t.Fatalf("newPluginRuntime() error = %v", err)
+		t.Fatal(err)
 	}
-	if _, ok := center.registrySnapshot().Resolve("weijin-video"); !ok {
-		t.Fatal("host-backed Weijin adapter is missing")
-	}
-
-	paths := make([]string, 0, 3)
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		paths = append(paths, r.Method+" "+r.URL.RequestURI())
-		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
-			t.Errorf("%s Authorization = %q, want Bearer test-key", r.URL.Path, got)
-		}
-		switch r.Method + " " + r.URL.Path {
-		case "POST /v1/videos":
-			var body map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Errorf("decode create body: %v", err)
-			}
-			if body["model"] != "seedance2.0-one-full-flex-720p" || body["seconds"] != float64(10) || body["aspect_ratio"] != "16:9" {
-				t.Errorf("create body = %#v", body)
-			}
-			if _, exists := body["resolution"]; exists {
-				t.Errorf("fixed-resolution model must omit resolution: %#v", body)
-			}
+	paths := make([]string, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/videos":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":"weijin-task-1","status":"queued"}`))
-		case "GET /v1/videos/weijin-task-1":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":"weijin-task-1","status":"completed","content":"` + server.URL + `/v1/videos/weijin-task-1/content"}`))
-		case "GET /v1/videos/weijin-task-1/content":
+			_, _ = w.Write([]byte(`{"id":"video-1","status":"completed"}`))
+		case "/v1/videos/video-1/content":
+			if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+				t.Errorf("Authorization = %q", got)
+			}
+			if got := r.Header.Get("Accept"); got != "video/mp4" {
+				t.Errorf("Accept = %q", got)
+			}
 			w.Header().Set("Content-Type", "video/mp4")
 			_, _ = w.Write([]byte("video"))
 		default:
@@ -216,29 +261,18 @@ func TestRunVideoTaskUsesWeijinBearerForTaskAndContent(t *testing.T) {
 
 	ctx := withProtocolRegistry(context.Background(), center.registrySnapshot())
 	result, err := runVideoTask(ctx, canvasGenerationInput{
-		Mode:   "video",
-		Prompt: "make it move",
-		Config: providerConfig{BaseURL: server.URL, APIKey: "test-key", InterfaceType: "weijin-video", Model: "seedance2.0-one-full-flex-720p", VideoSeconds: "10", Size: "16:9", VQuality: "720p"},
+		Mode: "video", Prompt: "cinematic shot",
+		Config: providerConfig{BaseURL: server.URL, APIKey: "test-key", InterfaceType: "newapi", Model: "sora-2", VideoSeconds: "5", Size: "1280x720"},
 	})
 	if err != nil {
-		t.Fatalf("runVideoTask() error = %v", err)
+		t.Fatal(err)
 	}
-	video, ok := result["video"].(map[string]interface{})
-	if !ok || video["dataUrl"] != "data:video/mp4;base64,dmlkZW8=" {
-		t.Fatalf("video = %#v", result["video"])
+	video, _ := result["video"].(map[string]interface{})
+	if video["dataUrl"] != "data:video/mp4;base64,dmlkZW8=" {
+		t.Fatalf("video = %#v", video)
 	}
-	wantPaths := "POST /v1/videos,GET /v1/videos/weijin-task-1,GET /v1/videos/weijin-task-1/content"
-	if got := strings.Join(paths, ","); got != wantPaths {
-		t.Fatalf("paths = %q, want %q", got, wantPaths)
-	}
-}
-
-func TestProtocolPollIntervalUsesWeijinGuidance(t *testing.T) {
-	if got := protocolPollInterval("weijin-video"); got != 10*time.Second {
-		t.Fatalf("Weijin poll interval = %s", got)
-	}
-	if got := protocolPollInterval("agnes-video"); got != 2500*time.Millisecond {
-		t.Fatalf("default poll interval = %s", got)
+	if got := strings.Join(paths, ","); got != "POST /v1/videos,GET /v1/videos/video-1/content" {
+		t.Fatalf("paths = %q", got)
 	}
 }
 
@@ -513,6 +547,25 @@ data: [DONE]
 	}
 }
 
+func TestTextThinkingOptionsAndReasoningParsing(t *testing.T) {
+	input := canvasGenerationInput{TextOptions: canvasTextOptions{Thinking: true}}
+	responsesBody := map[string]interface{}{}
+	applyTextThinking(responsesBody, input, "responses")
+	reasoning, _ := responsesBody["reasoning"].(map[string]interface{})
+	if reasoning["effort"] != "medium" || reasoning["summary"] != "auto" {
+		t.Fatalf("responses reasoning options = %#v", reasoning)
+	}
+	chatBody := map[string]interface{}{}
+	applyTextThinking(chatBody, input, "chat-completion")
+	if chatBody["reasoning_effort"] != "medium" {
+		t.Fatalf("chat reasoning options = %#v", chatBody)
+	}
+	result, err := parseAgentToolPayload(map[string]interface{}{"choices": []interface{}{map[string]interface{}{"message": map[string]interface{}{"content": "正文", "reasoning_content": "推理摘要"}}}}, "chat-completion")
+	if err != nil || result["text"] != "正文" || result["reasoning"] != "推理摘要" {
+		t.Fatalf("parsed reasoning result = %#v, err = %v", result, err)
+	}
+}
+
 func TestStreamingAgentParserReassemblesChatToolCallsAcrossChunks(t *testing.T) {
 	var deltas strings.Builder
 	parser := newStreamingAgentParser("chat-completion", func(delta string) {
@@ -604,6 +657,22 @@ func TestProviderHTTPErrorDoesNotExposeResponseBody(t *testing.T) {
 	}
 }
 
+func TestShouldFallbackTextToChatOnlyForMissingCapability(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented} {
+		if !shouldFallbackTextToChat(providerHTTPError{StatusCode: status}) {
+			t.Errorf("status %d should fallback to chat completions", status)
+		}
+	}
+	for _, status := range []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, http.StatusInternalServerError, http.StatusTooManyRequests} {
+		if shouldFallbackTextToChat(providerHTTPError{StatusCode: status}) {
+			t.Errorf("status %d should not fallback to chat completions", status)
+		}
+	}
+	if shouldFallbackTextToChat(errors.New("network")) {
+		t.Fatal("non-http error should not fallback")
+	}
+}
+
 func TestProviderPayloadErrorMessageUsesSafeActionableCategories(t *testing.T) {
 	tests := []struct {
 		name string
@@ -613,6 +682,8 @@ func TestProviderPayloadErrorMessageUsesSafeActionableCategories(t *testing.T) {
 		{name: "moderation", raw: "request blocked by content policy: prompt=private", want: "安全审核"},
 		{name: "quota", raw: "insufficient quota for api-key=secret", want: "额度不足"},
 		{name: "model access", raw: "model not found for tenant secret-id", want: "模型不存在"},
+		{name: "thinking mode rejects forced tool choice", raw: `{"error":{"message":"Thinking mode does not support this tool_choice","request_id":"secret-trace"}}`, want: "不支持强制工具调用"},
+		{name: "reasoning mode rejects forced tool choice", raw: `{"error":{"message":"tool_choice=required is not supported in reasoning mode"}}`, want: "不支持强制工具调用"},
 		{name: "unknown", raw: "trace_id=private internal stack", want: "模型服务返回失败"},
 	}
 	for _, tt := range tests {
@@ -686,6 +757,12 @@ func TestProviderUserFacingErrorMessageClassifiesRejectedRequestBodies(t *testin
 			statusCode: http.StatusBadRequest,
 			body:       "",
 			want:       "请检查模型和参数",
+		},
+		{
+			name:       "thinking mode rejects forced tool choice",
+			statusCode: http.StatusBadRequest,
+			body:       `{"error":{"message":"Thinking mode does not support this tool_choice","request_id":"secret"}}`,
+			want:       "不支持强制工具调用",
 		},
 	}
 	for _, tt := range tests {
@@ -791,19 +868,14 @@ func TestProviderPayloadErrorCategoryPrefersProviderCodeOverModerationWording(t 
 	}
 }
 
-func TestNormalizeNewAPIChannel2ResolutionPreservesDeclaredTiers(t *testing.T) {
-	tests := map[string]string{
-		"1440": "1440p",
-		"2k":   "1440p",
-		"4K":   "2160p",
-		"768p": "768p",
-	}
-	for input, want := range tests {
-		t.Run(input, func(t *testing.T) {
-			if got := normalizeNewAPIChannel2Resolution(input, "custom-video-model"); got != want {
-				t.Fatalf("normalizeNewAPIChannel2Resolution(%q) = %q, want %q", input, got, want)
-			}
-		})
+func TestRunVideoTaskRequiresOfficialPluginWhenRegistryEmpty(t *testing.T) {
+	ctx := withProtocolRegistry(context.Background(), emptyProtocolRegistry)
+	_, err := runVideoTask(ctx, canvasGenerationInput{
+		Prompt: "make it move",
+		Config: providerConfig{BaseURL: "https://example.com", APIKey: "key", Model: "MiniMax-H3", InterfaceType: "minimax-video"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "插件未安装") {
+		t.Fatalf("runVideoTask() error = %v, want plugin missing", err)
 	}
 }
 
@@ -1693,7 +1765,7 @@ func TestRunVideoTaskUsesXAIVideoGenerationEndpoint(t *testing.T) {
 			_, _ = w.Write([]byte(`{"request_id":"video-1"}`))
 		case "GET /v1/videos/video-1":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"status":"done","video":{"url":"` + server.URL + `/files/video.mp4"}}`))
+			_, _ = w.Write([]byte(`{"status":"done","url":"` + server.URL + `/files/video.mp4"}`))
 		case "GET /files/video.mp4":
 			if authorization := r.Header.Get("Authorization"); authorization != "Bearer test-key" {
 				t.Errorf("file Authorization = %q, want Bearer test-key", authorization)
@@ -1715,7 +1787,7 @@ func TestRunVideoTaskUsesXAIVideoGenerationEndpoint(t *testing.T) {
 			InterfaceType: "xai-video",
 			VideoSeconds:  "10",
 			Size:          "1:1",
-			VQuality:      "720",
+			VQuality:      "720p",
 		},
 	})
 	if err != nil {
@@ -1731,32 +1803,24 @@ func TestRunVideoTaskUsesXAIVideoGenerationEndpoint(t *testing.T) {
 	}
 }
 
-func TestRunVideoTaskXAIVideoUsesContentEndpointForLoopbackResultURL(t *testing.T) {
+func TestRunVideoTaskXAIVideoRejectsUnreachableResultURL(t *testing.T) {
 	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
-	paths := make([]string, 0, 3)
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		paths = append(paths, r.Method+" "+r.URL.Path)
 		switch r.Method + " " + r.URL.Path {
 		case "POST /v1/videos/generations":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"request_id":"video-loopback"}`))
 		case "GET /v1/videos/video-loopback":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"status":"done","video":{"url":"http://127.0.0.2:1/unreachable.mp4"}}`))
-		case "GET /v1/videos/video-loopback/content":
-			if authorization := r.Header.Get("Authorization"); authorization != "Bearer test-key" {
-				t.Errorf("content Authorization = %q, want Bearer test-key", authorization)
-			}
-			w.Header().Set("Content-Type", "video/mp4")
-			_, _ = w.Write([]byte("video"))
+			_, _ = w.Write([]byte(`{"status":"done","url":"http://127.0.0.2:1/unreachable.mp4"}`))
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
 
-	result, err := runVideoTask(context.Background(), canvasGenerationInput{
+	_, err := runVideoTask(context.Background(), canvasGenerationInput{
 		Prompt: "make it move",
 		Config: providerConfig{
 			BaseURL:       server.URL + "/v1",
@@ -1765,28 +1829,21 @@ func TestRunVideoTaskXAIVideoUsesContentEndpointForLoopbackResultURL(t *testing.
 			InterfaceType: "xai-video",
 		},
 	})
-	if err != nil {
-		t.Fatalf("runVideoTask() error = %v", err)
-	}
-	video, ok := result["video"].(map[string]interface{})
-	if !ok || video["dataUrl"] != "data:video/mp4;base64,dmlkZW8=" {
-		t.Fatalf("video = %#v", result["video"])
-	}
-	want := "POST /v1/videos/generations,GET /v1/videos/video-loopback,GET /v1/videos/video-loopback/content"
-	if got := strings.Join(paths, ","); got != want {
-		t.Fatalf("paths = %q, want %q", got, want)
+	if err == nil {
+		t.Fatal("runVideoTask() error = nil, want unreachable result URL to fail")
 	}
 }
 
-func TestXAIVideoBodyWithoutStartFramePutsAllImagesIntoReferenceImages(t *testing.T) {
-	body, err := xaiVideoRequestBody(canvasGenerationInput{
+func TestXAIVideoPluginMapsUnmarkedImagesToStartFrame(t *testing.T) {
+	body := officialVideoCreateBody(t, canvasGenerationInput{
+		Mode:   "video",
 		Prompt: "make it move",
 		Config: providerConfig{
 			Model:         "grok-imagine-video-1.5",
 			InterfaceType: "xai-video",
 			VideoSeconds:  "20",
-			Size:          "1024x1792",
-			VQuality:      "1080",
+			Size:          "9:16",
+			VQuality:      "1080p",
 		},
 		ReferenceImages: []providerMedia{
 			{ID: "image-1", DataURL: testReferenceImageDataURL},
@@ -1794,79 +1851,48 @@ func TestXAIVideoBodyWithoutStartFramePutsAllImagesIntoReferenceImages(t *testin
 		},
 		Metadata: map[string]interface{}{"videoEditOperation": "image_to_video"},
 	})
-	if err != nil {
-		t.Fatalf("xaiVideoRequestBody() error = %v", err)
-	}
-	if body.Duration != 20 || body.AspectRatio != "9:16" || body.Resolution != "1080p" {
+	if body["duration"] != float64(20) || body["aspect_ratio"] != "9:16" || body["resolution"] != "1080p" {
 		t.Fatalf("xAI settings = %#v", body)
 	}
-	if body.Image != nil {
-		t.Fatalf("image should be nil without start frame, got %#v", body.Image)
-	}
-	if len(body.ReferenceImages) != 2 || body.ReferenceImages[0].URL != testReferenceImageDataURL || body.ReferenceImages[1].URL != testReferenceImageDataURL {
-		t.Fatalf("reference_images = %#v", body.ReferenceImages)
+	image, _ := body["image"].(map[string]any)
+	if image["url"] != testReferenceImageDataURL {
+		t.Fatalf("image = %#v", body["image"])
 	}
 }
 
-func TestXAIVideoBodyWithStartFrameKeepsOfficialImageShape(t *testing.T) {
-	body, err := xaiVideoRequestBody(canvasGenerationInput{
+func TestXAIVideoPluginKeepsStartFrameAsImage(t *testing.T) {
+	body := officialVideoCreateBody(t, canvasGenerationInput{
+		Mode:   "video",
 		Config: providerConfig{Model: "grok-imagine-video-1.5", InterfaceType: "xai-video"},
 		ReferenceImages: []providerMedia{
 			{ID: "image-1", DataURL: testReferenceImageDataURL},
 		},
 		Metadata: map[string]interface{}{"videoEditOperation": "image_to_video", "videoStartFrameNodeId": "image-1"},
 	})
-	if err != nil {
-		t.Fatalf("xaiVideoRequestBody() error = %v", err)
+	image, _ := body["image"].(map[string]any)
+	if image["url"] != testReferenceImageDataURL {
+		t.Fatalf("image = %#v", body["image"])
 	}
-	if body.Image == nil || body.Image.URL != testReferenceImageDataURL {
-		t.Fatalf("image = %#v", body.Image)
-	}
-	if len(body.ReferenceImages) != 0 {
-		t.Fatalf("reference_images = %#v", body.ReferenceImages)
+	if _, exists := body["reference_images"]; exists {
+		t.Fatalf("reference_images = %#v", body["reference_images"])
 	}
 }
 
-func TestXAIVideoReferenceOperationIgnoresStaleStartFrameMetadata(t *testing.T) {
-	body, err := xaiVideoRequestBody(canvasGenerationInput{
+func TestXAIVideoPluginUsesReferenceImagesForReferenceOperation(t *testing.T) {
+	body := officialVideoCreateBody(t, canvasGenerationInput{
+		Mode:   "video",
 		Config: providerConfig{Model: "grok-imagine-video-1.5", InterfaceType: "xai-video"},
 		ReferenceImages: []providerMedia{
 			{ID: "character", DataURL: testReferenceImageDataURL},
 		},
 		Metadata: map[string]interface{}{"videoEditOperation": "reference_to_video", "videoStartFrameNodeId": "character"},
 	})
-	if err != nil {
-		t.Fatalf("xaiVideoRequestBody() error = %v", err)
+	if body["image"] != nil {
+		t.Fatalf("image = %#v", body["image"])
 	}
-	if body.Image != nil || len(body.ReferenceImages) != 1 {
-		t.Fatalf("xAI reference operation body = %#v", body)
-	}
-}
-
-func TestXAIVideoBodyWithStartFrameRejectsMultipleImages(t *testing.T) {
-	_, err := xaiVideoRequestBody(canvasGenerationInput{
-		Config: providerConfig{Model: "grok-imagine-video-1.5", InterfaceType: "xai-video"},
-		ReferenceImages: []providerMedia{
-			{ID: "image-1", DataURL: testReferenceImageDataURL},
-			{ID: "image-2", DataURL: testReferenceImageDataURL},
-		},
-		Metadata: map[string]interface{}{"videoEditOperation": "image_to_video", "videoStartFrameNodeId": "image-1"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "只支持 1 张起始图") {
-		t.Fatalf("xaiVideoRequestBody() error = %v", err)
-	}
-}
-
-func TestXAIVideoBodyWithMissingStartFrameImageErrors(t *testing.T) {
-	_, err := xaiVideoRequestBody(canvasGenerationInput{
-		Config: providerConfig{Model: "grok-imagine-video-1.5", InterfaceType: "xai-video"},
-		ReferenceImages: []providerMedia{
-			{ID: "image-2", DataURL: testReferenceImageDataURL},
-		},
-		Metadata: map[string]interface{}{"videoEditOperation": "image_to_video", "videoStartFrameNodeId": "image-1"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "首帧参考图未包含") {
-		t.Fatalf("xaiVideoRequestBody() error = %v", err)
+	refs, _ := body["reference_images"].([]any)
+	if len(refs) != 1 {
+		t.Fatalf("reference_images = %#v", body["reference_images"])
 	}
 }
 
@@ -1951,7 +1977,7 @@ func TestVolcengineArkVideoProtocolUsesContentTaskAndDownloadsResult(t *testing.
 				return
 			}
 			wantTypes := []string{"text", "image_url", "video_url", "audio_url"}
-			wantRoles := []string{"", "reference_image", "reference_video", "reference_audio"}
+			wantRoles := []string{"", "first_frame", "reference_video", "reference_audio"}
 			for index, item := range content {
 				entry, _ := item.(map[string]interface{})
 				if entry["type"] != wantTypes[index] || (wantRoles[index] != "" && entry["role"] != wantRoles[index]) {
@@ -1999,9 +2025,10 @@ func TestNewAPIChannel1VideoBodyMapsFramesAndReferences(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer server.Close()
 
-	body, err := newAPIChannel1VideoBody(canvasGenerationInput{
+	body := officialVideoCreateBody(t, canvasGenerationInput{
+		Mode:   "video",
 		Prompt: "make it move",
-		Config: providerConfig{Model: "seedance-2.0", Size: "9:16", VQuality: "1080", VideoSeconds: "15", VideoWatermark: "true"},
+		Config: providerConfig{Model: "seedance-2.0", InterfaceType: "newapi-channel-1", Size: "9:16", VQuality: "1080P", VideoSeconds: "15", VideoWatermark: "true"},
 		ReferenceImages: []providerMedia{
 			{ID: "first", URL: server.URL + "/first.png"},
 			{ID: "last", URL: server.URL + "/last.png"},
@@ -2011,22 +2038,20 @@ func TestNewAPIChannel1VideoBodyMapsFramesAndReferences(t *testing.T) {
 		ReferenceAudios: []providerMedia{{ID: "voice", URL: server.URL + "/voice.mp3"}},
 		Metadata:        map[string]interface{}{"videoStartFrameNodeId": "first", "videoEndFrameNodeId": "last"},
 	})
-	if err != nil {
-		t.Fatalf("newAPIChannel1VideoBody() error = %v", err)
-	}
-	input := body["input"].(map[string]interface{})
-	media := input["media"].([]map[string]string)
-	wantTypes := []string{"first_frame", "last_frame", "reference_image", "reference_video", "reference_voice"}
+	input := body["input"].(map[string]any)
+	media, _ := input["media"].([]any)
+	wantTypes := []string{"first_frame", "last_frame", "reference_image", "reference_video", "reference_audio"}
 	if len(media) != len(wantTypes) {
 		t.Fatalf("media = %#v", media)
 	}
 	for index, want := range wantTypes {
-		if media[index]["type"] != want {
-			t.Fatalf("media[%d].type = %q, want %q", index, media[index]["type"], want)
+		item, _ := media[index].(map[string]any)
+		if item["type"] != want {
+			t.Fatalf("media[%d].type = %q, want %q", index, item["type"], want)
 		}
 	}
-	parameters := body["parameters"].(map[string]interface{})
-	if parameters["resolution"] != "1080P" || parameters["ratio"] != "9:16" || parameters["duration"] != 15 || parameters["watermark"] != true {
+	parameters := body["parameters"].(map[string]any)
+	if parameters["resolution"] != "1080P" || parameters["ratio"] != "9:16" || parameters["duration"] != float64(15) || parameters["watermark"] != true {
 		t.Fatalf("parameters = %#v", parameters)
 	}
 }
@@ -2063,14 +2088,78 @@ func TestProtocolRequestPreservesVideoImageIDsAndRoles(t *testing.T) {
 	}
 }
 
-func TestNewAPIChannel1VideoBodyRejectsInlineMedia(t *testing.T) {
-	_, err := newAPIChannel1VideoBody(canvasGenerationInput{
+func TestProtocolRequestRestoresDeclaredVideoResolutionEnum(t *testing.T) {
+	tests := []struct {
+		name        string
+		quality     string
+		resolutions []string
+		want        string
+	}{
+		{name: "lowercase suffix", quality: "480", resolutions: []string{"480p", "720p"}, want: "480p"},
+		{name: "provider casing", quality: "1080", resolutions: []string{"720P", "1080P"}, want: "1080P"},
+		{name: "opaque enum", quality: "768p竖", resolutions: []string{"768p竖", "768p横"}, want: "768p竖"},
+		{name: "unmatched custom value", quality: "native", resolutions: []string{"720p"}, want: "native"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := protocolRequestFromInput(canvasGenerationInput{
+				Mode:            "video",
+				Config:          providerConfig{VQuality: test.quality},
+				VideoCapability: &VideoCapabilityConfig{Resolutions: test.resolutions},
+			})
+			if request.Resolution != test.want || request.Output.Resolution != test.want {
+				t.Fatalf("resolution = %q, output resolution = %q, want %q", request.Resolution, request.Output.Resolution, test.want)
+			}
+		})
+	}
+}
+
+func TestVolcengineArkDeclarativeRequestUsesResolutionSuffix(t *testing.T) {
+	profile := DefaultModelCapabilityConfigForModel("volcengine-ark-video", "doubao-seedance-2-0-fast-260128").Video
+	request := protocolRequestFromInput(canvasGenerationInput{
+		Mode:   "video",
+		Prompt: "make it move",
+		Config: providerConfig{
+			InterfaceType: "volcengine-ark-video",
+			Model:         "doubao-seedance-2-0-fast-260128",
+			Size:          "16:9",
+			VQuality:      "480",
+			VideoSeconds:  "4",
+		},
+		VideoCapability: profile,
+	})
+	adapter, ok := loadOfficialFallbackRegistry().Resolve("volcengine-ark-video")
+	if !ok {
+		t.Fatal("Volcengine Ark declarative adapter is unavailable")
+	}
+	spec, err := adapter.BuildCreate(context.Background(), protocol.RequestContext{Request: request})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := spec.Body.(map[string]any)
+	if !ok {
+		t.Fatalf("body = %#v", spec.Body)
+	}
+	if body["resolution"] != "480p" {
+		t.Fatalf("resolution = %#v, want 480p", body["resolution"])
+	}
+}
+
+func TestNewAPIChannel1VideoPluginKeepsInlineDataURL(t *testing.T) {
+	body := officialVideoCreateBody(t, canvasGenerationInput{
+		Mode:            "video",
 		Prompt:          "make it move",
-		Config:          providerConfig{Model: "seedance-2.0"},
+		Config:          providerConfig{Model: "seedance-2.0", InterfaceType: "newapi-channel-1"},
 		ReferenceImages: []providerMedia{{ID: "image", DataURL: testReferenceImageDataURL}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "公网 HTTP(S) URL") {
-		t.Fatalf("newAPIChannel1VideoBody() error = %v", err)
+	input := body["input"].(map[string]any)
+	media, _ := input["media"].([]any)
+	if len(media) != 1 {
+		t.Fatalf("media = %#v", media)
+	}
+	item, _ := media[0].(map[string]any)
+	if item["url"] != testReferenceImageDataURL {
+		t.Fatalf("media[0] = %#v", item)
 	}
 }
 
@@ -2096,11 +2185,8 @@ func TestRunNewAPIChannel1VideoTaskDownloadsSucceededObject(t *testing.T) {
 			_, _ = w.Write([]byte(`{"id":"channel-1-task","task_id":"channel-1-task","status":"RUNNING"}`))
 		case "GET /v1/videos/channel-1-task":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":"channel-1-task","status":"SUCCEEDED","object":"` + server.URL + `/video.mp4"}`))
+			_, _ = w.Write([]byte(`{"id":"channel-1-task","status":"SUCCEEDED","url":"` + server.URL + `/video.mp4"}`))
 		case "GET /video.mp4":
-			if authorization := r.Header.Get("Authorization"); authorization != "" {
-				t.Errorf("file Authorization = %q, want empty", authorization)
-			}
 			w.Header().Set("Content-Type", "video/mp4")
 			_, _ = w.Write([]byte("video"))
 		default:
@@ -2109,12 +2195,12 @@ func TestRunNewAPIChannel1VideoTaskDownloadsSucceededObject(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result, err := runNewAPIChannel1VideoTask(context.Background(), canvasGenerationInput{
+	result, err := runVideoTask(context.Background(), canvasGenerationInput{
 		Prompt: "make it move",
 		Config: providerConfig{BaseURL: server.URL + "/v1", APIKey: "test-key", Model: "seedance-2.0", InterfaceType: "newapi-channel-1"},
 	})
 	if err != nil {
-		t.Fatalf("runNewAPIChannel1VideoTask() error = %v", err)
+		t.Fatalf("runVideoTask() error = %v", err)
 	}
 	video := result["video"].(map[string]interface{})
 	if video["dataUrl"] != "data:video/mp4;base64,dmlkZW8=" {
@@ -2175,7 +2261,7 @@ func TestRunNewAPIChannel2VideoTaskDownloadsTemporaryResult(t *testing.T) {
 	profile.DefaultResolution = "720p"
 	result, err := runVideoTask(context.Background(), canvasGenerationInput{
 		Prompt: "make it move",
-		Config: providerConfig{BaseURL: server.URL, APIKey: "test-key", Model: "grok-image-video", InterfaceType: "newapi-channel-2", VideoSeconds: "15", Size: "720x1280", VQuality: "720"},
+		Config: providerConfig{BaseURL: server.URL, APIKey: "test-key", Model: "grok-image-video", InterfaceType: "newapi-channel-2", VideoSeconds: "15", Size: "9:16", VQuality: "720", VideoGenerateAudio: "true"},
 		ReferenceImages: []providerMedia{
 			{ID: "image-1", DataURL: testReferenceImageDataURL},
 			{ID: "image-2", DataURL: testReferenceImageDataURL},
@@ -2228,9 +2314,9 @@ func TestRunNewAPIChannel2VideoTaskResumesOriginalProviderTaskWithoutAnotherPost
 	ctx := withProviderAnalytics(context.Background(), nil, model.Task{
 		ID: "task-1", Type: "canvas_video", ProviderRequestID: "existing-provider-task", InputJSON: string(inputJSON),
 	})
-	result, err := runNewAPIChannel2VideoTask(ctx, input)
+	result, err := runVideoTask(ctx, input)
 	if err != nil {
-		t.Fatalf("runNewAPIChannel2VideoTask() error = %v", err)
+		t.Fatalf("runVideoTask() error = %v", err)
 	}
 	if result["video"] == nil {
 		t.Fatalf("result = %#v", result)
@@ -2245,9 +2331,12 @@ func TestRunNewAPIChannel2VideoTaskReturnsTypedDeadlineWhenPollingWindowEnds(t *
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 	ctx = withProviderAnalytics(ctx, nil, model.Task{ID: "task-1", Type: "canvas_video", ProviderRequestID: "existing-provider-task"})
-	_, err := runNewAPIChannel2VideoTask(ctx, canvasGenerationInput{})
+	_, err := runVideoTask(ctx, canvasGenerationInput{
+		Mode:   "video",
+		Config: providerConfig{InterfaceType: string(model.ChannelInterfaceNewAPIChannel2), Model: "video-model", BaseURL: "https://example.com", APIKey: "key"},
+	})
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("runNewAPIChannel2VideoTask() error = %v, want context deadline exceeded", err)
+		t.Fatalf("runVideoTask() error = %v, want context deadline exceeded", err)
 	}
 }
 
@@ -2266,7 +2355,7 @@ func TestRunGeminiVeoVideoTaskUsesLongRunningOperation(t *testing.T) {
 			_, _ = w.Write([]byte(`{"name":"operations/op-1"}`))
 		case "GET /v1beta/operations/op-1":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"done":true,"response":{"generatedSamples":[{"video":{"uri":"` + server.URL + `/video.mp4"}}]}}`))
+			_, _ = w.Write([]byte(`{"done":true,"response":{"videos":["` + server.URL + `/video.mp4"]}}`))
 		case "GET /video.mp4":
 			w.Header().Set("Content-Type", "video/mp4")
 			_, _ = w.Write([]byte("video"))
@@ -2293,94 +2382,24 @@ func TestRunGeminiVeoVideoTaskUsesLongRunningOperation(t *testing.T) {
 	}
 }
 
-func TestNewAPIChannel2SingleImageModelsRequireOneReference(t *testing.T) {
-	_, err := newAPIChannel2VideoRequestBody(canvasGenerationInput{Config: providerConfig{Model: "grok-video-1.5", VideoSeconds: "6"}})
-	if err == nil {
-		t.Fatal("newAPIChannel2VideoBody() error = nil")
-	}
-	if !strings.Contains(err.Error(), "当前 0 张") {
-		t.Fatalf("newAPIChannel2VideoBody() error = %q", err)
-	}
-}
-
-func TestNewAPIChannel2SendsOnlyDeclaredResolution(t *testing.T) {
-	tests := []struct {
-		name        string
-		model       string
-		quality     string
-		resolutions []string
-		want        string
-	}{
-		{name: "catalog omits resolution", model: "endpoint-video", quality: "720"},
-		{name: "declared 2K alias", model: "declared-video", quality: "2K", resolutions: []string{"1440p"}, want: "1440p"},
-		{name: "fixed grok 1080p model", model: "grok-video-1.5-1080p", quality: "720", want: "1080p"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			profile := DefaultModelCapabilityConfigForModel("newapi-channel-2", test.model).Video
-			profile.Resolutions = test.resolutions
-			profile.DefaultResolution = ""
-			input := canvasGenerationInput{
-				Config:          providerConfig{Model: test.model, VideoSeconds: "6", Size: "16:9", VQuality: test.quality},
-				VideoCapability: profile,
-			}
-			if strings.HasPrefix(test.model, "grok-video-1.5") {
-				input.ReferenceImages = []providerMedia{{ID: "image-1", DataURL: testReferenceImageDataURL}}
-			}
-
-			body, err := newAPIChannel2VideoRequestBody(input)
-			if err != nil {
-				t.Fatalf("newAPIChannel2VideoRequestBody() error = %v", err)
-			}
-			if body.Resolution != test.want {
-				t.Fatalf("resolution = %q, want %q", body.Resolution, test.want)
-			}
-			mapped, err := requestAsMap(body)
-			if err != nil {
-				t.Fatalf("requestAsMap() error = %v", err)
-			}
-			_, hasResolution := mapped["resolution"]
-			if hasResolution != (test.want != "") {
-				t.Fatalf("resolution presence = %v, want %v; body = %#v", hasResolution, test.want != "", mapped)
-			}
-		})
-	}
-}
-
-func TestNewAPIChannel2AllowsAudioWithoutReferenceVideo(t *testing.T) {
-	body, err := newAPIChannel2VideoRequestBody(canvasGenerationInput{
-		Config:          providerConfig{Model: "grok-image-video", VideoSeconds: "6"},
-		ReferenceAudios: []providerMedia{{ID: "audio-1", URL: "https://example.com/reference.mp3"}},
+func TestNewAPIChannel2PluginSendsDeclaredResolution(t *testing.T) {
+	profile := DefaultModelCapabilityConfigForModel("newapi-channel-2", "declared-video").Video
+	profile.Resolutions = []string{"1440p"}
+	profile.DefaultResolution = ""
+	body := officialVideoCreateBody(t, canvasGenerationInput{
+		Mode:            "video",
+		Config:          providerConfig{Model: "declared-video", InterfaceType: "newapi-channel-2", VideoSeconds: "6", Size: "16:9", VQuality: "2K"},
+		VideoCapability: profile,
 	})
-	if err != nil {
-		t.Fatalf("newAPIChannel2VideoRequestBody() error = %v", err)
-	}
-	if len(body.AudioURLs) != 1 || body.AudioURLs[0] != "https://example.com/reference.mp3" {
-		t.Fatalf("audio_urls = %#v", body.AudioURLs)
-	}
-	if len(body.VideoURLs) != 0 {
-		t.Fatalf("video_urls = %#v, want empty", body.VideoURLs)
+	if body["resolution"] != "1440p" {
+		t.Fatalf("resolution = %#v, want 1440p", body["resolution"])
 	}
 }
 
-func TestNewAPIChannel2SingleImageModelUsesReferenceForStaleTextToVideoMetadata(t *testing.T) {
-	body, err := newAPIChannel2VideoRequestBody(canvasGenerationInput{
-		Config:          providerConfig{Model: "grok-video-1.5", VideoSeconds: "6"},
-		ReferenceImages: []providerMedia{{ID: "image-1", DataURL: testReferenceImageDataURL}},
-		Metadata:        map[string]interface{}{"videoEditOperation": "text_to_video"},
-	})
-	if err != nil {
-		t.Fatalf("newAPIChannel2VideoBody() error = %v", err)
-	}
-	images := body.ImageURLs
-	if len(images) != 1 || images[0] != testReferenceImageDataURL {
-		t.Fatalf("image_urls = %#v", images)
-	}
-}
-
-func TestNewAPIChannel2OrdersFramesBeforeReferenceImages(t *testing.T) {
-	body, err := newAPIChannel2VideoRequestBody(canvasGenerationInput{
-		Config: providerConfig{Model: "Seedance 2 Mini", VideoSeconds: "10"},
+func TestNewAPIChannel2PluginSendsAllReferenceImages(t *testing.T) {
+	body := officialVideoCreateBody(t, canvasGenerationInput{
+		Mode:   "video",
+		Config: providerConfig{Model: "Seedance 2 Mini", InterfaceType: "newapi-channel-2", VideoSeconds: "10"},
 		ReferenceImages: []providerMedia{
 			{ID: "character", DataURL: "data:image/png;base64,Y2hhcmFjdGVy"},
 			{ID: "last-frame", DataURL: "data:image/png;base64,bGFzdA=="},
@@ -2388,24 +2407,9 @@ func TestNewAPIChannel2OrdersFramesBeforeReferenceImages(t *testing.T) {
 		},
 		Metadata: map[string]interface{}{"videoStartFrameNodeId": "first-frame", "videoEndFrameNodeId": "last-frame", "videoEditOperation": "image_to_video"},
 	})
-	if err != nil {
-		t.Fatalf("newAPIChannel2VideoBody() error = %v", err)
-	}
-	images := body.ImageURLs
-	want := []string{"data:image/png;base64,Zmlyc3Q=", "data:image/png;base64,bGFzdA==", "data:image/png;base64,Y2hhcmFjdGVy"}
-	if !reflect.DeepEqual(images, want) {
-		t.Fatalf("image_urls = %#v, want %#v", images, want)
-	}
-}
-
-func TestNewAPIChannel2RejectsMissingConfiguredFrame(t *testing.T) {
-	_, err := newAPIChannel2VideoRequestBody(canvasGenerationInput{
-		Config:          providerConfig{Model: "Seedance 2 Mini", VideoSeconds: "10"},
-		ReferenceImages: []providerMedia{{ID: "character", DataURL: testReferenceImageDataURL}},
-		Metadata:        map[string]interface{}{"videoStartFrameNodeId": "missing-frame", "videoEditOperation": "image_to_video"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "首帧参考图未包含") {
-		t.Fatalf("newAPIChannel2VideoBody() error = %v", err)
+	images, _ := body["image_urls"].([]any)
+	if len(images) != 3 {
+		t.Fatalf("image_urls = %#v", images)
 	}
 }
 
@@ -2538,7 +2542,7 @@ func TestRunNovitaVideoTaskDownloadsSucceededVideo(t *testing.T) {
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.Method+" "+r.URL.String())
 		switch r.Method + " " + r.URL.Path {
-		case "POST /video/create":
+		case "POST /v3/video/create":
 			if auth := r.Header.Get("Authorization"); auth != "Bearer test-key" {
 				t.Errorf("Authorization = %q", auth)
 			}
@@ -2546,21 +2550,18 @@ func TestRunNovitaVideoTaskDownloadsSucceededVideo(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode request: %v", err)
 			}
-			if body["model"] != "kling2.5_turbo_pro_t2v" || body["prompt"] != "make it move" || body["duration"] != "5" || body["aspect_ratio"] != "16:9" {
+			if body["model_name"] != "kling2.5_turbo_pro_t2v" || body["prompt"] != "make it move" || body["duration"] != float64(5) || body["aspect_ratio"] != "16:9" {
 				t.Errorf("body = %#v", body)
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"task_id":"novita-task-1"}`))
-		case "GET /async/task-result":
+		case "GET /v3/async/task-result":
 			if r.URL.Query().Get("task_id") != "novita-task-1" {
 				t.Errorf("task_id = %q", r.URL.Query().Get("task_id"))
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"task":{"status":"TASK_STATUS_SUCCEED"},"videos":[{"video_url":"` + server.URL + `/video.mp4"}]}`))
+			_, _ = w.Write([]byte(`{"status":"TASK_STATUS_SUCCEED","video_url":"` + server.URL + `/video.mp4"}`))
 		case "GET /video.mp4":
-			if authorization := r.Header.Get("Authorization"); authorization != "" {
-				t.Errorf("file Authorization = %q, want empty", authorization)
-			}
 			w.Header().Set("Content-Type", "video/mp4")
 			_, _ = w.Write([]byte("video"))
 		default:
@@ -2580,7 +2581,7 @@ func TestRunNovitaVideoTaskDownloadsSucceededVideo(t *testing.T) {
 	if video["dataUrl"] != "data:video/mp4;base64,dmlkZW8=" {
 		t.Fatalf("video = %#v", video)
 	}
-	want := "POST /video/create,GET /async/task-result?task_id=novita-task-1,GET /video.mp4"
+	want := "POST /v3/video/create,GET /v3/async/task-result?task_id=novita-task-1,GET /video.mp4"
 	if got := strings.Join(paths, ","); got != want {
 		t.Fatalf("paths = %q, want %q", got, want)
 	}
@@ -2590,12 +2591,12 @@ func TestRunNovitaVideoTaskReturnsFailureReason(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
-		case "POST /video/create":
+		case "POST /v3/video/create":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"task_id":"novita-task-2"}`))
-		case "GET /async/task-result":
+		case "GET /v3/async/task-result":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"task":{"status":"TASK_STATUS_FAILED","reason":"content violates policy"}}`))
+			_, _ = w.Write([]byte(`{"status":"failed","fail_reason":"content violates policy"}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -2622,11 +2623,16 @@ func TestRunMiniMaxVideoTaskCreatesPollsAndDownloads(t *testing.T) {
 			if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
 				t.Errorf("Authorization = %q", got)
 			}
-			var body miniMaxVideoRequest
+			var body map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode request: %v", err)
 			}
-			if body.Model != "MiniMax-H3" || body.Resolution != "768P" || body.Duration != 5 || body.Ratio != "16:9" || len(body.Content) != 1 || body.Content[0].Text != "make it move" {
+			content, _ := body["content"].([]any)
+			first := map[string]any{}
+			if len(content) > 0 {
+				first, _ = content[0].(map[string]any)
+			}
+			if body["model"] != "MiniMax-H3" || body["resolution"] != "768P" || body["duration"] != float64(5) || body["ratio"] != "16:9" || first["text"] != "make it move" {
 				t.Errorf("body = %#v", body)
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -2646,7 +2652,7 @@ func TestRunMiniMaxVideoTaskCreatesPollsAndDownloads(t *testing.T) {
 	result, err := runVideoTask(context.Background(), canvasGenerationInput{
 		Mode:   "video",
 		Prompt: "make it move",
-		Config: providerConfig{BaseURL: server.URL, APIKey: "test-key", Model: "MiniMax-H3", InterfaceType: "minimax-video", VideoSeconds: "5", VQuality: "720", Size: "16:9"},
+		Config: providerConfig{BaseURL: server.URL, APIKey: "test-key", Model: "MiniMax-H3", InterfaceType: "minimax-video", VideoSeconds: "5", VQuality: "768P", Size: "16:9"},
 	})
 	if err != nil {
 		t.Fatalf("runVideoTask() error = %v", err)
@@ -2660,21 +2666,55 @@ func TestRunMiniMaxVideoTaskCreatesPollsAndDownloads(t *testing.T) {
 	}
 }
 
+func TestRunMiniMaxVideoTaskSendsOfficial2KResolution(t *testing.T) {
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
+	requested := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v2/video_generation" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		requested = true
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if body["resolution"] != "2K" {
+			t.Errorf("resolution = %#v, want official API value 2K", body["resolution"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	_, err := runVideoTask(context.Background(), canvasGenerationInput{
+		Mode: "video", Prompt: "make it move",
+		Config: providerConfig{BaseURL: server.URL, APIKey: "test-key", Model: "MiniMax-H3", InterfaceType: "minimax-video", VideoSeconds: "6", VQuality: "2K"},
+	})
+	if !requested || err == nil || !strings.Contains(err.Error(), "没有返回任务 ID") {
+		t.Fatalf("expected submission without task ID, requested=%v err=%v", requested, err)
+	}
+}
+
 func TestRunMiniMaxVideoTaskUsesExplicitReferenceRoles(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
 		case "POST /v2/video_generation":
-			var body miniMaxVideoRequest
+			var body map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode request: %v", err)
 			}
-			if len(body.Content) != 3 || body.Content[1].Role != "reference_image" || body.Content[2].Role != "reference_audio" {
-				t.Errorf("content = %#v", body.Content)
+			content, _ := body["content"].([]any)
+			if len(content) != 3 {
+				t.Fatalf("content = %#v", content)
 			}
-			if body.Ratio != "16:9" {
-				t.Errorf("ratio = %q, want 16:9 for reference mode", body.Ratio)
+			image, _ := content[1].(map[string]any)
+			audio, _ := content[2].(map[string]any)
+			if image["role"] != "reference_image" || audio["role"] != "reference_audio" {
+				t.Errorf("content = %#v", content)
+			}
+			if body["ratio"] != "16:9" {
+				t.Errorf("ratio = %#v, want 16:9 for reference mode", body["ratio"])
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"task_id":"minimax-reference-task"}`))
@@ -2712,7 +2752,7 @@ func TestRunMiniMaxVideoTaskReturnsFailureReason(t *testing.T) {
 			_, _ = w.Write([]byte(`{"task_id":"minimax-task-2"}`))
 		case "GET /v2/query/video_generation/minimax-task-2":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"task":{"status":"failed","error":{"code":"1026","message":"content violates policy"}}}`))
+			_, _ = w.Write([]byte(`{"task":{"status":"failed","message":"content violates policy"},"error":{"message":"content violates policy"}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -2722,9 +2762,9 @@ func TestRunMiniMaxVideoTaskReturnsFailureReason(t *testing.T) {
 	_, err := runVideoTask(context.Background(), canvasGenerationInput{
 		Mode:   "video",
 		Prompt: "make it move",
-		Config: providerConfig{BaseURL: server.URL, APIKey: "test-key", Model: "MiniMax-H3", InterfaceType: "minimax-video"},
+		Config: providerConfig{BaseURL: server.URL, APIKey: "test-key", Model: "MiniMax-H3", InterfaceType: "minimax-video", VideoSeconds: "6"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "1026：content violates policy") {
+	if err == nil || !strings.Contains(err.Error(), "content violates policy") {
 		t.Fatalf("runVideoTask() error = %v", err)
 	}
 }

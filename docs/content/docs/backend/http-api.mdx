@@ -1,0 +1,103 @@
+---
+title: HTTP API 合同
+description: 信封、错误码与 OpenAPI
+---
+
+# HTTP API 合同
+
+路径前缀是 `/api`。前后端一起发布，不按 `/api/v1`、`/api/v2` 做路径版本。不兼容变更随版本一起改接口和调用方。
+
+机器可读规范：运行中的 `GET /api/openapi.yaml`，源文件 `backend/internal/handler/openapi.yaml`。前端 TypeScript 仍走 `web/src/services/api` 的 `http`，不从 OpenAPI 生成客户端。
+
+## 信封
+
+成功：
+
+```json
+{ "code": 0, "data": {}, "msg": "ok" }
+```
+
+失败：HTTP status 与 `code` 都不是成功；`reason` 是稳定机器可读原因。
+
+```json
+{ "code": 40301, "data": null, "msg": "账号素材数量已达到 100 个上限", "reason": "quota_exceeded" }
+```
+
+`code === 0` 才是业务成功。HTTP 200 但 `code !== 0` 必须当失败。前端判断类型用 `ApiError.reason` / `ApiError.code`，不要解析 `msg`。
+
+## 错误码
+
+`code` 默认等于 HTTP 状态。需要区分同一状态的不同原因时，使用 `status * 100 + n`。没有单独的 1001/2001 号段，以免和 HTTP 状态、现有 42901 以及重试判断打架。
+
+| code | HTTP | reason | 含义 |
+| --- | --- | --- | --- |
+| 0 | 200 | — | 成功 |
+| 400 | 400 | `invalid_argument` | 请求不合法 |
+| 401 | 401 | `unauthorized` | 未登录 |
+| 403 | 403 | `forbidden` | 无权限 |
+| 404 | 404 | `not_found` | 资源不存在 |
+| 409 | 409 | `conflict` | 冲突 |
+| 429 | 429 | `rate_limited` | 限流（未细分） |
+| 500 | 500 | `internal` | 内部错误 |
+| 502 | 502 | `bad_gateway` | 上游失败 |
+| 503 | 503 | `unavailable` | 暂时不可用 |
+| 504 | 504 | `timeout` | 超时 |
+| 40301 | 403 | `quota_exceeded` | 账号配额用尽（不自动重试） |
+| 40901 | 409 | `conflict` | 幂等冲突 |
+| 42901 | 429 | `rate_limited` | 请求限流（可带 Retry-After） |
+
+模型错误把已有字符串码放进 `reason`（如 `model_capability_not_supported`），`code` 仍为 400。
+
+常量：后端 `service/error_codes.go`，前端 `web/src/services/api/error-codes.ts`。
+
+## 管理员修改用户名
+
+`PATCH /admin/users/:id` 接受可选 `username`。省略时保留原用户名；提供时去除首尾空白，校验 3-32 位字母、数字、下划线或连字符。空值或格式错误返回 400，与其他账号重名（不区分大小写）返回 409；目标不存在返回 404。接口及 service 均要求管理员身份。
+
+改名后使用新用户名和原密码登录，邮箱登录不受影响。仅改名不更换用户 ID，不重置积分余额、个人统计、任务、素材或登录会话。若同时提交新密码，则撤销该用户的旧会话。用户名修改和 `user.update` 审计在同一事务内完成，审计元数据包含 `previousUsername` 与 `username`；任一写入失败都会回滚。
+
+后台入口为“用户管理 → 编辑用户 → 用户名”。编辑当前管理员本人时，前端同步更新当前用户展示信息；登录时间写入只更新对应字段，不写回可能已经过时的用户名。
+
+## 管理员找回用户密码
+
+后台“用户管理 → 重置密码”可手动设置新密码，或使用浏览器安全随机源生成 24 位随机密码。不需要用户旧密码，不依赖邮件服务，不读取原密码明文；不会自动启用已停用的账号。密码操作只提交 `PATCH /admin/users/:id` 的 `password` 字段，不携带用户名、角色或积分修改。
+
+密码按原值保存（不裁剪空白），至少 8 个字符，UTF-8 编码最多 72 字节。后端仅存储 bcrypt 哈希，并在同一事务内撤销目标用户所有旧会话、写入 `user.update` 审计。审计仅记录 `passwordChanged` 和 `sessionsRevoked` 标记，不包含新旧密码或哈希；接口响应禁止缓存。管理员重置自己的密码时同时清除会话 Cookie，弹窗完成后返回登录页。
+
+保存成功后的新密码只保留在弹窗内存中，支持显式显示和复制，关闭即清除，不保存到 localStorage 或服务器明文字段。复制会写入系统剪贴板，请通过可信方式交付本人。未启用邮件服务的账号可由管理员按上述入口协助找回；已有“忘记密码”邮箱验证码流程保持不变。
+
+## 管理统计
+
+管理员统计端点使用同一组筛选参数：`from`、`to`、`userId`、`model`、`channelId`、`capability`。日期参数按 UTC 自然日解释，`to` 对调用方是包含当天；默认查询 30 天，最长 366 天。
+
+| 端点 | 返回内容 |
+| --- | --- |
+| `GET /admin/analytics/overview` | KPI、逐日趋势、模型、渠道、个人和失败分类的完整总览 |
+| `GET /admin/analytics/models` | 按逻辑模型和能力聚合的明细 |
+| `GET /admin/analytics/channels` | 按最终归属渠道聚合的明细 |
+| `GET /admin/analytics/users` | 每个人的完整总账，以及截至区间末尾的 DAU、WAU、MAU |
+| `GET /admin/analytics/export.csv` | 每个人一行的 UTF-8 BOM CSV，内含模型、渠道、逐日 JSON 明细 |
+
+统计口径分为三套事实，不能相互代替：
+
+- **任务事实**：文/图/视/音任务、排队/运行/成功/失败/取消、任务耗时、成功媒体和视频秒数。媒体与视频秒数只按成功任务计一次；历史视频任务缺失输入秒数时，最多从同任务日志回补一次。
+- **逻辑请求事实**：请求成败、耗时和 Token。`poll`、`download` 不计为逻辑请求，避免轮询把调用量重复放大。
+- **账单事实**：仅已结算订单计入积分消耗；按结算时间落入区间。上游费用是按已配置价格估算的微单位值，必须结合 `costAvailable` 与 `currency` 使用。
+
+`users[]` 精确到账号，除个人总账外还包含 `models[]`、`channels[]`、`daily[]`。每日明细覆盖登录、文/图/视/音任务、各任务状态、请求成败、图/视/音产量、视频秒数、Token、积分、估算费用、Agent 消息、画布活跃、素材和资源。登录本身会计入活跃日，因此没有生成任务但在区间内登录过的账号仍可出现。
+
+模型、渠道及账单通过 `task_id` 归一。渠道优先采用已结算订单渠道，其次采用成功请求渠道，再其次采用失败请求渠道；无系统渠道 ID 的记录显示为“本地、自定义或未关联”，不会被武断归类为某一个渠道。
+
+## 个人积分统计
+
+`GET /wallet` 除账户和分页流水外返回当前登录用户的 `consumption`。`todayMicrocredits`、`yesterdayMicrocredits`、`weekMicrocredits` 和 `monthMicrocredits` 分别表示今日、昨日、本周一至今日和本月一日至今日的已结算积分消耗；`daily[]` 从本月一日连续返回到今日，元素包含 `day`、`amountMicrocredits` 和结算次数 `count`。
+
+个人统计统一按 `Asia/Shanghai` 自然日计算，只汇总该用户的 `consume` 积分流水，不包含冻结、充值或退款，也不受 `type`、`page`、`pageSize` 流水查询参数影响。金额单位均为微积分，`1_000_000` 微积分等于 `1` 积分。
+
+## 存储设置恢复
+
+`GET /admin/settings/oss` 返回平台对象存储的非敏感配置。`credentialsRequireReset` 为 `true` 表示数据库中的加密凭据无法由当前后端数据目录的 `.settings-key` 解密，常见于只恢复 PostgreSQL、未同时恢复后端数据卷的场景。此时响应不会返回或伪装可用的 Secret，管理员必须重新填写当前厂商凭据，或切换到服务器本地存储后保存。
+
+普通资源读写仍严格校验密文，不会使用无法解密的凭据。读取恢复状态本身不会改写数据库中的旧密文。
+
+管理员可通过 `GET /admin/settings/oss/credentials` 显式读取当前平台凭据。该接口单独执行管理员鉴权和限流，响应禁止缓存，并写入不含明文的管理员审计记录；普通 `GET /admin/settings/oss` 始终保持脱敏。若恢复数据库时遗失原 `.settings-key`，旧密文在密码学上不可恢复，该接口返回冲突提示，重新填写 SecretKey 并保存后才能读取。

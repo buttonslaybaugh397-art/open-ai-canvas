@@ -21,6 +21,7 @@ type CreditLedgerEntry struct {
 	AvailableAfterMicrocredits int64            `json:"availableAfterMicrocredits"`
 	ReservedAfterMicrocredits  int64            `json:"reservedAfterMicrocredits"`
 	BillingOrderID             string           `json:"billingOrderId,omitempty" gorm:"index;size:36"`
+	PaymentOrderID             string           `json:"paymentOrderId,omitempty" gorm:"index;size:36"`
 	RedeemCodeID               string           `json:"redeemCodeId,omitempty" gorm:"index;size:36"`
 	ActorUserID                string           `json:"actorUserId,omitempty" gorm:"index;size:36"`
 	Model                      string           `json:"model,omitempty" gorm:"size:120;index"`
@@ -47,7 +48,6 @@ type BillingOrder struct {
 	Scene                        string        `json:"scene" gorm:"index;size:80"`
 	BillingMode                  string        `json:"billingMode" gorm:"size:32"`
 	PriceVersion                 int64         `json:"priceVersion"`
-	Resolution                   string        `json:"resolution,omitempty" gorm:"size:32"`
 	UnitPriceMicrocredits        int64         `json:"unitPriceMicrocredits"`
 	MultiplierBasisPoints        int64         `json:"multiplierBasisPoints"`
 	Quantity                     int64         `json:"quantity"`

@@ -3,6 +3,15 @@ import { normalizeVideoDuration, VIDEO_DURATION_OPTIONS } from "@/lib/video-gene
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 
+export const SEEDANCE_REFERENCE_LIMITS = {
+    images: 9,
+    videos: 3,
+    audios: 3,
+    imageMaxBytes: 30 * 1024 * 1024,
+    videoMaxBytes: 50 * 1024 * 1024,
+    audioMaxBytes: 15 * 1024 * 1024,
+};
+
 export const seedanceResolutionOptions = [
     { value: "480p", label: "480P" },
     { value: "720p", label: "720P" },
@@ -20,8 +29,6 @@ export const seedanceRatioOptions = [
 ] as const;
 
 export const seedanceDurationOptions = VIDEO_DURATION_OPTIONS;
-
-export const SEEDANCE_REFERENCE_LIMITS = { images: 30, videos: 10, audios: 10 } as const;
 
 const seedancePixels = {
     "480p": {
@@ -50,9 +57,9 @@ const seedancePixels = {
     },
 } as const;
 
-export function isSeedanceVideoConfig(config: AiConfig | { model: string; videoModel: string; baseUrl: string; interfaceType?: string }) {
+export function isSeedanceVideoConfig(config: AiConfig | Pick<AiConfig, "model" | "videoModel" | "baseUrl">) {
     const requestConfig = "channels" in config ? resolveModelRequestConfig(config, config.model || config.videoModel) : config;
-    return requestConfig.interfaceType === "seedance-videos" || requestConfig.interfaceType === "volcengine-ark-video" || isSeedanceVideoModel(modelOptionName(requestConfig.model || requestConfig.videoModel)) || isArkPlanBaseUrl(requestConfig.baseUrl);
+    return isSeedanceVideoModel(modelOptionName(requestConfig.model || requestConfig.videoModel)) || isArkPlanBaseUrl(requestConfig.baseUrl);
 }
 
 export function isSeedanceVideoModel(model: string) {
@@ -130,8 +137,26 @@ export function buildSeedancePromptText(prompt: string, _images: ReferenceImage[
     return prompt.trim();
 }
 
-export const seedanceVideoReferenceHint = "参考视频需为 mp4/mov，H.264/H.265，FPS 24-60；含真人人脸素材请使用火山授权 asset:// 素材。";
-
 export function seedanceVideoReferenceError(videos: ReferenceVideo[]) {
-    return videos.length > SEEDANCE_REFERENCE_LIMITS.videos ? "参考视频最多 " + SEEDANCE_REFERENCE_LIMITS.videos + " 个" : "";
+    let totalDurationMs = 0;
+    for (let index = 0; index < videos.length; index += 1) {
+        const video = videos[index];
+        const label = seedanceReferenceLabel("video", index);
+        if (video.bytes && video.bytes > SEEDANCE_REFERENCE_LIMITS.videoMaxBytes) return `${label} 超过 50MB，请压缩后再上传`;
+        if (video.durationMs) {
+            if (video.durationMs < 2000 || video.durationMs > 15000) return `${label} 时长需要在 2-15 秒之间`;
+            totalDurationMs += video.durationMs;
+        }
+        if (video.width && video.height) {
+            if (video.width < 300 || video.width > 6000 || video.height < 300 || video.height > 6000) return `${label} 宽高需要在 300-6000px 之间`;
+            const ratio = video.width / video.height;
+            if (ratio < 0.4 || ratio > 2.5) return `${label} 宽高比需要在 0.4-2.5 之间`;
+            const pixels = video.width * video.height;
+            if (pixels < 640 * 640 || pixels > 2206 * 946) return `${label} 像素总量不符合 Seedance 要求，请转成 480p/720p/1080p 后再上传`;
+        }
+    }
+    if (totalDurationMs > 15000) return "Seedance 参考视频总时长不能超过 15 秒";
+    return "";
 }
+
+export const seedanceVideoReferenceHint = "参考视频需为 mp4/mov，H.264/H.265，FPS 24-60；含真人人脸素材请使用火山授权 asset:// 素材。";

@@ -101,19 +101,13 @@ export function toChatCompletionToolChoice(toolChoice: ToolChoice) {
     return typeof toolChoice === "object" ? { type: "function", function: { name: toolChoice.name } } : toolChoice;
 }
 
-export function buildBackendToolRequests(messages: ResponseInputMessage[], tools: ResponseFunctionTool[], toolChoice: ToolChoice): BackendToolRequests {
+export function buildBackendToolRequests(messages: ResponseInputMessage[], tools: ResponseFunctionTool[], toolChoice: ToolChoice, config?: AiConfig): BackendToolRequests {
     return {
-        responses: {
-            input: toResponseInput(messages),
-            tools: tools.map(toResponseTool),
-            tool_choice: toolChoice,
-            parallel_tool_calls: false,
-        },
-        chatCompletion: {
-            messages: toChatCompletionMessages(messages),
+        canonical: {
+            messages,
             tools,
-            tool_choice: toChatCompletionToolChoice(toolChoice),
-            parallel_tool_calls: false,
+            toolChoice,
+            systemPrompt: config?.systemPrompt || "",
         },
     };
 }

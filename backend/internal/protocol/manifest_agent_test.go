@@ -97,3 +97,22 @@ func TestManifestUsesOnlyUnifiedTopLevelContract(t *testing.T) {
 		t.Fatalf("multi-provider load = %#v, %v", adapters, err)
 	}
 }
+
+func TestHostProvidersRuntimeLoadsEveryProviderContribution(t *testing.T) {
+	manifest := BundledHostManifests()[0]
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	adapters, err := LoadInstalledProviders(raw, Builtins().Resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(adapters) != 2 {
+		t.Fatalf("adapter count = %d, want 2", len(adapters))
+	}
+	if adapters[0].Metadata().ID != "globalaiopc-image" || adapters[1].Metadata().ID != "globalaiopc-video" {
+		t.Fatalf("adapter IDs = %q, %q", adapters[0].Metadata().ID, adapters[1].Metadata().ID)
+	}
+}

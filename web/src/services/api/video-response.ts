@@ -80,16 +80,10 @@ export function blobToDataUrl(blob: Blob) {
 }
 
 export async function videoResultFromUrl(url: string, options?: RequestOptions): Promise<VideoGenerationResult> {
-    if (/^https?:\/\//i.test(url)) {
-        // Keep provider URLs as the preview source. Persistence is handled by
-        // the authenticated backend import path, so a signed OSS URL never has
-        // to grant the browser CORS access just to become a Blob.
-        return { url, mimeType: "video/mp4" };
-    }
     try {
         const response = await axios.get<Blob>(url, { responseType: "blob", signal: options?.signal });
         await assertVideoBlob(response.data);
-        return { url, blob: response.data };
+        return { blob: response.data };
     } catch (error) {
         if (axios.isCancel(error) || options?.signal?.aborted) throw error;
         return { url, mimeType: "video/mp4" };

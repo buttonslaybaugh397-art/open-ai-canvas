@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"infinite-canvas/backend/internal/model"
@@ -49,6 +50,31 @@ func TestMergeChannelRequestSupportsEnabledOnlyPatch(t *testing.T) {
 	})
 	if req.Name != "Video" || req.BaseURL != "https://example.com/v1" || len(req.Models) != 1 || len(req.Headers) != 1 {
 		t.Fatalf("mergeChannelRequest() = %#v", req)
+	}
+}
+
+func TestUpdateSystemChannelEnabledOnlySkipsOutboundResolution(t *testing.T) {
+	svc, db := newChannelModelTestService(t)
+	svc.dataDir = t.TempDir()
+	admin := &model.User{ID: "admin", Role: model.UserRoleAdmin}
+	channel := model.ModelChannel{ID: "channel-1", UserID: admin.ID, Scope: model.ChannelScopeSystem, Enabled: true, Name: "Dead", BaseURL: "https://dead.invalid/v1", APIKey: "key", APIFormat: "openai", ModelsJSON: `[]`}
+	if err := db.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	disabled := false
+	updated, err := svc.UpdateSystemChannel(admin, channel.ID, ChannelRequest{Enabled: &disabled})
+	if err != nil {
+		t.Fatalf("UpdateSystemChannel() should not resolve the stored URL for an enabled-only patch: %v", err)
+	}
+	if updated.Enabled {
+		t.Fatal("UpdateSystemChannel() did not persist disabled state")
+	}
+	var stored model.ModelChannel
+	if err := db.First(&stored, "id = ?", channel.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Enabled {
+		t.Fatal("stored channel is still enabled after update")
 	}
 }
 
@@ -153,102 +179,78 @@ func TestFetchAdminChannelModelsReaddsDeletedModel(t *testing.T) {
 	}
 }
 
-func TestDiscoveredHuiQuYunModelUsesDedicatedProtocol(t *testing.T) {
-	channel := model.ModelChannel{ID: "huiquyun", BaseURL: "https://api.bjhuiqu.net/v1"}
-	item := discoveredChannelModel(channel, "sora-2-pro-15s", nil)
-	if item.Capability != "video" || item.Protocol != model.ChannelInterfaceHuiQuYunVideo {
-		t.Fatalf("discovered HuiQuYun model = %#v", item)
+func TestImportAdminChannelModelsOnlyImportsSelectedModels(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"model-a"},{"id":"model-b"}]}`))
+	}))
+	defer upstream.Close()
+
+	svc, db := newChannelModelTestService(t)
+	svc.runtimeCapabilities = RuntimeCapabilities{desktopLocalChannels: true}
+	admin := &model.User{ID: "admin", Role: model.UserRoleAdmin}
+	channel := model.ModelChannel{ID: "channel-1", UserID: admin.ID, Scope: model.ChannelScopeSystem, Enabled: true, Name: "Test", BaseURL: upstream.URL + "/v1", APIKey: "key", APIFormat: "openai", ModelsJSON: `[]`, AllowLocalChannel: true}
+	if err := db.Create(&channel).Error; err != nil {
+		t.Fatal(err)
 	}
-	if item.CapabilityConfigJSON == "" || item.CapabilityVersion != 1 || item.Enabled || item.PriceConfigured {
-		t.Fatalf("discovered HuiQuYun capability contract = %#v", item)
+
+	preview, err := svc.PreviewAdminChannelModels(context.Background(), admin, channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview) != 2 {
+		t.Fatalf("preview models = %#v, want two models", preview)
+	}
+	var before int64
+	if err := db.Model(&model.ChannelModel{}).Where("channel_id = ?", channel.ID).Count(&before).Error; err != nil {
+		t.Fatal(err)
+	}
+	if before != 0 {
+		t.Fatalf("preview created %d channel models", before)
+	}
+
+	result, err := svc.ImportAdminChannelModels(context.Background(), admin, channel.ID, []string{"model-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Added != 1 || len(result.Models) != 1 || result.Models[0] != "model-b" {
+		t.Fatalf("import result = %#v, want only model-b", result)
+	}
+	var imported []model.ChannelModel
+	if err := db.Where("channel_id = ?", channel.ID).Find(&imported).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(imported) != 1 || imported[0].ModelKey != "model-b" {
+		t.Fatalf("imported models = %#v, want only model-b", imported)
 	}
 }
 
-func TestHuiQuYunChannelAcceptsExplicitModelContract(t *testing.T) {
-	channel := &model.ModelChannel{BaseURL: "https://api.bjhuiqu.net"}
-	modelKey, _, capability, protocol, err := normalizeChannelModelContract(channel, ChannelModelRequest{ModelKey: "ambiguous-model", Capability: "video", Protocol: string(model.ChannelInterfaceHuiQuYunVideo)})
-	if err != nil || modelKey != "ambiguous-model" || capability != "video" || protocol != model.ChannelInterfaceHuiQuYunVideo {
-		t.Fatalf("normalizeChannelModelContract() = %q, %q, %q, %v", modelKey, capability, protocol, err)
-	}
-}
+func TestImportAdminChannelModelsRejectsUnknownSelection(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"model-a"}]}`))
+	}))
+	defer upstream.Close()
 
-func TestHuiQuYunCatalogRefreshPreservesConfiguredContract(t *testing.T) {
-	channel := model.ModelChannel{BaseURL: "https://api.bjhuiqu.net/v1"}
-	item := model.ChannelModel{ModelKey: "ambiguous-model", Capability: "video", Protocol: model.ChannelInterfaceHuiQuYunVideo, PriceConfigured: true, CapabilityConfigJSON: `{}`}
-	if changed := syncHuiQuYunModelContract(channel, &item, []string{"openai-image"}); changed {
-		t.Fatal("configured HuiQuYun contract must not be overwritten by a later catalog match")
+	svc, db := newChannelModelTestService(t)
+	svc.runtimeCapabilities = RuntimeCapabilities{desktopLocalChannels: true}
+	admin := &model.User{ID: "admin", Role: model.UserRoleAdmin}
+	channel := model.ModelChannel{ID: "channel-1", UserID: admin.ID, Scope: model.ChannelScopeSystem, Enabled: true, Name: "Test", BaseURL: upstream.URL + "/v1", APIKey: "key", APIFormat: "openai", ModelsJSON: `[]`, AllowLocalChannel: true}
+	if err := db.Create(&channel).Error; err != nil {
+		t.Fatal(err)
 	}
-	if item.Capability != "video" || item.Protocol != model.ChannelInterfaceHuiQuYunVideo {
-		t.Fatalf("configured HuiQuYun model = %#v", item)
-	}
-}
 
-func TestHuiQuYunVideoModelNamesResolveToDedicatedProtocol(t *testing.T) {
-	// MX933 家族和固定时长后缀都不含 video 字样，早期只靠关键字会把它们当文本模型。
-	for _, name := range []string{"sd2-mx933-720-5s", "sd2-mx933-720-fast-5s", "sd2-mx933-720-10s", "mj-sd2.0-933-720p", "mj-sd2.0-933-720p-fast"} {
-		if protocol := huiQuYunProtocolForModel(name, nil); protocol != model.ChannelInterfaceHuiQuYunVideo {
-			t.Fatalf("huiQuYunProtocolForModel(%q) = %q", name, protocol)
-		}
+	_, err := svc.ImportAdminChannelModels(context.Background(), admin, channel.ID, []string{"not-in-catalog"})
+	var authErr *AuthError
+	if !errors.As(err, &authErr) || authErr.Message != "所选模型不在上游模型目录中：not-in-catalog" {
+		t.Fatalf("ImportAdminChannelModels() error = %#v", err)
 	}
-	if protocol := huiQuYunProtocolForModel("gpt-4.1-mini", nil); protocol != model.ChannelInterfaceChatCompletion {
-		t.Fatalf("text model protocol = %q", protocol)
+	var count int64
+	if err := db.Model(&model.ChannelModel{}).Where("channel_id = ?", channel.ID).Count(&count).Error; err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestHuiQuYunCatalogRefreshRepairsStaleVideoProtocol(t *testing.T) {
-	// 定价保护不能锁死错误协议：视频模型被存成文本协议时，重新拉取必须纠正。
-	channel := model.ModelChannel{BaseURL: "https://api.bjhuiqu.net/v1"}
-	item := model.ChannelModel{ModelKey: "sd2-mx933-720-5s", Capability: "text", Protocol: model.ChannelInterfaceChatCompletion, PriceConfigured: true}
-	if changed := syncHuiQuYunModelContract(channel, &item, nil); !changed {
-		t.Fatal("stale HuiQuYun video protocol must be repaired on refresh")
-	}
-	if item.Protocol != model.ChannelInterfaceHuiQuYunVideo || item.Capability != "video" {
-		t.Fatalf("repaired HuiQuYun model = %#v", item)
-	}
-}
-
-func TestHuiQuYunCatalogRefreshRepairsMjSd933Contract(t *testing.T) {
-	channel := model.ModelChannel{BaseURL: "https://api.bjhuiqu.net/v1"}
-	item := model.ChannelModel{ModelKey: "mj-sd2.0-933-720p", Capability: "video", Protocol: model.ChannelInterfaceNewAPIChannel2, PriceConfigured: true}
-	if changed := syncHuiQuYunModelContract(channel, &item, nil); !changed {
-		t.Fatal("mj-sd2.0-933-720p stale contract must be repaired on refresh")
-	}
-	if item.Protocol != model.ChannelInterfaceHuiQuYunVideo || item.Capability != "video" {
-		t.Fatalf("repaired mj-sd2.0-933-720p contract = %#v", item)
-	}
-	profile, err := DecodeModelCapabilityConfig(item.CapabilityConfigJSON)
-	if err != nil || profile == nil || profile.Video == nil || len(profile.Video.Resolutions) != 2 || profile.Video.Resolutions[0] != "480p" || profile.Video.Resolutions[1] != "720p" {
-		t.Fatalf("repaired mj-sd2.0-933-720p capability = %#v, error = %v", profile, err)
-	}
-}
-
-func TestStartupPreservesConfiguredAICostVideoProtocolAndCapability(t *testing.T) {
-	channel := model.ModelChannel{BaseURL: "https://www.aicost.me"}
-	item := model.ChannelModel{
-		ModelKey:              "seedance2.5-480p",
-		Capability:            "video",
-		Protocol:              model.ChannelInterfaceNewAPIChannel2,
-		CapabilityConfigJSON:  "{\"version\":1,\"video\":{\"references\":{\"maxImages\":30}}}",
-		UnitPriceMicrocredits: 123,
-		Enabled:               true,
-		PriceConfigured:       true,
-	}
-	protocol := item.Protocol
-	capability := item.Capability
-	capabilityConfig := item.CapabilityConfigJSON
-	if changed := syncChannelModelContract(channel, &item, nil, nil); changed {
-		t.Fatal("configured aicost protocol must not be inferred from the host or model name")
-	}
-	if item.Protocol != protocol || item.Capability != capability || item.CapabilityConfigJSON != capabilityConfig || item.UnitPriceMicrocredits != 123 || !item.Enabled || !item.PriceConfigured {
-		t.Fatalf("startup changed administrator settings: %#v", item)
-	}
-}
-
-func TestStartupDoesNotRewriteOtherAICostVideoProtocols(t *testing.T) {
-	channel := model.ModelChannel{BaseURL: "https://www.aicost.me"}
-	item := model.ChannelModel{ModelKey: "grok-image-video", Capability: "video", Protocol: model.ChannelInterfaceNewAPIChannel2}
-	if changed := syncChannelModelContract(channel, &item, nil, nil); changed {
-		t.Fatalf("unrelated aicost model was rewritten: %#v", item)
+	if count != 0 {
+		t.Fatalf("unknown selection created %d channel models", count)
 	}
 }
 
@@ -271,6 +273,109 @@ func TestSaveAdminChannelModelRejectsActiveDuplicateKey(t *testing.T) {
 	var authErr *AuthError
 	if !errors.As(err, &authErr) || authErr.Status != http.StatusBadRequest || authErr.Message != "该渠道已存在模型 model-b，请直接编辑已有模型" {
 		t.Fatalf("SaveAdminChannelModel() error = %#v", err)
+	}
+}
+
+func TestDeleteAdminChannelModelsDeletesSelectionAtomically(t *testing.T) {
+	svc, db := newChannelModelTestService(t)
+	admin := &model.User{ID: "admin", Role: model.UserRoleAdmin}
+	channel := model.ModelChannel{ID: "channel-1", UserID: admin.ID, Scope: model.ChannelScopeSystem, Enabled: true, Name: "Test", BaseURL: "https://example.com/v1", APIKey: "key", APIFormat: "openai", ModelsJSON: `["model-a","model-b","model-c"]`}
+	items := []model.ChannelModel{
+		{ID: "model-a", ChannelID: channel.ID, ModelKey: "model-a", DisplayName: "Model A", Enabled: true, PriceVersion: 1},
+		{ID: "model-b", ChannelID: channel.ID, ModelKey: "model-b", DisplayName: "Model B", Enabled: true, PriceVersion: 1},
+		{ID: "model-c", ChannelID: channel.ID, ModelKey: "model-c", DisplayName: "Model C", Enabled: true, PriceVersion: 1},
+	}
+	if err := db.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&items).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := svc.DeleteAdminChannelModels(admin, channel.ID, []string{" model-a ", "model-b", "model-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted = %d, want 2", deleted)
+	}
+	var storedChannel model.ModelChannel
+	if err := db.First(&storedChannel, "id = ?", channel.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if storedChannel.ModelsJSON != `["model-c"]` {
+		t.Fatalf("ModelsJSON = %s, want model-c only", storedChannel.ModelsJSON)
+	}
+	var active []model.ChannelModel
+	if err := db.Where("channel_id = ?", channel.ID).Find(&active).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 1 || active[0].ID != "model-c" {
+		t.Fatalf("active models = %#v, want model-c", active)
+	}
+	var removed []model.ChannelModel
+	if err := db.Unscoped().Where("channel_id = ? AND id IN ?", channel.ID, []string{"model-a", "model-b"}).Find(&removed).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 2 {
+		t.Fatalf("removed models = %#v, want two", removed)
+	}
+	for _, item := range removed {
+		if item.Enabled || item.PriceVersion != 2 || !item.DeletedAt.Valid {
+			t.Fatalf("removed model state = %#v", item)
+		}
+	}
+}
+
+func TestDeleteAdminChannelModelsRejectsWholeSelectionWhenOneModelIsInUse(t *testing.T) {
+	svc, db := newChannelModelTestService(t)
+	admin := &model.User{ID: "admin", Role: model.UserRoleAdmin}
+	channel := model.ModelChannel{ID: "channel-1", UserID: admin.ID, Scope: model.ChannelScopeSystem, Enabled: true, Name: "Test", BaseURL: "https://example.com/v1", APIKey: "key", APIFormat: "openai", ModelsJSON: `["model-a","model-b"]`}
+	items := []model.ChannelModel{
+		{ID: "model-a", ChannelID: channel.ID, ModelKey: "model-a", DisplayName: "Model A", Enabled: true, PriceVersion: 1},
+		{ID: "model-b", ChannelID: channel.ID, ModelKey: "model-b", DisplayName: "Model B", Enabled: true, PriceVersion: 1},
+	}
+	if err := db.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&items).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.Task{ID: "task-running", ChannelModelID: "model-b", Status: model.TaskStatusRunning}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := svc.DeleteAdminChannelModels(admin, channel.ID, []string{"model-a", "model-b"})
+	var authErr *AuthError
+	if !errors.As(err, &authErr) || authErr.Message != "所选渠道模型中有模型仍被前台模型供应线路或进行中任务使用，本次未删除任何模型" {
+		t.Fatalf("DeleteAdminChannelModels() deleted = %d, error = %#v", deleted, err)
+	}
+	var active int64
+	if err := db.Model(&model.ChannelModel{}).Where("channel_id = ?", channel.ID).Count(&active).Error; err != nil {
+		t.Fatal(err)
+	}
+	if active != 2 {
+		t.Fatalf("active models = %d, want 2 after atomic rejection", active)
+	}
+	var storedChannel model.ModelChannel
+	if err := db.First(&storedChannel, "id = ?", channel.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if storedChannel.ModelsJSON != channel.ModelsJSON {
+		t.Fatalf("ModelsJSON changed after rejected batch: %s", storedChannel.ModelsJSON)
+	}
+}
+
+func TestNormalizeAdminChannelModelDeleteIDsRequiresBoundedSelection(t *testing.T) {
+	if _, err := normalizeAdminChannelModelDeleteIDs([]string{"", " "}); err == nil {
+		t.Fatal("empty selection should be rejected")
+	}
+	values := make([]string, 101)
+	for index := range values {
+		values[index] = "model-" + strconv.Itoa(index)
+	}
+	if _, err := normalizeAdminChannelModelDeleteIDs(values); err == nil {
+		t.Fatal("selection above 100 models should be rejected")
 	}
 }
 
@@ -343,7 +448,7 @@ func newChannelModelTestService(t *testing.T) (*Service, *gorm.DB) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.ModelChannel{}, &model.ChannelModel{}, &model.ChannelModelPriceTier{}, &model.IDSequence{}); err != nil {
+	if err := db.AutoMigrate(&model.ModelChannel{}, &model.ChannelModel{}, &model.ChannelModelPriceTier{}, &model.LogicalModel{}, &model.LogicalModelRevision{}, &model.LogicalModelRoute{}, &model.Task{}, &model.IDSequence{}); err != nil {
 		t.Fatal(err)
 	}
 	return &Service{repo: repository.New(db)}, db

@@ -129,6 +129,9 @@ func (s *Service) Register(req RegisterRequest) (*AuthSessionResult, error) {
 		if email == "" {
 			return nil, BadAuthRequest("请输入邮箱")
 		}
+		if err := s.validateRegistrationEmailDomain(email); err != nil {
+			return nil, err
+		}
 		verifiedCode, err = s.VerifyRegistrationEmailCode(email, req.EmailCode)
 		if err != nil {
 			return nil, err
@@ -196,7 +199,7 @@ func (s *Service) Login(req LoginRequest) (*AuthSessionResult, error) {
 	now := time.Now()
 	user.LastLoginAt = &now
 	user.UpdatedAt = now
-	if err := s.repo.Save(user); err != nil {
+	if err := s.repo.RecordUserLogin(user.ID, now); err != nil {
 		return nil, err
 	}
 	if err := s.ensureSignupBonus(user.ID); err != nil {
@@ -340,6 +343,9 @@ func validateUsername(value string) error {
 func validatePassword(value string) error {
 	if len([]rune(value)) < 8 {
 		return BadAuthRequest("密码至少 8 位")
+	}
+	if len(value) > 72 {
+		return BadAuthRequest("密码不能超过 72 字节")
 	}
 	return nil
 }

@@ -1,5 +1,25 @@
 import { expect, test } from "bun:test";
 
+test("admin user editing sends the username and updates current account references", async () => {
+    const [drawerSource, panelSource, apiSource] = await Promise.all([
+        Bun.file(new URL("../src/pages/admin/users/users-drawer.tsx", import.meta.url)).text(),
+        Bun.file(new URL("../src/pages/admin/users/users-panel.tsx", import.meta.url)).text(),
+        Bun.file(new URL("../src/services/api/auth.ts", import.meta.url)).text(),
+    ]);
+    const editor = sourceSection(drawerSource, "export function AdminUserEditDrawer", "type CreateUserFormValues");
+    expect(editor).toContain('name="username"');
+    expect(editor).toContain("username: user.username");
+    expect(editor).toContain("username: values.username.trim()");
+    expect(editor).toContain("pattern: /^[a-zA-Z0-9_-]{3,32}$/");
+    expect(editor).toContain('maxLength={32} prefix="@"');
+    expect(editor).toContain("disabled={saving}");
+    expect(editor).not.toContain('value={user ? `@${user.username}` : ""} disabled');
+    expect(panelSource).toContain("currentUser?.id === nextUser.id");
+    expect(panelSource).toContain("setUser({ ...currentUser, ...nextUser })");
+    expect(panelSource).toContain("onUserChanged?.(nextUser)");
+    expect(apiSource).toContain('Partial<Pick<LocalUser, "username" | "displayName" | "email" | "role" | "status">>');
+});
+
 function compactSource(source: string) {
     return source.replace(/\s+/g, " ").trim();
 }
@@ -33,13 +53,113 @@ test("announcement editor preserves image and pinned fields through edit and sav
     expect(safetySource).toContain("pinned?: boolean");
 });
 
-test("analytics keeps fixed range presets distinct and uses enabled channel models for pricing", async () => {
+test("plugin upload owns native drops and price availability text remains readable", async () => {
+    const [pluginSource, adminCss] = await Promise.all([Bun.file(new URL("../src/pages/plugins/plugin-documentation-modals.tsx", import.meta.url)).text(), Bun.file(new URL("../src/styles/admin-ui.css", import.meta.url)).text()]);
+    const toggleCss = sourceSection(adminCss, ".admin-price-tier-toggle span {", ".admin-model-editor-add-tier.ant-btn {");
+
+    expect(pluginSource).toContain("event.preventDefault()");
+    expect(pluginSource).toContain("onDragOver={(event)");
+    expect(pluginSource).toContain("onDrop={handlePluginDrop}");
+    expect(pluginSource).toContain("点击选择插件文件，也可拖拽到此处");
+    expect(pluginSource).toContain("释放文件以上传插件");
+    expect(pluginSource).toContain("isDraggingPlugin");
+    expect(compactSource(adminCss)).toContain(".admin-price-tier-controls { margin-left: auto;");
+    expect(toggleCss).toContain("overflow-wrap: anywhere;");
+    expect(toggleCss).toContain("white-space: normal;");
+    expect(toggleCss).not.toContain("text-overflow: ellipsis;");
+});
+
+test("model reference limits use compact rows only inside the admin editor", async () => {
+    const css = await Bun.file(new URL("../src/styles/admin-ui.css", import.meta.url)).text();
+    const numberField = sourceSection(css, ".admin-model-editor-references .admin-capability-number-field {", ".admin-model-editor-references .admin-capability-boolean-field {");
+    expect(numberField).toContain("grid-template-columns: minmax(0, 1fr) 80px;");
+    expect(numberField).toContain("min-height: 32px;");
+    expect(numberField).toContain("align-items: center;");
+    const switches = sourceSection(css, ".admin-model-editor-references .admin-capability-boolean-field label {", "@media (min-width: 601px)");
+    expect(switches).toContain("display: flex;");
+    expect(compactSource(css)).toContain(".admin-model-editor-references .admin-capability-reference-grid { align-items: start;");
+    expect(compactSource(css)).toContain(".admin-model-editor-modal .admin-capability-reference-grid { grid-template-columns: minmax(0, 1fr);");
+});
+
+test("model editor presents protocols in a searchable inline radio browser instead of a dropdown", async () => {
+    const [source, css] = await Promise.all([
+        Bun.file(new URL("../src/pages/admin/components/channel-model-editor.tsx", import.meta.url)).text(),
+        Bun.file(new URL("../src/styles/admin-ui.css", import.meta.url)).text(),
+    ]);
+    const protocolSection = sourceSection(compactSource(source), '<Form.Item className="admin-model-protocol-field"', "{protocolError && (");
+
+    expect(protocolSection).toContain("<ModelProtocolBrowser");
+    expect(protocolSection).not.toContain("<Select");
+    expect(compactSource(css)).toContain(".admin-model-protocol-field { grid-column: 1 / -1;");
+});
+
+test("channel model fetch requires explicit selection before import", async () => {
+    const [componentSource, apiSource, adminCssSource] = await Promise.all([
+        Bun.file(new URL("../src/pages/admin/components/channel-model-manager.tsx", import.meta.url)).text(),
+        Bun.file(new URL("../src/services/api/wallet.ts", import.meta.url)).text(),
+        Bun.file(new URL("../src/styles/admin-ui.css", import.meta.url)).text(),
+    ]);
+    const component = compactSource(componentSource);
+
+    expect(apiSource).toContain("http.post<{ models: string[] }>(`/admin/channels/${encodeURIComponent(channelId)}/models/fetch`)");
+    expect(apiSource).toContain("http.post<{ models: string[]; added: number }>(`/admin/channels/${encodeURIComponent(channelId)}/models/import`, { models })");
+    expect(component).toContain('title="选择要导入的模型"');
+    expect(component).toContain("默认已全选");
+    expect(component).toContain("setFetchPreviewOpen(true)");
+    expect(component).toContain("setSelectedFetchModels(result.models)");
+    expect(component).toContain("已选择 {selectedFetchModels.length} / {fetchPreviewModels.length} 个模型");
+    expect(component).toContain("disabled={importing || allFetchModelsSelected}");
+    expect(component).toContain("onClick={() => setSelectedFetchModels(fetchPreviewModels)}");
+    expect(component).toContain("disabled={importing || selectedFetchModels.length === 0}");
+    expect(component).toContain("onClick={() => setSelectedFetchModels([])}");
+    expect(component).toContain("取消全选");
+    expect(component).toContain("disabled={importing}");
+    expect(component).toContain("importAdminChannelModels(channel.id, selectedFetchModels)");
+    expect(component).toContain("disabled={!selectedFetchModels.length}");
+    expect(component).not.toContain("disabled: alreadyExists");
+    expect(component).not.toContain("const result = await fetchAdminChannelModels(channel.id); await reload();");
+    expect(adminCssSource).toContain(".admin-model-import-modal .channel-model-import-picker .ant-checkbox-checked");
+    expect(adminCssSource).toContain("border-color: var(--control-check-fg) !important");
+});
+
+test("channel model manager supports bounded atomic batch deletion", async () => {
+    const [componentSource, apiSource] = await Promise.all([Bun.file(new URL("../src/pages/admin/components/channel-model-manager.tsx", import.meta.url)).text(), Bun.file(new URL("../src/services/api/wallet.ts", import.meta.url)).text()]);
+    const component = compactSource(componentSource);
+
+    expect(apiSource).toContain("http.post<{ deleted: number }>(`/admin/channels/${encodeURIComponent(channelId)}/models/batch-delete`, { modelIds })");
+    expect(component).toContain("<AdminBatchBar count={selectedModelIds.length}");
+    expect(component).toContain("rowSelection:");
+    expect(component).toContain("selectedRowKeys: selectedModelIds");
+    expect(component).toContain("preserveSelectedRowKeys: true");
+    expect(component).toContain("setSelectedModelIds(next.slice(0, 100))");
+    expect(component).toContain("deleteAdminChannelModels(channel.id, selectedModelIds)");
+    expect(component).toContain("okButtonProps: { danger: true }");
+    expect(component).toContain("本次就不会删除任何模型");
+    expect(component).toContain("批量删除");
+});
+
+test("analytics keeps fixed range presets distinct and presents a real consumption dashboard", async () => {
     const source = compactSource(await Bun.file(new URL("../src/pages/admin/components/analytics-panel.tsx", import.meta.url)).text());
 
-    expect(source).toContain('type RangePreset = "7d" | "30d" | "60d"');
-    expect(source).toContain('["60d", "60 天"]');
+    expect(source).toContain('type RangePreset = "7d" | "30d" | "90d"');
+    expect(source).toContain('["90d", "近 90 天"]');
     expect(source).toContain('next.set("rangePreset", rangePreset)');
     expect(source).toContain("setRangePreset(undefined)");
+    expect(source).toContain('label="所选区间总消耗"');
+    expect(source).toContain('label="视频生成秒数"');
+    expect(source).toContain('label="视频平均积分/秒"');
+    expect(source).toContain('id="admin-analytics-user-usage-title">每个人的用量');
+    expect(source).toContain('label="总积分用量"');
+    expect(source).toContain("function averageVideoCreditsPerSecond");
+    expect(source).toContain('row.capability === "video" && row.videoSeconds > 0');
+    expect(source).toContain('label: "个人统计"');
+    expect(source).toContain("const dailyCredits = new Map<string, number>()");
+    expect(source).toContain("item.daily.forEach");
+    expect(source).toContain("creditsConsumedMicrocredits");
+    expect(source).toContain("capabilityBreakdown.map");
+    expect(source).toContain('dataKey="credits"');
+    expect(source).toContain('name="已结算积分"');
+    expect(source).toContain('const [analysisTab, setAnalysisTab] = useState<AnalysisTab>("users")');
     expect(source).toContain('placeholder={pricingModelOptions.length ? "选择已启用模型" : "暂无已启用模型"}');
     expect(source).toContain("onValuesChange={handlePricingValuesChange}");
     expect(source).toContain("onChange={handlePricingModelChange}");
@@ -78,46 +198,6 @@ test("admin navigation keeps the storage resource page reachable", async () => {
     const source = await Bun.file(new URL("../src/pages/admin/components/admin-shell.tsx", import.meta.url)).text();
     expect(source).toContain('path: "/admin/resources"');
 });
-
-test("admin navigation exposes the credit consumption statistics page", async () => {
-    const [shellSource, routerSource] = await Promise.all([
-        Bun.file(new URL("../src/pages/admin/components/admin-shell.tsx", import.meta.url)).text(),
-        Bun.file(new URL("../src/router.tsx", import.meta.url)).text(),
-    ]);
-    expect(shellSource).toContain('path: "/admin/credit-consumption"');
-    expect(shellSource).toContain('label: "积分统计"');
-    expect(routerSource).toContain('{ path: "credit-consumption", element: deferred(<CreditConsumptionPage />) }');
-});
-
-test("system updater displays the project release repository", async () => {
-    const source = await Bun.file(new URL("../src/pages/admin/settings/system-update-page.tsx", import.meta.url)).text();
-    expect(source).toContain("buttonslaybaugh397-art/open-ai-canvas");
-    expect(source).not.toContain("ddcat-ai/open-ai-canvas");
-});
-
-test("credit consumption statistics expose comparisons, capability mix, and ranked drill-downs", async () => {
-    const [pageSource, apiSource, cssSource] = await Promise.all([
-        Bun.file(new URL("../src/pages/admin/credit-consumption/credit-consumption-page.tsx", import.meta.url)).text(),
-        Bun.file(new URL("../src/services/api/wallet.ts", import.meta.url)).text(),
-        Bun.file(new URL("../src/styles/admin-ui.css", import.meta.url)).text(),
-    ]);
-
-    for (const field of ["previousPeriodMicrocredits", "previousSettledOrders", "previousConsumingUsers", "previousUsedModels", "capabilities"]) {
-        expect(apiSource).toContain(field);
-    }
-    expect(pageSource).toContain('{ label: "近 7 天", days: 7 }');
-    expect(pageSource).toContain('{ label: "近 30 天", days: 30 }');
-    expect(pageSource).toContain('{ label: "近 90 天", days: 90 }');
-    expect(pageSource).toContain('title="能力消费构成"');
-    expect(pageSource).toContain('title="用户消耗榜"');
-    expect(pageSource).toContain('title="模型消耗榜"');
-    expect(pageSource).toContain("<Area");
-    expect(pageSource).toContain("<Bar");
-    expect(pageSource).toContain("<Comparison");
-    expect(cssSource).toContain(".admin-credit-overview-grid");
-    expect(cssSource).toContain(".admin-credit-analysis-grid");
-    expect(cssSource).toContain(".admin-credit-capability-track");
-}
 
 test("nested admin pages return to their own parent entry", async () => {
     const source = await Bun.file(new URL("../src/pages/admin/components/admin-shell.tsx", import.meta.url)).text();
@@ -233,7 +313,7 @@ test("request logs display user credit billing independently from upstream cost"
     const billingSummary = sourceSection(listSource, "function BillingSummary", "function MediaResult");
     expect(listSource).toContain('title: "积分计费"');
     expect(listSource).toContain('title: "请求阶段 / 状态"');
-    expect(listSource).toContain('description="模型生成、状态查询与结果下载；仅计费调用扣除积分"');
+    expect(listSource).toContain('description="模型生成与结果下载记录；仅计费调用扣除积分"');
     expect(billingSummary).toContain("billingAmountMicrocredits");
     expect(billingSummary).toContain("billingAvailable");
     expect(billingSummary).toContain("!log.billable");

@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 
 import { CachedResourceImage } from "@/components/cached-resource-image";
-import { MediaPreview } from "@/components/media-preview";
 import type { Asset } from "@/stores/use-asset-store";
 
 type AssetMediaPreviewProps = {
@@ -15,13 +14,21 @@ export function AssetMediaPreview({ asset, alt, className = "", fallback = null 
     if (!asset) return fallback;
 
     if (asset.kind === "video" && asset.data.url) {
+        const poster = asset.coverUrl && asset.coverUrl !== asset.data.url ? asset.coverUrl : undefined;
         return (
-            <MediaPreview
+            <video
                 src={asset.data.url}
-                kind="video"
+                poster={poster}
+                aria-label={alt}
+                muted
+                playsInline
+                preload="metadata"
                 className={className}
-                fallbackStorageKey={asset.data.storageKey}
-                fallbackClassName={className}
+                onLoadedMetadata={(event) => {
+                    // 主动触发首帧附近的解码，避免只有 metadata 时长期停留在空白画面。
+                    const video = event.currentTarget;
+                    if (!poster && video.currentTime === 0 && video.duration > 0) video.currentTime = Math.min(0.001, video.duration);
+                }}
             />
         );
     }

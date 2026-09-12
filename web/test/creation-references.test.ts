@@ -14,10 +14,6 @@ function imageAttachment(id: string): CreationAttachment {
     };
 }
 
-function mediaAttachment(id: string, type: string): CreationAttachment {
-    return { id, name: id, type, url: `https://example.com/${id}`, storageKey: `resource:${id}`, bytes: 1024, previewUrl: `https://example.com/${id}` };
-}
-
 describe("creation references", () => {
     test("removes attachments and prompt tokens beyond the current model limit", () => {
         const attachments = [imageAttachment("first"), imageAttachment("second"), imageAttachment("third")];
@@ -39,30 +35,6 @@ describe("creation references", () => {
 
         expect(result.attachments).toBe(attachments);
         expect(result.removedReferences).toEqual([]);
-    });
-
-    test("按后台配置分别限制图片、视频和音频数量", () => {
-        const attachments = [imageAttachment("image-1"), imageAttachment("image-2"), mediaAttachment("video-1", "video/mp4"), mediaAttachment("audio-1", "audio/mpeg"), mediaAttachment("video-2", "video/mp4")];
-
-        expect(limitCreationAttachments(attachments, { total: 4, image: 1, video: 2, audio: 1, file: 0 }).map((item) => item.id)).toEqual(["image-1", "video-1", "audio-1", "video-2"]);
-    });
-
-    test("被分类上限拒绝的素材不会占用总数名额", () => {
-        const attachments = [imageAttachment("unsupported-image"), mediaAttachment("video-1", "video/mp4"), mediaAttachment("video-2", "video/mp4")];
-
-        expect(limitCreationAttachments(attachments, { total: 2, image: 0, video: 2 }).map((item) => item.id)).toEqual(["video-1", "video-2"]);
-    });
-
-    test("上传前只保留各分类剩余额度内的文件", () => {
-        const current = [imageAttachment("image-1"), mediaAttachment("video-1", "video/mp4")];
-        const candidates = [
-            { name: "image-2.png", type: "image/png" },
-            { name: "video-2.mp4", type: "video/mp4" },
-            { name: "audio-1.mp3", type: "audio/mpeg" },
-            { name: "audio-2.mp3", type: "audio/mpeg" },
-        ];
-
-        expect(limitCreationAttachmentCandidates(current, candidates, { total: 4, image: 1, video: 2, audio: 1 }).map((item) => item.name)).toEqual(["video-2.mp4", "audio-1.mp3"]);
     });
 
     test("文本创作允许媒体和常用文档，图片创作仍只接受图片", () => {

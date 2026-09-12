@@ -1,7 +1,7 @@
 import { getMediaBlob } from "@/services/file-storage";
 import { getImageBlob } from "@/services/image-storage";
 import { resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
-import { createGenerationTask, waitForGenerationTask, type GenerationTask } from "@/services/api/task-center";
+import { createGenerationTask, waitForGenerationTask, type GenerationTask, type CreateTaskInput } from "@/services/api/task-center";
 import { LOCAL_DREAMINA_WAIT_STOPPED_CODE, LocalDreaminaGenerationClientError, runLocalDreaminaGenerationTask, type LocalDreaminaGenerationInput, type LocalDreaminaGenerationTask } from "@/services/local-dreamina-generation";
 import { isLocalDreaminaBackgroundTask, localDreaminaTaskId, projectLocalDreaminaTask, stripLocalDreaminaTaskPrefix } from "@/services/local-dreamina-task-projection";
 import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
@@ -13,26 +13,16 @@ import { useLocalDreaminaModelStore } from "@/stores/use-local-dreamina-model-st
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import { buildBackendToolRequests, type ResponseFunctionTool, type ResponseInputMessage, type ToolChoice, type ToolResponseResult } from "@/services/api/image";
+import { assertAgentExchangeBudget } from "@/lib/canvas/canvas-agent-context-budget";
 
 export { logicalModelIDForConfig };
-
-// 只要模型明确选择了请求协议，就统一交给后端协议运行时执行：逻辑模型
-// 由逻辑模型路由解析协议，系统渠道由 channelId 解析真实渠道模型，用户
-// 自建渠道则由所选协议插件负责第三方字段映射和结果解析。没有显式协议
-// 的旧配置继续保留前端直连兼容路径。
-export function backendModelRuntimeRequired(config: AiConfig) {
-    if ((config.taskWorkflowProvider || "model") !== "model") return true;
-    if (logicalModelIDForConfig(config)) return true;
-    const requestConfig = resolveModelRequestConfig(config, config.model);
-    return Boolean(requestConfig.channelId || requestConfig.interfaceType);
-}
 
 export type BackendGenerationMode = "text" | "image" | "video" | "audio";
 
 export type BackendGenerationResult = {
     mode?: BackendGenerationMode;
     images?: Array<{ dataUrl: string; storageKey?: string; width?: number; height?: number; bytes?: number; mimeType?: string }>;
-    video?: { dataUrl: string; url?: string; storageKey?: string; width?: number; height?: number; durationMs?: number; bytes?: number; mimeType?: string };
+    video?: { dataUrl: string; storageKey?: string; width?: number; height?: number; durationMs?: number; bytes?: number; mimeType?: string };
     audio?: { dataUrl: string; storageKey?: string; durationMs?: number; bytes?: number; mimeType?: string; format?: string };
     text?: string;
     toolCalls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string }; thoughtSignature?: string }>;
@@ -47,12 +37,14 @@ type BackendGenerationTaskOptions = {
     referenceImages?: ReferenceImage[];
     referenceVideos?: ReferenceVideo[];
     referenceAudios?: ReferenceAudio[];
-    textHistory?: Array<{ role: "user" | "assistant"; content: string }>;
+    textHistory?: Array<{ role: "user" | "assistant" | "system"; content: string }>;
     mask?: ReferenceImage;
     signal?: AbortSignal;
     metadata?: Record<string, unknown>;
     onTaskUpdate?: (task: GenerationTask) => void;
     onTextDelta?: (text: string) => void;
+    streamText?: boolean;
+    enableThinking?: boolean;
     localIdempotencyKey?: string;
     localResumeOnly?: boolean;
     clientOperationId?: string;
@@ -101,6 +93,9 @@ export async function runBackendGenerationTask(
         signal,
         metadata,
         onTaskUpdate,
+        onTextDelta,
+        streamText,
+        enableThinking,
         localIdempotencyKey,
         localResumeOnly,
         clientOperationId,
@@ -115,13 +110,14 @@ export async function runBackendGenerationTask(
         await dependencies.ensureLocalDreaminaReady?.(signal);
         throwIfAborted(signal);
         return await runLocalDreaminaGeneration(
-            { projectId, mode, prompt, config, referenceImages, referenceVideos, referenceAudios, textHistory, mask, signal, metadata, onTaskUpdate, localIdempotencyKey, localResumeOnly, clientOperationId, retryOf, attemptGroupId },
+            { projectId, mode, prompt, config, referenceImages, referenceVideos, referenceAudios, textHistory, mask, signal, metadata, onTaskUpdate, onTextDelta, streamText, enableThinking, localIdempotencyKey, localResumeOnly, clientOperationId, retryOf, attemptGroupId },
             dependencies,
         );
     }
+    assertBackendRuntimeConfigured(config, mode);
     const prepared = await prepareGenerationReferences({ referenceImages, referenceVideos, referenceAudios, mask });
     throwIfAborted(signal);
-    return createAndWaitGenerationTask({ projectId, mode, prompt, config, referenceImages, referenceVideos, referenceAudios, textHistory, signal, metadata, onTaskUpdate }, prepared, dependencies);
+    return createAndWaitGenerationTask({ projectId, mode, prompt, config, referenceImages, referenceVideos, referenceAudios, textHistory, signal, metadata, onTaskUpdate, onTextDelta, streamText, enableThinking, clientOperationId, retryOf, attemptGroupId }, prepared, dependencies);
 }
 
 // 分镜等后台生产流程只需要可靠提交任务；任务状态与产物由项目工作区轮询和
@@ -133,12 +129,13 @@ export async function submitBackendGenerationTask(
     throwIfAborted(options.signal);
     assertClientPromptLimit(options.mode, options.prompt, options.config, options.metadata);
     if (usesLocalDreamina(options.config)) throw new Error("本机即梦任务暂不支持后台提交");
+    assertBackendRuntimeConfigured(options.config, options.mode);
     const prepared = await prepareGenerationReferences(options);
     throwIfAborted(options.signal);
     return createBackendGenerationTask(options, prepared, dependencies);
 }
 
-export async function runBackendToolGenerationTask(options: {
+type BackendToolGenerationOptions = {
     prompt: string;
     config: AiConfig;
     messages: ResponseInputMessage[];
@@ -146,12 +143,28 @@ export async function runBackendToolGenerationTask(options: {
     toolChoice: ToolChoice;
     signal?: AbortSignal;
     onDelta?: (text: string) => void;
-}): Promise<ToolResponseResult> {
+    onTaskCreated?: (task: GenerationTask) => void;
+    metadata?: { source: string; nodeId?: string; runId?: string; stage?: string };
+};
+
+// 报价和执行复用完全相同的任务协议，准备阶段不提交模型任务。
+export function prepareBackendToolGenerationTask(options: BackendToolGenerationOptions): CreateTaskInput {
     throwIfAborted(options.signal);
+    assertAgentExchangeBudget(options.messages, options.tools, options.config.systemPrompt || "");
+    const imageKeys = new Set<string>();
+    for (const message of options.messages) {
+        if ("type" in message || message.role === "tool" || !Array.isArray(message.content)) continue;
+        for (const part of message.content) {
+            if (part.type !== "image_url") continue;
+            const key = part.image_url.url;
+            if (!resourceIdFromStorageKey(key)) throw new Error("看图素材尚未保存为资源，请让助手重新读取图片后继续。");
+            imageKeys.add(key);
+        }
+    }
     const logicalModelId = logicalModelIDForConfig(options.config);
     const requestConfig = resolveModelRequestConfig(options.config, options.config.model);
     if (!logicalModelId && !requestConfig.channelId && !requestConfig.interfaceType) throw new Error("当前模型未选择可用请求协议");
-    const task = await createGenerationTask({
+    const task: CreateTaskInput = {
         type: "canvas_text",
         operation: "text",
         prompt: options.prompt,
@@ -160,11 +173,21 @@ export async function runBackendToolGenerationTask(options: {
         input: {
             mode: "text",
             prompt: options.prompt,
-            config: backendProviderConfig(options.config),
-            agentRequests: buildBackendToolRequests(options.messages, options.tools, options.toolChoice),
-            metadata: { source: "canvas-online-agent" },
+            config: backendProviderConfig(options.config, "text"),
+            agentRequests: buildBackendToolRequests(options.messages, options.tools, options.toolChoice, options.config),
+            referenceImages: [...imageKeys].map((storageKey) => ({ storageKey })),
+            metadata: options.metadata || { source: "canvas-online-agent" },
         },
-    });
+    };
+    if (new Blob([JSON.stringify(task)]).size > 15 * 1024 * 1024) {
+        throw new Error("本次图片或对话内容过多，请减少参考图片，或新建会话后继续。已有作品会保留。");
+    }
+    return task;
+}
+
+export async function runBackendToolGenerationTask(options: BackendToolGenerationOptions): Promise<ToolResponseResult> {
+    const task = await createGenerationTask(prepareBackendToolGenerationTask(options));
+    options.onTaskCreated?.(task);
     const completed = await waitForGenerationTask(task.id, { signal: options.signal, initialTask: task, onTextDelta: options.onDelta });
     const result = parseBackendGenerationResult(completed);
     return {
@@ -390,6 +413,13 @@ function usesLocalDreamina(config: AiConfig) {
     return (config.taskWorkflowProvider || "model") === "model" && isLocalDreaminaModel(config.model);
 }
 
+function assertBackendRuntimeConfigured(config: AiConfig, mode: BackendGenerationMode) {
+    if (resolveGenerationWorkflowExecution(config, mode)) return;
+    if (logicalModelIDForConfig(config)) return;
+    const requestConfig = resolveModelRequestConfig(config, config.model);
+    if (!requestConfig.channelId && !requestConfig.interfaceType) throw new Error("当前模型未选择可用请求协议，请先在模型设置中选择协议插件");
+}
+
 function throwIfAborted(signal?: AbortSignal) {
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 }
@@ -422,11 +452,27 @@ async function createAndWaitGenerationTask(options: BackendGenerationTaskOptions
 }
 
 async function createBackendGenerationTask(options: BackendGenerationTaskOptions, prepared: PreparedGenerationReferences, dependencies: GenerationTaskDependencies) {
-    const { projectId, mode, prompt, config, metadata, onTaskUpdate } = options;
+    const task = await dependencies.createTask(backendGenerationTaskInput(options, prepared));
+    options.onTaskUpdate?.(task);
+    return task;
+}
+
+export async function prepareBackendGenerationTask(options: BackendGenerationTaskOptions): Promise<CreateTaskInput> {
+    throwIfAborted(options.signal);
+    if (usesLocalDreamina(options.config)) throw new Error("智能创作的在线授权暂不支持本机即梦，请使用现有本机入口");
+    assertClientPromptLimit(options.mode, options.prompt, options.config, options.metadata);
+    assertBackendRuntimeConfigured(options.config, options.mode);
+    const prepared = await prepareGenerationReferences(options);
+    throwIfAborted(options.signal);
+    return backendGenerationTaskInput(options, prepared);
+}
+
+function backendGenerationTaskInput(options: BackendGenerationTaskOptions, prepared: PreparedGenerationReferences): CreateTaskInput {
+    const { projectId, mode, prompt, config, metadata } = options;
     const videoOperation = generationOperation(options);
     const workflow = resolveGenerationWorkflowExecution(config, mode);
     const logicalModelId = workflow ? "" : logicalModelIDForConfig(config);
-    const task = await dependencies.createTask({
+    return {
         ...(projectId ? { projectId } : {}),
         type: `canvas_${mode}`,
         operation: mode === "video" ? videoOperation : mode,
@@ -441,15 +487,35 @@ async function createBackendGenerationTask(options: BackendGenerationTaskOptions
             config: backendProviderConfig(config, mode),
             capabilityOptions: logicalModelId ? logicalCapabilityOptions(config, mode) : undefined,
             textHistory: options.textHistory,
+            ...(mode === "text" ? { textOptions: { stream: options.streamText !== false, thinking: options.enableThinking === true } } : {}),
             referenceImages: prepared.referenceImages,
             referenceVideos: prepared.referenceVideos,
             referenceAudios: prepared.referenceAudios,
             mask: prepared.mask,
-            metadata,
+            metadata: generationMetadata(config, {
+                ...metadata,
+                ...(options.clientOperationId ? { clientOperationId: options.clientOperationId } : {}),
+                ...(options.retryOf ? { retryOf: options.retryOf } : {}),
+                ...(options.attemptGroupId ? { attemptGroupId: options.attemptGroupId } : {}),
+            }),
         },
-    });
-    onTaskUpdate?.(task);
-    return task;
+    };
+}
+
+function generationMetadata(config: AiConfig, metadata?: Record<string, unknown>) {
+    const channel = resolveModelChannel(config, config.model);
+    const model = modelOptionName(config.model);
+    const modelCost = channel.modelCosts?.find((item) => item.model === model);
+    const protocol = modelCost?.protocol || channel.interfaceType;
+    const defaults = modelCost?.defaultOptions;
+    if (!protocol || !defaults || !Object.keys(defaults).length) return metadata;
+    const existing = metadata?.providerOptions && typeof metadata.providerOptions === "object" && !Array.isArray(metadata.providerOptions)
+        ? metadata.providerOptions as Record<string, unknown>
+        : {};
+    const namespace = existing[protocol] && typeof existing[protocol] === "object" && !Array.isArray(existing[protocol])
+        ? existing[protocol] as Record<string, unknown>
+        : {};
+    return { ...metadata, providerOptions: { ...existing, [protocol]: { ...defaults, ...namespace } } };
 }
 
 async function prepareBackendMediaReference(media: ReferenceVideo | ReferenceAudio) {
@@ -518,7 +584,7 @@ export function backendProviderConfig(config: AiConfig, mode: BackendGenerationM
     if (workflow) return workflowProviderConfig(config, requestConfig, workflow);
     const generationOptions = {
         size: config.size,
-        quality: config.quality,
+        quality: omittedImageQuality(config.quality),
         transparentBackground: config.transparentBackground,
         count: config.count,
         videoSeconds: config.videoSeconds,
@@ -530,6 +596,7 @@ export function backendProviderConfig(config: AiConfig, mode: BackendGenerationM
         audioFormat: config.audioFormat,
         audioSpeed: config.audioSpeed,
         audioInstructions: config.audioInstructions,
+        systemPrompt: config.systemPrompt,
     };
     if (logicalModelIDForConfig(config)) return generationOptions;
     return {
@@ -543,7 +610,7 @@ export function backendProviderConfig(config: AiConfig, mode: BackendGenerationM
         model: requestConfig.model,
         ...generationOptions,
         capabilityConfig: modelCapabilityConfigFor(config, requestConfig.model),
-        systemPrompt: "",
+        systemPrompt: config.systemPrompt,
     };
 }
 
@@ -583,7 +650,7 @@ function workflowProviderConfig(config: AiConfig, requestConfig: ReturnType<type
         runningHubWalletApiKey: "",
         runningHubUploadApiKey: runningHubActive ? config.runningHub.uploadApiKey || "" : "",
         capabilityConfig: modelCapabilityConfigFor(config, requestConfig.model),
-        systemPrompt: "",
+        systemPrompt: config.systemPrompt,
     };
 }
 
@@ -602,13 +669,28 @@ function logicalCapabilityOptions(config: AiConfig, mode: BackendGenerationMode)
     const channel = resolveModelChannel(config, config.model);
     const spec = channel.modelCosts?.find((item) => item.model === modelOptionName(config.model))?.logicalCapabilitySpec;
     const candidates: Record<string, unknown> = mode === "image"
-        ? { size: config.size, quality: config.quality, transparentBackground: config.transparentBackground === "true", count: Number(config.count) }
+        ? { size: config.size, quality: omittedImageQuality(config.quality), transparentBackground: config.transparentBackground === "true", count: Number(config.count) }
         : mode === "video"
             ? { size: config.size, videoSeconds: Number(config.videoSeconds), vquality: config.vquality, videoGenerateAudio: config.videoGenerateAudio === "true", videoWatermark: config.videoWatermark === "true" }
             : mode === "audio"
                 ? { audioVoice: config.audioVoice, audioFormat: config.audioFormat, audioSpeed: Number(config.audioSpeed) }
                 : {};
-    return Object.fromEntries(Object.entries(candidates).filter(([key]) => Boolean(spec?.options?.[key])));
+    const filtered = Object.fromEntries(Object.entries(candidates).filter(([key]) => Boolean(spec?.options?.[key])));
+    // 图片质量和画幅同时参与按规格计费匹配。即使逻辑模型能力声明只把其中一项
+    // 暴露给供应线路，报价仍需要看到客户端最终选择，避免局部重绘等编辑请求落到
+    // “未配置所选规格”的错误分支。
+    if (mode === "image") {
+        for (const key of ["quality", "size"] as const) {
+            const value = candidates[key];
+            if (value !== undefined && value !== null && String(value).trim() !== "") filtered[key] = value;
+        }
+    }
+    return filtered;
+}
+
+function omittedImageQuality(value: string | undefined) {
+    const normalized = String(value || "").trim().toLowerCase();
+    return normalized === "auto" || normalized === "any" ? undefined : value;
 }
 
 export function parseBackendGenerationResult(task: GenerationTask): BackendGenerationResult {

@@ -60,6 +60,10 @@ export type TimelineTrack = {
     label: string;
     order: number;
     locked?: boolean;
+    /** 轨道可见性（预览/导出跳过不可见轨）。undefined = true。 */
+    visible?: boolean;
+    /** 轨道静音（音频轨在播放/导出时静音）。undefined = false。 */
+    muted?: boolean;
 };
 
 export type TimelineClipKind = "video" | "audio" | "subtitle" | "text" | "image";
@@ -68,10 +72,11 @@ export type TimelineClipKind = "video" | "audio" | "subtitle" | "text" | "image"
 export type TimelineDirectMedia = {
     /** 源素材 id（本地资产 id / 上传文件 id），用于生成时间线内唯一 nodeId 前缀 */
     id: string;
+    /** 远端素材库记录；本地上传成功后必须存在。 */
+    assetId?: string;
     kind: "video" | "audio" | "image" | "text";
     title: string;
     storageKey?: string;
-    volcengineAssetUri?: string;
     url?: string;
     dataUrl?: string;
     content?: string;

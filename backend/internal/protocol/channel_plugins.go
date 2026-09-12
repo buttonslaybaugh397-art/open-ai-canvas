@@ -59,16 +59,310 @@ func BundledHostProviderIDs() map[string]struct{} {
 }
 
 func customChannelAdapters() []Adapter {
-	items := customChannelMetadata()
-	result := make([]Adapter, 0, len(items))
-	result = append(result, aiStarsLabImageAdapter(), aiStarsLabVideoAdapter(), weijinVideoAdapter())
-	for _, info := range items {
-		if info.ID == "aistarslab-image" || info.ID == "aistarslab-video" || info.ID == "weijin-video" {
-			continue
-		}
-		result = append(result, builtinAdapter{info: info})
+	return []Adapter{
+		globalAiOpcAdapter(CapabilityImage),
+		globalAiOpcAdapter(CapabilityVideo),
+		huiQuYunVideoAdapter(),
+		aiStarsLabImageAdapter(),
+		aiStarsLabVideoAdapter(),
+		weijinVideoAdapter(),
 	}
-	return result
+}
+
+func globalAiOpcAdapter(capability Capability) Adapter {
+	id := "globalaiopc-" + string(capability)
+	info := customChannelMetadataByIDMust(id)
+	return builtinAdapter{
+		info: info,
+		create: func(request GenerationRequest) (RequestSpec, error) {
+			body, err := globalAiOpcBody(request, capability)
+			return jsonSpec(http.MethodPost, "/v2/model-center/tasks", body), err
+		},
+		parseCreate: func(payload map[string]any) (CreateResult, error) {
+			state, err := unwrapGlobalAiOpcPayload(payload)
+			if err != nil {
+				return CreateResult{}, err
+			}
+			id := firstString(state, "id", "task_id", "request_id")
+			if id == "" {
+				return CreateResult{}, fmt.Errorf("GlobalAiOpc response has no task id")
+			}
+			status := normalizeStatus(firstString(state, "status"))
+			if status == "" {
+				status = StatusPending
+			}
+			return CreateResult{TaskID: id, Status: status}, nil
+		},
+		poll: func(c PollContext) (RequestSpec, error) {
+			return RequestSpec{Method: http.MethodGet, Path: "/v2/model-center/tasks/" + url.PathEscape(c.TaskID)}, nil
+		},
+		parsePoll: func(c PollContext, payload map[string]any) (PollResult, error) {
+			state, err := unwrapGlobalAiOpcPayload(payload)
+			if err != nil {
+				return PollResult{}, err
+			}
+			status := normalizeStatus(firstString(state, "status"))
+			if status == "" {
+				return PollResult{}, fmt.Errorf("GlobalAiOpc response has unknown status %q", firstString(state, "status"))
+			}
+			result := PollResult{TaskID: defaultValue(firstString(state, "id", "task_id", "request_id"), c.TaskID), Status: status}
+			if status == StatusFailed || status == StatusCancelled {
+				result.Message = globalAiOpcFailure(state)
+				return result, nil
+			}
+			if status != StatusSucceeded {
+				return result, nil
+			}
+			resultURL := firstString(state, string(capability)+"_url", "result_url", "url")
+			if resultURL == "" {
+				return PollResult{}, fmt.Errorf("GlobalAiOpc task %s completed without a result URL", result.TaskID)
+			}
+			media := MediaReference{URL: resultURL, Kind: string(capability), Ephemeral: true}
+			result.Result = &Result{}
+			if capability == CapabilityImage {
+				result.Result.Images = []MediaReference{media}
+			} else {
+				result.Result.Videos = []MediaReference{media}
+			}
+			return result, nil
+		},
+	}
+}
+
+func globalAiOpcBody(request GenerationRequest, capability Capability) (map[string]any, error) {
+	body := map[string]any{"model": strings.TrimSpace(request.Model), "prompt": strings.TrimSpace(request.Prompt)}
+	images := mediaValues(request.Images)
+	if capability == CapabilityImage {
+		if len(images) > 0 {
+			body["reference_images"] = images
+		}
+		body["aspect_ratio"] = normalizeGlobalAiOpcRatio(request.AspectRatio, "1:1")
+		body["resolution"] = normalizeGlobalAiOpcImageResolution(request.Model, request.Quality)
+		body["watermark"] = request.Watermark
+		return body, nil
+	}
+	body["duration"] = request.Duration
+	modelID := strings.ToLower(strings.TrimSpace(request.Model))
+	if strings.HasPrefix(modelID, "seedance_1_5_pro_") {
+		body["size"] = normalizeGlobalAiOpcRatio(request.AspectRatio, "16:9")
+		if len(images) > 0 {
+			body["first_image"] = images[0]
+		}
+		if len(images) > 1 {
+			body["last_image"] = images[1]
+		}
+	} else {
+		body["aspect_ratio"] = normalizeGlobalAiOpcRatio(request.AspectRatio, "16:9")
+		body["resolution"] = normalizeGlobalAiOpcVideoResolution(modelID, defaultValue(request.Resolution, request.Quality))
+		if len(images) > 0 {
+			body["reference_images"] = images
+		}
+		for _, image := range request.Images {
+			switch image.Role {
+			case "first_frame":
+				body["first_image"] = defaultValue(image.URL, image.DataURL)
+			case "last_frame":
+				body["last_image"] = defaultValue(image.URL, image.DataURL)
+			}
+		}
+	}
+	body["generate_audio"] = request.GenerateAudio
+	body["watermark"] = request.Watermark
+	if values := mediaValues(request.Videos); len(values) > 0 {
+		body["reference_videos"] = values
+	}
+	if values := mediaValues(request.Audios); len(values) > 0 {
+		body["reference_audios"] = values
+	}
+	return compactMap(body), nil
+}
+
+func normalizeGlobalAiOpcRatio(value, fallback string) string {
+	switch strings.TrimSpace(value) {
+	case "1:1", "3:4", "4:3", "16:9", "9:16", "3:2", "2:3", "21:9":
+		return strings.TrimSpace(value)
+	default:
+		return fallback
+	}
+}
+
+func normalizeGlobalAiOpcImageResolution(modelID, value string) string {
+	resolution := strings.ToUpper(strings.TrimSpace(value))
+	if strings.EqualFold(strings.TrimSpace(modelID), "seedream_5.0Pro") {
+		if resolution == "2K" {
+			return resolution
+		}
+		return "1K"
+	}
+	if resolution == "3K" || resolution == "4K" {
+		return resolution
+	}
+	return "2K"
+}
+
+func normalizeGlobalAiOpcVideoResolution(modelID, value string) string {
+	if modelID == "minimax-h3-c4" {
+		return "1440P"
+	}
+	resolution := strings.ToLower(strings.TrimSpace(value))
+	switch resolution {
+	case "low":
+		resolution = "480p"
+	case "", "auto", "medium", "high":
+		resolution = "720p"
+	case "4k", "2160":
+		resolution = "2160p"
+	}
+	if modelID == "sd_2.0_special" && resolution == "2160p" {
+		return "4k"
+	}
+	return resolution
+}
+
+func unwrapGlobalAiOpcPayload(payload map[string]any) (map[string]any, error) {
+	if code, ok := payload["code"]; ok {
+		raw := strings.ToLower(strings.TrimSpace(fmt.Sprint(code)))
+		if raw != "" && raw != "0" && raw != "ok" && raw != "success" && raw != "succeeded" && raw != "completed" {
+			return nil, fmt.Errorf("%s", defaultValue(firstString(payload, "msg", "message"), "GlobalAiOpc request failed"))
+		}
+	}
+	if data := object(payload["data"]); data != nil {
+		return data, nil
+	}
+	if _, wrapped := payload["data"]; wrapped {
+		return nil, fmt.Errorf("GlobalAiOpc response has no task data")
+	}
+	return payload, nil
+}
+
+func globalAiOpcFailure(payload map[string]any) string {
+	if failure := object(payload["error"]); failure != nil {
+		return defaultValue(firstString(failure, "message", "code"), "upstream failed")
+	}
+	return defaultValue(firstString(payload, "error", "message", "msg"), "upstream failed")
+}
+
+func huiQuYunVideoAdapter() Adapter {
+	info := customChannelMetadataByIDMust("huiquyun-video")
+	return builtinAdapter{
+		info: info,
+		create: func(request GenerationRequest) (RequestSpec, error) {
+			if huiQuYunMultipartModel(request.Model) && len(request.Images)+len(request.Videos)+len(request.Audios) > 0 {
+				body := map[string]any{
+					"model": request.Model, "prompt": strings.TrimSpace(request.Prompt),
+					"seconds": request.Duration, "resolution": request.Resolution,
+					"aspect_ratio": request.AspectRatio, "generate_audio": request.GenerateAudio,
+				}
+				files := make([]RequestFilePart, 0, len(request.Images)+len(request.Videos)+len(request.Audios))
+				for _, image := range request.Images {
+					name := "images"
+					if image.Role == "first_frame" || image.Role == "last_frame" {
+						name = image.Role
+					}
+					files = append(files, RequestFilePart{Name: name, Filename: image.Name, MIMEType: image.MIMEType, Reference: image})
+				}
+				for _, video := range request.Videos {
+					files = append(files, RequestFilePart{Name: "videos", Filename: video.Name, MIMEType: video.MIMEType, Reference: video})
+				}
+				for _, audio := range request.Audios {
+					files = append(files, RequestFilePart{Name: "audios", Filename: audio.Name, MIMEType: audio.MIMEType, Reference: audio})
+				}
+				return RequestSpec{Method: http.MethodPost, Path: "/videos/generations", ContentType: "multipart/form-data", Body: body, Files: files}, nil
+			}
+			body := map[string]any{
+				"model": request.Model, "prompt": strings.TrimSpace(request.Prompt),
+				"seconds": request.Duration, "resolution": "720P",
+				"aspect_ratio": request.AspectRatio, "audio": request.GenerateAudio,
+			}
+			images := mediaValues(request.Images)
+			switch len(images) {
+			case 1:
+				body["reference_image"] = images[0]
+			case 2:
+				body["start_frame"], body["end_frame"] = images[0], images[1]
+			default:
+				if len(images) > 2 {
+					body["reference_images"] = images
+				}
+			}
+			if values := mediaValues(request.Videos); len(values) > 0 {
+				body["video_references"] = values
+			}
+			if values := mediaValues(request.Audios); len(values) > 0 {
+				body["audio_reference"] = values[0]
+			}
+			return jsonSpec(http.MethodPost, "/videos/generations", compactMap(body)), nil
+		},
+		parseCreate: func(payload map[string]any) (CreateResult, error) {
+			state := nestedChannelState(payload)
+			id := firstString(state, "id", "task_id", "request_id")
+			if id == "" {
+				return CreateResult{}, fmt.Errorf("HuiQuYun response has no task id")
+			}
+			status := normalizeStatus(firstString(state, "status"))
+			if status == "" {
+				status = StatusPending
+			}
+			return CreateResult{TaskID: id, Status: status}, nil
+		},
+		poll: func(c PollContext) (RequestSpec, error) {
+			return RequestSpec{Method: http.MethodGet, Path: "/videos/" + url.PathEscape(c.TaskID)}, nil
+		},
+		parsePoll: func(c PollContext, payload map[string]any) (PollResult, error) {
+			state := nestedChannelState(payload)
+			status := normalizeStatus(firstString(state, "status"))
+			if status == "" {
+				return PollResult{}, fmt.Errorf("HuiQuYun response has unknown status %q", firstString(state, "status"))
+			}
+			result := PollResult{TaskID: defaultValue(firstString(state, "id", "task_id", "request_id"), c.TaskID), Status: status}
+			if status == StatusFailed || status == StatusCancelled {
+				result.Message = channelFailure(state)
+				return result, nil
+			}
+			if status != StatusSucceeded {
+				return result, nil
+			}
+			if resultURL := nestedChannelResultURL(state, 0); resultURL != "" {
+				result.Result = &Result{Videos: []MediaReference{{URL: resultURL, Kind: string(CapabilityVideo), Ephemeral: true}}}
+			}
+			return result, nil
+		},
+		result: func(c PollContext) (RequestSpec, error) {
+			return RequestSpec{Method: http.MethodGet, Path: "/videos/" + url.PathEscape(c.TaskID) + "/content"}, nil
+		},
+	}
+}
+
+func huiQuYunMultipartModel(modelID string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(modelID))
+	return strings.Contains(normalized, "mj-sd2.0-933-720p") || strings.HasPrefix(normalized, "sd2-mx933-720-") || strings.HasPrefix(normalized, "sd2-mx933-720-fast-")
+}
+
+func nestedChannelState(payload map[string]any) map[string]any {
+	if data := object(payload["data"]); data != nil {
+		return data
+	}
+	return payload
+}
+
+func nestedChannelResultURL(payload map[string]any, depth int) string {
+	if depth < 2 {
+		for _, key := range []string{"data", "result", "video"} {
+			if nested := object(payload[key]); nested != nil {
+				if result := nestedChannelResultURL(nested, depth+1); result != "" {
+					return result
+				}
+			}
+		}
+	}
+	return firstString(payload, "video_url", "output_url", "download_url", "url")
+}
+
+func channelFailure(payload map[string]any) string {
+	if failure := object(payload["error"]); failure != nil {
+		return defaultValue(firstString(failure, "message", "code"), "upstream failed")
+	}
+	return defaultValue(firstString(payload, "error", "message", "msg"), "upstream failed")
 }
 
 func weijinVideoAdapter() Adapter {
@@ -342,6 +636,13 @@ func aiStarsLabPollResult(c PollContext, payload map[string]any) (PollResult, er
 		return PollResult{TaskID: defaultValue(aiStarsLabTaskIDFromPayload(payload), c.TaskID), Status: StatusFailed, Message: message}, nil
 	}
 	status, message := aiStarsLabStatus(payload)
+	if status == "" {
+		state := payload
+		if data := object(payload["data"]); data != nil {
+			state = data
+		}
+		return PollResult{}, fmt.Errorf("AIStarsLab response has unknown status %q", firstString(state, "status"))
+	}
 	id := defaultValue(aiStarsLabTaskIDFromPayload(payload), c.TaskID)
 	if status == StatusFailed {
 		return PollResult{TaskID: id, Status: status, Message: message}, nil

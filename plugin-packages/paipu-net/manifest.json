@@ -1,0 +1,55 @@
+{
+  "apiVersion": "yingce.plugin/v1",
+  "id": "paipu-net",
+  "name": "牌谱 API",
+  "version": "1.0.0",
+  "author": "影策社区",
+  "description": "接入 api.paipu.net 的 New API 兼容文本、图片与视频模型接口。",
+  "documentation": "# 牌谱 API\n\n基地址填写 `https://api.paipu.net`。渠道密钥填写牌谱 API Key。模型 ID 以 `/v1/models` 返回结果为准。\n\n支持文本 `/v1/chat/completions`、图片 `/v1/images/generations`、视频 `/v1/videos` 异步任务。",
+  "permissions": ["generation.run", "media.read"],
+  "configuration": {
+    "fields": [
+      {"name": "apiKey", "type": "secret", "label": "牌谱 API Key", "required": true, "description": "填写 api.paipu.net 控制台生成的 API Key。"}
+    ]
+  },
+  "contributes": {
+    "providers": [
+      {
+        "id": "paipu-net-text",
+        "label": "牌谱 API 文本",
+        "capabilities": ["text"],
+        "scopes": ["admin.system-channel", "user.custom-channel", "canvas", "creation", "agent"],
+        "baseUrl": "https://api.paipu.net",
+        "auth": {"type": "bearer", "field": "apiKey", "header": "Authorization"},
+        "parameters": [{"name": "prompt", "type": "string", "required": true, "mapping": "prompt"}],
+        "create": {"method": "POST", "path": "/v1/chat/completions", "contentType": "application/json", "fields": {"model": "request.model", "messages": "request.messages", "temperature": "request.extra.temperature|omit_zero", "top_p": "request.extra.top_p|omit_zero", "max_completion_tokens": "request.extra.max_completion_tokens|omit_zero"}},
+        "agent": {"method": "POST", "path": "/v1/chat/completions", "contentType": "application/json", "fields": {"model": "request.model", "messages": "request.extra.agent.chatCompletion.messages", "tools": "request.extra.agent.chatCompletion.tools", "tool_choice": "request.extra.agent.chatCompletion.tool_choice"}},
+        "agentResponse": {"textPaths": ["choices.0.message.content"], "reasoningPaths": ["choices.0.message.reasoning_content"], "toolCallsPath": "choices.0.message.tool_calls", "toolCallIdPaths": ["id"], "toolCallNamePaths": ["function.name"], "toolCallArgumentsPaths": ["function.arguments"]},
+        "response": {"textPaths": ["choices.0.message.content", "choices.0.text"], "reasoningPaths": ["choices.0.message.reasoning_content"]}
+      },
+      {
+        "id": "paipu-net-image",
+        "label": "牌谱 API 图片",
+        "capabilities": ["image"],
+        "scopes": ["admin.system-channel", "user.custom-channel", "canvas", "creation"],
+        "baseUrl": "https://api.paipu.net",
+        "auth": {"type": "bearer", "field": "apiKey", "header": "Authorization"},
+        "parameters": [{"name": "prompt", "type": "string", "required": true, "mapping": "prompt"}, {"name": "size", "type": "string", "mapping": "aspectRatio"}, {"name": "quality", "type": "string", "mapping": "quality"}, {"name": "n", "type": "integer", "mapping": "imageCount"}, {"name": "images", "type": "media[]", "mapping": "images"}],
+        "create": {"method": "POST", "path": "/v1/images/generations", "contentType": "application/json", "fields": {"model": "request.model", "prompt": "request.prompt", "images": "request.images|media_urls", "size": "request.aspectRatio|omit_empty", "quality": "request.quality|omit_auto", "n": "request.imageCount|omit_zero", "response_format": "url"}},
+        "response": {"resultPaths": ["data.0.url", "url"], "resultKind": "image", "resultEphemeral": true}
+      },
+      {
+        "id": "paipu-net-video",
+        "label": "牌谱 API 视频",
+        "capabilities": ["video"],
+        "scopes": ["admin.system-channel", "user.custom-channel", "canvas", "creation"],
+        "baseUrl": "https://api.paipu.net",
+        "auth": {"type": "bearer", "field": "apiKey", "header": "Authorization"},
+        "parameters": [{"name": "prompt", "type": "string", "required": true, "mapping": "prompt"}, {"name": "duration", "type": "integer", "required": true, "mapping": "duration"}, {"name": "aspect_ratio", "type": "string", "mapping": "aspectRatio"}, {"name": "resolution", "type": "string", "mapping": "resolution"}, {"name": "images", "type": "media[]", "mapping": "images"}, {"name": "videos", "type": "media[]", "mapping": "videos"}, {"name": "audios", "type": "media[]", "mapping": "audios"}],
+        "create": {"method": "POST", "path": "/v1/videos", "contentType": "application/json", "fields": {"model": "request.model", "prompt": "request.prompt", "duration": "request.duration|omit_zero", "aspect_ratio": "request.aspectRatio|omit_empty", "resolution": "request.resolution|omit_auto", "images": "request.images|media_urls", "videos": "request.videos|media_urls", "audios": "request.audios|media_urls"}},
+        "poll": {"method": "GET", "path": "/v1/videos/{{taskId}}"},
+        "response": {"taskIdPaths": ["id", "task_id"], "statusPaths": ["status"], "errorPaths": ["error.code"], "messagePaths": ["message", "error.message", "error.code"], "resultPaths": ["url", "result_url", "metadata.url"], "resultKind": "video", "resultEphemeral": true}
+      }
+    ]
+  }
+}

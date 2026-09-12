@@ -1,4 +1,5 @@
-import { App, Button, ColorPicker, Dropdown, Input, InputNumber, Select, Slider, Switch } from "antd";
+import { App, Button, ColorPicker, Dropdown, Input, InputNumber, Select, Slider } from "antd";
+import { Switch } from "@/components/ui/base/switch";
 import type { MenuProps } from "antd";
 import { Box, BoxSelect, Camera, Circle, Cuboid, FileUp, Focus, Image as ImageIcon, LampDesk, Lightbulb, Plus, Redo2, RotateCcw, Save, Trash2, Undo2, UserRound, Video, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
@@ -23,6 +24,7 @@ import { createDirectorActor, createDirectorBillboard, createDirectorCamera, cre
 import { describeDirectorSaveStatus, resolveDirectorCloseOutcome, shouldBlockDirectorUnload, shouldOfferDirectorDraftRecovery } from "@/lib/canvas/director/director-save-wiring";
 import { useDirectorSaveCoordinator } from "@/components/canvas/director/use-director-save-coordinator";
 import { uploadMediaFile } from "@/services/file-storage";
+import { localSavedRemotePendingMessage, saveRemoteUserDataNow } from "@/services/user-data-sync";
 import { useAssetStore, type ModelAsset } from "@/stores/use-asset-store";
 import { useDirectorWorkbenchStore } from "@/stores/canvas/use-director-workbench-store";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -420,7 +422,12 @@ export function CanvasDirectorWorkbench({ open, scene, imageNodes, onboardingSco
         const assetId = addAsset({ kind: "model", title: file.name.replace(/\.(glb|gltf)$/i, ""), coverUrl: "", tags: ["3D模型"], source: "导演台", data: { url: uploaded.url, storageKey: uploaded.storageKey, bytes: uploaded.bytes, mimeType: uploaded.mimeType, fileName: file.name }, metadata: { source: "director" } });
         const asset = useAssetStore.getState().assets.find((item): item is ModelAsset => item.id === assetId && item.kind === "model");
         if (asset) addModelAsset(asset);
-        message.success("3D 模型已加入场景和素材库");
+        try {
+            await saveRemoteUserDataNow();
+            message.success("3D 模型已加入场景和素材库");
+        } catch (error) {
+            message.warning(localSavedRemotePendingMessage("3D 模型已加入场景和本机素材库", error));
+        }
     };
 
     const addBillboard = (node: CanvasNodeData) => {

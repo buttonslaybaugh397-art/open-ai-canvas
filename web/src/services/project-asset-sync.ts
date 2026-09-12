@@ -2,10 +2,10 @@ import { canvasNodeToAsset, declaredCanvasNodeAssetCategory, findCanvasNodeAsset
 import { canvasVideoAssetPreviewUrl } from "@/lib/canvas/canvas-media-preview";
 import { readImageMeta } from "@/lib/image-utils";
 import { parseBackendGenerationResult, type BackendGenerationResult } from "@/services/api/generation-task";
+import { ApiError } from "@/services/api/request";
 import { linkProjectAsset, moveProjectAsset, updateProjectAssetCategory } from "@/services/api/projects";
-import { importResourceFromUrl, resourceStorageKey } from "@/services/api/resources";
 import type { GenerationTask, GenerationTaskOutput } from "@/services/api/task-center";
-import { getMediaBlob, resolveMediaUrl, setMediaBlob, uploadMediaFile } from "@/services/file-storage";
+import { getMediaBlob, resolveMediaUrl, setMediaBlob } from "@/services/file-storage";
 import { createGenerationTaskMaterializer, createIdempotentMaterializeOutput, type MaterializeGenerationTaskOutput } from "@/services/generation-task-materializer";
 import { withGenerationArtifactCommitLock } from "@/services/generation-asset-repository";
 import { uploadGeneratedAssetToConfiguredSources } from "@/services/external-asset-sources";
@@ -15,7 +15,7 @@ import { createLocalDreaminaTaskEffectStore } from "@/services/local-dreamina-ge
 import { createProviderNeutralGenerationTaskEffectStore } from "@/services/provider-neutral-generation-effects";
 import { saveRemoteUserDataNow } from "@/services/user-data-sync";
 import { getActiveUserScope } from "@/lib/user-scope";
-import type { TaskMediaSource } from "@/lib/task-media";
+import { normalizeAssetCategory } from "@/lib/asset-category";
 import { runGenerationConsumer } from "@/services/generation-consumer-lifecycle";
 import { useAssetStore, type AssetCategory, type AssetStatus, type NewAsset } from "@/stores/use-asset-store";
 import type { CanvasNodeData } from "@/types/canvas";
@@ -42,6 +42,47 @@ export type CanvasNodeAssetResult = {
 };
 
 const pendingAssetSyncs = new Map<string, Promise<CanvasNodeAssetResult>>();
+const DEFAULT_RATE_LIMIT_RETRY_MS = 60_000;
+const MAX_RATE_LIMIT_RETRY_MS = 5 * 60_000;
+
+type CanvasAssetSyncRetryOptions = {
+    signal?: AbortSignal;
+    maxRetries?: number;
+    wait?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
+};
+
+function waitForCanvasAssetSyncRetry(delayMs: number, signal?: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(new DOMException("The operation was aborted", "AbortError"));
+            return;
+        }
+        const timer = globalThis.setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve();
+        }, delayMs);
+        const onAbort = () => {
+            globalThis.clearTimeout(timer);
+            reject(new DOMException("The operation was aborted", "AbortError"));
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
+    });
+}
+
+export async function retryCanvasAssetSyncAfterRateLimit<T>(operation: () => Promise<T>, options: CanvasAssetSyncRetryOptions = {}): Promise<T> {
+    const maxRetries = Math.max(0, options.maxRetries ?? 2);
+    const wait = options.wait ?? waitForCanvasAssetSyncRetry;
+    for (let attempt = 0; ; attempt += 1) {
+        throwIfAborted(options.signal);
+        try {
+            return await operation();
+        } catch (error) {
+            if (!(error instanceof ApiError) || error.status !== 429 || attempt >= maxRetries) throw error;
+            const delayMs = Math.min(MAX_RATE_LIMIT_RETRY_MS, Math.max(0, error.retryAfterMs ?? DEFAULT_RATE_LIMIT_RETRY_MS));
+            await wait(delayMs, options.signal);
+        }
+    }
+}
 
 export function ensureCanvasNodeAsset(options: EnsureCanvasNodeAssetOptions) {
     const scope = getActiveUserScope();
@@ -72,7 +113,12 @@ async function persistCanvasNodeAsset(options: EnsureCanvasNodeAssetOptions): Pr
         store.updateAsset(asset.id, { category: declaredCategory });
         asset = useAssetStore.getState().assets.find((item) => item.id === asset?.id) || asset;
     }
-    if (!options.domainProjectId) return { assetId: asset.id, created, linkedToProject: false };
+    if (!options.domainProjectId) {
+        // 个人画布也必须在返回成功前把素材提交到服务端，不能只依赖延迟自动同步。
+        await saveRemoteUserDataNow();
+        throwIfAborted(options.signal);
+        return { assetId: asset.id, created, linkedToProject: false };
+    }
     await syncAssetToProject(asset.id, options.domainProjectId, declaredCategory, options.folderId, options.signal);
     return { assetId: asset.id, created, linkedToProject: true };
 }
@@ -94,7 +140,7 @@ async function syncAssetToProject(assetId: string, domainProjectId: string, cate
         domainProjectId,
         {
             assetId: asset.id,
-            category: category || asset.category || "other",
+            category: normalizeAssetCategory(category || asset.category),
             folderId,
         },
         signal,
@@ -104,7 +150,7 @@ async function syncAssetToProject(assetId: string, domainProjectId: string, cate
     if (folderId !== undefined && (linked.folderId || "") !== folderId) linked = (await moveProjectAsset(domainProjectId, asset.id, folderId, signal)).asset;
     throwIfAborted(signal);
     useAssetStore.getState().updateAsset(asset.id, {
-        category: linked.category as AssetCategory,
+        category: normalizeAssetCategory(linked.category),
         status: linked.status as AssetStatus,
         primaryVersionId: linked.primaryVersionId,
         metadata: { ...asset.metadata, projectIds: [...new Set([...linkedProjectIds, domainProjectId])] },
@@ -169,19 +215,6 @@ async function storedGenerationImage(result: NonNullable<BackendGenerationResult
             mimeType: result.mimeType || "image/png",
         };
     }
-    if (isExternalMediaUrl(result.dataUrl)) {
-        // Generated URLs are often short-lived signed object URLs without CORS.
-        // Let the backend import and persist them instead of reading them in the browser.
-        const resource = await importResourceFromUrl(result.dataUrl, "image", { width: result.width, height: result.height });
-        return {
-            url: result.dataUrl,
-            storageKey: resourceStorageKey(resource.id),
-            width: result.width || resource.width || 1024,
-            height: result.height || resource.height || 1024,
-            bytes: result.bytes || resource.size || 0,
-            mimeType: result.mimeType || resource.mimeType || "image/png",
-        };
-    }
     const storageKey = generationArtifactStorageKey(effectKey, "image", scope);
     const blob = await loadOrStoreGenerationArtifact({
         effectKey: storageKey,
@@ -207,52 +240,29 @@ async function storedGenerationImage(result: NonNullable<BackendGenerationResult
     };
 }
 
-async function storedGenerationMedia(
-    backupSource: string,
-    effectKey: string,
-    mediaType: "video" | "audio",
-    metadata: { width?: number; height?: number; durationMs?: number; bytes?: number; mimeType: string },
-    scope: string,
-    signal?: AbortSignal,
-    preferredUrl = "",
-) {
+async function storedGenerationMedia(dataUrl: string, effectKey: string, mediaType: "video" | "audio", metadata: { width?: number; height?: number; durationMs?: number; bytes?: number; mimeType: string }, scope: string, signal?: AbortSignal) {
     throwIfAborted(signal);
-    if (isExternalMediaUrl(backupSource)) {
-        // Videos must be synchronized before they are kept in the canvas. The
-        // import runs server-side, so signed OSS/provider URLs do not need CORS.
-        const resource = await importResourceFromUrl(backupSource, mediaType, metadata);
-        return {
-            url: preferredUrl || backupSource,
-            storageKey: resourceStorageKey(resource.id),
-            width: metadata.width || resource.width,
-            height: metadata.height || resource.height,
-            durationMs: metadata.durationMs || resource.durationMs,
-            bytes: metadata.bytes || resource.size || 0,
-            mimeType: metadata.mimeType || resource.mimeType,
-        };
-    }
     const storageKey = generationArtifactStorageKey(effectKey, mediaType, scope);
     const blob = await loadOrStoreGenerationArtifact({
         effectKey: storageKey,
         read: (key) => getMediaBlob(key),
-        materialize: async () => (await fetch(backupSource, { signal })).blob(),
+        materialize: async () => (await fetch(dataUrl, { signal })).blob(),
         write: async (key, artifact) => {
             await setMediaBlob(key, artifact);
         },
     });
     throwIfAborted(signal);
-    const uploaded = await uploadMediaFile(blob, mediaType, { allowLocalFallback: mediaType !== "video" });
-    const url = preferredUrl || uploaded.url;
+    const url = await resolveMediaUrl(storageKey);
     throwIfAborted(signal);
     if (!url) throw new Error(`${mediaType === "video" ? "视频" : "音频"}结果资源不可用`);
     return {
         url,
-        storageKey: uploaded.storageKey,
+        storageKey,
         width: metadata.width,
         height: metadata.height,
         durationMs: metadata.durationMs,
-        bytes: metadata.bytes || uploaded.bytes || blob.size,
-        mimeType: metadata.mimeType || uploaded.mimeType || blob.type,
+        bytes: metadata.bytes || blob.size,
+        mimeType: metadata.mimeType || blob.type,
     };
 }
 
@@ -297,7 +307,7 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
         if (!video) throw new Error("生成任务缺少视频输出");
         const stored = video.storageKey
             ? {
-                  url: video.url || (await resolveMediaUrl(video.storageKey, video.dataUrl)),
+                  url: await resolveMediaUrl(video.storageKey, video.dataUrl),
                   storageKey: video.storageKey,
                   width: video.width || 0,
                   height: video.height || 0,
@@ -306,7 +316,7 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
                   mimeType: video.mimeType || "video/mp4",
               }
             : await storedGenerationMedia(
-                  video.dataUrl || video.url || "",
+                  video.dataUrl,
                   input.effectKey,
                   "video",
                   {
@@ -318,7 +328,6 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
                   },
                   scope,
                   input.signal,
-                  video.url,
               );
         if (!stored.url) throw new Error("视频结果资源不可用");
         return {
@@ -516,7 +525,7 @@ export async function consumeGenerationTaskAgent(
 export async function consumeGenerationTaskMessage(
     task: GenerationTask,
     messageId: string,
-    consumer: (input: { task: GenerationTask; resultUrls: string[]; resultSources: TaskMediaSource[]; effectKey: string; signal?: AbortSignal }) => Promise<void> | void,
+    consumer: (input: { task: GenerationTask; resultUrls: string[]; effectKey: string; signal?: AbortSignal }) => Promise<void> | void,
     dependencies: {
         signal?: AbortSignal;
         managed?: true;
@@ -530,7 +539,6 @@ export async function consumeGenerationTaskMessage(
     }
     const materialized = await (dependencies.materialize ?? materializeGenerationTaskAssets)(task, dependencies.signal);
     const resultUrls = (dependencies.materializedUrls ?? generationTaskMaterializedUrls)(materialized);
-    const resultSources = generationTaskMediaSources(materialized);
     const attach = dependencies.attachMessage ?? attachGenerationTaskMessage;
     const outputs = materialized.outputs?.filter((output) => output.materializedAssetId) ?? [];
     for (const output of outputs) {
@@ -539,7 +547,7 @@ export async function consumeGenerationTaskMessage(
             messageId,
             output.outputIndex,
             async ({ effectKey, signal }) => {
-                await consumer({ task: materialized, resultUrls, resultSources, effectKey, signal });
+                await consumer({ task: materialized, resultUrls, effectKey, signal });
             },
             dependencies.signal,
         );
@@ -554,35 +562,6 @@ export function generationTaskMaterializedUrls(task: GenerationTask): string[] {
         if (!asset) return [];
         if (asset.kind === "image") return [asset.data.dataUrl || asset.coverUrl];
         if (asset.kind === "video" || asset.kind === "audio") return [asset.data.url];
-        return [];
-    });
-}
-
-function isExternalMediaUrl(value: string) {
-    return /^https?:\/\//i.test(value);
-}
-
-export function generationTaskMediaSources(task: GenerationTask): TaskMediaSource[] {
-    const result = generationTaskResult(task);
-    const mediaResults: Array<TaskMediaSource & { outputIndex: number }> = [];
-    if (result.images?.length) {
-        result.images.forEach((image, outputIndex) => mediaResults.push({ url: image.dataUrl, storageKey: image.storageKey, kind: "image", outputIndex }));
-    } else if (result.video) {
-        mediaResults.push({ url: result.video.url || result.video.dataUrl || "", storageKey: result.video.storageKey, kind: "video", outputIndex: 0 });
-    } else if (result.audio) {
-        mediaResults.push({ url: result.audio.dataUrl, storageKey: result.audio.storageKey, kind: "audio", outputIndex: 0 });
-    }
-
-    const assets = useAssetStore.getState().assets;
-    return (task.outputs || []).flatMap((output) => {
-        const primary = mediaResults.find((candidate) => candidate.outputIndex === output.outputIndex);
-        const asset = output.materializedAssetId ? assets.find((candidate) => candidate.id === output.materializedAssetId) : undefined;
-        const assetStorageKey = asset && (asset.kind === "image" || asset.kind === "video" || asset.kind === "audio") ? asset.data.storageKey : undefined;
-        if (primary?.url) return [{ url: primary.url, kind: primary.kind, storageKey: primary.storageKey || assetStorageKey }];
-        if (asset) {
-            if (asset.kind === "image") return [{ url: asset.data.dataUrl || asset.coverUrl, kind: "image" as const, storageKey: assetStorageKey }];
-            if (asset.kind === "video" || asset.kind === "audio") return [{ url: asset.data.url, kind: asset.kind, storageKey: assetStorageKey }];
-        }
         return [];
     });
 }

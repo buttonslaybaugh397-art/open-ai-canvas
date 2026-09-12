@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -103,8 +104,8 @@ func defaultRuntimePolicy() RuntimePolicySetting {
 			ResourceUploadMB:        50,
 			SessionUploadMB:         32,
 			GeneratedFileMB:         64,
-			DailyUploadMB:           200,
-			StoredFileGB:            2,
+			DailyUploadMB:           2048,
+			StoredFileGB:            20,
 			StructuredDataMB:        256,
 			TaskDataGB:              1,
 			AssetCount:              2_000,
@@ -133,8 +134,8 @@ func defaultRuntimePolicy() RuntimePolicySetting {
 			SessionFilePerMinute:       30,
 			AssetWritePerMinute:        120,
 			CanvasWritePerMinute:       120,
-			RegisterPerHour:            5,
-			EmailCodePerHour:           10,
+			RegisterPerHour:            30,
+			EmailCodePerHour:           60,
 			LoginIPPerTenMinutes:       50,
 			LoginAccountPerTenMinutes:  10,
 			SystemRelayPerMinute:       120,
@@ -187,8 +188,14 @@ func (s *Service) RuntimePolicy() (RuntimePolicySetting, error) {
 }
 
 func (s *Service) runtimeConcurrencySetting() (RuntimeTaskPolicy, error) {
-	policy, err := s.RuntimePolicy()
-	return policy.Task, err
+	s.initReadCaches()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return s.concurrencyReadCache.get(ctx, runtimePolicySettingKey, func(ctx context.Context) (RuntimeTaskPolicy, int, error) {
+		reader := &Service{repo: s.repo.WithContext(ctx)}
+		policy, err := reader.RuntimePolicy()
+		return policy.Task, 256, err
+	})
 }
 
 func (s *Service) PublicRuntimeLimits() (*PublicRuntimeLimits, error) {
@@ -243,6 +250,8 @@ func (s *Service) UpdateRuntimePolicySetting(actor *model.User, value RuntimePol
 	if err := s.repo.SaveSystemSetting(&setting); err != nil {
 		return nil, err
 	}
+	s.initReadCaches()
+	s.concurrencyReadCache.clear()
 	if err := s.appendAdminAudit(actor, "runtime_policy.update", "system_setting", runtimePolicySettingKey, "更新资源与请求策略", map[string]any{"before": before, "after": value}); err != nil {
 		return nil, err
 	}
@@ -260,6 +269,8 @@ func (s *Service) ResetRuntimePolicySetting(actor *model.User) (*PublicRuntimePo
 	if err := s.repo.DeleteSystemSetting(runtimePolicySettingKey); err != nil {
 		return nil, err
 	}
+	s.initReadCaches()
+	s.concurrencyReadCache.clear()
 	after := defaultRuntimePolicy()
 	if err := s.appendAdminAudit(actor, "runtime_policy.reset", "system_setting", runtimePolicySettingKey, "重置资源与请求策略", map[string]any{"before": before, "after": after}); err != nil {
 		return nil, err
@@ -276,7 +287,6 @@ func (s *Service) readRuntimePolicy() (*model.SystemSetting, RuntimePolicySettin
 	if err != nil {
 		return nil, RuntimePolicySetting{}, err
 	}
-	// Unmarshal over defaults so settings saved by older versions gain new fields.
 	value := defaultRuntimePolicy()
 	if strings.TrimSpace(setting.ValueJSON) == "" || json.Unmarshal([]byte(setting.ValueJSON), &value) != nil {
 		return nil, RuntimePolicySetting{}, errors.New("资源与请求策略配置格式无效")
@@ -319,7 +329,7 @@ func validateRuntimePolicy(value RuntimePolicySetting) error {
 		}
 	}
 	if resource.RecycleBinRetentionDays < 0 || resource.RecycleBinRetentionDays > 365 {
-		return BadAuthRequest("回收站保留天数必须是 0-365 的整数（0 表示不自动清理）")
+		return BadAuthRequest("回收站保留天数必须是 0-365 的整数 (0 表示不自动清理)")
 	}
 	task := value.Task
 	for label, item := range map[string]int{

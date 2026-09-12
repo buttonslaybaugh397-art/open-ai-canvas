@@ -5,7 +5,8 @@ import { nanoid } from "nanoid";
 
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { FOLDER_COLLAPSED_HEIGHT, FOLDER_COLLAPSED_WIDTH, FRAME_HEADER_HEIGHT, getFrameChildIds, getFrameChildren, isFrameNode } from "@/lib/canvas/canvas-frame";
-import { alignCanvasNodes, layoutCanvasFlow, layoutCanvasNodes, nextCanvasVersionLabel, type CanvasAlignmentMode } from "@/lib/canvas/canvas-layout";
+import { alignCanvasNodes, layoutCanvasAuto, layoutCanvasFlow, layoutCanvasNodes, nextCanvasVersionLabel, spreadCanvasNodes, type CanvasAlignmentMode } from "@/lib/canvas/canvas-layout";
+import { applyCanvasConnectionPromptSync } from "@/lib/canvas/canvas-resource-references";
 import { createCanvasNode, isHiddenBatchChild, removeCanvasNodes } from "@/lib/canvas/canvas-project-domain";
 import { isolateCopiedNodeMetadata, nextCopiedNodeTitle } from "@/lib/canvas/canvas-node-copy";
 import { CanvasNodeType, type CanvasConnection, type CanvasFolderStyle, type CanvasFolderTheme, type CanvasNodeData, type CanvasNodeMetadata, type CanvasNodeTypeId, type ContextMenuState, type Position } from "@/types/canvas";
@@ -152,7 +153,7 @@ export function useCanvasNodeOperations({
         if (workflowTitle) node.title = workflowTitle;
         commitNodes([...nodesRef.current, node]);
         selectNodes(new Set([node.id]));
-        if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Script && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Frame && type !== CanvasNodeType.Drawing && type !== PORTRAIT_CLEARANCE_NODE_TYPE) setDialogNodeId(node.id);
+        if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Script && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Frame && type !== CanvasNodeType.Drawing && type !== CanvasNodeType.MediaConversion && type !== PORTRAIT_CLEARANCE_NODE_TYPE) setDialogNodeId(node.id);
     }, [commitNodes, defaultDrawingEngine, effectiveConfig.comfyBridge.enabled, effectiveConfig.comfyBridge.workflows.length, effectiveConfig.runningHub.enabled, effectiveConfig.runningHub.workflows.length, getCanvasCenter, message, nodesRef, runtimeStatuses, selectNodes, setDialogNodeId, tldrawLicenseKey]);
 
     const createFolder = useCallback((position?: Position, linked?: { id: string; projectId: string; title: string; style: CanvasFolderStyle; theme: CanvasFolderTheme; createdAt: string }) => {
@@ -200,13 +201,23 @@ export function useCanvasNodeOperations({
             return;
         }
 
-        const candidateIds = new Set(candidates.map((node) => node.id));
-        const hasConnections = connectionsRef.current.some((connection) => candidateIds.has(connection.fromNodeId) && candidateIds.has(connection.toNodeId));
-        const mode = hasConnections ? "flow" : "grid";
-        const positions = mode === "flow" ? layoutCanvasFlow(candidates, connectionsRef.current) : layoutCanvasNodes(candidates, "grid");
+        const positions = layoutCanvasAuto(candidates, connectionsRef.current);
         commitNodes(currentNodes.map((node) => positions.has(node.id) ? { ...node, position: positions.get(node.id)! } : node));
-        message.success(mode === "flow" ? (hasSelection ? "已按连线整理选中节点" : "已按连线整理画布") : (hasSelection ? "已网格整理选中节点" : "已网格整理画布"));
+        message.success(hasSelection ? "已按媒体分类整理选中节点" : "已按媒体分类整理画布");
     }, [commitNodes, connectionsRef, message, nodesRef, selectedNodeIdsRef]);
+
+    const spreadSelectedNodes = useCallback(() => {
+        const currentNodes = nodesRef.current;
+        const selected = currentNodes.filter((node) => selectedNodeIdsRef.current.has(node.id) && !node.metadata?.locked && !isFrameNode(node) && !isHiddenBatchChild(node, currentNodes));
+        if (selected.length < 2) {
+            message.info("请至少选择两个可整理节点");
+            return;
+        }
+        const positions = spreadCanvasNodes(selected);
+        if (!positions.size) return;
+        commitNodes(currentNodes.map((node) => positions.has(node.id) ? { ...node, position: positions.get(node.id)! } : node));
+        message.success("已按相对布局加大间距");
+    }, [commitNodes, message, nodesRef, selectedNodeIdsRef]);
 
     const alignSelectedNodes = useCallback((mode: CanvasAlignmentMode) => {
         const selected = nodesRef.current.filter((node) => selectedNodeIdsRef.current.has(node.id) && !node.metadata?.locked && !isFrameNode(node));
@@ -328,28 +339,37 @@ export function useCanvasNodeOperations({
 
     const deleteNodes = useCallback((ids: Set<string>) => {
         if (!ids.size) return;
-        const result = removeCanvasNodes(nodesRef.current, ids);
-        const removedNodes = nodesRef.current.filter((node) => result.removedIds.has(node.id));
-        const nextConnections = connectionsRef.current.filter((connection) => !result.removedIds.has(connection.fromNodeId) && !result.removedIds.has(connection.toNodeId));
-        commitNodes(result.nodes);
+        const previousNodes = nodesRef.current;
+        const previousConnections = connectionsRef.current;
+        const result = removeCanvasNodes(previousNodes, ids);
+        const removedNodes = previousNodes.filter((node) => result.removedIds.has(node.id));
+        const nextConnections = previousConnections.filter((connection) => !result.removedIds.has(connection.fromNodeId) && !result.removedIds.has(connection.toNodeId));
+        const nextNodes = applyCanvasConnectionPromptSync(previousNodes, previousConnections, result.nodes, nextConnections);
+        commitNodes(nextNodes);
         commitConnections(nextConnections);
         selectNodes(new Set());
-        onNodesDeleted(result.removedIds, result.nodes, removedNodes);
+        onNodesDeleted(result.removedIds, nextNodes, removedNodes);
     }, [commitConnections, commitNodes, connectionsRef, nodesRef, onNodesDeleted, selectNodes]);
 
     const deleteConnection = useCallback((connectionId: string) => {
-        commitConnections(connectionsRef.current.filter((connection) => connection.id !== connectionId));
+        const previousNodes = nodesRef.current;
+        const previousConnections = connectionsRef.current;
+        const nextConnections = previousConnections.filter((item) => item.id !== connectionId);
+        const nextNodes = applyCanvasConnectionPromptSync(previousNodes, previousConnections, previousNodes, nextConnections);
+        if (nextNodes !== previousNodes) commitNodes(nextNodes);
+        commitConnections(nextConnections);
         setSelectedConnectionId((current) => current === connectionId ? null : current);
         setContextMenu((current) => current?.type === "connection" && current.connectionId === connectionId ? null : current);
-    }, [commitConnections, connectionsRef, setContextMenu, setSelectedConnectionId]);
+    }, [commitConnections, commitNodes, connectionsRef, nodesRef, setContextMenu, setSelectedConnectionId]);
 
-    const duplicateNode = useCallback((nodeId: string) => {
+    const duplicateNode = useCallback((nodeId: string, duplicateMode: "variant" | "copy" = "variant") => {
         const source = nodesRef.current.find((node) => node.id === nodeId);
         if (!source) return;
         const sources = isFrameNode(source) ? [source, ...getFrameChildren(source.id, nodesRef.current)] : [source];
         const idMap = new Map(sources.map((node, index) => [node.id, `${node.type}-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`]));
-        const versionRootId = isFrameNode(source) ? undefined : source.metadata?.versionOfNodeId || source.id;
+        const versionRootId = duplicateMode === "variant" && !isFrameNode(source) ? source.metadata?.versionOfNodeId || source.id : undefined;
         const versionLabel = versionRootId ? nextCanvasVersionLabel(versionRootId, nodesRef.current) : undefined;
+        const copyTitle = duplicateMode === "copy" ? nextCopiedNodeTitle(source.title, nodesRef.current.map((node) => node.title)) : undefined;
         const copiedNodes = sources.map((node) => {
             const metadata = isolateCopiedNodeMetadata(node, idMap);
             if (node.type === CanvasNodeType.Drawing) {
@@ -367,7 +387,7 @@ export function useCanvasNodeOperations({
             return {
                 ...node,
                 id: idMap.get(node.id)!,
-                title: node.id === source.id ? `${node.title.replace(/ · [A-Z]$/, "")} · ${versionLabel || "副本"}` : node.title,
+                title: node.id === source.id ? copyTitle || `${node.title.replace(/ · [A-Z]$/, "")} · ${versionLabel || "副本"}` : node.title,
                 position: { x: node.position.x + 36, y: node.position.y + 36 },
                 parentId: node.parentId ? idMap.get(node.parentId) || node.parentId : undefined,
                 metadata,
@@ -382,7 +402,7 @@ export function useCanvasNodeOperations({
         }
         const id = idMap.get(source.id)!;
         const nextNodes = [
-            ...nodesRef.current.map((node) => node.id === source.id && versionRootId && !node.metadata?.versionLabel ? { ...node, title: `${node.title} · A`, metadata: { ...node.metadata, versionOfNodeId: versionRootId, versionLabel: "A", versionPrimary: true } } : node),
+            ...nodesRef.current.map((node) => node.id === source.id && versionRootId && !node.metadata?.versionLabel ? { ...node, title: `${node.title} · A`, metadata: { ...node.metadata, versionOfNodeId: versionRootId, versionLabel: "A", versionPrimary: true, generationResultPlacement: "replace-node" as const } } : node),
             ...copiedNodes,
         ];
         commitNodes(nextNodes);
@@ -393,7 +413,7 @@ export function useCanvasNodeOperations({
             const sourceNode = sourceByTargetId.get(targetNode.id);
             if (sourceNode) cloneDrawingForNode(sourceNode, targetNode, "绘图副本保存失败，请重新复制");
         });
-        if (!isFrameNode(source) && source.type !== CanvasNodeType.Drawing && source.type !== PORTRAIT_CLEARANCE_NODE_TYPE) setDialogNodeId(id);
+        if (!isFrameNode(source) && source.type !== CanvasNodeType.Drawing && source.type !== CanvasNodeType.MediaConversion && source.type !== PORTRAIT_CLEARANCE_NODE_TYPE) setDialogNodeId(id);
     }, [cloneDrawingForNode, commitConnections, commitNodes, connectionsRef, nodesRef, selectNodes, setDialogNodeId]);
 
     const setPrimaryVersion = useCallback((nodeId: string) => {
@@ -534,6 +554,7 @@ export function useCanvasNodeOperations({
         alignSelectedNodes,
         autoArrangeCanvasNodes,
         arrangeSelectedNodes,
+        spreadSelectedNodes,
         copyNodesToClipboard,
         copySelectedNodes,
         createFolder,

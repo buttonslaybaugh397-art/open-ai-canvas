@@ -55,15 +55,24 @@
 | <img src="assets/user-rou.jpg" alt="Rou" width="80"> | Rou | [rou325089@163.com](mailto:rou325089@163.com) | 上善若水 |
 | <img src="assets/user-vv.jpg" alt="vv" width="80"> | vv<br><sub>dy/xhs：荣灵</sub> | [2838033228@qq.com](mailto:2838033228@qq.com) | 就是水水 |
 | <img src="assets/user-dominic1556.jpg" alt="Dominic1556" width="80"> | Dominic1556 | [184026530@qq.com](mailto:184026530@qq.com) | Done is better than perfect |
+| <img src="assets/user-yuxi.jpg" alt="宇熙" width="80"> | 宇熙 | [53121904@qq.com](mailto:53121904@qq.com) | 年轻的时候不狂，老了拿什么回忆 |
+| <img src="assets/user-yingzi.png" alt="影子" width="80"> | 影子 | [305818148@qq.com](mailto:305818148@qq.com) | 年纪大佬才明白人要顺势而为。 |
+| <img src="assets/user-ray.jpg" alt="Ray" width="80"> | Ray | [cnraylee@qq.com](mailto:cnraylee@qq.com) | AI时代的全栈落地工，欢迎找我聊需求 |
+| <img src="assets/user-bjsg.jpg" alt="不见山谷" width="80"> | 不见山谷<br><sub>VV：yu170718</sub> | [1762202553@qq.com](mailto:1762202553@qq.com) | 空山不见人，但闻人语响 |
+| <img src="assets/user-yep.jpg" alt="yep" width="80"> | yep | [1239738103@qq.com](mailto:1239738103@qq.com) | 思考，坚持 |
+| <img src="assets/user-hamburger.jpg" alt="汉堡爸爸" width="80"> | 汉堡爸爸<br><sub>VV：jxs62888</sub> | [309151651@qq.com](mailto:309151651@qq.com) | 没什么大不了 |
+| <img src="assets/user-bensharp.jpg" alt="bensharp" width="80"> | bensharp<br><sub>VV：jiahezuiai</sub> | [275008147@qq.com](mailto:275008147@qq.com) | 在哪跌倒，就在哪睡一觉 |
+| <img src="assets/user-daqzia.jpg" alt="daqzia" width="80"> | daqzia<br><sub>VV：wangzhiwei-8234</sub> | [wzwzcb@gmail.com](mailto:wzwzcb@gmail.com) | NullPointerException |
+| <img src="assets/user-xingmeng.jpg" alt="醒梦" width="80"> | 醒梦<br><sub>VV：love-is-heart-is</sub> | [1948863412@qq.com](mailto:1948863412@qq.com) | Always believe that good things will happen |
 
 ## 交流与反馈
 
-Issue 反馈、技术讨论和产品升级建议都可以在 QQ 群中沟通。群内还会不定期组织 AI 学习与培训交流会。
+Issue 反馈、技术讨论和产品升级建议都可以在 微信 群中沟通。群内还会不定期组织 AI 学习与培训交流会。
 
 <p align="center">
-  <img src="assets/qq.jpg" alt="影策 QQ 交流群" width="280">
-  <img src="assets/wx.jpg" alt="影策 微信交流群" width="280">
+  <img src="assets/wx.jpg" alt="影策 微信交流群" width="100%">
 </p>
+
 
 ## 当前能力
 
@@ -95,7 +104,7 @@ Issue 反馈、技术讨论和产品升级建议都可以在 QQ 群中沟通。�
 Codex 插件（`plugins/yingce/`）负责把 MCP 接入 Codex App。
 ```
 
-前端默认把 `/api` 代理到 `http://127.0.0.1:8080`；生产环境由网页容器的 Nginx 代理到后端，只有 web 的 `3000` 端口需要对外暴露。系统模型和文本任务的 SSE 只在明确的流式路径关闭代理缓冲，详见 [`nginx.conf`](nginx.conf) 和 [SSE 文档](docs/content/docs/overview/docker.mdx)。
+前端默认把 `/api` 代理到 `http://127.0.0.1:8080`；生产环境由网页容器的 Nginx 代理到后端，只有 web 的 `3000` 端口需要对外暴露。信封和错误码见 [HTTP API](docs/content/docs/backend/http-api.mdx)。系统模型和文本任务的 SSE 只在明确的流式路径关闭代理缓冲，详见 [`nginx.conf`](nginx.conf) 和 [SSE 文档](docs/content/docs/overview/docker.mdx)。
 
 ## 本地开发
 
@@ -171,7 +180,7 @@ CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=192.168.1.10
 适用于 Linux 云服务器。脚本会安装 Docker，拉取源码，生成受保护的 `.env`，构建网页/后端镜像并启动 PostgreSQL、Redis、后端和网页：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canvas/main/scripts/install-server.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/main/scripts/install-server.sh | sudo bash
 ```
 
 默认访问 `http://服务器IP:3000`。第一个注册账号会成为管理员；公开注册默认关闭。更新或排查：
@@ -189,30 +198,18 @@ sudo docker compose --env-file .env \
 服务器不需要源码时可使用镜像脚本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canvas/main/scripts/install-server-image.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/main/scripts/install-server-image.sh | sudo bash
 ```
 
-容器包不可匿名拉取时，先通过 `GHCR_USERNAME` 和 `GHCR_TOKEN` 登录 GHCR。新安装默认解析 `buttonslaybaugh397-art/open-ai-canvas` 的最新 Release、固定 `CANVAS_IMAGE_TAG` 并安装 Host Updater；仓库尚无 Release 时才回退到 `latest` 并跳过更新器。端口由 `CANVAS_HTTP_PORT` 配置。
+容器包不可匿名拉取时，先通过 `GHCR_USERNAME` 和 `GHCR_TOKEN` 登录 GHCR。生产环境应在 `/opt/open-ai-canvas/.env` 中把 `CANVAS_IMAGE_TAG` 固定为具体 Release（不要使用 `latest`），端口由 `CANVAS_HTTP_PORT` 配置。
 
 固定版本的 GHCR 部署可安装宿主机在线更新器；安装后管理后台会出现“系统配置 → 系统更新”，更新器会在切换前强制生成并校验 PostgreSQL 与数据目录 ZIP 备份：
 
 ```bash
 cd /opt/open-ai-canvas
-curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canvas/main/scripts/install-host-updater.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/main/scripts/install-host-updater.sh | sudo bash
 sudo docker compose --env-file .env -f docker-compose.deploy.yml up -d --force-recreate backend web --wait
 ```
-
-1Panel 或其他保留 `deployment-secrets` 的定制部署必须使用仓库内的专用编排，不能用标准部署文件覆盖。将下面的 `/实际编排目录` 替换为 1Panel 当前保存 `.env` 和 `docker-compose.1panel.yml` 的目录；该操作不需要重填数据库密码，也不会重建命名卷：
-
-```bash
-cd /实际编排目录
-curl -fsSL https://raw.githubusercontent.com/buttonslaybaugh397-art/open-ai-canvas/main/scripts/install-host-updater.sh -o /tmp/install-open-ai-canvas-updater.sh
-sudo env INSTALL_DIR="$PWD" CANVAS_UPDATER_COMPOSE_FILE=docker-compose.1panel.yml bash /tmp/install-open-ai-canvas-updater.sh
-rm -f /tmp/install-open-ai-canvas-updater.sh
-sudo docker compose --env-file .env -f docker-compose.1panel.yml up -d --force-recreate backend web --wait
-```
-
-升级或重建时保留 `backend-data`、`deployment-secrets`、`postgres-data` 和 `redis-data`，不要执行 `docker compose down -v`。
 
 更新流程、数据库迁移、健康验证和异常回退说明见 [`docs/content/docs/backend/system-update.mdx`](docs/content/docs/backend/system-update.mdx)。
 
@@ -249,8 +246,8 @@ npx -y @ddcat666/open-ai-canvas-agent
 
 ```bash
 cd canvas-agent
-npm install
-npm run build
+bun install
+bun run build
 node dist/index.js
 ```
 
@@ -262,13 +259,13 @@ node dist/index.js
 
 ```bash
 # 前端
-cd web && bun run build
+cd web && bun run lint && bun run build
 
 # 后端
 cd backend && go test ./...
 
 # Canvas Agent
-cd canvas-agent && npm test && npm run build
+cd canvas-agent && bun run test && bun run build
 
 # 文档站
 cd docs && bun run types:check

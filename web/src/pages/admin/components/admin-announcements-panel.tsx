@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
-import { App, Button, Form, Input, Modal, Select, Segmented, Switch } from "antd";
+import { App, Button, Form, Input, Modal, Select } from "antd";
+import { Switch } from "@/components/ui/base/switch";
 import type { InputRef } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { Eye, Pencil, PencilLine, Pin, Plus, RefreshCw, Search, Send, Upload, X } from "lucide-react";
+import { PencilLine, Pin, Plus, RefreshCw, Search, Send, Upload, X } from "lucide-react";
 
 import { PaginationBar } from "@/components/layout/workspace-page";
 import { AnnouncementContent } from "@/components/ui/announcement-content";
@@ -99,7 +100,6 @@ export default function AdminAnnouncementsPanel({
     const closeInFlightRef = useRef(new Set<string>());
     const writeBlockedRef = useRef(publishBlocked);
     const editorReturnFocusRef = useRef<HTMLElement | null>(null);
-    const [editorMode, setEditorMode] = useState<"edit" | "preview">("edit");
     const imageInputRef = useRef<HTMLInputElement | null>(null);
     writeBlockedRef.current = publishBlocked;
     const watchedTitle = Form.useWatch("title", form);
@@ -121,7 +121,7 @@ export default function AdminAnnouncementsPanel({
                     keyword: queryKeyword || undefined,
                     status: queryStatus === "all" ? undefined : queryStatus,
                     page: targetPage,
-                    limit: targetPageSize,
+                    pageSize: targetPageSize,
                 }),
                 targetPage,
                 targetPageSize,
@@ -179,7 +179,6 @@ export default function AdminAnnouncementsPanel({
         form.setFieldsValue(DEFAULT_ANNOUNCEMENT);
         setImagePreviewUrl("");
         setDraftImageResourceId("");
-        setEditorMode("edit");
     }, [form, publishOpen, publishReturnFocus]);
 
     const editorOpen = publishOpen || Boolean(editingAnnouncement);
@@ -661,8 +660,6 @@ export default function AdminAnnouncementsPanel({
                 watchedContent={watchedContent}
                 watchedLevel={watchedLevel}
                 watchedPinned={watchedPinned}
-                editorMode={editorMode}
-                onEditorModeChange={setEditorMode}
                 imagePreviewUrl={imagePreviewUrl}
                 imageUploading={imageUploading}
                 imageInputRef={imageInputRef}
@@ -689,8 +686,6 @@ function AnnouncementEditor({
     watchedContent,
     watchedLevel,
     watchedPinned,
-    editorMode,
-    onEditorModeChange,
     imagePreviewUrl,
     imageUploading,
     imageInputRef,
@@ -712,8 +707,6 @@ function AnnouncementEditor({
     watchedContent?: string;
     watchedLevel?: AnnouncementLevel;
     watchedPinned?: boolean;
-    editorMode: "edit" | "preview";
-    onEditorModeChange: (mode: "edit" | "preview") => void;
     imagePreviewUrl: string;
     imageUploading: boolean;
     imageInputRef: { current: HTMLInputElement | null };
@@ -758,27 +751,16 @@ function AnnouncementEditor({
                 }
                 styles={{ body: { maxHeight: "calc(100vh - 190px)", overflowY: "auto" } }}
             >
-                <div className="mb-4 flex justify-end border-b border-border/70 pb-3">
-                    <Segmented
-                        aria-label="公告编辑模式"
-                        value={editorMode}
-                        onChange={(value) => onEditorModeChange(value as "edit" | "preview")}
-                        options={[
-                            { value: "edit", label: <span className="inline-flex items-center gap-1.5"><Pencil className="size-3.5" />编辑</span> },
-                            { value: "preview", label: <span className="inline-flex items-center gap-1.5"><Eye className="size-3.5" />预览</span> },
-                        ]}
-                    />
-                </div>
                 <div className={`admin-announcement-editor-intro${editingAnnouncement ? " is-warning" : ""}`}>
                     <strong>{editingAnnouncement ? "保存会重新向全体用户发布" : "发布成功后会进入用户公告中心"}</strong>
                     <p>{editingAnnouncement ? "无论当前公告是否已关闭，保存都会刷新发布时间、恢复为发布中，并清除所有用户的旧已读状态。" : "已打开的页面会在下一次同步后看到（通常 5 分钟内）；请写清影响范围、所需操作和预计恢复时间。"}</p>
                 </div>
                 <Form form={form} layout="vertical" requiredMark={false} disabled={publishBlocked} initialValues={DEFAULT_ANNOUNCEMENT} scrollToFirstError={{ focus: true, block: "center" }} onFinish={onPreview}>
                     <div className="admin-announcement-editor-layout">
-                        <section className={`admin-announcement-editor-section${editorMode === "preview" ? " hidden" : ""}`}>
-                    <div className="admin-announcement-editor-section-heading">
-                        <h2>公告内容</h2>
-                                <p>支持 Markdown 标题、加粗、列表、链接、引用和表格；原始 HTML 不会被解析。</p>
+                        <section className="admin-announcement-editor-section">
+                            <div className="admin-announcement-editor-section-heading">
+                                <h2>公告内容</h2>
+                                <p>支持换行以及链接、强调、列表等受控 HTML；Markdown 不会被解析。</p>
                             </div>
                             <div className="admin-announcement-form-grid">
                                 <Form.Item
@@ -829,13 +811,10 @@ function AnnouncementEditor({
                             </Form.Item>
                             <Form.Item
                                 name="content"
-                                label="公告正文"
-                                rules={[
-                                    { required: true, whitespace: true, message: "请填写公告正文" },
-                                    { max: 4000, message: "正文不能超过 4000 个字符" },
-                                ]}
+                                label="公告正文（可选）"
+                                rules={[{ max: 4000, message: "正文不能超过 4000 个字符" }]}
                             >
-                                <Input.TextArea maxLength={4000} showCount autoSize={{ minRows: 14, maxRows: 24 }} placeholder="填写服务状态、影响范围和用户需要采取的操作" />
+                                <Input.TextArea maxLength={4000} showCount autoSize={{ minRows: 14, maxRows: 24 }} placeholder="可选填写服务状态、影响范围和用户需要采取的操作" />
                             </Form.Item>
                         </section>
 
@@ -854,7 +833,7 @@ function AnnouncementEditor({
                             </div>
                             <h3>{watchedTitle?.trim() || "公告标题将在这里显示"}</h3>
                             {imagePreviewUrl ? <img src={imagePreviewUrl} alt="公告配图预览" className="mt-4 max-h-56 w-full rounded-lg border border-border/70 bg-muted/20 object-contain p-1" /> : null}
-                            {watchedContent?.trim() ? <AnnouncementContent content={watchedContent.trim()} className="admin-announcement-preview-content" /> : <p className="admin-announcement-preview-placeholder">公告正文将在这里显示。</p>}
+                            {watchedContent?.trim() ? <AnnouncementContent content={watchedContent.trim()} className="admin-announcement-preview-content" /> : <p className="admin-announcement-preview-placeholder">此公告仅展示标题。</p>}
                         </section>
                     </div>
                 </Form>
@@ -908,7 +887,7 @@ function AnnouncementEditor({
                             <div className="is-wide">
                                 <dt>公告正文</dt>
                                 <dd>
-                                    <AnnouncementContent content={pending.content} className="admin-announcement-confirm-content" />
+                                    {pending.content ? <AnnouncementContent content={pending.content} className="admin-announcement-confirm-content" /> : "无正文"}
                                 </dd>
                             </div>
                         </dl>
@@ -1045,13 +1024,13 @@ function assertAnnouncementMutationResult(
     }
 }
 
-function assertAnnouncementListResult(result: unknown, expectedPage: number, expectedLimit: number) {
-    if (!isRecord(result) || !Array.isArray(result.announcements) || !Number.isInteger(result.total) || (result.total as number) < 0 || result.page !== expectedPage || result.limit !== expectedLimit) {
+function assertAnnouncementListResult(result: unknown, expectedPage: number, expectedPageSize: number) {
+    if (!isRecord(result) || !Array.isArray(result.announcements) || !Number.isInteger(result.total) || (result.total as number) < 0 || result.page !== expectedPage || result.pageSize !== expectedPageSize) {
         throw new Error("公告列表返回格式不完整");
     }
     const announcements = result.announcements.map((value) => normalizeAnnouncementListItem(value));
     if ((result.total as number) < announcements.length) throw new Error("公告列表总数与当前页数据不一致");
-    return { announcements, total: result.total as number, page: expectedPage, limit: expectedLimit };
+    return { announcements, total: result.total as number, page: expectedPage, pageSize: expectedPageSize };
 }
 
 function normalizeAnnouncementListItem(value: unknown): SystemAnnouncement {
@@ -1097,9 +1076,9 @@ async function inspectPendingReview(review: AnnouncementPendingReview) {
     for (const title of queryTitles) {
         let targetPage = 1;
         while (targetPage <= 50) {
-            const data = assertAnnouncementListResult(await listAdminAnnouncements({ keyword: title, page: targetPage, limit: 100 }), targetPage, 100);
+            const data = assertAnnouncementListResult(await listAdminAnnouncements({ keyword: title, page: targetPage, pageSize: 100 }), targetPage, 100);
             data.announcements.forEach((announcement) => candidates.set(announcement.id, announcement));
-            if (targetPage >= Math.max(1, Math.ceil(data.total / data.limit))) break;
+            if (targetPage >= Math.max(1, Math.ceil(data.total / data.pageSize))) break;
             if (targetPage === 50) throw new Error("同名匹配记录过多，无法安全定位目标；请稍后重试。");
             targetPage += 1;
         }

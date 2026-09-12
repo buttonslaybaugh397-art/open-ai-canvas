@@ -1,5 +1,5 @@
 import type { ColumnsType } from "antd/es/table";
-import { Eye, Pencil, Power } from "lucide-react";
+import { Eye, KeyRound, Pencil, Power } from "lucide-react";
 
 import { formatCredits } from "@/constant/credits";
 import { IdentityProviderBadge } from "@/components/layout/identity-provider-badge";
@@ -23,12 +23,14 @@ export function createUserColumns({
     visibleColumns,
     onView,
     onEdit,
+    onResetPassword,
     onToggleStatus,
 }: {
     actorId?: string;
     visibleColumns: Set<UserColumnKey>;
     onView: (user: AdminUser) => void;
     onEdit: (user: AdminUser) => void;
+    onResetPassword: (user: AdminUser) => void;
     onToggleStatus: (user: AdminUser) => Promise<void>;
 }): ColumnsType<AdminUser> {
     const columns: Array<ColumnsType<AdminUser>[number] & { key: UserColumnKey }> = [
@@ -58,7 +60,7 @@ export function createUserColumns({
         {
             key: "actions",
             title: "操作",
-            width: 280,
+            width: 360,
             align: "center",
             render: (_, user) => (
                 <AdminRowActions
@@ -66,6 +68,7 @@ export function createUserColumns({
                     visibleActionCount={2}
                     actions={[
                         { key: "edit", label: "编辑用户", icon: <Pencil className="size-3.5" />, onClick: () => onEdit(user) },
+                        { key: "reset-password", label: "重置密码", icon: <KeyRound className="size-3.5" />, onClick: () => onResetPassword(user) },
                         {
                             key: "toggle-status",
                             label: user.status === "active" ? "停用用户" : "重新启用",

@@ -134,7 +134,7 @@ func (s *Service) CheckinCredits(user *model.User) (*model.CreditAccount, bool, 
 	if policy.CheckinBonusMicrocredits == 0 {
 		return nil, false, BadAuthRequest("当前未开启签到奖励")
 	}
-	day := creditPolicyDay(time.Now())
+	day := time.Now().UTC().Format("2006-01-02")
 	return s.repo.GrantCreditsOnce(user.ID, model.CreditLedgerCheckinBonus, policy.CheckinBonusMicrocredits, "checkin:"+user.ID+":"+day, "每日签到奖励")
 }
 
@@ -143,13 +143,9 @@ func (s *Service) publicCreditPolicy(userID string) (PublicCreditPolicy, error) 
 	if err != nil {
 		return PublicCreditPolicy{}, err
 	}
-	reference := "checkin:" + userID + ":" + creditPolicyDay(time.Now())
+	reference := "checkin:" + userID + ":" + time.Now().UTC().Format("2006-01-02")
 	checked, err := s.repo.CreditLedgerReferenceExists(reference)
 	return PublicCreditPolicy{SignupBonusMicrocredits: policy.SignupBonusMicrocredits, CheckinBonusMicrocredits: policy.CheckinBonusMicrocredits, CheckedInToday: checked}, err
-}
-
-func creditPolicyDay(now time.Time) string {
-	return now.In(creditConsumptionLocation).Format("2006-01-02")
 }
 
 // 单价、数量和倍率全程使用整数并向上取整，避免浮点误差造成少扣积分。

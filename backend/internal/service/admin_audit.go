@@ -12,7 +12,6 @@ import (
 type AdminUserDetail struct {
 	User             model.User                  `json:"user"`
 	Account          model.CreditAccount         `json:"account"`
-	Consumption      CreditConsumptionStats      `json:"consumption"`
 	Counts           repository.AdminUserCounts  `json:"counts"`
 	StorageUsage     repository.UserStorageUsage `json:"storageUsage"`
 	StoredFileBytes  int64                       `json:"storedFileBytes"`
@@ -24,14 +23,14 @@ type AdminTaskPage struct {
 	Tasks []model.Task `json:"tasks"`
 	Total int64        `json:"total"`
 	Page  int          `json:"page"`
-	Limit int          `json:"limit"`
+	Limit int          `json:"pageSize"`
 }
 
 type AdminAuditPage struct {
 	Events []model.AdminAuditEvent `json:"events"`
 	Total  int64                   `json:"total"`
 	Page   int                     `json:"page"`
-	Limit  int                     `json:"limit"`
+	Limit  int                     `json:"pageSize"`
 }
 
 func (s *Service) appendAdminAudit(actor *model.User, action string, targetType string, targetID string, summary string, metadata any) error {
@@ -88,16 +87,12 @@ func (s *Service) AdminUserDetail(actor *model.User, userID string) (*AdminUserD
 	if err != nil {
 		return nil, err
 	}
-	consumptionByUserID, err := s.creditConsumptionStatsForUsers([]string{user.ID})
-	if err != nil {
-		return nil, err
-	}
 	policy, err := s.RuntimePolicy()
 	if err != nil {
 		return nil, err
 	}
 	return &AdminUserDetail{
-		User: *user, Account: *account, Consumption: consumptionByUserID[user.ID], Counts: counts, StorageUsage: usage,
+		User: *user, Account: *account, Counts: counts, StorageUsage: usage,
 		StoredFileBytes: storedFileBytes, DailyUploadBytes: dailyUploadBytes, Quota: policy.Resource,
 	}, nil
 }

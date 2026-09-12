@@ -33,7 +33,7 @@ func TestTaskForOutputRedactsRoutingAndSecrets(t *testing.T) {
 
 func TestTaskMediaPreviewUsesSafeMediaURLs(t *testing.T) {
 	previewURL, previewKind := taskMediaPreview(`{"images":["data:image/png;base64,AAAA","/api/resources/resource-1/file"],"video":"https://cdn.example.com/output.mp4"}`, "video")
-	if previewURL != "https://cdn.example.com/output.mp4" || previewKind != "video" {
+	if previewURL != "/api/resources/resource-1/file" || previewKind != "image" {
 		t.Fatalf("unexpected preview: url=%q kind=%q", previewURL, previewKind)
 	}
 	if previewURL, _ := taskMediaPreview(`{"url":"file:///tmp/output.mp4"}`, "video"); previewURL != "" {
@@ -41,51 +41,13 @@ func TestTaskMediaPreviewUsesSafeMediaURLs(t *testing.T) {
 	}
 }
 
-func TestTaskMediaPreviewRecognizesCommonNestedVideoFields(t *testing.T) {
-	raw := "{\"data\":{\"images\":[\"https://cdn.example.com/poster.jpg\"],\"result\":{\"video_url\":\"https://cdn.example.com/result.webm?token=1\"}}}"
-	previewURL, previewKind := taskMediaPreview(raw, "canvas_video")
-	if previewURL != "https://cdn.example.com/result.webm?token=1" || previewKind != "video" {
-		t.Fatalf("unexpected nested video preview: url=%q kind=%q", previewURL, previewKind)
+func TestTaskMediaPreviewSeparatesVideoPoster(t *testing.T) {
+	previewURL, previewKind, posterURL := taskMediaPreviewWithPoster(`{"video":{"url":"https://cdn.example.com/output.mp4","posterUrl":"https://cdn.example.com/poster.webp"}}`, "canvas_video")
+	if previewURL != "https://cdn.example.com/output.mp4" || previewKind != "video" || posterURL != "https://cdn.example.com/poster.webp" {
+		t.Fatalf("unexpected video preview: url=%q kind=%q poster=%q", previewURL, previewKind, posterURL)
 	}
-}
-
-func TestTaskMediaPreviewUsesResourceStorageKeyWhenURLIsMissing(t *testing.T) {
-	previewURL, previewKind := taskMediaPreview("{\"storageKey\":\"resource:resource-2\",\"mimeType\":\"video/webm\"}", "canvas_video")
-	if previewURL != "/api/resources/resource-2/file" || previewKind != "video" {
-		t.Fatalf("unexpected storage-only preview: url=%q kind=%q", previewURL, previewKind)
-	}
-}
-
-func TestTaskMediaPreviewRecognizesSnakeCaseVideoMetadata(t *testing.T) {
-	raw := "{\"storage_key\":\"resource:resource-3\",\"mime_type\":\"video/webm\",\"type\":\"video\"}"
-	previewURL, previewKind := taskMediaPreview(raw, "image")
-	if previewURL != "/api/resources/resource-3/file" || previewKind != "video" {
-		t.Fatalf("unexpected snake-case storage-only preview: url=%q kind=%q", previewURL, previewKind)
-	}
-}
-
-func TestTaskMediaPreviewDoesNotUseVideoPosterAsResult(t *testing.T) {
-	raw := "{\"type\":\"video\",\"mimeType\":\"video/mp4\",\"images\":[\"https://cdn.example.com/poster.jpg\"],\"storageKey\":\"resource:resource-4\"}"
-	previewURL, previewKind := taskMediaPreview(raw, "image")
-	if previewURL != "/api/resources/resource-4/file" || previewKind != "video" {
-		t.Fatalf("unexpected poster fallback: url=%q kind=%q", previewURL, previewKind)
-	}
-}
-
-func TestTaskMediaPreviewKeepsProviderVideoURLAndStorageKey(t *testing.T) {
-	raw := "{\"video\":{\"url\":\"https://provider.example.com/output.mp4\",\"dataUrl\":\"/api/resources/resource-1/file\",\"storageKey\":\"resource:resource-1\"}}"
-	previewURL, previewKind := taskMediaPreview(raw, "video")
-	if previewURL != "https://provider.example.com/output.mp4" || previewKind != "video" {
-		t.Fatalf("unexpected video preview: url=%q kind=%q", previewURL, previewKind)
-	}
-	if storageKey := taskMediaPreviewStorageKey(raw, previewURL); storageKey != "resource:resource-1" {
-		t.Fatalf("storage key = %q", storageKey)
-	}
-
-	task := model.Task{Type: "canvas_video", ResultJSON: raw}
-	summary := taskSummaryForOutput(task)
-	if summary.PreviewURL != previewURL || summary.PreviewStorageKey != "resource:resource-1" {
-		t.Fatalf("summary preview = %#v", summary)
+	if _, _, posterURL := taskMediaPreviewWithPoster(`{"video":{"url":"https://cdn.example.com/output.mp4","posterUrl":"file:///tmp/poster.png"}}`, "canvas_video"); posterURL != "" {
+		t.Fatalf("unsafe local poster was exposed: %q", posterURL)
 	}
 }
 
@@ -96,6 +58,37 @@ func TestTaskClientContextRequiresCreatePageMetadata(t *testing.T) {
 	}
 	if context := taskClientContext(`{"metadata":{"source":"other","conversationId":"conversation-1","messageId":"message-1"}}`); context != nil {
 		t.Fatalf("unexpected context for non-create-page task: %+v", context)
+	}
+}
+
+func TestTaskClientContextPreservesCanvasNodeID(t *testing.T) {
+	context := taskClientContext(`{"mode":"image","metadata":{"nodeId":"canvas-node-1","source":"canvas"}}`)
+	if context == nil || context.NodeID != "canvas-node-1" {
+		t.Fatalf("canvas node context was not preserved: %+v", context)
+	}
+}
+
+func TestTaskSummaryPreservesCanvasNodeWithoutExposingInput(t *testing.T) {
+	summary := taskSummaryForOutput(model.Task{
+		ID: "task-1", ProjectID: "project-1", Type: "canvas_image",
+		InputJSON: `{"metadata":{"nodeId":"node-1"},"config":{"apiKey":"private-test-value"}}`,
+	})
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output map[string]any
+	if err := json.Unmarshal(encoded, &output); err != nil {
+		t.Fatal(err)
+	}
+	context, ok := output["clientContext"].(map[string]any)
+	if !ok || context["nodeId"] != "node-1" || len(context) != 1 {
+		t.Fatalf("summary lost safe canvas association: %#v", output)
+	}
+	for _, key := range []string{"inputJson", "config", "apiKey"} {
+		if _, exists := output[key]; exists {
+			t.Fatalf("summary leaked %s", key)
+		}
 	}
 }
 

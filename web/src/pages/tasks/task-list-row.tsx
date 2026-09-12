@@ -1,14 +1,16 @@
-import { Button, Tooltip } from "antd";
+import { Button } from "antd";
+import { IconButton } from "@/components/ui/base/buttons";
+import { Tooltip } from "@/components/ui/base/tooltip";
 import { Eye, FileText, FolderKanban, Image as ImageIcon, Play, RotateCcw, Video } from "lucide-react";
 import { useState } from "react";
 
 import { MediaPreview } from "@/components/media-preview";
-import { taskPreviewSource } from "@/lib/task-media";
 import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError } from "@/lib/generation-error";
 import { formatTaskKind, statusLabel } from "@/lib/generation-task-display";
 import type { GenerationTask } from "@/services/api/task-center";
 import type { AiConfig } from "@/stores/use-config-store";
 import { formatModelName, getTaskCanvasContext, isTaskFailed, statusDotClassName, taskAttentionReason, TaskBilling, TaskDate } from "./task-shared";
+import { TaskVideoThumbnail } from "./task-video-thumbnail";
 
 export function TaskListRow({
     task,
@@ -78,7 +80,7 @@ export function TaskListRow({
             {creditsEnabled ? <TaskBilling billing={task.billing} /> : <span className="task-record-billing-empty" aria-hidden="true" />}
             <div className="task-record-actions">
                 <Tooltip title="查看详情">
-                    <Button type="text" size="small" icon={<Eye className="size-3.5" />} aria-label="查看详情" onClick={onOpen} />
+                    <IconButton size="sm" variant="ghost" icon={Eye} aria-label="查看详情" onClick={onOpen} />
                 </Tooltip>
                 {isFailed ? (
                     <Tooltip title="重试任务">
@@ -102,8 +104,8 @@ function TaskPreviewThumbnail({ task, onOpen }: { task: GenerationTask; onOpen: 
     const isVideo = task.previewKind === "video";
     const fallbackVideo = task.type.includes("video");
     const [unavailableUrl, setUnavailableUrl] = useState("");
-    const previewUnavailable = Boolean(task.previewUrl && unavailableUrl === task.previewUrl);
-    const mediaSource = taskPreviewSource(task);
+    const thumbnailUrl = isVideo ? task.previewPosterUrl : task.previewUrl;
+    const previewUnavailable = Boolean(thumbnailUrl && unavailableUrl === thumbnailUrl);
     if (!task.previewUrl) {
         const Icon = fallbackVideo ? Video : task.type.includes("image") ? ImageIcon : FileText;
         return (
@@ -121,7 +123,7 @@ function TaskPreviewThumbnail({ task, onOpen }: { task: GenerationTask; onOpen: 
             aria-label={previewUnavailable ? "预览不可用，素材可能已删除" : isVideo ? "放大预览生成视频" : "放大预览生成图片"}
             title={previewUnavailable ? "预览不可用，素材可能已删除" : undefined}
         >
-            <MediaPreview src={task.previewUrl} kind={isVideo ? "video" : "image"} width={68} height={48} loading="lazy" className="h-full w-full object-cover" fallbackLabel="预览不可用" fallbackStorageKey={mediaSource?.storageKey} onUnavailable={() => setUnavailableUrl(task.previewUrl || "")} />
+            {thumbnailUrl ? <MediaPreview src={thumbnailUrl} kind="image" width={68} height={48} loading="lazy" className="h-full w-full object-cover" fallbackLabel="预览不可用" onUnavailable={() => setUnavailableUrl(thumbnailUrl)} /> : isVideo ? <TaskVideoThumbnail src={task.previewUrl} /> : <ImageIcon className="size-4" />}
             {!previewUnavailable ? (
                 <span className="absolute inset-0 grid place-items-center bg-black/0 text-white opacity-0 transition-[background-color,opacity] duration-150 group-hover:bg-black/30 group-hover:opacity-100 group-focus-visible:bg-black/30 group-focus-visible:opacity-100">
                     {isVideo ? <Play className="size-4 fill-current" /> : <Eye className="size-4" />}

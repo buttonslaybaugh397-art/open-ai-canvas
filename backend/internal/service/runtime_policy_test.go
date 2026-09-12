@@ -31,15 +31,37 @@ func TestOnlyResumableNewAPIChannel2VideoDeadlinesStayRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := model.Task{ID: "task-1", Type: "canvas_video", ProviderRequestID: "provider-task-1"}
+	startedAt := time.Now()
+	base := model.Task{ID: "task-1", Type: "canvas_video", ProviderRequestID: "provider-task-1", StartedAt: &startedAt}
 	if !svc.shouldDeferVideoProviderTask(base, string(input), context.DeadlineExceeded) {
 		t.Fatal("resumable NewAPI Channel 2 deadline should remain running")
+	}
+	pendingErr := providerStatePendingError{TaskID: base.ProviderRequestID, Cause: providerHTTPError{StatusCode: 400, Body: `{"code":"task_not_exist"}`}}
+	if !svc.shouldDeferVideoProviderTask(base, string(input), pendingErr) {
+		t.Fatal("resumable NewAPI Channel 2 provider sync delay should remain running")
+	}
+	expiredStartedAt := startedAt.Add(-newAPIChannel2TaskSyncMaxAge - time.Second)
+	expiredTask := model.Task{ID: base.ID, Type: base.Type, ProviderRequestID: base.ProviderRequestID, StartedAt: &expiredStartedAt}
+	if svc.shouldDeferVideoProviderTask(expiredTask, string(input), pendingErr) {
+		t.Fatal("provider sync delay must stop after the bounded synchronization window")
+	}
+	if !svc.shouldDeferVideoProviderTask(expiredTask, string(input), context.DeadlineExceeded) {
+		t.Fatal("a normal long-running provider task must remain resumable after the synchronization window")
+	}
+	if svc.shouldDeferVideoProviderTask(model.Task{ID: base.ID, Type: base.Type, ProviderRequestID: base.ProviderRequestID}, string(input), pendingErr) {
+		t.Fatal("provider sync delay without a persisted start time must fail closed")
 	}
 	if svc.shouldDeferVideoProviderTask(model.Task{ID: "task-2", Type: "canvas_video"}, string(input), context.DeadlineExceeded) {
 		t.Fatal("missing provider task id must not be deferred")
 	}
+	if svc.shouldDeferVideoProviderTask(model.Task{ID: "task-2", Type: "canvas_video"}, string(input), pendingErr) {
+		t.Fatal("provider sync delay without persisted provider task id must not be deferred")
+	}
 	if svc.shouldDeferVideoProviderTask(base, string(input), context.Canceled) {
 		t.Fatal("explicit cancellation must not be deferred")
+	}
+	if svc.shouldDeferVideoProviderTask(base, string(input), providerHTTPError{StatusCode: 400, Body: `{"code":"task_not_exist"}`}) {
+		t.Fatal("untyped provider error must not be deferred")
 	}
 	other, err := json.Marshal(canvasGenerationInput{Mode: "video", Config: providerConfig{BaseURL: "https://example.com", InterfaceType: string(model.ChannelInterfaceNewAPIVideo)}})
 	if err != nil {
@@ -154,7 +176,8 @@ func TestRuntimePolicyBackfillsRecycleBinRetentionForLegacyJSON(t *testing.T) {
 	if err := json.Unmarshal(encoded, &value); err != nil {
 		t.Fatal(err)
 	}
-	delete(value["resource"].(map[string]any), "recycleBinRetentionDays")
+	resource := value["resource"].(map[string]any)
+	delete(resource, "recycleBinRetentionDays")
 	encoded, err = json.Marshal(value)
 	if err != nil {
 		t.Fatal(err)
@@ -169,22 +192,5 @@ func TestRuntimePolicyBackfillsRecycleBinRetentionForLegacyJSON(t *testing.T) {
 	}
 	if policy.Resource.RecycleBinRetentionDays != 30 {
 		t.Fatalf("legacy recycle bin retention = %d, want 30", policy.Resource.RecycleBinRetentionDays)
-	}
-}
-
-func TestRuntimePolicyValidatesRecycleBinRetentionRange(t *testing.T) {
-	for _, days := range []int{0, 365} {
-		policy := defaultRuntimePolicy()
-		policy.Resource.RecycleBinRetentionDays = days
-		if err := validateRuntimePolicy(policy); err != nil {
-			t.Fatalf("retention %d should be valid: %v", days, err)
-		}
-	}
-	for _, days := range []int{-1, 366} {
-		policy := defaultRuntimePolicy()
-		policy.Resource.RecycleBinRetentionDays = days
-		if err := validateRuntimePolicy(policy); err == nil {
-			t.Fatalf("retention %d should be rejected", days)
-		}
 	}
 }

@@ -1,5 +1,7 @@
+import { Button, Spin } from "antd";
+import { Tooltip } from "@/components/ui/base/tooltip";
 import { useEffect, useRef, useState } from "react";
-import { Button, Spin, Tooltip } from "antd";
+
 import { Check, Mic, Square, X } from "lucide-react";
 
 import { AudioWaveform } from "./audio-waveform";
@@ -108,7 +110,7 @@ export function VoiceRecordingInline({ onTranscribed, onCancel }: VoiceRecording
 
     return (
         <div
-            className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border px-2 py-1.5"
+            className="voice-recording-inline flex min-w-0 flex-1 items-center gap-2 rounded-lg border px-2 py-1.5"
             style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border }}
         >
             {displayError ? (

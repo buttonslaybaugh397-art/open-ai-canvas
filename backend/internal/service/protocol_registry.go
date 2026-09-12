@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
@@ -14,16 +16,72 @@ import (
 
 type protocolRegistryContextKey struct{}
 
+var emptyProtocolRegistry, _ = protocol.NewRegistry()
+var officialFallbackRegistryOnce sync.Once
+var officialFallbackRegistry = emptyProtocolRegistry
+
 func withProtocolRegistry(ctx context.Context, registry *protocol.Registry) context.Context {
 	return context.WithValue(ctx, protocolRegistryContextKey{}, registry)
+}
+
+func protocolRegistryFromContext(ctx context.Context) (*protocol.Registry, bool) {
+	registry, ok := ctx.Value(protocolRegistryContextKey{}).(*protocol.Registry)
+	return registry, ok && registry != nil
 }
 
 func protocolAdapterForContext(ctx context.Context, id string) (protocol.Adapter, bool) {
 	registry, _ := ctx.Value(protocolRegistryContextKey{}).(*protocol.Registry)
 	if registry == nil {
-		registry = protocol.Builtins()
+		registry = emptyProtocolRegistry
 	}
 	return registry.Resolve(strings.TrimSpace(id))
+}
+
+// ensureOfficialProtocolAdapter 让未注入 registry 的调用（主要是单测）与生产一样
+// 使用官方插件包。调用方若显式放入空 registry，表示要测“插件未安装”。
+func ensureOfficialProtocolAdapter(ctx context.Context, interfaceType string) context.Context {
+	if _, present := protocolRegistryFromContext(ctx); present {
+		return ctx
+	}
+	interfaceType = strings.TrimSpace(interfaceType)
+	if interfaceType == "" {
+		return ctx
+	}
+	registry := loadOfficialFallbackRegistry()
+	adapter, ok := registry.Resolve(interfaceType)
+	if !ok || adapter.Metadata().Execution != "declarative" {
+		return ctx
+	}
+	return withProtocolRegistry(ctx, registry)
+}
+
+// officialDeclarativeVideoInterface 列出已有官方声明式视频插件的 InterfaceType。
+// 这些接口缺失 adapter 时必须报错，不能再走第二套手写实现。
+func officialDeclarativeVideoInterface(interfaceType string) (string, bool) {
+	switch strings.TrimSpace(interfaceType) {
+	case string(model.ChannelInterfaceAgnesVideo):
+		return "Agnes", true
+	case string(model.ChannelInterfaceMiniMaxVideo):
+		return "MiniMax", true
+	case string(model.ChannelInterfaceGeminiVeo):
+		return "Gemini Veo", true
+	case string(model.ChannelInterfaceNovitaVideo):
+		return "Novita", true
+	case string(model.ChannelInterfaceNewAPIChannel2):
+		return "NewAPI Video Generations", true
+	case string(model.ChannelInterfaceNewAPIChannel1):
+		return "NewAPI 媒体任务", true
+	case string(model.ChannelInterfaceXAIVideo):
+		return "xAI", true
+	case string(model.ChannelInterfaceVolcengineArkVideo):
+		return "火山方舟", true
+	case string(model.ChannelInterfaceVolcengineJiMengVideo):
+		return "即梦", true
+	case string(model.ChannelInterfaceNewAPIVideo):
+		return "OpenAI Videos", true
+	default:
+		return "", false
+	}
 }
 
 func declarativeProtocolAdapterForContext(ctx context.Context, id string) (protocol.Adapter, bool) {
@@ -37,14 +95,18 @@ func declarativeProtocolAdapterForContext(ctx context.Context, id string) (proto
 func agentProtocolAdapterForContext(ctx context.Context, id string) (protocol.AgentAdapter, bool) {
 	registry, _ := ctx.Value(protocolRegistryContextKey{}).(*protocol.Registry)
 	if registry == nil {
-		registry = protocol.Builtins()
+		registry = emptyProtocolRegistry
 	}
 	adapter, ok := registry.Resolve(strings.TrimSpace(id))
 	if !ok || adapter.Metadata().Execution != "declarative" {
 		return nil, false
 	}
 	agentAdapter, ok := adapter.(protocol.AgentAdapter)
-	return agentAdapter, ok
+	if !ok {
+		return nil, false
+	}
+	capability, ok := adapter.(protocol.AgentCapability)
+	return agentAdapter, ok && capability.AgentAvailable()
 }
 
 type PluginProviderCatalogItem struct {
@@ -91,9 +153,6 @@ func (s *Service) PluginProviderCatalog(scope, capability string, includeUnavail
 }
 
 func canonicalProviderAdapter(registry *protocol.Registry, id string) (protocol.Adapter, bool) {
-	if adapter, ok := protocol.Builtins().Resolve(id); ok {
-		return adapter, true
-	}
 	return registry.Resolve(id)
 }
 
@@ -141,7 +200,44 @@ func (s *Service) protocolRegistry() *protocol.Registry {
 			return registry
 		}
 	}
-	return protocol.Builtins()
+	return loadOfficialFallbackRegistry()
+}
+
+func loadOfficialFallbackRegistry() *protocol.Registry {
+	officialFallbackRegistryOnce.Do(func() {
+		directory, err := officialPluginPackageDir()
+		if err != nil {
+			return
+		}
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			return
+		}
+		adapters := make([]protocol.Adapter, 0, len(entries))
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".yingce-plugin") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(directory, entry.Name()))
+			if err != nil {
+				return
+			}
+			pkg, err := protocol.ParsePluginPackage(data)
+			if err != nil {
+				return
+			}
+			providers, err := protocol.LoadInstalledProviders(pkg.ManifestRaw, nil)
+			if err != nil {
+				return
+			}
+			adapters = append(adapters, providers...)
+		}
+		registry, err := protocol.NewRegistry(adapters...)
+		if err == nil {
+			officialFallbackRegistry = registry
+		}
+	})
+	return officialFallbackRegistry
 }
 
 func (s *Service) protocolMetadata(id string) (protocol.Metadata, bool) {
@@ -208,7 +304,18 @@ func (s *Service) InstallPlugin(data []byte, fileName string) (PluginView, error
 	if s.pluginRuntime == nil {
 		return PluginView{}, fmt.Errorf("插件运行时未初始化")
 	}
-	return s.pluginRuntime.install(data, fileName)
+	parsed, err := protocol.ParsePluginPackage(data)
+	if err != nil {
+		return PluginView{}, err
+	}
+	if err := s.ensurePaymentPluginLifecycle(parsed.Manifest); err != nil {
+		return PluginView{}, err
+	}
+	plugin, err := s.pluginRuntime.install(data, fileName)
+	if err == nil {
+		s.refreshPaymentRegistry()
+	}
+	return plugin, err
 }
 
 func (s *Service) InstallPluginForAdmin(actor *model.User, data []byte, fileName string) (PluginView, error) {
@@ -221,6 +328,9 @@ func (s *Service) InstallPluginForAdmin(actor *model.User, data []byte, fileName
 	}
 	if _, reserved := officialApplicationPolicies[parsed.Manifest.Metadata.ID]; reserved {
 		return PluginView{}, fmt.Errorf("插件 ID %q 由官方应用保留", parsed.Manifest.Metadata.ID)
+	}
+	if _, reserved := systemPaymentPolicies[parsed.Manifest.Metadata.ID]; reserved && !isPaymentPluginManifest(parsed.Manifest) {
+		return PluginView{}, fmt.Errorf("插件 ID %q 由系统支付插件保留", parsed.Manifest.Metadata.ID)
 	}
 	plugin, err := s.InstallPlugin(data, fileName)
 	if err != nil {
@@ -262,14 +372,90 @@ func (s *Service) SetPluginEnabled(id string, enabled bool) (PluginView, error) 
 	if s.pluginRuntime == nil {
 		return PluginView{}, fmt.Errorf("插件运行时未初始化")
 	}
-	return s.pluginRuntime.setEnabled(id, enabled)
+	plugin, err := s.pluginRuntime.setEnabled(id, enabled)
+	if err == nil {
+		s.refreshPaymentRegistry()
+	}
+	return plugin, err
 }
 
 func (s *Service) UninstallPlugin(id string) error {
 	if s.pluginRuntime == nil {
 		return fmt.Errorf("插件运行时未初始化")
 	}
-	return s.pluginRuntime.uninstall(id)
+	if err := s.ensurePaymentPluginCanBeRemoved(id); err != nil {
+		return err
+	}
+	err := s.pluginRuntime.uninstall(id)
+	if err == nil {
+		s.refreshPaymentRegistry()
+	}
+	return err
+}
+
+func (s *Service) ensurePaymentPluginLifecycle(next protocol.Manifest) error {
+	if s.repo == nil || s.pluginRuntime == nil || len(next.Contributes.PaymentProviders) == 0 {
+		return nil
+	}
+	s.pluginRuntime.mu.RLock()
+	current, exists := s.pluginRuntime.plugins[next.Metadata.ID]
+	s.pluginRuntime.mu.RUnlock()
+	if !exists {
+		return nil
+	}
+	var currentManifest protocol.Manifest
+	if err := json.Unmarshal(current.Raw, &currentManifest); err != nil {
+		return fmt.Errorf("读取现有插件 %q：%w", next.Metadata.ID, err)
+	}
+	if len(currentManifest.Contributes.PaymentProviders) == 0 || strings.TrimSpace(currentManifest.Metadata.Version) == strings.TrimSpace(next.Metadata.Version) {
+		return nil
+	}
+	count, err := s.repo.ActivePaymentOrderCountForPlugin(currentManifest.Metadata.ID, currentManifest.Metadata.Version)
+	if err != nil {
+		return fmt.Errorf("检查插件 %q 未完成订单：%w", current.Metadata.ID, err)
+	}
+	if count > 0 {
+		return fmt.Errorf("支付插件 %q 仍有 %d 个未完成订单，暂不能升级", current.Metadata.ID, count)
+	}
+	return nil
+}
+
+func (s *Service) ensurePaymentPluginCanBeRemoved(id string) error {
+	if s.repo == nil || s.pluginRuntime == nil {
+		return nil
+	}
+	s.pluginRuntime.mu.RLock()
+	record, exists := s.pluginRuntime.plugins[strings.TrimSpace(id)]
+	s.pluginRuntime.mu.RUnlock()
+	if !exists {
+		return nil
+	}
+	var manifest protocol.Manifest
+	if err := json.Unmarshal(record.Raw, &manifest); err != nil {
+		return fmt.Errorf("读取插件 %q：%w", id, err)
+	}
+	if len(manifest.Contributes.PaymentProviders) == 0 {
+		return nil
+	}
+	count, err := s.repo.ActivePaymentOrderCountForPlugin(manifest.Metadata.ID, "")
+	if err != nil {
+		return fmt.Errorf("检查插件 %q 未完成订单：%w", id, err)
+	}
+	if count > 0 {
+		return fmt.Errorf("支付插件 %q 仍有 %d 个未完成订单，暂不能卸载", id, count)
+	}
+	return nil
+}
+
+func (s *Service) refreshPaymentRegistry() {
+	if s.pluginRuntime == nil {
+		return
+	}
+	if registry := s.pluginRuntime.paymentRegistrySnapshot(); registry != nil {
+		s.registrationMu.Lock()
+		s.paymentRegistry = registry
+		s.registrationMu.Unlock()
+	}
 }
 
 func (s *Service) UninstallPluginForAdmin(actor *model.User, id string) error {

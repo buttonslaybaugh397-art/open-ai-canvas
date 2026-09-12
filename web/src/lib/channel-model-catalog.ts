@@ -22,22 +22,6 @@ export type ChannelModelCatalogItem = {
     supportsImages?: boolean;
     minImages?: number;
     maxImages?: number;
-    maxVideos?: number;
-    maxVideoDurationSeconds?: number;
-    maxAudios?: number;
-    audioRequiresImage?: boolean;
-    aistarslab?: {
-        channel: string;
-        capability: "image" | "video";
-        model: string;
-        qualities?: string[];
-        aspectRatios?: string[];
-        duration?: number[];
-        modes?: string[];
-        inputImagesMax?: number;
-        inputVideosMax?: number;
-        inputAudiosMax?: number;
-    };
 };
 
 type ChannelModelCost = NonNullable<ModelChannel["modelCosts"]>[number];
@@ -64,7 +48,6 @@ export function sanitizeChannelModelCatalogItem(value: unknown): ChannelModelCat
               ...(catalogOptions(options.resolution).length ? { resolution: catalogOptions(options.resolution) } : {}),
           }
         : undefined;
-    const aiStarsLab = objectValue(record.aistarslab);
     return compactCatalogItem({
         id,
         displayName: stringValue(record.displayName),
@@ -75,22 +58,6 @@ export function sanitizeChannelModelCatalogItem(value: unknown): ChannelModelCat
         supportsImages: typeof record.supportsImages === "boolean" ? record.supportsImages : undefined,
         minImages: nonNegativeInteger(record.minImages),
         maxImages: nonNegativeInteger(record.maxImages),
-        maxVideos: nonNegativeInteger(record.maxVideos),
-        maxVideoDurationSeconds: nonNegativeInteger(record.maxVideoDurationSeconds),
-        maxAudios: nonNegativeInteger(record.maxAudios),
-        audioRequiresImage: typeof record.audioRequiresImage === "boolean" ? record.audioRequiresImage : undefined,
-        aistarslab: aiStarsLab && stringValue(aiStarsLab.channel) && stringValue(aiStarsLab.model) ? {
-            channel: stringValue(aiStarsLab.channel),
-            capability: stringValue(aiStarsLab.capability) === "video" ? "video" : "image",
-            model: stringValue(aiStarsLab.model),
-            qualities: stringArray(aiStarsLab.qualities),
-            aspectRatios: stringArray(aiStarsLab.aspectRatios),
-            duration: numberArray(aiStarsLab.duration),
-            modes: stringArray(aiStarsLab.modes),
-            inputImagesMax: nonNegativeInteger(aiStarsLab.inputImagesMax),
-            inputVideosMax: nonNegativeInteger(aiStarsLab.inputVideosMax),
-            inputAudiosMax: nonNegativeInteger(aiStarsLab.inputAudiosMax),
-        } : undefined,
     });
 }
 
@@ -99,7 +66,7 @@ export function mergeFetchedChannelModelCosts(channel: ModelChannel, catalog: Ch
     const next: ChannelModelCost[] = [];
     for (const item of catalog) {
         const existing = existingByModel.get(item.id);
-        const inferredProtocol = item.aistarslab ? (item.aistarslab.capability === "video" ? "aistarslab-video" : "aistarslab-image") : protocolForModelCatalog(item.supportedEndpointTypes);
+        const inferredProtocol = protocolForModelCatalog(item.supportedEndpointTypes);
         const inferredCapability = modelProtocolCapability(inferredProtocol) || item.modelType;
         if (existing) {
             const protocol = inferredProtocol || existing.protocol;
@@ -116,9 +83,7 @@ export function mergeFetchedChannelModelCosts(channel: ModelChannel, catalog: Ch
                 ...(item.displayName ? { displayName: item.displayName } : {}),
                 capability,
                 ...(inferredProtocol ? { protocol: inferredProtocol } : {}),
-                ...(patchCapabilityConfig || capabilityChanged || item.aistarslab
-                    ? { capabilityConfig: item.aistarslab ? { ...(capabilityConfig || defaultModelCapabilityConfig(protocol, catalogCapabilityModelName(item))), aistarslab: item.aistarslab } : capabilityConfig }
-                    : {}),
+                ...(patchCapabilityConfig || capabilityChanged ? { capabilityConfig } : {}),
             });
             continue;
         }
@@ -126,7 +91,7 @@ export function mergeFetchedChannelModelCosts(channel: ModelChannel, catalog: Ch
         const capability = inferredCapability || modelProtocolCapability(channel.interfaceType);
         const protocol = inferredProtocol || protocolTemplateForNewCatalogModel(capability, channel.interfaceType);
         if (!protocol || !capability) continue;
-        const capabilityConfig = capability === "image" || capability === "video" ? { ...catalogCapabilityConfig(item, protocol, capability, undefined, true), ...(item.aistarslab ? { aistarslab: item.aistarslab } : {}) } : undefined;
+        const capabilityConfig = capability === "image" || capability === "video" ? catalogCapabilityConfig(item, protocol, capability, undefined, true) : undefined;
         next.push({
             model: item.id,
             ...(item.displayName ? { displayName: item.displayName } : {}),
@@ -148,17 +113,11 @@ function protocolTemplateForNewCatalogModel(capability: ChannelModelCost["capabi
 }
 
 function hasCatalogCapabilityConfig(item: ChannelModelCatalogItem) {
-    return Boolean(item.defaultParameters || item.options || item.supportsImages !== undefined || item.minImages !== undefined || item.maxImages !== undefined || item.maxVideos !== undefined || item.maxVideoDurationSeconds !== undefined || item.maxAudios !== undefined || item.aistarslab);
-}
-
-// AIStarsLab 的目录 ID 是「线路:模型」（同一模型可在多条线路下报不同价格和能力）；
-// 按名字推导默认能力时只能用官方模型名，否则前缀会让家族识别失效。
-function catalogCapabilityModelName(item: ChannelModelCatalogItem) {
-    return item.aistarslab?.model || item.id;
+    return Boolean(item.defaultParameters || item.options || item.supportsImages !== undefined || item.minImages !== undefined || item.maxImages !== undefined);
 }
 
 function catalogCapabilityConfig(item: ChannelModelCatalogItem, protocol: ModelProtocol | undefined, capability: "image" | "video", existing: ModelCapabilityConfig | undefined, isNew: boolean): ModelCapabilityConfig {
-    const fallback = defaultModelCapabilityConfig(protocol, catalogCapabilityModelName(item));
+    const fallback = defaultModelCapabilityConfig(protocol, item.id);
     const existingProfile = capability === "image" ? existing?.image : existing?.video;
     const config = structuredClone(existingProfile ? existing! : fallback);
     if (capability === "image") {
@@ -214,9 +173,6 @@ function catalogCapabilityConfig(item: ChannelModelCatalogItem, protocol: ModelP
             video.defaultOperation = "image_to_video";
         }
     }
-    if (item.maxVideos !== undefined) video.references.maxVideos = item.maxVideos;
-    if (item.maxVideoDurationSeconds !== undefined) video.references.maxVideoDurationSeconds = item.maxVideoDurationSeconds;
-    if (item.maxAudios !== undefined) video.references.maxAudios = item.maxAudios;
     return config;
 }
 
@@ -233,11 +189,6 @@ function compactCatalogItem(item: ChannelModelCatalogItem): ChannelModelCatalogI
         ...(item.supportsImages !== undefined ? { supportsImages: item.supportsImages } : {}),
         ...(item.minImages !== undefined ? { minImages: item.minImages } : {}),
         ...(item.maxImages !== undefined ? { maxImages: item.maxImages } : {}),
-        ...(item.maxVideos !== undefined ? { maxVideos: item.maxVideos } : {}),
-        ...(item.maxVideoDurationSeconds !== undefined ? { maxVideoDurationSeconds: item.maxVideoDurationSeconds } : {}),
-        ...(item.maxAudios !== undefined ? { maxAudios: item.maxAudios } : {}),
-        ...(item.audioRequiresImage !== undefined ? { audioRequiresImage: item.audioRequiresImage } : {}),
-        ...(item.aistarslab ? { aistarslab: item.aistarslab } : {}),
     };
 }
 
@@ -283,8 +234,4 @@ function uniqueNumbers(values: string[]) {
 
 function nonNegativeInteger(value: unknown) {
     return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
-}
-
-function numberArray(value: unknown) {
-    return Array.isArray(value) ? value.map((item) => Number(item)).filter((item) => Number.isFinite(item) && item > 0) : [];
 }

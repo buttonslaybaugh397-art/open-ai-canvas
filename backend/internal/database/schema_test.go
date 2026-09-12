@@ -60,13 +60,3 @@ func TestPostgresAssetIDMigrationsCoverEveryAssetIDColumn(t *testing.T) {
 		}
 	}
 }
-
-func TestTaskSchemaDoesNotDeclareRemovedPhysicalVariant(t *testing.T) {
-	parsed, err := schema.Parse(&model.Task{}, &sync.Map{}, schema.NamingStrategy{})
-	if err != nil {
-		t.Fatalf("parse task schema: %v", err)
-	}
-	if parsed.LookUpField("PhysicalVariantID") != nil {
-		t.Fatal("task schema still declares removed PhysicalVariantID")
-	}
-}

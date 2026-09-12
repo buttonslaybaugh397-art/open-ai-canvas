@@ -1,8 +1,9 @@
 import { AnimatePresence } from "motion/react";
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
-import { ArrowLeft, Check, ChevronRight, Clipboard, CloudUpload, Copy, FolderOpen, FolderPlus, Image as ImageIcon, Layers3, Link2, Maximize2, PanelTop, Pencil, Plus, Redo2, Tags, Trash2, Undo2, Upload, UserRound } from "lucide-react";
+import { ArrowLeft, Check, ChevronRight, Clipboard, CloudUpload, Copy, FolderOpen, FolderPlus, Image as ImageIcon, Layers3, LayoutTemplate, Link2, Maximize2, PanelTop, Pencil, Plus, Redo2, Tags, Trash2, Undo2, Upload, UserRound } from "lucide-react";
 
 import { CanvasCreateMenu, type CanvasCreateCommand } from "@/components/canvas/canvas-create-menu";
+import { ASSET_CATEGORY_OPTIONS } from "@/lib/asset-category";
 import { aceternityMotion } from "@/lib/aceternity-motion";
 import { SpotlightSurface } from "@/components/ui/aceternity/spotlight-surface";
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -15,15 +16,7 @@ import { CanvasNodeType, type CanvasNodeData, type CanvasNodeTypeId, type Canvas
 
 type CanvasAssetCategory = NonNullable<NonNullable<CanvasNodeData["metadata"]>["assetCategory"]>;
 
-const assetCategoryOptions: Array<{ value: CanvasAssetCategory; label: string }> = [
-    { value: "character", label: "角色" },
-    { value: "environment", label: "场景" },
-    { value: "wardrobe", label: "服饰" },
-    { value: "prop", label: "道具" },
-    { value: "weapon", label: "武器" },
-    { value: "style", label: "画风" },
-    { value: "other", label: "其他" },
-];
+const assetCategoryOptions: Array<{ value: CanvasAssetCategory; label: string }> = ASSET_CATEGORY_OPTIONS;
 
 type CanvasNodeContextMenuProps = {
     menu: ContextMenuState;
@@ -33,6 +26,7 @@ type CanvasNodeContextMenuProps = {
     canUndo: boolean;
     canRedo: boolean;
     canPaste: boolean;
+    selectedCount?: number;
     onClose: () => void;
     onAddNode: (type: CanvasNodeTypeId) => void;
     onAddFolder: () => void;
@@ -45,6 +39,7 @@ type CanvasNodeContextMenuProps = {
     onRedo: () => void;
     onPaste: () => void;
     onCopyNode: () => void;
+    onCreateGenerationCopy: () => void;
     onDuplicate: () => void;
     onDelete: () => void;
     onSaveAsset: () => void;
@@ -57,6 +52,9 @@ type CanvasNodeContextMenuProps = {
     onUploadToArkPrivateAsset: () => void;
     onSetAssetCategory: (category: CanvasAssetCategory) => void;
     onToggleFrame: () => void;
+    onSpreadSelection?: () => void;
+    onCopySelection?: () => void;
+    onDeleteSelection?: () => void;
 };
 
 export function CanvasNodeContextMenu({
@@ -67,6 +65,7 @@ export function CanvasNodeContextMenu({
     canUndo,
     canRedo,
     canPaste,
+    selectedCount = 0,
     onClose,
     onAddNode,
     onAddFolder,
@@ -79,6 +78,7 @@ export function CanvasNodeContextMenu({
     onRedo,
     onPaste,
     onCopyNode,
+    onCreateGenerationCopy,
     onDuplicate,
     onDelete,
     onSaveAsset,
@@ -91,6 +91,9 @@ export function CanvasNodeContextMenu({
     onUploadToArkPrivateAsset,
     onSetAssetCategory,
     onToggleFrame,
+    onSpreadSelection,
+    onCopySelection,
+    onDeleteSelection,
 }: CanvasNodeContextMenuProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const [addOpen, setAddOpen] = useState(false);
@@ -140,7 +143,8 @@ export function CanvasNodeContextMenu({
     const canGenerateFromText = Boolean(isText && !isCharacterReference && hasNodeContent);
     const canCopyMediaUrl = Boolean(isMedia && hasNodeContent);
     const assetCategory = node ? canvasNodeAssetCategory(node) : "other";
-    const position = getContextMenuPosition(menu);
+    const hasMultiSelection = selectedCount >= 2;
+    const position = getContextMenuPosition(menu, hasMultiSelection);
 
     return (
         <>
@@ -174,6 +178,12 @@ export function CanvasNodeContextMenu({
                     ) : menu.type === "canvas" ? (
                         <>
                             <MenuHeader title="画布命令" />
+                            {hasMultiSelection ? (
+                                <>
+                                    <MenuButton icon={<LayoutTemplate className="size-4" />} label="自适应整理画布" detail="保持相对布局并加大边距" disabled={!onSpreadSelection} onClick={() => onSpreadSelection && runAction(onSpreadSelection)} />
+                                    <MenuDivider />
+                                </>
+                            ) : null}
                             <MenuButton icon={<Plus className="size-4" />} label="添加节点" chevron active={addOpen} onClick={() => setAddOpen((value) => !value)} />
                             <MenuButton icon={<Upload className="size-4" />} label="上传到这里" onClick={() => runAction(onUpload)} />
                             {!isProjectLinked ? <MenuButton icon={<FolderOpen className="size-4" />} label="从素材库插入" onClick={() => runAction(onOpenAssets)} /> : null}
@@ -182,6 +192,15 @@ export function CanvasNodeContextMenu({
                             <MenuButton icon={<Undo2 className="size-4" />} label="撤销" shortcut="⌘Z" disabled={!canUndo} onClick={() => runAction(onUndo)} />
                             <MenuButton icon={<Redo2 className="size-4" />} label="重做" shortcut="⇧⌘Z" disabled={!canRedo} onClick={() => runAction(onRedo)} />
                             <MenuButton icon={<Clipboard className="size-4" />} label="粘贴" shortcut="⌘V" disabled={!canPaste} onClick={() => runAction(onPaste)} />
+                        </>
+                    ) : menu.type === "node" && hasMultiSelection ? (
+                        <>
+                            <MenuHeader title={`已选 ${selectedCount} 个节点`} />
+                            <MenuSection label="选区" />
+                            <MenuButton icon={<LayoutTemplate />} label="自适应整理画布" detail="保持相对布局并加大边距" disabled={!onSpreadSelection} onClick={() => onSpreadSelection && runAction(onSpreadSelection)} />
+                            <MenuDivider />
+                            <MenuButton icon={<Copy />} label={`复制 ${selectedCount} 个节点`} shortcut="⌘C" disabled={!onCopySelection} onClick={() => onCopySelection && runAction(onCopySelection)} />
+                            <MenuButton icon={<Trash2 />} label={`删除 ${selectedCount} 个节点`} danger disabled={!onDeleteSelection} onClick={() => onDeleteSelection && runAction(onDeleteSelection)} />
                         </>
                     ) : menu.type === "node" ? (
                         <>
@@ -208,6 +227,7 @@ export function CanvasNodeContextMenu({
                                     <MenuButton icon={<Copy />} label="复制节点" shortcut="⌘C" onClick={() => runAction(onCopyNode)} />
                                     {isImage ? <MenuButton icon={<Clipboard />} label="复制图片" disabled={!hasNodeContent} onClick={() => runAction(onCopyContent)} /> : null}
                                     <MenuButton icon={<Link2 />} label={isImage ? "复制图片地址" : "复制视频地址"} disabled={!canCopyMediaUrl} onClick={() => runAction(onCopyMediaUrl)} />
+                                    <MenuButton icon={<Copy />} label="创建生成副本" onClick={() => runAction(onCreateGenerationCopy)} />
                                     <MenuButton icon={<Layers3 />} label="创建参数变体" shortcut="⌘D" onClick={() => runAction(onDuplicate)} />
                                     <MenuButton icon={<Trash2 />} label="删除节点" danger onClick={() => runAction(onDelete)} />
                                 </>
@@ -301,12 +321,11 @@ function AddNodeContextMenu({ parentPosition, workspaceMode, isProjectLinked, on
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: aceternityMotion.duration.instant, ease: aceternityMotion.easing.enter }}
-            className="aceternity-floating-panel fixed z-[var(--z-popover)] w-[260px] origin-top overflow-hidden rounded-[var(--dock-radius)] border p-2 backdrop-blur-2xl"
+            className="aceternity-floating-panel fixed z-[var(--z-popover)] w-[360px] origin-top overflow-hidden rounded-[var(--dock-radius)] border p-2 backdrop-blur-2xl"
             style={{ left, top: parentPosition.top, background: theme.spatial.elevated, borderColor: theme.toolbar.border, color: theme.node.text }}
             onContextMenu={(event) => event.preventDefault()}
             onPointerDown={(event) => event.stopPropagation()}
         >
-            <div className="absolute inset-x-8 top-0 h-px" style={{ background: `linear-gradient(90deg, transparent, ${theme.toolbar.border}, transparent)` }} />
             <CanvasCreateMenu commands={commands} />
         </SpotlightSurface>
     );
@@ -350,10 +369,10 @@ function MenuDivider() {
     return <div className="mx-1.5 my-1 h-px" style={{ background: `linear-gradient(90deg, transparent, ${theme.toolbar.border}, transparent)` }} />;
 }
 
-function getContextMenuPosition(menu: ContextMenuState) {
+function getContextMenuPosition(menu: ContextMenuState, hasMultiSelection = false) {
     if (typeof window === "undefined") return { left: menu.x, top: menu.y };
     const width = 224;
-    const estimatedHeight = menu.type === "node" ? Math.min(360, window.innerHeight - 72) : menu.type === "canvas" ? 250 : 84;
+    const estimatedHeight = menu.type === "node" ? Math.min(hasMultiSelection ? 240 : 360, window.innerHeight - 72) : menu.type === "canvas" ? (hasMultiSelection ? 300 : 250) : 84;
     return {
         left: clamp(menu.x, 12, Math.max(12, window.innerWidth - width - 12)),
         top: clamp(menu.y, 68, Math.max(68, window.innerHeight - estimatedHeight - 12)),
@@ -362,7 +381,7 @@ function getContextMenuPosition(menu: ContextMenuState) {
 
 function getSubmenuLeft(parentLeft: number) {
     if (typeof window === "undefined") return parentLeft + 192;
-    return parentLeft + 224 + 8 + 260 <= window.innerWidth - 12 ? parentLeft + 232 : Math.max(12, parentLeft - 268);
+    return parentLeft + 224 + 8 + 360 <= window.innerWidth - 12 ? parentLeft + 232 : Math.max(12, parentLeft - 368);
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -378,6 +397,7 @@ function nodeTypeLabel(node?: CanvasNodeData | null) {
     if (node.type === CanvasNodeType.Video) return "视频节点";
     if (node.type === CanvasNodeType.Audio) return "音频节点";
     if (node.type === CanvasNodeType.Drawing) return "绘图节点";
+    if (node.type === CanvasNodeType.MediaConversion) return "转换节点";
     if (node.type === CanvasNodeType.Frame) return isCanvasFolderNode(node) ? "文件夹" : "背板";
     return "生成配置节点";
 }

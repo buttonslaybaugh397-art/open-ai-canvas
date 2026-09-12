@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { AlertCircle, BookOpenCheck, CheckCircle2, ChevronRight, Clapperboard, Copy, Download, Image as ImageIcon, Lock, Maximize2, Music2, Pencil, RefreshCw, Settings2, Star, Trash2, Type, Video } from "lucide-react";
+import { AlertCircle, BookOpenCheck, CheckCircle2, ChevronRight, Clapperboard, Copy, Download, Image as ImageIcon, Lock, Maximize2, Music2, Pencil, RefreshCw, ScanSearch, Settings2, Star, Trash2, Type, Video, WandSparkles } from "lucide-react";
 
 import { useCanvasNodeActions } from "./canvas-node-action-context";
 
 import { canvasThemes } from "@/lib/canvas-theme";
+import { canvasConnectionTilt } from "@/lib/canvas/canvas-connection-tilt";
 import { storyboardMinNodeHeight } from "@/lib/canvas/canvas-storyboard-layout";
 import { resourceStorageLabel, resourceStorageLocation, resourceStorageTitle } from "@/lib/canvas/resource-storage-status";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -12,6 +13,7 @@ import { CanvasNodeType, type CanvasNodeData, type CanvasNodeTypeId, type Positi
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { PortraitClearanceIcon } from "@/components/canvas/portrait-clearance/portrait-clearance-icon";
 import { PORTRAIT_CLEARANCE_NODE_TYPE } from "@/lib/portrait-clearance/contracts";
+import { ART_CRITIQUE_NODE_TYPE } from "@/lib/art-critique/contracts";
 import { getNodeDefinition, getNodeMinSize, shouldKeepAspectRatio } from "@/lib/canvas/node-registry";
 import { CanvasNodeContent, CanvasNodeImageInfo } from "./canvas-node-content";
 
@@ -24,10 +26,10 @@ type CanvasNodeProps = {
     scale: number;
     isSelected: boolean;
     mediaActive?: boolean;
-    hydrateMediaPreview?: boolean;
     isRelated: boolean;
     isFocusRelated: boolean;
     isConnectionTarget: boolean;
+    connectionApproach?: Position;
     forceInputVisible?: boolean;
     showImageInfo: boolean;
     reduceMediaEffects?: boolean;
@@ -37,6 +39,7 @@ type CanvasNodeProps = {
     renderNodeContent?: (node: CanvasNodeData) => ReactNode;
     drawingProjectId?: string;
     batchCount?: number;
+    batchPreviewNodes?: CanvasNodeData[];
     batchExpanded?: boolean;
     batchClosing?: boolean;
     batchOpening?: boolean;
@@ -61,6 +64,7 @@ type CanvasNodeProps = {
     onOpenTextEditor?: (node: CanvasNodeData) => void;
     onOpenDirector?: (node: CanvasNodeData) => void;
     onOpenDrawing?: (node: CanvasNodeData) => void;
+    onMediaPlayRequest?: (nodeId: string) => void;
     onContextMenu: (event: React.MouseEvent, nodeId: string) => void;
 };
 
@@ -70,10 +74,10 @@ export const CanvasNode = React.memo(function CanvasNode({
     scale,
     isSelected,
     mediaActive = false,
-    hydrateMediaPreview = false,
     isRelated,
     isFocusRelated,
     isConnectionTarget,
+    connectionApproach,
     forceInputVisible = false,
     showImageInfo,
     reduceMediaEffects = false,
@@ -83,6 +87,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     renderNodeContent,
     drawingProjectId,
     batchCount = 0,
+    batchPreviewNodes,
     batchExpanded = false,
     batchClosing = false,
     batchOpening = false,
@@ -106,6 +111,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     onOpenTextEditor,
     onOpenDirector,
     onOpenDrawing,
+    onMediaPlayRequest,
     onContextMenu,
 }: CanvasNodeProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
@@ -262,6 +268,9 @@ export const CanvasNode = React.memo(function CanvasNode({
         if (next !== data.title) onTitleChange?.(data.id, next);
     };
 
+    const connectionTilt = isConnectionTarget && !reduceMediaEffects && !dragOffset
+        ? canvasConnectionTilt(data, connectionApproach) : undefined;
+
     return (
         <div
             data-node-id={data.id}
@@ -299,13 +308,17 @@ export const CanvasNode = React.memo(function CanvasNode({
             <div
                 className="canvas-node-shell relative h-full w-full overflow-visible rounded-[var(--node-radius)]"
                 data-node-state={nodeState}
+                data-connection-tilt={connectionTilt ? "true" : undefined}
                 data-state={data.metadata?.status || (isActive ? "active" : isRelated ? "related" : "idle")}
                 style={{
                     background: hasImageContent || hasVideoContent ? "transparent" : theme.node.fill,
                     // 固定占位但不绘制描边，避免聚焦切换时边框宽度变化造成白边跳动。
                     border: isComposerNode ? "0" : "1px solid transparent",
                     boxShadow: isComposerNode ? "none" : isSelected || isFocusRelated ? theme.node.hoverShadow : theme.node.shadow,
-                }}
+                    "--connection-tilt-x": `${connectionTilt?.rotateX || 0}deg`,
+                    "--connection-tilt-y": `${connectionTilt?.rotateY || 0}deg`,
+                    transformOrigin: connectionTilt?.origin,
+                } as React.CSSProperties}
                 onMouseDown={(event) => onMouseDown(event, data.id)}
                 onDoubleClick={(event) => {
                     if (isBatchRoot) {
@@ -346,8 +359,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                             "--batch-from-x": `${batchMotion?.x || 0}px`,
                             "--batch-from-y": `${batchMotion?.y || 0}px`,
                             "--batch-from-rotate": `${6 + (batchMotion?.index || 0) * 4}deg`,
-                            animation: data.metadata?.batchRootId ? (batchClosing ? `canvas-batch-child-out var(--motion-dur-base-calc) var(--motion-ease-in-out) both` : `canvas-batch-child-in var(--motion-dur-slow-calc) var(--motion-ease-out) both`) : undefined,
-                            animationDelay: data.metadata?.batchRootId ? `${batchClosing ? 0 : 45 + (batchMotion?.index || 0) * 24}ms` : undefined,
+                            animation: isBatchChild && (batchClosing || batchOpening) ? (batchClosing ? `canvas-batch-child-out var(--motion-dur-base-calc) var(--motion-ease-in-out) both` : `canvas-batch-child-in var(--motion-dur-slow-calc) var(--motion-ease-out) both`) : undefined,
+                            animationDelay: isBatchChild && (batchClosing || batchOpening) ? `${batchClosing ? 0 : 45 + (batchMotion?.index || 0) * 24}ms` : undefined,
                         } as React.CSSProperties
                     }
                 >
@@ -362,6 +375,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         textareaRef={textareaRef}
                         isBatchRoot={isBatchRoot}
                         batchCount={batchCount}
+                        batchPreviewNodes={batchPreviewNodes}
                         batchExpanded={batchExpanded}
                         batchOpening={batchOpening}
                         batchRecovering={batchRecovering}
@@ -376,7 +390,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onToggleBatch={() => onToggleBatch?.(data.id)}
                         reduceMediaEffects={reduceMediaEffects}
                         mediaActive={mediaActive}
-                        hydrateMediaPreview={hydrateMediaPreview}
+                        onMediaPlayRequest={onMediaPlayRequest}
                     />
                 </div>
 
@@ -484,6 +498,8 @@ function areCanvasNodePropsEqual(previous: CanvasNodeProps, next: CanvasNodeProp
         previous.isRelated === next.isRelated &&
         previous.isFocusRelated === next.isFocusRelated &&
         previous.isConnectionTarget === next.isConnectionTarget &&
+        previous.connectionApproach?.x === next.connectionApproach?.x &&
+        previous.connectionApproach?.y === next.connectionApproach?.y &&
         previous.forceInputVisible === next.forceInputVisible &&
         previous.showImageInfo === next.showImageInfo &&
         previous.reduceMediaEffects === next.reduceMediaEffects &&
@@ -493,6 +509,7 @@ function areCanvasNodePropsEqual(previous: CanvasNodeProps, next: CanvasNodeProp
         previous.renderNodeContent === next.renderNodeContent &&
         previous.drawingProjectId === next.drawingProjectId &&
         previous.batchCount === next.batchCount &&
+        previous.batchPreviewNodes === next.batchPreviewNodes &&
         previous.batchExpanded === next.batchExpanded &&
         previous.batchClosing === next.batchClosing &&
         previous.batchOpening === next.batchOpening &&
@@ -547,7 +564,7 @@ function NodeLockBadge({ theme }: { theme: CanvasTheme }) {
 
 function BatchToggleBadge({ count, expanded, theme, onToggle }: { count: number; expanded: boolean; theme: CanvasTheme; onToggle: () => void }) {
     return (
-        <button type="button" className="canvas-node-tool-button inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-[var(--fs-tiny)] font-semibold backdrop-blur-md" style={{ background: `${theme.toolbar.panel}d9`, borderColor: `${theme.toolbar.border}cc`, color: theme.node.text }} aria-label={expanded ? "图片组已展开" : "图片组已收起"} onClick={(event) => { event.stopPropagation(); onToggle(); }} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+        <button type="button" className="canvas-node-tool-button inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-[var(--fs-tiny)] font-semibold backdrop-blur-md" style={{ background: `${theme.toolbar.panel}d9`, borderColor: `${theme.toolbar.border}cc`, color: theme.node.text }} aria-expanded={expanded} aria-label={expanded ? "收起图片组" : "展开图片组"} onClick={(event) => { event.stopPropagation(); onToggle(); }} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
             <span className="leading-none" style={{ color: theme.accent.primary }}>{count}</span>
             <ChevronRight className={`size-3 opacity-55 transition-transform ${expanded ? "rotate-90" : ""}`} />
         </button>
@@ -692,8 +709,10 @@ function nodeTypeIcon(type: CanvasNodeTypeId) {
     if (type === CanvasNodeType.Drawing) return Pencil;
     if (type === CanvasNodeType.Script) return Clapperboard;
     if (type === CanvasNodeType.Config) return Settings2;
+    if (type === CanvasNodeType.MediaConversion) return WandSparkles;
     if (type === CanvasNodeType.Skill) return BookOpenCheck;
     if (type === PORTRAIT_CLEARANCE_NODE_TYPE) return PortraitClearanceIcon;
+    if (type === ART_CRITIQUE_NODE_TYPE) return ScanSearch;
     return Type;
 }
 

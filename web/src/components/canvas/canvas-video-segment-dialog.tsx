@@ -11,7 +11,8 @@ import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
 import { modelRequestOptions, resolveCompatibleModel, type ModelRequirements } from "@/lib/model-selection";
 import { navigateToSettings } from "@/lib/settings-navigation";
 import { useThemeStore } from "@/stores/use-theme-store";
-import { resolveReadableMediaUrl, resolveMediaUrl } from "@/services/file-storage";
+import { resolveMediaUrl } from "@/services/file-storage";
+import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
 import { resourceIdFromStorageKey } from "@/services/api/resources";
 import { modelDisplayName, type AiConfig } from "@/stores/use-config-store";
 import { type CanvasConnection, type CanvasNodeData, type CanvasVideoEditOperation } from "@/types/canvas";
@@ -85,7 +86,15 @@ export function CanvasVideoSegmentDialog({ node, nodes, connections, open, mode,
             if (!cancelled) setVideoUrl(url);
         };
         if (resourceIdFromStorageKey(storageKey)) {
-            setVideoUrl(resolveReadableMediaUrl(storageKey));
+            void cacheResourceObjectUrl(storageKey)
+                .then((cached) => {
+                    if (cancelled) return;
+                    if (cached) setVideoUrl(cached);
+                    else void resolveMediaUrl(storageKey, fallback).then(applyUrl);
+                })
+                .catch(() => {
+                    if (!cancelled) void resolveMediaUrl(storageKey, fallback).then(applyUrl);
+                });
         } else {
             void resolveMediaUrl(storageKey, fallback).then(applyUrl);
         }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { App } from "antd";
 import { useNavigate } from "react-router";
 
@@ -6,12 +6,13 @@ import { canvasAppearanceBaseTheme, canvasAppearanceForTheme, DEFAULT_CANVAS_BAC
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { removeCanvasDrawing } from "@/lib/canvas/canvas-drawing-storage";
 import { normalizeCanvasNodeTimestamps } from "@/lib/canvas/canvas-node-timestamps";
-import { hydrateAssistantImages, hydrateCanvasImages, resetInterruptedGeneration } from "@/lib/canvas/canvas-project-generation";
+import { hydrateAssistantImages, resetInterruptedGeneration } from "@/lib/canvas/canvas-project-generation";
 import { listAddedSkills, type Skill } from "@/services/api/skills";
-import { createCanvasProjectWithRemoteSync, deleteCanvasProjectsWithRemoteSync, saveRemoteUserDataNow } from "@/services/user-data-sync";
+import { createCanvasProjectWithRemoteSync, deleteCanvasProjectsWithRemoteSync, loadCanvasProjectForEditing, localSavedRemotePendingMessage, saveRemoteUserDataNow } from "@/services/user-data-sync";
 import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useThemeStore } from "@/stores/use-theme-store";
-import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, CanvasNodeMetadata, ViewportTransform } from "@/types/canvas";
+import { useUserStore } from "@/stores/use-user-store";
+import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 import type { CanvasHistorySnapshot } from "./use-canvas-history";
 
 type UseCanvasProjectLifecycleOptions = {
@@ -74,18 +75,24 @@ export function useCanvasProjectLifecycle({
     const { message } = App.useApp();
     const navigate = useNavigate();
     const hydrated = useCanvasStore((state) => state.hydrated);
+    const sessionHydrated = useUserStore((state) => state.hydrated);
     const openProject = useCanvasStore((state) => state.openProject);
     const updateProject = useCanvasStore((state) => state.updateProject);
     const renameProject = useCanvasStore((state) => state.renameProject);
     const currentProject = useCanvasStore((state) => state.projects.find((project) => project.id === projectId));
     const [addedSkills, setAddedSkills] = useState<Skill[]>([]);
+    const [loadError, setLoadError] = useState("");
+    const [loadAttempt, setLoadAttempt] = useState(0);
     const viewportSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useEffect(() => {
-        if (!hydrated) return;
+        if (!hydrated || !sessionHydrated) return;
         let cancelled = false;
         setProjectLoaded(false);
-        const project = openProject(projectId);
+        setLoadError("");
+        const load = async () => {
+        const project = await loadCanvasProjectForEditing(projectId);
+        if (cancelled) return;
         if (!project) {
             navigate("/canvas", { replace: true });
             return;
@@ -130,18 +137,25 @@ export function useCanvasProjectLifecycle({
             const initialSessions = project.chatSessions || [];
 
             // 先恢复可交互的节点和布局，媒体缓存/资源校验放到后台，避免首屏被远程资源拖住。
-            applyRestoredProject(initialNodes, initialSessions);
-            const [nodesResult, sessionsResult] = await Promise.allSettled([hydrateCanvasImages(initialNodes), hydrateAssistantImages(initialSessions)]);
-            if (cancelled) return;
-            if (nodesResult.status === "fulfilled") setNodes((current) => mergeHydratedNodeMedia(current, initialNodes, nodesResult.value));
-            if (sessionsResult.status === "fulfilled") setChatSessions((current) => mergeHydratedSessions(current, sessionsResult.value));
-            if (nodesResult.status === "rejected" || sessionsResult.status === "rejected") message.warning("部分本地媒体恢复失败，已使用项目记录继续打开");
+            startTransition(() => applyRestoredProject(initialNodes, initialSessions));
+            // 画布媒体由节点自己的视口观察器按需加载；打开时遍历并解析全部节点会让大画布形成 N+1 资源读取。
+            void hydrateAssistantImages(initialSessions)
+                .then((hydratedSessions) => {
+                    if (!cancelled) setChatSessions((current) => mergeHydratedSessions(current, hydratedSessions));
+                })
+                .catch(() => {
+                    if (!cancelled) message.warning("部分助手会话素材恢复失败，已使用项目记录继续打开");
+                });
         };
-        void restore();
+        await restore();
+        };
+        void load().catch((error) => {
+            if (!cancelled) setLoadError(error instanceof Error ? error.message : "读取画布失败，请重试");
+        });
         return () => {
             cancelled = true;
         };
-    }, [hydrated, message, navigate, openProject, projectId, resetHistory, setActiveChatId, setBackgroundMode, setCanvasAppearance, setChatSessions, setConnections, setNodes, setShowImageInfo, setViewport]);
+    }, [hydrated, sessionHydrated, loadAttempt, message, navigate, openProject, projectId, resetHistory, setActiveChatId, setBackgroundMode, setCanvasAppearance, setChatSessions, setConnections, setNodes, setShowImageInfo, setViewport]);
 
     useEffect(() => {
         if (!projectLoaded) return;
@@ -230,8 +244,8 @@ export function useCanvasProjectLifecycle({
             await saveRemoteUserDataNow();
             message.success("画布布局和位置已保存");
         } catch (error) {
-            const detail = error instanceof Error ? error.message : "未知错误";
-            message.warning(`本地画布布局已保存，云端同步失败：${detail}`);
+            // 本地 IndexedDB 已写入；云端失败只排队重试，不能把导入方的画布状态回滚。
+            message.warning(localSavedRemotePendingMessage("本地画布布局已保存", error));
         }
         return true;
     }, [activeChatId, backgroundMode, canvasAppearance, chatSessions, connectionsRef, currentProject?.directorScenes, message, nodesRef, projectId, showImageInfo, updateProject, viewportRef]);
@@ -241,6 +255,8 @@ export function useCanvasProjectLifecycle({
     }, [cleanupCanvasFiles, projectId]);
 
     return {
+        loadError,
+        retryLoad: () => setLoadAttempt((attempt) => attempt + 1),
         addedSkills,
         clearCanvasFiles,
         createAndOpenProject,
@@ -250,24 +266,6 @@ export function useCanvasProjectLifecycle({
         saveCanvasProject,
         updateProject,
     };
-}
-
-const hydratedMediaMetadataKeys = ["content", "storageKey", "naturalWidth", "naturalHeight", "bytes", "mimeType", "durationMs", "hasAudio", "videoPreview"] as const satisfies readonly (keyof CanvasNodeMetadata)[];
-
-function mergeHydratedNodeMedia(currentNodes: CanvasNodeData[], initialNodes: CanvasNodeData[], hydratedNodes: CanvasNodeData[]) {
-    const initialById = new Map(initialNodes.map((node) => [node.id, node]));
-    const hydratedById = new Map(hydratedNodes.map((node) => [node.id, node]));
-    return currentNodes.map((node) => {
-        const initial = initialById.get(node.id);
-        const hydrated = hydratedById.get(node.id);
-        if (!initial || !hydrated || node.metadata?.content !== initial.metadata?.content) return node;
-        const metadata = { ...node.metadata } as CanvasNodeMetadata;
-        hydratedMediaMetadataKeys.forEach((key) => {
-            const value = hydrated.metadata?.[key];
-            if (value !== undefined) (metadata as Record<string, unknown>)[key] = value;
-        });
-        return { ...node, metadata };
-    });
 }
 
 function mergeHydratedSessions(currentSessions: CanvasAssistantSession[], hydratedSessions: CanvasAssistantSession[]) {
