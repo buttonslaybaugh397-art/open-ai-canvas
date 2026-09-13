@@ -274,7 +274,11 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
     const saveGeneratedAsset = useCallback(
         async (node: CanvasNodeData, taskId: string, signal?: AbortSignal) => {
             const result = await retryCanvasAssetSyncAfterRateLimit(() => ensureCanvasNodeAsset({ canvasId: projectId, domainProjectId, node, source: "canvas-generation", taskId, signal }), { signal });
-            setNodes((current) => current.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, assetId: result.assetId } } : item)));
+            setNodes((current) => {
+                const target = current.find((item) => item.id === node.id);
+                if (!target || target.metadata?.assetId === result.assetId || target.metadata?.taskId !== taskId || target.metadata?.storageKey !== node.metadata?.storageKey) return current;
+                return current.map((item) => (item === target ? { ...item, metadata: { ...item.metadata, assetId: result.assetId } } : item));
+            });
             if (domainProjectId) await queryClient.invalidateQueries({ queryKey: ["project", domainProjectId] });
         },
         [domainProjectId, projectId, queryClient, setNodes],

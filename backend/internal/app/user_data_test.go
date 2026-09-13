@@ -257,6 +257,39 @@ func TestValidateCanvasMediaAssetsAcceptsMatchingNodeAndTimelineAssets(t *testin
 	}
 }
 
+func TestValidateCanvasMediaAssetsRejectsUnavailableResources(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		owner   string
+		status  model.ResourceStatus
+		message string
+	}{
+		{name: "missing", message: "资源记录不可用"},
+		{name: "other owner", owner: "user-2", status: model.ResourceStatusReady, message: "资源记录不可用"},
+		{name: "pending", owner: "user-1", status: model.ResourceStatusPending, message: "尚未就绪"},
+		{name: "failed", owner: "user-1", status: model.ResourceStatusFailed, message: "尚未就绪"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			svc, db, _ := newResourceDeletionTestService(t)
+			if test.owner != "" {
+				resource := model.Resource{ID: "resource-unavailable", UserID: test.owner, Status: test.status, Provider: "s3"}
+				if err := db.Create(&resource).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			asset := model.Asset{ID: "asset-unavailable", UserID: "user-1", PayloadJSON: `{"data":{"storageKey":"resource:resource-unavailable"}}`}
+			if err := db.Create(&asset).Error; err != nil {
+				t.Fatal(err)
+			}
+			raw := json.RawMessage(`{"nodes":[{"type":"image","metadata":{"assetId":"asset-unavailable","storageKey":"resource:resource-unavailable"}}]}`)
+			err := svc.validateCanvasMediaAssets("user-1", raw)
+			if err == nil || !strings.Contains(err.Error(), test.message) || !strings.Contains(err.Error(), "resource-unavailable") {
+				t.Fatalf("validateCanvasMediaAssets() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateCanvasMediaAssetsRejectsMismatchedAsset(t *testing.T) {
 	svc, db, _ := newResourceDeletionTestService(t)
 	resources := []model.Resource{

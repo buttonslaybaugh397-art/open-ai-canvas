@@ -13,6 +13,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
+	awsclient "github.com/aws/aws-sdk-go/aws/client"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
@@ -74,10 +75,14 @@ func newS3Client(setting ossSettingValue, timeout time.Duration) (*awss3.S3, err
 }
 
 func putS3Object(setting ossSettingValue, objectKey string, mimeType string, size int64, body io.Reader) (string, error) {
+	// Bound the entire upload, including SDK retries, not two minutes per attempt.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 	client, err := newS3Client(setting, 2*time.Minute)
 	if err != nil {
 		return "", err
 	}
+	client.Retryer = awsclient.DefaultRetryer{NumMaxRetries: 1}
 	var seekable io.ReadSeeker
 	if reader, ok := body.(io.ReadSeeker); ok {
 		seekable = reader
@@ -102,7 +107,7 @@ func putS3Object(setting ossSettingValue, objectKey string, mimeType string, siz
 	if size >= 0 {
 		input.ContentLength = aws.Int64(size)
 	}
-	output, err := client.PutObjectWithContext(context.Background(), input)
+	output, err := client.PutObjectWithContext(ctx, input)
 	if err != nil {
 		return "", fmt.Errorf("S3 上传失败：%w", err)
 	}

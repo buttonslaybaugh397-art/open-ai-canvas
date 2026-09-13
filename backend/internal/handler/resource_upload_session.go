@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 
 // 分片上传会话：把“导入本地媒体”拆成 开始→逐片→合并 三段，单片上限 8MB，
 // 文件整体不再受 multipart 单请求大小限制（对齐 Concat 桌面端“任意大小直接入库”的体验）。
-// 会话状态只存在内存（重启即失效 → 前端整传重试），磁盘暂存在系统临时目录，随会话清理。
+// 会话状态只存在内存；重启后需重新导入。片级瞬时失败复用原会话重试。
 const (
 	chunkUploadChunkSize   = 8 << 20
 	chunkUploadSlackBytes  = 64 << 10 // MaxBytesReader 允许的超片余量
@@ -29,6 +30,8 @@ const (
 )
 
 type chunkedUploadSession struct {
+	mu             sync.RWMutex
+	closed         bool
 	ID             string
 	UserID         string
 	FileName       string
@@ -84,13 +87,17 @@ func (s *chunkedUploadSession) chunkSizeAt(index int) int64 {
 
 func removeExpiredChunkSessions() {
 	now := time.Now()
+	var expired []*chunkedUploadSession
 	chunkUploadSessions.Lock()
-	defer chunkUploadSessions.Unlock()
 	for id, sess := range chunkUploadSessions.m {
 		if now.Sub(sess.CreatedAt) > chunkUploadTTL {
-			_ = os.RemoveAll(sess.Dir)
+			expired = append(expired, sess)
 			delete(chunkUploadSessions.m, id)
 		}
+	}
+	chunkUploadSessions.Unlock()
+	for _, sess := range expired {
+		removeChunkSessionFiles(sess)
 	}
 }
 
@@ -103,11 +110,61 @@ func takeChunkSession(id string) *chunkedUploadSession {
 
 func dropChunkSession(id string) {
 	chunkUploadSessions.Lock()
-	defer chunkUploadSessions.Unlock()
-	if sess := chunkUploadSessions.m[id]; sess != nil {
-		_ = os.RemoveAll(sess.Dir)
-		delete(chunkUploadSessions.m, id)
+	sess := chunkUploadSessions.m[id]
+	delete(chunkUploadSessions.m, id)
+	chunkUploadSessions.Unlock()
+	if sess != nil {
+		removeChunkSessionFiles(sess)
 	}
+}
+
+func removeChunkSessionFiles(sess *chunkedUploadSession) {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.closed = true
+	_ = os.RemoveAll(sess.Dir)
+}
+
+func chunkUploadIdentity(header, body string) (string, error) {
+	header, body = strings.TrimSpace(header), strings.TrimSpace(body)
+	if header != "" && body != "" && header != body {
+		return "", fmt.Errorf("上传幂等标识不一致")
+	}
+	if header != "" {
+		return header, nil
+	}
+	return body, nil
+}
+
+func (s *chunkedUploadSession) writeChunk(index int, body io.Reader) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return service.NotFound("上传会话已结束，请重新导入")
+	}
+	if index < 0 || index >= s.ChunkCount || s.chunkSizeAt(index) <= 0 {
+		return service.BadAuthRequest("非法的分片序号")
+	}
+	// 每次尝试使用独立临时文件，完整接收后发布，失败不破坏已确认分片。
+	dst, err := os.CreateTemp(s.Dir, "incoming-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(dst.Name())
+	_, copyErr := io.CopyN(dst, body, s.chunkSizeAt(index))
+	closeErr := dst.Close()
+	if copyErr != nil {
+		return service.BadAuthRequest(fmt.Sprintf("分片 %d 上传不完整，请重试", index))
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	var probe [1]byte
+	extra, readErr := body.Read(probe[:])
+	if extra != 0 || readErr != io.EOF {
+		return service.BadAuthRequest(fmt.Sprintf("分片 %d 长度无效，请重试", index))
+	}
+	return os.Rename(dst.Name(), s.chunkPath(index))
 }
 
 // RegisterChunkedUploadRoutes 注册本地媒体分片上传三条接口（POST 开始 / PUT 上传片 / POST 合并）。
@@ -144,12 +201,18 @@ func RegisterChunkedUploadRoutes(r *gin.RouterGroup, svc *service.Service) {
 			fail(c, http.StatusBadRequest, fmt.Errorf("文件大小必须大于 0"))
 			return
 		}
+		uploadIdentity, err := chunkUploadIdentity(c.GetHeader("X-Idempotency-Key"), req.IdempotencyKey)
+		if err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
 		// 超账号存储总量的文件无论如何都会失败，提前给出明确提示。
 		if policy.Resource.StoredFileGB > 0 && req.Size > int64(policy.Resource.StoredFileGB)<<30 {
 			fail(c, http.StatusBadRequest, fmt.Errorf("文件超过账号存储总量上限 %dGB", policy.Resource.StoredFileGB))
 			return
 		}
 		// 同一用户并发会话数兜底，防内存占用失控。
+		removeExpiredChunkSessions()
 		active := 0
 		chunkUploadSessions.Lock()
 		for _, sess := range chunkUploadSessions.m {
@@ -176,10 +239,13 @@ func RegisterChunkedUploadRoutes(r *gin.RouterGroup, svc *service.Service) {
 			Width:          req.Width,
 			Height:         req.Height,
 			DurationMs:     req.DurationMs,
-			IdempotencyKey: req.IdempotencyKey,
+			IdempotencyKey: uploadIdentity,
 			ChunkCount:     int((req.Size + chunkUploadChunkSize - 1) / chunkUploadChunkSize),
 			Dir:            dir,
 			CreatedAt:      time.Now(),
+		}
+		if session.IdempotencyKey == "" {
+			session.IdempotencyKey = "chunk-upload:" + session.ID
 		}
 		chunkUploadSessions.Lock()
 		chunkUploadSessions.m[session.ID] = session
@@ -210,26 +276,13 @@ func RegisterChunkedUploadRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		// 单片限长（期望长度 + 少量余量），超长直接中断，避免内存/磁盘被恶意占用。
 		body := http.MaxBytesReader(c.Writer, c.Request.Body, expected+chunkUploadSlackBytes)
-		dst, err := os.OpenFile(session.chunkPath(index), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		receiveStarted := time.Now()
+		err = session.writeChunk(index, body)
+		appendUploadTiming(c, "receive", receiveStarted)
 		if err != nil {
 			failService(c, err)
 			return
 		}
-		written, copyErr := io.CopyN(dst, body, expected)
-		closeErr := dst.Close()
-		var probe [1]byte
-		extra, readErr := body.Read(probe[:])
-		if copyErr != nil || closeErr != nil {
-			_ = os.Remove(session.chunkPath(index))
-			fail(c, http.StatusBadRequest, fmt.Errorf("分片 %d 上传不完整，请重试", index))
-			return
-		}
-		if readErr == nil || extra > 0 {
-			_ = os.Remove(session.chunkPath(index))
-			fail(c, http.StatusBadRequest, fmt.Errorf("分片 %d 超过大小限制", index))
-			return
-		}
-		_ = written
 		ok(c, gin.H{"index": index})
 	})
 
@@ -245,11 +298,24 @@ func RegisterChunkedUploadRoutes(r *gin.RouterGroup, svc *service.Service) {
 			fail(c, http.StatusNotFound, fmt.Errorf("上传会话不存在或已过期，请重新导入"))
 			return
 		}
+		session.mu.Lock()
+		cleanup := false
+		defer func() {
+			session.mu.Unlock()
+			if cleanup {
+				dropChunkSession(id)
+			}
+		}()
+		if session.closed {
+			fail(c, http.StatusNotFound, fmt.Errorf("上传会话已结束，请重新导入"))
+			return
+		}
 		if !session.hasAllChunks() {
 			fail(c, http.StatusBadRequest, fmt.Errorf("上传文件不完整，请重新导入"))
 			return
 		}
 		mergedPath := filepath.Join(session.Dir, "merged")
+		mergeStarted := time.Now()
 		merged, err := os.OpenFile(mergedPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			failService(c, err)
@@ -277,7 +343,7 @@ func RegisterChunkedUploadRoutes(r *gin.RouterGroup, svc *service.Service) {
 			return
 		}
 		if total != session.Size {
-			dropChunkSession(id)
+			session.closed, cleanup = true, true
 			fail(c, http.StatusBadRequest, fmt.Errorf("上传文件不完整，请重新导入"))
 			return
 		}
@@ -287,9 +353,11 @@ func RegisterChunkedUploadRoutes(r *gin.RouterGroup, svc *service.Service) {
 			return
 		}
 		defer fh.Close()
+		appendUploadTiming(c, "merge", mergeStarted)
+		storeStarted := time.Now()
 		resource, svcErr := svc.UploadResourceFile(user.ID, session.FileName, session.Size, session.Kind, session.Width, session.Height, session.DurationMs, fh, session.IdempotencyKey)
-		// 无论成败都结束会话：失败时前端会整传重试，不需要保留残片。
-		dropChunkSession(id)
+		appendUploadTiming(c, "store", storeStarted)
+		session.closed, cleanup = true, true
 		if svcErr != nil {
 			failService(c, svcErr)
 			return

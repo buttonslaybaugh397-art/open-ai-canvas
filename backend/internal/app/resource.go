@@ -289,7 +289,7 @@ func (s *Service) uploadResource(userID string, header *multipart.FileHeader, ki
 	mimeType := strings.TrimSpace(header.Header.Get("Content-Type"))
 	mimeType = detectUploadedMimeType(file, header.Filename, mimeType)
 	if existing != nil {
-		return s.retryStoredResource(userID, existing, kind, mimeType, header.Size, file)
+		return s.retryStoredResource(userID, existing, kind, mimeType, header.Size, file, false)
 	}
 	day, err := s.reserveUserUploadQuota(userID, header.Size)
 	if err != nil {
@@ -326,7 +326,7 @@ func (s *Service) UploadResourceFile(userID string, fileName string, size int64,
 	}
 	mimeType := detectUploadedMimeType(file, fileName, "")
 	if existing != nil {
-		return s.retryStoredResource(userID, existing, kind, mimeType, size, file)
+		return s.retryStoredResource(userID, existing, kind, mimeType, size, file, true)
 	}
 	day, err := s.reserveChunkedUploadQuota(userID, size)
 	if err != nil {
@@ -389,7 +389,7 @@ func (s *Service) ImportResourceURL(userID string, rawURL string, kind string, w
 	}
 	size := int64(len(payload.data))
 	if existing != nil {
-		return s.retryStoredResource(userID, existing, kind, payload.mimeType, size, bytes.NewReader(payload.data))
+		return s.retryStoredResource(userID, existing, kind, payload.mimeType, size, bytes.NewReader(payload.data), false)
 	}
 	day, err := s.reserveUserUploadQuota(userID, size)
 	if err != nil {
@@ -625,7 +625,7 @@ func (s *Service) storeResourceObject(resource *model.Resource, fileName string,
 	return "", nil
 }
 
-func (s *Service) retryStoredResource(userID string, resource *model.Resource, kind string, mimeType string, size int64, body io.Reader) (*model.Resource, error) {
+func (s *Service) retryStoredResource(userID string, resource *model.Resource, kind string, mimeType string, size int64, body io.Reader, chunked bool) (*model.Resource, error) {
 	if resource == nil {
 		return nil, errors.New("资源不存在")
 	}
@@ -653,7 +653,13 @@ func (s *Service) retryStoredResource(userID string, resource *model.Resource, k
 	resource.Status = model.ResourceStatusPending
 	resource.Error = ""
 	resource.UpdatedAt = time.Now()
-	day, err := s.reserveRetryUploadQuota(userID, size)
+	// failed / pending 记录不计入已用空间，重试须重新预留日额度及总空间。
+	var day string
+	if chunked {
+		day, err = s.reserveChunkedUploadQuota(userID, size)
+	} else {
+		day, err = s.reserveUserUploadQuota(userID, size)
+	}
 	if err != nil {
 		resource.Status = model.ResourceStatusFailed
 		resource.Error = err.Error()
@@ -667,7 +673,7 @@ func (s *Service) retryStoredResource(userID string, resource *model.Resource, k
 	etag, err = s.storeResourceObject(resource, "", body)
 	resource.UpdatedAt = time.Now()
 	if err != nil {
-		s.releaseRetryUploadQuota(userID, day, size)
+		s.releaseUserUploadQuota(userID, day, size)
 		resource.Status = model.ResourceStatusFailed
 		resource.Error = err.Error()
 		if saveErr := s.repo.SaveResource(resource); saveErr != nil {
@@ -678,7 +684,7 @@ func (s *Service) retryStoredResource(userID string, resource *model.Resource, k
 	resource.Status = model.ResourceStatusReady
 	resource.ETag = etag
 	if err := s.repo.SaveResource(resource); err != nil {
-		s.releaseRetryUploadQuota(userID, day, size)
+		s.releaseUserUploadQuota(userID, day, size)
 		resource.Status = model.ResourceStatusFailed
 		resource.Error = "保存资源重试就绪状态失败"
 		if saveErr := s.repo.SaveResource(resource); saveErr != nil {
@@ -686,6 +692,7 @@ func (s *Service) retryStoredResource(userID string, resource *model.Resource, k
 		}
 		return nil, fmt.Errorf("保存资源重试就绪状态失败：%w", err)
 	}
+	s.commitUserUploadQuota(userID, size)
 	s.recordActivity(userID, "resource", 1)
 	return resource, nil
 }

@@ -195,7 +195,9 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			return
 		}
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, (policy.Resource.ResourceUploadMB<<20)+(1<<20))
+		receiveStarted := time.Now()
 		file, err := c.FormFile("file")
+		appendUploadTiming(c, "receive", receiveStarted)
 		if err != nil {
 			var maxErr *http.MaxBytesError
 			if errors.As(err, &maxErr) {
@@ -209,7 +211,9 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		width, _ := strconv.Atoi(c.PostForm("width"))
 		height, _ := strconv.Atoi(c.PostForm("height"))
 		durationMs, _ := strconv.ParseInt(c.PostForm("durationMs"), 10, 64)
+		storeStarted := time.Now()
 		resource, err := svc.UploadResource(user.ID, file, c.PostForm("kind"), width, height, durationMs, c.GetHeader("X-Idempotency-Key"))
+		appendUploadTiming(c, "store", storeStarted)
 		if err != nil {
 			failService(c, err)
 			return

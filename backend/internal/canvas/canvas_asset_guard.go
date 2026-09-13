@@ -50,16 +50,18 @@ func (s *Service) ValidateCanvasMediaAssets(userID string, raw json.RawMessage) 
 	if err != nil {
 		return err
 	}
-	readyResources := make(map[string]struct{}, len(resources))
+	resourceStatuses := make(map[string]model.ResourceStatus, len(resources))
 	for _, resource := range resources {
-		if resource.Status == model.ResourceStatusReady {
-			readyResources[resource.ID] = struct{}{}
-		}
+		resourceStatuses[resource.ID] = resource.Status
 	}
 
 	for _, reference := range references {
-		if _, exists := readyResources[reference.ResourceID]; !exists {
-			return kernel.BadAuthRequest("画布媒体对应的云端资源不存在或尚未就绪，请重新上传")
+		status, exists := resourceStatuses[reference.ResourceID]
+		if !exists {
+			return kernel.BadAuthRequest("画布引用的资源记录不可用（ID：" + reference.ResourceID + "），请检查数据库恢复是否完整及资源归属")
+		}
+		if status != model.ResourceStatusReady {
+			return kernel.BadAuthRequest("画布资源尚未就绪（ID：" + reference.ResourceID + "），请检查上传状态后重试")
 		}
 		resourceIDs, assetExists := assetResources[reference.AssetID]
 		if !assetExists {

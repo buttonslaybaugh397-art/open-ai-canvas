@@ -35,6 +35,7 @@ export async function uploadMediaFile(input: Blob, prefix = "file", onProgress?:
     const blob = input;
     const previewUrl = URL.createObjectURL(blob);
     let retainPreviewUrl = false;
+    let posterUpload: Promise<UploadedImage | undefined> = Promise.resolve(undefined);
 
     try {
         let captured: Awaited<ReturnType<typeof captureVideoPoster>> | undefined;
@@ -73,20 +74,17 @@ export async function uploadMediaFile(input: Blob, prefix = "file", onProgress?:
             meta = { hasAudio: resolvedHasAudio };
         }
 
-        let poster: UploadedImage | undefined;
-        if (captured?.poster) {
-            try {
-                poster = await uploadImage(captured.poster);
-            } catch (error) {
-                // 预览图失败不应把已经可用的视频降级成本地文件；视频本体仍按强校验上传。
-                console.warn("上传视频预览图失败，继续保存视频本体", { mimeType: blob.type, bytes: blob.size, error });
-            }
-        }
+        // 封面与视频本体并行传输，避免对象存储延迟在两个请求之间累加。
+        posterUpload = captured?.poster ? uploadImage(captured.poster).catch((error) => {
+            console.warn("上传视频预览图失败，继续保存视频本体", { mimeType: blob.type, bytes: blob.size, error });
+            return undefined;
+        }) : Promise.resolve(undefined);
 
         let remoteUploadError = "";
         try {
             const kind = blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : "file";
             const resource = await uploadResourceFile(blob, kind, { ...meta, fileName: input instanceof File ? input.name : undefined, idempotencyKey: storageKey }, onProgress);
+            const poster = await posterUpload;
             try {
                 await primeResourceBlobCache(resourceStorageKey(resource.id), blob);
             } catch (error) {
@@ -104,8 +102,11 @@ export async function uploadMediaFile(input: Blob, prefix = "file", onProgress?:
         await store.setItem(storageKey, blob);
         retainPreviewUrl = true;
         objectUrls.set(storageKey, previewUrl);
+        const poster = await posterUpload;
         return { url: previewUrl, storageKey, bytes: blob.size, mimeType: blob.type || "application/octet-stream", ...meta, preview: poster, pendingRemoteUpload: true, remoteUploadError };
     } finally {
+        // 异常路径也收拢并行封面请求，避免调用结束后仍继续写入。
+        await posterUpload;
         // 只有本地降级结果需要把 objectURL 留给页面；成功上传和所有异常路径都及时释放。
         if (!retainPreviewUrl) URL.revokeObjectURL(previewUrl);
     }

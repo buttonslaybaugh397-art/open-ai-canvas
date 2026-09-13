@@ -950,6 +950,11 @@ func TestStoreResourceReusesReadyUploadIdentity(t *testing.T) {
 
 func TestRetryStoredResourceKeepsOriginalObjectKey(t *testing.T) {
 	svc := newResourceTestService(t)
+	t.Cleanup(func() {
+		if svc.pendingStorage["user-1"] != 0 {
+			t.Fatal("retry leaked storage reservation")
+		}
+	})
 	uploadKey := normalizedResourceUploadKey([]string{"image:user-1:retry-upload"})
 	failed := &model.Resource{
 		ID: "resource-failed", UserID: "user-1", Kind: "image", Status: model.ResourceStatusFailed,
@@ -959,7 +964,7 @@ func TestRetryStoredResourceKeepsOriginalObjectKey(t *testing.T) {
 	if err := svc.repo.CreateResource(failed); err != nil {
 		t.Fatal(err)
 	}
-	retried, err := svc.retryStoredResource("user-1", failed, "image", "image/png", 7, bytes.NewReader([]byte("payload")))
+	retried, err := svc.retryStoredResource("user-1", failed, "image", "image/png", 7, bytes.NewReader([]byte("payload")), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -985,6 +990,11 @@ func TestRetryStoredResourceKeepsOriginalObjectKey(t *testing.T) {
 
 func TestRetryStoredResourceReleasesDailyQuotaAfterFailure(t *testing.T) {
 	svc := newResourceTestService(t)
+	t.Cleanup(func() {
+		if svc.pendingStorage["user-1"] != 0 {
+			t.Fatal("failed retry leaked storage reservation")
+		}
+	})
 	uploadKey := normalizedResourceUploadKey([]string{"image:user-1:failed-retry"})
 	failed := &model.Resource{
 		ID: "resource-failed-retry", UserID: "user-1", Kind: "image", Status: model.ResourceStatusFailed,
@@ -994,7 +1004,7 @@ func TestRetryStoredResourceReleasesDailyQuotaAfterFailure(t *testing.T) {
 	if err := svc.repo.CreateResource(failed); err != nil {
 		t.Fatal(err)
 	}
-	_, err := svc.retryStoredResource("user-1", failed, "image", "image/png", 7, iotest.ErrReader(errors.New("write failed")))
+	_, err := svc.retryStoredResource("user-1", failed, "image", "image/png", 7, iotest.ErrReader(errors.New("write failed")), false)
 	if err == nil || !strings.Contains(err.Error(), "write failed") {
 		t.Fatalf("retryStoredResource() error = %v", err)
 	}
@@ -1005,6 +1015,69 @@ func TestRetryStoredResourceReleasesDailyQuotaAfterFailure(t *testing.T) {
 	}
 	if usage != 0 {
 		t.Fatalf("daily upload usage = %d, want 0", usage)
+	}
+}
+
+func TestChunkedResourceRetryUsesOriginalSizeAndQuotaContract(t *testing.T) {
+	const size = int64(51 << 20)
+	body := make([]byte, size)
+	for _, scenario := range []string{"success", "storage-full", "daily-full", "multipart"} {
+		t.Run(scenario, func(t *testing.T) {
+			svc := newResourceTestService(t)
+			policy := defaultRuntimePolicy()
+			day := time.Now().UTC().Format("2006-01-02")
+			failed := &model.Resource{ID: "failed", UserID: "user-1", Kind: "file", MimeType: "application/octet-stream", Status: model.ResourceStatusFailed, Provider: "local", ObjectKey: "retry.bin", Size: size, UploadKey: normalizedResourceUploadKey([]string{"large-upload"}), CreatedAt: time.Now(), UpdatedAt: time.Now()}
+			if err := svc.repo.CreateResource(failed); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "storage-full" {
+				if err := svc.repo.CreateResource(&model.Resource{ID: "full", UserID: "user-1", Status: model.ResourceStatusReady, Provider: "local", ObjectKey: "full.bin", Size: gigabytes(policy.Resource.StoredFileGB) - size}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var baseline int64
+			if scenario == "daily-full" {
+				baseline = megabytes(policy.Resource.DailyUploadMB) - size
+				if err := svc.repo.ReserveDailyUpload("user-1", day, baseline, megabytes(policy.Resource.DailyUploadMB)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var resource *model.Resource
+			var err error
+			if scenario == "multipart" {
+				resource, err = svc.retryStoredResource("user-1", failed, "file", failed.MimeType, size, bytes.NewReader(body), false)
+			} else {
+				resource, err = svc.UploadResourceFile("user-1", "test.bin", size, "file", 0, 0, 0, bytes.NewReader(body), "large-upload")
+			}
+			if (err == nil) != (scenario == "success") {
+				t.Fatalf("unexpected retry error: %v", err)
+			}
+			wantUsage := baseline
+			if scenario == "success" {
+				wantUsage += size
+				if resource.ID != failed.ID || resource.Size != size || resource.Status != model.ResourceStatusReady {
+					t.Fatalf("retry changed identity: %#v", resource)
+				}
+				_, file, err := svc.OpenResource("user-1", resource.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				n, copyErr := io.Copy(io.Discard, file)
+				_ = file.Close()
+				if copyErr != nil || n != size {
+					t.Fatalf("stored bytes=%d err=%v", n, copyErr)
+				}
+			} else {
+				stored, readErr := svc.repo.ResourceForUser("user-1", failed.ID)
+				if readErr != nil || stored.Status != model.ResourceStatusFailed {
+					t.Fatalf("failed retry left pending state: %v", readErr)
+				}
+			}
+			used, err := svc.repo.DailyUploadBytes("user-1", day)
+			if err != nil || used != wantUsage || svc.pendingStorage["user-1"] != 0 {
+				t.Fatalf("quota mismatch: used=%d want=%d pending=%d err=%v", used, wantUsage, svc.pendingStorage["user-1"], err)
+			}
+		})
 	}
 }
 

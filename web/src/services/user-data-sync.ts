@@ -387,13 +387,30 @@ export async function deleteCanvasProjectsWithRemoteSync(ids: string[]) {
     });
 }
 
+/** 只确认本次素材的远端写入，其他画布的历史坏引用不能冒充本次素材同步失败。 */
+export async function saveRemoteAssetNow(id: string) {
+    const epoch = sessionEpoch;
+    const assetId = id.trim();
+    if (!assetId) throw new Error("素材 ID 不能为空");
+    await withRemoteUserDataSyncExclusive(async () => {
+        if (epoch !== sessionEpoch) throw new Error("账号已切换，已停止旧会话保存");
+        if (!activeRemoteUserId) throw new Error("尚未建立云端同步会话");
+        requireRemoteUserDataBaseline();
+        const source = useAssetStore.getState().assets.find((asset) => asset.id === assetId);
+        if (!source) throw new Error("素材不存在，请重新选择");
+        await verifyRemoteAssetBaseline(source);
+        if (sameEntitySnapshot(acknowledgedAssets.get(assetId), source)) return;
+        await saveRemoteAssetSnapshot(source, new Map());
+    });
+}
+
 export async function saveRemoteUserDataNow() {
     // 这是远端写入的总闸门：只有 phase=ready 且已建立 acknowledged 基线时才能提交。
     // 本地 Zustand/localForage 写成功不等于服务端写成功，任何同步异常都必须继续抛出给调用方。
     const epoch = sessionEpoch;
     if (!activeRemoteUserId) return;
     requireRemoteUserDataBaseline();
-    // 画布先用本地缓存秒开时，远端详情校验可能仍在进行；写入必须等待校验结果。
+    // 多个画布可能正在读取远端详情；写入必须等待校验结果。
     await waitForRemoteProjectLoads();
     if (syncPromise) {
         syncQueued = true;
@@ -443,11 +460,7 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>) {
             verifiedProjects.add(source.id);
         }
         for (const source of dirtyAssets) {
-            const baseline = acknowledgedAssets.get(source.id);
-            if (!baseline || verifiedAssets.has(source.id)) continue;
-            const { asset } = await getRemoteAsset(source.id);
-            if (Date.parse(asset.updatedAt) !== Date.parse(baseline.updatedAt)) throw new Error("素材远端版本已变化，已停止覆盖，请重新打开素材库");
-            verifiedAssets.add(source.id);
+            await verifyRemoteAssetBaseline(source);
         }
     }
 
@@ -456,11 +469,10 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>) {
     // 素材先于画布提交。这样画布中的 resource: 引用一旦成为远端事实，
     // 对应 Asset 已经存在，刷新或换设备不会出现只占容量、不见素材的窗口。
     for (const source of dirtyAssets) {
-        const remotePayload = await ensureRemoteResourceReferences(assetForRemoteSync(source), uploaded);
-        await upsertRemoteAsset(remotePayload);
-        acknowledgedAssets.set(source.id, source);
-        verifiedAssets.add(source.id);
+        await saveRemoteAssetSnapshot(source, uploaded);
     }
+    const canvasErrors: unknown[] = [];
+    let savedProjects = 0;
     for (const source of dirtyProjects) {
         const keysToUpload = collectLocalMediaKeys(source);
         const total = keysToUpload.length;
@@ -489,18 +501,38 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>) {
             await upsertRemoteCanvasProject(sanitizeCanvasProjectForRemoteSync(remotePayload));
             acknowledgedProjects.set(source.id, source);
             verifiedProjects.add(source.id);
-            if (total > 0) useSyncProgressStore.getState().setProjectProgress(source.id, null);
+            savedProjects += 1;
+            useSyncProgressStore.getState().setProjectProgress(source.id, null);
         } catch (error) {
-            if (total > 0) {
-                useSyncProgressStore.getState().setProjectProgress(source.id, {
-                    phase: "error",
-                    message: error instanceof Error ? error.message : "云端同步失败，等待重试",
-                });
-            }
-            throw error;
+            useSyncProgressStore.getState().setProjectProgress(source.id, {
+                projectId: source.id,
+                total,
+                completed: 0,
+                phase: "error",
+                message: error instanceof Error ? error.message : "云端同步失败，等待重试",
+            });
+            canvasErrors.push(error);
         }
     }
-    if (dirtyProjects.length) void appQueryClient.invalidateQueries({ queryKey: ["canvas-library"] });
+    if (savedProjects) void appQueryClient.invalidateQueries({ queryKey: ["canvas-library"] });
+    // 失败画布不更新确认基线，也不能阻塞其他画布的独立写入。
+    if (canvasErrors.length === 1) throw canvasErrors[0];
+    if (canvasErrors.length > 1) throw new AggregateError(canvasErrors, `${canvasErrors.length} 个画布云端保存失败，请检查各画布的同步状态`);
+}
+
+async function verifyRemoteAssetBaseline(source: Asset) {
+    const baseline = acknowledgedAssets.get(source.id);
+    if (!incrementalSession || !baseline || verifiedAssets.has(source.id)) return;
+    const { asset } = await getRemoteAsset(source.id);
+    if (Date.parse(asset.updatedAt) !== Date.parse(baseline.updatedAt)) throw new Error("素材远端版本已变化，已停止覆盖，请重新打开素材库");
+    verifiedAssets.add(source.id);
+}
+
+async function saveRemoteAssetSnapshot(source: Asset, uploaded: Map<string, string>) {
+    const remotePayload = await ensureRemoteResourceReferences(assetForRemoteSync(source), uploaded);
+    await upsertRemoteAsset(remotePayload);
+    acknowledgedAssets.set(source.id, source);
+    verifiedAssets.add(source.id);
 }
 
 function collectLocalMediaKeys(value: unknown, set = new Set<string>()): string[] {

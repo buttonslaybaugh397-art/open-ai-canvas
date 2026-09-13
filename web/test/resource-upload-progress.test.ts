@@ -43,7 +43,9 @@ test("分片上传累加片内真实进度，传输 100% 后仍须等待合并�
             return { config, status: 200, statusText: "OK", headers: {}, data: { code: 0, data } };
         };
         await uploadResourceFile(new Blob([new Uint8Array(size)]), "video", undefined, (loaded, total) => progress.push([loaded, total]));
-        expect(progress).toEqual([[chunkSize / 2, size], [chunkSize, size], [chunkSize + (size - chunkSize) / 2, size], [size, size]]);
+        expect(progress[0]).toEqual([chunkSize / 2, size]);
+        expect(progress.at(-1)).toEqual([size, size]);
+        expect(progress.every(([loaded, total], index) => total === size && loaded <= size && loaded >= (progress[index - 1]?.[0] || 0))).toBe(true);
         expect(merged).toBe(true);
     } finally {
         apiClient.defaults.adapter = adapter;

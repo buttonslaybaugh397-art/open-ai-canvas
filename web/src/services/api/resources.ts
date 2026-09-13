@@ -135,7 +135,8 @@ export function isResourceUrl(url?: string) {
 
 // 超过该阈值（与后端单请求 multipart 上限 50MB 一致）的本地媒体走分片上传，避免大视频导入失败。
 const CHUNK_UPLOAD_THRESHOLD = 50 << 20;
-const CHUNK_UPLOAD_RETRIES = 2;
+const CHUNK_UPLOAD_CONCURRENCY = 3;
+const CHUNK_UPLOAD_ATTEMPTS = 3;
 
 export async function uploadResourceFile(
     file: Blob,
@@ -171,37 +172,74 @@ export async function uploadResourceFile(
     }
 }
 
-// 分片上传：POST 开始会话 → 逐片 PUT 原始二进制（每片 8MB）→ POST 合并落库。
-// 单请求体积小、可断点续传/失败重试；单文件不再受 50MB 限制（仅日/总量配额约束）。
+// 分片上传限制并发，只重试未确认分片；合并失败不得自动重开会话整传。
 async function uploadFileInChunks(file: Blob, name: string, kind: "image" | "video" | "audio" | "file", meta: ResourceUploadMeta | undefined, onProgress?: (uploadedBytes: number, totalBytes: number) => void) {
-    // 片级失败通常意味着会话过期/网络抖动：整体重开一次会话重传（整传重试）。
-    for (let attempt = 0; attempt < CHUNK_UPLOAD_RETRIES; attempt++) {
-        try {
-            return await runChunkedUpload(file, name, kind, meta, onProgress);
-        } catch (error) {
-            if (attempt === CHUNK_UPLOAD_RETRIES - 1) throw error;
-        }
-    }
-    throw new Error("上传失败");
-}
-
-async function runChunkedUpload(file: Blob, name: string, kind: "image" | "video" | "audio" | "file", meta: ResourceUploadMeta | undefined, onProgress?: (uploadedBytes: number, totalBytes: number) => void) {
     const session = await http.post<{ uploadId: string; chunkSize: number; chunkCount: number }>("/resources/uploads", { fileName: name, kind, size: file.size, width: meta?.width, height: meta?.height, durationMs: meta?.durationMs }, uploadRequestConfig(meta?.idempotencyKey));
-    for (let index = 0; index < session.chunkCount; index++) {
-        const start = index * session.chunkSize;
-        const end = Math.min(file.size, start + session.chunkSize);
-        const blob = file.slice(start, end);
-        const data = new FormData();
-        data.append("chunk", blob);
-        // raw 二进制直传，与后端按裸 body 逐片落盘对齐（勿设手动 Content-Type，让 axios 处理）。
-        await http.put<{ index: number }>(`/resources/uploads/${encodeURIComponent(session.uploadId)}/chunks/${index}`, blob, {
-            headers: { "Content-Type": "application/octet-stream" },
-            onUploadProgress: onProgress ? ({ loaded }) => onProgress(start + Math.min(loaded, blob.size), file.size) : undefined,
-        });
-        onProgress?.(Math.min(end, file.size), file.size);
+    if (!session || typeof session.uploadId !== "string" || !session.uploadId.trim() || !Number.isSafeInteger(session.chunkSize) || session.chunkSize <= 0 || !Number.isSafeInteger(session.chunkCount) || session.chunkCount !== Math.ceil(file.size / session.chunkSize)) {
+        throw new ResourceUploadError("服务端返回的分片信息无效", { permanent: true });
     }
+    const uploaded = new Map<number, number>();
+    let totalUploaded = 0;
+    let nextIndex = 0;
+    const controller = new AbortController();
+    let failure: unknown;
+    const report = (index: number, bytes: number) => {
+        if (controller.signal.aborted) return;
+        const previous = uploaded.get(index) || 0;
+        const next = Math.max(previous, bytes);
+        uploaded.set(index, next);
+        totalUploaded += next - previous;
+        onProgress?.(Math.min(totalUploaded, file.size), file.size);
+    };
+    const worker = async () => {
+        try {
+            while (!controller.signal.aborted && nextIndex < session.chunkCount) {
+                const index = nextIndex++;
+                const start = index * session.chunkSize;
+                const blob = file.slice(start, Math.min(file.size, start + session.chunkSize));
+                for (let attempt = 0; ; attempt++) {
+                    try {
+                        await http.put<{ index: number }>(`/resources/uploads/${encodeURIComponent(session.uploadId)}/chunks/${index}`, blob, {
+                            headers: { "Content-Type": "application/octet-stream" },
+                            signal: controller.signal,
+                            onUploadProgress: onProgress ? ({ loaded }) => report(index, Math.min(loaded, blob.size)) : undefined,
+                        });
+                        report(index, blob.size);
+                        break;
+                    } catch (error) {
+                        if (controller.signal.aborted || attempt >= CHUNK_UPLOAD_ATTEMPTS - 1 || normalizeUploadError(error).permanent) throw error;
+                        const delay = error instanceof ApiError && error.retryAfterMs !== undefined ? error.retryAfterMs : 500 * 2 ** attempt;
+                        await waitForChunkRetry(delay, controller.signal);
+                    }
+                }
+            }
+        } catch (error) {
+            if (!controller.signal.aborted) {
+                failure = error;
+                controller.abort();
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(CHUNK_UPLOAD_CONCURRENCY, session.chunkCount) }, worker));
+    if (controller.signal.aborted) throw failure;
     const complete = await http.post<{ resource: RemoteResource }>(`/resources/uploads/${encodeURIComponent(session.uploadId)}/complete`);
     return complete.resource;
+}
+
+function waitForChunkRetry(delay: number, signal: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+        const abort = () => {
+            clearTimeout(timer);
+            signal.removeEventListener("abort", abort);
+            reject(new DOMException("请求已取消", "AbortError"));
+        };
+        const timer = setTimeout(() => {
+            signal.removeEventListener("abort", abort);
+            resolve();
+        }, Math.max(0, delay));
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) abort();
+    });
 }
 
 // 失败分类直接复用 request() 已经算好的 ApiError.retryable（408/425/429/5xx 可重试），

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -67,6 +68,36 @@ func TestS3ObjectOperationsUsePathStyleSessionTokenAndNoManagedHeaders(t *testin
 	}
 	if strings.Join(methods, ",") != "PUT,GET,DELETE" {
 		t.Fatalf("methods = %v", methods)
+	}
+}
+
+func TestS3UploadBoundsRetriesAndRewindsBody(t *testing.T) {
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
+	for _, recover := range []bool{true, false} {
+		var attempts atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			data, _ := io.ReadAll(r.Body)
+			if string(data) != "payload" {
+				t.Errorf("retry body = %q", data)
+			}
+			attempt := attempts.Add(1)
+			if recover && attempt == 2 {
+				w.Header().Set("ETag", `"retry-etag"`)
+				return
+			}
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `<Error><Code>ServiceUnavailable</Code><Message>retry</Message></Error>`)
+		}))
+		setting := ossSettingValue{Provider: s3Provider, Region: "us-east-1", Endpoint: server.URL, Bucket: "bucket", AccessKeyID: "test-id", AccessKeySecret: "test-secret"}
+		etag, err := putS3Object(setting, "test.txt", "text/plain", 7, strings.NewReader("payload"))
+		server.Close()
+		if attempts.Load() != 2 || (err == nil) != recover {
+			t.Fatalf("recover=%v attempts=%d err=%v", recover, attempts.Load(), err)
+		}
+		if recover && etag != "retry-etag" {
+			t.Fatalf("etag = %q", etag)
+		}
 	}
 }
 

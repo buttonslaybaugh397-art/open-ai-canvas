@@ -12,6 +12,7 @@ import { createCanvasProjectWithRemoteSync, deleteCanvasProjectsWithRemoteSync, 
 import { flushCanvasStorePersistence, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
+import { useSyncProgressStore } from "@/stores/use-sync-progress-store";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
 import type { CanvasHistorySnapshot } from "./use-canvas-history";
 
@@ -84,6 +85,17 @@ export function useCanvasProjectLifecycle({
     const [loadError, setLoadError] = useState("");
     const [loadAttempt, setLoadAttempt] = useState(0);
     const viewportSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const remoteSaveError = useSyncProgressStore((state) => {
+        const progress = state.syncingProjects[projectId];
+        return progress?.phase === "error" ? progress.message || "云端保存失败" : "";
+    });
+
+    useEffect(() => {
+        if (!projectLoaded || !remoteSaveError) return;
+        const key = `canvas-save-error:${projectId}`;
+        message.warning({ key, content: `当前画布尚未保存到云端：${remoteSaveError}`, duration: 0 });
+        return () => message.destroy(key);
+    }, [message, projectId, projectLoaded, remoteSaveError]);
 
     useEffect(() => {
         if (!hydrated || !sessionHydrated) return;
@@ -126,15 +138,11 @@ export function useCanvasProjectLifecycle({
         };
 
         const load = async () => {
-            const cachedProject = useCanvasStore.getState().projects.find((p) => p.id === projectId);
-            if (cachedProject && cachedProject.nodes?.length) {
-                // 本地已有该画布的持久化缓存：先以本地数据秒开渲染，彻底消除白屏与等待
-                applyRestoredProject(cachedProject);
-            }
+            // 缓存可能来自迁移前的数据库；远端校验完成前不能启动保存或历史任务恢复。
             const loadedProject = await loadCanvasProjectForEditing(projectId);
             if (cancelled) return;
             if (!loadedProject) {
-                if (!cachedProject) navigate("/canvas", { replace: true });
+                navigate("/canvas", { replace: true });
                 return;
             }
             const project = useCanvasStore.getState().projects.find((p) => p.id === projectId) || loadedProject;
