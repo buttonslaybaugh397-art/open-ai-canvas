@@ -628,7 +628,7 @@ func ossSettingFromRequest(req OSSSettingRequest, current ossSettingValue) (ossS
 	}
 	if next.Provider == s3Provider {
 		switch next.S3Preset {
-		case "aws", "r2", "b2", "rustfs", "custom":
+		case "aws", "r2", "b2", "rustfs", "rainyun", "custom":
 		default:
 			return next, BadAuthRequest("S3 预设无效")
 		}
@@ -739,6 +739,11 @@ func normalizeOSSSetting(value ossSettingValue) ossSettingValue {
 	value.SessionToken = strings.TrimSpace(value.SessionToken)
 	value.StorageLocationID = strings.TrimSpace(value.StorageLocationID)
 	value.ArchivedCredentials = cloneOSSProviderCredentials(value.ArchivedCredentials)
+	if value.Provider == s3Provider && value.S3Preset == rainyunS3Preset {
+		value.Region = rainyunS3Region
+		value.Endpoint = rainyunS3Endpoint
+		value.PathStyle = true
+	}
 	return value
 }
 
@@ -819,3 +824,7 @@ func storageTestDigest(value ossSettingValue) string {
 	sum := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(sum[:])
 }
+
+const rainyunS3Preset = "rainyun"
+const rainyunS3Region = "us-east-1"
+const rainyunS3Endpoint = "https://cn-nb1.rains3.com"

@@ -144,7 +144,7 @@ export function UserOSSSettingsForm() {
                 </Form.Item>
                 {isS3 ? (
                     <Form.Item name="s3Preset" label="S3 预设" className="mb-3">
-                        <Select options={S3_PRESET_OPTIONS} onChange={(preset: S3Preset) => form.setFieldsValue(getS3PresetHints(preset))} />
+                        <Select options={S3_PRESET_OPTIONS} onChange={(preset: S3Preset) => { const hints = getS3PresetHints(preset); form.setFieldsValue({ region: hints.region, endpoint: hints.endpoint, ...(hints.pathStyle === true ? { pathStyle: true } : {}) }); }} />
                     </Form.Item>
                 ) : null}
                 <Form.Item name="region" label="Region" className="mb-3">

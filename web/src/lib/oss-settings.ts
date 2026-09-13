@@ -1,6 +1,6 @@
 export type OSSProvider = "aliyun" | "tencent" | "qiniu" | "s3";
 
-export type S3Preset = "aws" | "r2" | "b2" | "rustfs" | "custom";
+export type S3Preset = "aws" | "r2" | "b2" | "rustfs" | "rainyun" | "custom";
 
 export const DEFAULT_OSS_PATH_PREFIX = "open-ai-canvas";
 
@@ -32,10 +32,11 @@ export const S3_PRESET_OPTIONS: Array<{ label: string; value: S3Preset }> = [
     { label: "Cloudflare R2", value: "r2" },
     { label: "Backblaze B2", value: "b2" },
     { label: "RustFS", value: "rustfs" },
+    { label: "Rainyun 对象存储", value: "rainyun" },
     { label: "自定义", value: "custom" },
 ];
 
-const S3_PRESET_HINTS: Record<S3Preset, { region: string; endpoint: string; help: string }> = {
+const S3_PRESET_HINTS: Record<S3Preset, { region: string; endpoint: string; help: string; pathStyle?: boolean }> = {
     aws: {
         region: "us-east-1",
         endpoint: "https://s3.us-east-1.amazonaws.com",
@@ -55,6 +56,12 @@ const S3_PRESET_HINTS: Record<S3Preset, { region: string; endpoint: string; help
         region: "us-east-1",
         endpoint: "http://127.0.0.1:9000",
         help: "填写后端可访问的 RustFS S3 服务根 URL。",
+    },
+    rainyun: {
+        region: "us-east-1",
+        endpoint: "https://cn-nb1.rains3.com",
+        help: "Rainyun ROS 使用 us-east-1、Path Style 和区域 Endpoint；Bucket 只填写存储桶名称。",
+        pathStyle: true,
     },
     custom: {
         region: "us-east-1",

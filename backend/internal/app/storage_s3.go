@@ -66,6 +66,9 @@ func newS3Client(setting ossSettingValue, timeout time.Duration) (*awss3.S3, err
 		WithCredentials(credentials.NewStaticCredentials(setting.AccessKeyID, setting.AccessKeySecret, setting.SessionToken)).
 		WithHTTPClient(httpClient).
 		WithS3ForcePathStyle(setting.PathStyle || !standardAWSS3Endpoint(endpoint.String())).
+		// Some S3-compatible gateways do not complete Expect: 100-Continue for large PUTs.
+		// Keep AWS defaults for official endpoints, but disable this handshake for custom endpoints.
+		WithS3Disable100Continue(!standardAWSS3Endpoint(endpoint.String())).
 		WithDisableSSL(endpoint.Scheme == "http")
 	sess, err := session.NewSession(config)
 	if err != nil {

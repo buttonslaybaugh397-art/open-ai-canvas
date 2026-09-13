@@ -100,6 +100,12 @@ func (s *Service) testOSSSetting(scope string, ownerID string, actorID string, r
 
 func verifyOSSConnection(value ossSettingValue, testKey string) error {
 	payload := []byte("yingce-storage-test")
+	// AWS SDK adds Expect: 100-Continue to PUT requests at or above 2 MiB.
+	// Exercise that same path for S3-compatible endpoints so the connection test
+	// can catch gateways that accept only small probe uploads.
+	if strings.EqualFold(strings.TrimSpace(value.Provider), s3Provider) {
+		payload = bytes.Repeat([]byte{'x'}, 2*1024*1024+1)
+	}
 	// 连接测试验证服务端到对象存储的真实读写权限。CDN 是浏览器读取出口，
 	// 可能存在回源鉴权或边缘同步延迟，不能参与刚写入对象的最小读写测试。
 	testValue := value

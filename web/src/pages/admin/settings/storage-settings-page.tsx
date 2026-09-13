@@ -510,8 +510,8 @@ export default function StorageSettingsPage() {
                                                     options={S3_PRESET_OPTIONS}
                                                     onChange={(preset: S3Preset) => {
                                                         const hints = getS3PresetHints(preset);
-                                                        form.setFieldsValue({ region: hints.region, endpoint: hints.endpoint });
-                                                        setDirty(hasStorageChanges({ ...form.getFieldsValue(true), region: hints.region, endpoint: hints.endpoint, s3Preset: preset }, setting));
+                                                        form.setFieldsValue({ region: hints.region, endpoint: hints.endpoint, ...(hints.pathStyle === true ? { pathStyle: true } : {}) });
+                                                        setDirty(hasStorageChanges({ ...form.getFieldsValue(true), region: hints.region, endpoint: hints.endpoint, pathStyle: hints.pathStyle === true ? true : form.getFieldValue("pathStyle"), s3Preset: preset }, setting));
                                                         setTestStale(true);
                                                     }}
                                                 />
