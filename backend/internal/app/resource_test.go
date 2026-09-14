@@ -490,7 +490,7 @@ func TestPrepareResourceDeliveryAllowsExplicitProxyWithCDN(t *testing.T) {
 	}
 }
 
-func TestPrepareResourceDeliverySignsPrivateQiniuCDNURL(t *testing.T) {
+func TestPrepareResourceDeliveryProxiesQiniuWithCDNBaseURL(t *testing.T) {
 	svc := newResourceTestService(t)
 	settingJSON, _ := json.Marshal(ossSettingValue{
 		Enabled: true, Provider: qiniuKodoProvider, Endpoint: "https://up-z0.qiniup.com", CDNBaseURL: "https://media.example.com",
@@ -511,8 +511,8 @@ func TestPrepareResourceDeliverySignsPrivateQiniuCDNURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if delivery.RedirectURL == "" || !strings.HasPrefix(delivery.RedirectURL, "https://media.example.com/ai/users/user-1/image/private.png?") || !strings.Contains(delivery.RedirectURL, "e=") || !strings.Contains(delivery.RedirectURL, "token=") {
-		t.Fatalf("PrepareResourceDelivery() = %q, want a signed Qiniu URL", delivery.RedirectURL)
+	if delivery.Resource == nil || delivery.RedirectURL != "" {
+		t.Fatalf("PrepareResourceDelivery() = %#v, want same-origin proxy delivery", delivery)
 	}
 }
 

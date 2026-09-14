@@ -127,13 +127,10 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 			return &ResourceDelivery{Resource: resource}, nil
 		}
 		if setting.Provider == qiniuKodoProvider && setting.CDNBaseURL != "" {
-			// 七牛私有空间即使配置了绑定域名，也不能匿名访问；必须使用
-			// Kodo 私有下载签名，否则浏览器会收到 NotSupportAnonymous。
-			redirectURL, err := signedOSSObjectURL(setting, resource.ObjectKey, time.Now().Add(directResourceURLTTL))
-			if err != nil {
-				return nil, err
-			}
-			return &ResourceDelivery{Resource: resource, RedirectURL: redirectURL}, nil
+			// Keep the browser on the current origin even when a Qiniu binding domain is configured.
+			// The backend still reads through the signed Qiniu CDN URL, preserving CDN acceleration
+			// while avoiding cross-origin redirects and Range/CORS failures in reverse-proxy setups.
+			return &ResourceDelivery{Resource: resource}, nil
 		}
 		if setting.CDNBaseURL != "" {
 			redirectURL, err := ossCDNObjectURL(setting.CDNBaseURL, resource.ObjectKey)
