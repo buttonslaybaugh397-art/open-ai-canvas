@@ -10,6 +10,7 @@ import { applyBatchPrimaryImage, applyNodeConfigPatch } from "@/lib/canvas/canva
 import { resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
 import { CONTENT_MODERATION_ERROR_CODE, isContentModerationError } from "@/lib/generation-error";
 import { ensureCanvasNodeAsset } from "@/services/project-asset-sync";
+import { getCachedResourceBlob } from "@/services/resource-blob-cache";
 import { CanvasNodeType, type CanvasFolderStyle, type CanvasFolderTheme, type CanvasNodeData, type CanvasNodeMetadata, type Position } from "@/types/canvas";
 
 type UseCanvasNodeEditorOptions = {
@@ -195,10 +196,23 @@ export function useCanvasNodeEditor({
             .catch((error) => message.error(error instanceof Error ? error.message : "资产分类更新失败"));
     }, [canvasId, domainProjectId, message, nodesRef, queryClient, setNodes]);
 
-    const downloadNodeImage = useCallback((node: CanvasNodeData) => {
-        if ((node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || !node.metadata?.content) return;
-        saveAs(node.metadata.content, buildCanvasMediaDownloadFileName(canvasTitle, node));
-    }, [canvasTitle]);
+    const downloadNodeImage = useCallback(async (node: CanvasNodeData) => {
+        if ((node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || (!node.metadata?.content && !node.metadata?.storageKey)) return;
+        const fileName = buildCanvasMediaDownloadFileName(canvasTitle, node);
+        const resourceId = node.metadata?.storageKey?.startsWith("resource:") ? node.metadata.storageKey.slice("resource:".length) : "";
+        if (!resourceId) {
+            if (node.metadata?.content) saveAs(node.metadata.content, fileName);
+            return;
+        }
+        try {
+            // Download remote resources through the same-origin proxy so a CDN redirect never navigates the canvas.
+            const blob = await getCachedResourceBlob(`resource:${resourceId}`);
+            if (!blob) throw new Error("资源文件暂时无法读取，请稍后重试");
+            saveAs(blob, fileName);
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "资源下载失败");
+        }
+    }, [canvasTitle, message]);
 
     const saveNodeAsset = useCallback(async (node: CanvasNodeData) => {
         if (node.type !== CanvasNodeType.Text && node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) return message.error("当前节点类型不能保存为素材");
