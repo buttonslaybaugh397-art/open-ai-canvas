@@ -298,8 +298,11 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			return
 		}
 		if delivery.RedirectURL != "" {
-			// CDN 或对象存储直连地址允许安全短期缓存
-			c.Header("Cache-Control", "private, max-age=86400, stale-while-revalidate=3600")
+			// RedirectURL may contain a short-lived signed CDN URL (for example Qiniu).
+			// Never cache the redirect beyond the signature lifetime, otherwise a reverse proxy can
+			// serve an expired URL and make media previews fail intermittently.
+			c.Header("Cache-Control", "private, no-store")
+			c.Header("Vary", "Cookie")
 			c.Header("Referrer-Policy", "no-referrer")
 			c.Header("X-Content-Type-Options", "nosniff")
 			c.Redirect(http.StatusTemporaryRedirect, delivery.RedirectURL)
