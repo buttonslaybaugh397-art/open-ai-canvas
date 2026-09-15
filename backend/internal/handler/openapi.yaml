@@ -137,6 +137,25 @@ paths:
           $ref: "#/components/responses/Error"
         "409":
           $ref: "#/components/responses/Error"
+  /admin/users/{id}/detail:
+    get:
+      tags: [admin-users]
+      summary: 管理员读取用户详情
+      description: |
+        storedFileBytes 为资源原件和会话附件实测占用，不是累计上传量。
+        文件核验最多等待 3 秒；不可用时 storedFileBytes 为 null，fileStorageError 提供状态提示，
+        不用零或数据库声明大小冒充实测值，不影响其他详情字段。dailyUploadBytes 保持 UTC 当日累计上传口径。
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Envelope" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /projects:
     get:
       tags: [projects]
@@ -175,6 +194,147 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
+  /resources/storage-usage:
+    get:
+      tags: [resources]
+      summary: 核算当前账号文件实际占用
+      description: |
+        账号取自登录 Cookie。按物理存储身份去重后，核实资源原件和会话附件的实际字节数。
+        包含回收站、失败上传留下的文件及尚未物理删除的 outbox 文件；明确不存在的对象计零。
+        不含播放缓存、临时分片、未归属文件和结构化 JSON，不能用于替代服务器磁盘统计。
+        普通读取允许最多 30 秒云端元数据缓存；refresh=1 强制回源。checkedAt 是最早观测时间。
+        不删除文件、不改写资源记录，核验失败返回错误而非部分总量或零。
+        每账号每分钟最多 30 次读取，其中强制重算最多 6 次；一次核算最长 30 秒。
+      parameters:
+        - in: query
+          name: refresh
+          schema: { type: integer, enum: [0, 1], default: 0 }
+      responses:
+        "200":
+          description: 当前账号实测容量，usedBytes 为三个分项之和；单位为字节
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, data, msg]
+                properties:
+                  code: { type: integer, enum: [0] }
+                  msg: { type: string }
+                  data:
+                    type: object
+                    required: [usage]
+                    properties:
+                      usage:
+                        type: object
+                        required: [usedBytes, totalBytes, resourceBytes, sessionBytes, pendingDeletionBytes, checkedAt]
+                        properties:
+                          usedBytes: { type: integer, format: int64, minimum: 0 }
+                          totalBytes: { type: integer, format: int64, minimum: 1 }
+                          resourceBytes: { type: integer, format: int64, minimum: 0 }
+                          sessionBytes: { type: integer, format: int64, minimum: 0 }
+                          pendingDeletionBytes: { type: integer, format: int64, minimum: 0 }
+                          checkedAt: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /resources/{id}/repair-references:
+    post:
+      tags: [resources]
+      summary: 原子修复当前用户素材和画布中的失效资源引用
+      description: 原资源必须不存在或属于当前用户且状态为 failed/deleted；替换资源必须属于当前用户且 ready。仅改写指定媒体字段中的完整引用，保留 JSON 和数据库更新时间。无匹配记录和重复调用均成功，无资源删除或改写。按 AssetWritePerMinute 对账号限流。
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, minLength: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [replacementResourceId]
+              properties:
+                replacementResourceId: { type: string, minLength: 1 }
+      responses:
+        "200":
+          description: 原子修复成功或幂等无操作
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, data, msg]
+                properties:
+                  code: { type: integer, enum: [0] }
+                  data:
+                    type: object
+                    required: [repaired]
+                    properties:
+                      repaired: { type: boolean, enum: [true] }
+                  msg: { type: string }
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          description: 资源状态不允许修复，或文档/资源发生并发变更；无部分写入
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          $ref: "#/components/responses/Error"
+        "500":
+          $ref: "#/components/responses/Error"
+  /resources/{id}/playback:
+    post:
+      tags: [resources]
+      summary: 按需创建视频兼容播放副本
+      description: 仅本人 ready 视频；空/none 抢占一次转码，ready/processing/failed 复用。无请求体。失败状态属于资源处理结果，返回 data.resource.playbackStatus=failed，不自动重试。
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        "200":
+          description: 返回当前资源及播放适配状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: integer, enum: [0] }
+                  data:
+                    type: object
+                    properties:
+                      resource:
+                        type: object
+                        properties:
+                          id: { type: string }
+                          playbackStatus: { type: string, enum: [processing, ready, failed] }
+                          playbackObjectKey: { type: string }
+                          playbackError: { type: string }
+                  msg: { type: string }
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+        "429":
+          description: 账号频控或全局转码并发已满，携带 Retry-After
+        "503":
+          $ref: "#/components/responses/Error"
   /resources/{id}/file:
     get:
       tags: [resources]
@@ -184,9 +344,33 @@ paths:
           name: id
           required: true
           schema: { type: string }
+        - in: query
+          name: variant
+          schema: { type: string, enum: [playback] }
+          description: ready 播放副本优先于云端重定向；支持 Range 和独立 ETag
+        - in: query
+          name: download
+          description: 设置为 1 时以附件流式下载原件，即使同时指定 variant=playback
+          schema: { type: string, enum: ["1"] }
+        - in: query
+          name: filename
+          description: 可选附件文件名，仅 download=1 时使用
+          schema: { type: string }
+        - in: query
+          name: direct
+          description: 设置为 1 请求直连；附件下载仅对支持附件签名的存储直连
+          schema: { type: string, enum: ["1"] }
+        - in: query
+          name: proxy
+          description: 设置为 1 强制同源资源流
+          schema: { type: string, enum: ["1"] }
       responses:
         "200":
           description: 文件流
+        "206":
+          description: Range 部分文件流
+        "307":
+          description: 禁止缓存的短时签名资源重定向
         "401":
           $ref: "#/components/responses/Error"
         "404":
@@ -199,6 +383,44 @@ paths:
         "200":
           $ref: "#/components/responses/Envelope"
         "400":
+          $ref: "#/components/responses/Error"
+  /tasks/{id}/query-provider:
+    post:
+      tags: [tasks]
+      summary: 查询失败视频任务并恢复原任务轮询或结果
+      description: 仅查询已存在的上游任务；仍在处理时恢复持久化轮询，不重新提交或预占计费。
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          $ref: "#/components/responses/ProviderTaskRecovery"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /admin/api-logs/{id}/query-task:
+    post:
+      tags: [admin-analytics]
+      summary: 管理员查询并恢复失败视频任务
+      description: 要求管理员权限及日志与任务归属一致，复用用户任务恢复合同并记录审计。
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          $ref: "#/components/responses/ProviderTaskRecovery"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "409":
           $ref: "#/components/responses/Error"
   /tasks/{id}/text-events:
     get:
@@ -397,6 +619,21 @@ components:
       in: cookie
       name: open_ai_canvas_session
   schemas:
+    ProviderTaskQueryResult:
+      type: object
+      required: [task, providerStatus, recovered, pollingResumed, billingSettled]
+      properties:
+        task:
+          type: object
+          properties:
+            id: { type: string }
+            status: { type: string, enum: [running, succeeded] }
+            providerRecoveryAt: { type: string, format: date-time }
+          additionalProperties: true
+        providerStatus: { type: string }
+        recovered: { type: boolean, description: 已保存成功结果 }
+        pollingResumed: { type: boolean, description: 已恢复原上游任务的自动轮询 }
+        billingSettled: { type: boolean, description: 本次恢复成功且已结算 }
     Envelope:
       type: object
       required: [code, msg]
@@ -577,6 +814,17 @@ components:
         costAvailable: { type: boolean }
         currency: { type: string }
   responses:
+    ProviderTaskRecovery:
+      description: 原任务已恢复自动轮询或成功结果
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/ProviderTaskQueryResult"
     Envelope:
       description: 业务成功信封
       content:

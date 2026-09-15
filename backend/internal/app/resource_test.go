@@ -912,14 +912,26 @@ func TestUserOSSSettingVersionsKeepHistoricalSecrets(t *testing.T) {
 
 func newResourceTestService(t *testing.T) *Service {
 	t.Helper()
+	svc, _ := newResourceTestServiceWithDB(t)
+	return svc
+}
+
+func newResourceTestServiceWithDB(t *testing.T) (*Service, *gorm.DB) {
+	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.SystemSetting{}, &model.UserOSSSetting{}, &model.StorageLocation{}, &model.UserDailyUploadUsage{}, &model.Resource{}, &model.SessionFile{}); err != nil {
+	sqlDB, err := db.DB()
+	if err != nil {
 		t.Fatal(err)
 	}
-	return &Service{repo: repository.New(db), dataDir: t.TempDir()}
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	if err := db.AutoMigrate(&model.SystemSetting{}, &model.UserOSSSetting{}, &model.StorageLocation{}, &model.UserDailyUploadUsage{}, &model.Resource{}, &model.SessionFile{}, &model.ResourceDeletionJob{}); err != nil {
+		t.Fatal(err)
+	}
+	return &Service{repo: repository.New(db), dataDir: t.TempDir()}, db
 }
 
 func TestStoreResourceReusesReadyUploadIdentity(t *testing.T) {
@@ -1025,15 +1037,15 @@ func TestChunkedResourceRetryUsesOriginalSizeAndQuotaContract(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			svc := newResourceTestService(t)
 			policy := defaultRuntimePolicy()
+			if scenario == "storage-full" {
+				svc, _ = storageUsageCloudService(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Length", strconv.FormatInt(gigabytes(policy.Resource.StoredFileGB)-size, 10))
+				}))
+			}
 			day := time.Now().UTC().Format("2006-01-02")
 			failed := &model.Resource{ID: "failed", UserID: "user-1", Kind: "file", MimeType: "application/octet-stream", Status: model.ResourceStatusFailed, Provider: "local", ObjectKey: "retry.bin", Size: size, UploadKey: normalizedResourceUploadKey([]string{"large-upload"}), CreatedAt: time.Now(), UpdatedAt: time.Now()}
 			if err := svc.repo.CreateResource(failed); err != nil {
 				t.Fatal(err)
-			}
-			if scenario == "storage-full" {
-				if err := svc.repo.CreateResource(&model.Resource{ID: "full", UserID: "user-1", Status: model.ResourceStatusReady, Provider: "local", ObjectKey: "full.bin", Size: gigabytes(policy.Resource.StoredFileGB) - size}); err != nil {
-					t.Fatal(err)
-				}
 			}
 			var baseline int64
 			if scenario == "daily-full" {
@@ -1111,20 +1123,82 @@ func TestGeneratedMediaRejectsInvalidDataURL(t *testing.T) {
 }
 
 func TestPersistGeneratedMediaAppliesStoredFileQuota(t *testing.T) {
-	svc := newResourceTestService(t)
-	if err := svc.repo.Create(&model.Resource{
-		ID:     "existing",
-		UserID: "user-1",
-		Status: model.ResourceStatusReady,
-		Size:   gigabytes(defaultRuntimePolicy().Resource.StoredFileGB) - 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	svc, _ := storageUsageCloudService(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.FormatInt(gigabytes(defaultRuntimePolicy().Resource.StoredFileGB)-1, 10))
+	}))
 
 	_, err := svc.persistGeneratedMediaResult("user-1", map[string]interface{}{
 		"image": map[string]interface{}{"dataUrl": "data:image/png;base64,YQ=="},
 	})
 	if err == nil || !strings.Contains(err.Error(), "20GB 上限") {
 		t.Fatalf("persistGeneratedMediaResult() error = %v", err)
+	}
+}
+
+func TestPrepareResourceDeliveryUsesSignedQiniuCDNForForcedDownload(t *testing.T) {
+	svc := newResourceTestService(t)
+	settingJSON, _ := json.Marshal(ossSettingValue{
+		Enabled: true, Provider: qiniuKodoProvider, Endpoint: "https://up-z0.qiniup.com", CDNBaseURL: "https://media.example.com",
+		Bucket: "private-bucket", AccessKeyID: "access-id", AccessKeySecret: "secret-value",
+	})
+	if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(settingJSON)}); err != nil {
+		t.Fatal(err)
+	}
+	resource := model.Resource{
+		ID: "resource-qiniu-direct-download", UserID: "user-1", Kind: "video", Status: model.ResourceStatusReady,
+		Provider: qiniuKodoProvider, Endpoint: "https://up-z0.qiniup.com", Bucket: "private-bucket",
+		ObjectKey: "users/user-1/video/result.mp4", MimeType: "video/mp4",
+	}
+	if err := svc.repo.CreateResource(&resource); err != nil {
+		t.Fatal(err)
+	}
+	delivery, err := svc.PrepareResourceDelivery("user-1", resource.ID, ResourceDeliveryOptions{ForceDirect: true, ForceDownload: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivery.RedirectURL == "" || !strings.Contains(delivery.RedirectURL, "media.example.com/users/user-1/video/result.mp4") || !strings.Contains(delivery.RedirectURL, "e=") {
+		t.Fatalf("PrepareResourceDelivery(force direct) = %#v, want signed CDN URL", delivery)
+	}
+	parsed, err := url.Parse(delivery.RedirectURL)
+	if err != nil || parsed.Query().Get("attname") != "result.mp4" {
+		t.Fatalf("download filename query = %q, want result.mp4", delivery.RedirectURL)
+	}
+	delivery, err = svc.PrepareResourceDelivery("user-1", resource.ID, ResourceDeliveryOptions{ForceDirect: true, ForceDownload: true, DownloadFileName: "canvas_shot_20260915.mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err = url.Parse(delivery.RedirectURL)
+	if err != nil || parsed.Query().Get("attname") != "canvas_shot_20260915.mp4" {
+		t.Fatalf("custom download filename query = %q", delivery.RedirectURL)
+	}
+}
+
+func TestForcedDownloadKeepsUnsignedAttachmentProvidersOnSameOrigin(t *testing.T) {
+	for _, provider := range []string{s3Provider, qiniuKodoProvider} {
+		t.Run(provider, func(t *testing.T) {
+			svc := newResourceTestService(t)
+			settingJSON, _ := json.Marshal(ossSettingValue{
+				Enabled: true, Provider: provider, Endpoint: "https://storage.example.com",
+				Bucket: "bucket", AccessKeyID: "access", AccessKeySecret: "secret",
+			})
+			if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(settingJSON)}); err != nil {
+				t.Fatal(err)
+			}
+			resource := model.Resource{
+				ID: "download", UserID: "user-1", Status: model.ResourceStatusReady,
+				Provider: provider, Endpoint: "https://storage.example.com", Bucket: "bucket",
+				ObjectKey: "result.mp4", Kind: "video", MimeType: "video/mp4",
+			}
+			if err := svc.repo.CreateResource(&resource); err != nil {
+				t.Fatal(err)
+			}
+			delivery, err := svc.PrepareResourceDelivery("user-1", resource.ID, ResourceDeliveryOptions{ForceDirect: true, ForceDownload: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if delivery.RedirectURL != "" || delivery.Resource.ID != resource.ID {
+				t.Fatalf("download must stream through same-origin attachment route: %#v", delivery)
+			}
+		})
 	}
 }

@@ -15,6 +15,7 @@ export function repairMissingCanvasAssets(projectIds?: Set<string>, partialAsset
     const assetIdByStorageKey = new Map<string, string>();
     const storageKeyByAssetId = new Map<string, string>();
     const knownAssetIds = new Set<string>();
+    const unloadedAssetIds = new Set<string>();
     for (const asset of assetStore.assets) {
         knownAssetIds.add(asset.id);
         const storageKey = assetStorageKey(asset);
@@ -30,24 +31,20 @@ export function repairMissingCanvasAssets(projectIds?: Set<string>, partialAsset
         if (projectIds && !projectIds.has(project.id)) continue;
         if (partialAssets) {
             for (const node of project.nodes) {
-                if (node.metadata?.assetId) {
-                    knownAssetIds.add(node.metadata.assetId);
-                    if (node.metadata.storageKey) storageKeyByAssetId.set(node.metadata.assetId, node.metadata.storageKey);
-                }
+                const assetId = node.metadata?.assetId?.trim();
+                if (assetId && !knownAssetIds.has(assetId)) unloadedAssetIds.add(assetId);
             }
             for (const clip of project.timeline?.clips || []) {
-                if (clip.directMedia?.assetId) {
-                    knownAssetIds.add(clip.directMedia.assetId);
-                    if (clip.directMedia.storageKey) storageKeyByAssetId.set(clip.directMedia.assetId, clip.directMedia.storageKey);
-                }
+                const assetId = clip.directMedia?.assetId?.trim();
+                if (assetId && !knownAssetIds.has(assetId)) unloadedAssetIds.add(assetId);
             }
         }
-        const repaired = repairProject(project, knownAssetIds, assetIdByStorageKey, storageKeyByAssetId, (node) => {
+        const repaired = repairProject(project, knownAssetIds, unloadedAssetIds, assetIdByStorageKey, storageKeyByAssetId, (node) => {
             const input = canvasNodeToAsset(node, { canvasId: project.id, source: "canvas-upload" });
             if (!input) return undefined;
             const assetId = useAssetStore.getState().addAsset(input);
             knownAssetIds.add(assetId);
-            const storageKey = node.metadata?.storageKey;
+            const storageKey = node.metadata?.storageKey?.trim();
             if (storageKey) {
                 assetIdByStorageKey.set(storageKey, assetId);
                 storageKeyByAssetId.set(assetId, storageKey);
@@ -65,6 +62,7 @@ export function repairMissingCanvasAssets(projectIds?: Set<string>, partialAsset
 function repairProject(
     project: CanvasProject,
     knownAssetIds: Set<string>,
+    unloadedAssetIds: Set<string>,
     assetIdByStorageKey: Map<string, string>,
     storageKeyByAssetId: Map<string, string>,
     createAsset: (node: CanvasNodeData) => string | undefined,
@@ -72,7 +70,7 @@ function repairProject(
     let changed = false;
     const nodes = project.nodes.map((node) => {
         if (!isDurableMediaNode(node)) return node;
-        const assetId = matchingAssetId(node.metadata?.assetId, node.metadata?.storageKey, knownAssetIds, assetIdByStorageKey, storageKeyByAssetId) || createAsset(node);
+        const assetId = matchingAssetId(node.metadata?.assetId, node.metadata?.storageKey, knownAssetIds, unloadedAssetIds, assetIdByStorageKey, storageKeyByAssetId) || createAsset(node);
         if (!assetId || node.metadata?.assetId === assetId) return node;
         changed = true;
         return { ...node, metadata: { ...node.metadata, assetId } };
@@ -82,8 +80,8 @@ function repairProject(
               ...project.timeline,
               clips: project.timeline.clips.map((clip) => {
                   const media = clip.directMedia;
-                  if (!media || media.kind === "text" || !mediaContent(media)) return clip;
-                  const assetId = matchingAssetId(media.assetId, media.storageKey, knownAssetIds, assetIdByStorageKey, storageKeyByAssetId) || createAsset(timelineMediaNode(media));
+                  if (!media || media.kind === "text" || (!mediaContent(media) && !media.storageKey)) return clip;
+                  const assetId = matchingAssetId(media.assetId, media.storageKey, knownAssetIds, unloadedAssetIds, assetIdByStorageKey, storageKeyByAssetId) || createAsset(timelineMediaNode(media));
                   if (!assetId || media.assetId === assetId) return clip;
                   changed = true;
                   return { ...clip, directMedia: { ...media, assetId } };
@@ -93,9 +91,18 @@ function repairProject(
     return changed ? { nodes, timeline } : null;
 }
 
-function matchingAssetId(explicitId: string | undefined, storageKey: string | undefined, knownAssetIds: Set<string>, assetIdByStorageKey: Map<string, string>, storageKeyByAssetId: Map<string, string>) {
-    if (explicitId && knownAssetIds.has(explicitId) && (!storageKey || storageKeyByAssetId.get(explicitId) === storageKey)) return explicitId;
-    return storageKey ? assetIdByStorageKey.get(storageKey) : undefined;
+function matchingAssetId(explicitId: string | undefined, storageKey: string | undefined, knownAssetIds: Set<string>, unloadedAssetIds: Set<string>, assetIdByStorageKey: Map<string, string>, storageKeyByAssetId: Map<string, string>) {
+    const normalizedStorageKey = storageKey?.trim();
+    const normalizedId = explicitId?.trim();
+    if (normalizedStorageKey) {
+        const mappedAssetId = assetIdByStorageKey.get(normalizedStorageKey);
+        if (mappedAssetId) return mappedAssetId;
+    }
+    if (normalizedId && knownAssetIds.has(normalizedId)) {
+        const knownStorageKey = storageKeyByAssetId.get(normalizedId);
+        if (!normalizedStorageKey || !knownStorageKey || knownStorageKey === normalizedStorageKey) return normalizedId;
+    }
+    return normalizedId && unloadedAssetIds.has(normalizedId) ? normalizedId : undefined;
 }
 
 function isDurableMediaNode(node: CanvasNodeData) {
@@ -129,5 +136,9 @@ function mediaContent(media: TimelineDirectMedia) {
 }
 
 function assetStorageKey(asset: Asset) {
-    return asset.kind === "text" || asset.kind === "entity" ? undefined : asset.data.storageKey;
+    if (asset.kind === "text" || asset.kind === "entity") return undefined;
+    const dataStorageKey = asset.data.storageKey?.trim();
+    if (dataStorageKey) return dataStorageKey;
+    const metadataStorageKey = asset.metadata?.resourceKey;
+    return typeof metadataStorageKey === "string" ? metadataStorageKey.trim() || undefined : undefined;
 }

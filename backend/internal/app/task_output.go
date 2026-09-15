@@ -24,6 +24,7 @@ type TaskSummary struct {
 	Provider                  string                     `json:"provider,omitempty"`
 	Model                     string                     `json:"model,omitempty"`
 	ProviderRequestID         string                     `json:"providerRequestId,omitempty"`
+	ProviderRecoveryAt        *time.Time                 `json:"providerRecoveryAt,omitempty"`
 	ProviderCancelStatus      model.ProviderCancelStatus `json:"providerCancelStatus,omitempty"`
 	ProviderCancelError       string                     `json:"providerCancelError,omitempty"`
 	ProviderCancelAttempts    int                        `json:"providerCancelAttempts,omitempty"`
@@ -115,6 +116,7 @@ func taskSummaryForOutput(task model.Task) TaskSummary {
 		Provider:                  task.Provider,
 		Model:                     task.Model,
 		ProviderRequestID:         task.ProviderRequestID,
+		ProviderRecoveryAt:        task.ProviderRecoveryAt,
 		ProviderCancelStatus:      task.ProviderCancelStatus,
 		ProviderCancelError:       task.ProviderCancelError,
 		ProviderCancelAttempts:    task.ProviderCancelAttempts,

@@ -775,7 +775,7 @@ function isAdminOSSSetting(value: unknown): value is AdminOSSSetting {
     return (
         typeof setting.enabled === "boolean" &&
         ["aliyun", "tencent", "qiniu", "s3"].includes(setting.provider || "") &&
-        ["aws", "r2", "b2", "rustfs", "custom"].includes(setting.s3Preset || "") &&
+        S3_PRESET_OPTIONS.some((option) => option.value === setting.s3Preset) &&
         typeof setting.region === "string" &&
         typeof setting.endpoint === "string" &&
         typeof setting.cdnBaseUrl === "string" &&

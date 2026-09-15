@@ -159,6 +159,10 @@ func (s *Service) validateAssetReplacementCanvasReferences(userID string, replac
 	return s.canvasDomain().ValidateAssetReplacementCanvasReferences(userID, replacement)
 }
 
+func (s *Service) RepairResourceReferences(userID, oldID, replacementID string) error {
+	return s.canvasDomain().RepairResourceReferences(userID, oldID, replacementID)
+}
+
 func (s *Service) UserDataSnapshot(userID string) (UserDataSnapshot, error) {
 	return s.canvasDomain().UserDataSnapshot(userID)
 }

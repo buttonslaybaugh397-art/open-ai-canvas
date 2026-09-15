@@ -1,8 +1,22 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
-import { changesRequireOSSRetest, DEFAULT_OSS_PATH_PREFIX, getS3PresetHints, normalizeOSSConnectionTestInput } from "../src/lib/oss-settings";
+import { changesRequireOSSRetest, DEFAULT_OSS_PATH_PREFIX, getS3PresetHints, normalizeOSSConnectionTestInput, S3_PRESET_OPTIONS } from "../src/lib/oss-settings";
 
 describe("OSS settings helpers", () => {
+    test("admin response validation accepts every selectable S3 preset, including Rainyun", () => {
+        const source = readFileSync(new URL("../src/pages/admin/settings/storage-settings-page.tsx", import.meta.url), "utf8");
+        const validator = source.match(/function isAdminOSSSetting\(value: unknown\): value is AdminOSSSetting \{([\s\S]*?)\n\}/)?.[1];
+        expect(validator).toBeDefined();
+        expect(validator).toContain("S3_PRESET_OPTIONS.some((option) => option.value === setting.s3Preset)");
+        expect(S3_PRESET_OPTIONS.some((option) => option.value === "rainyun")).toBe(true);
+        expect(getS3PresetHints("rainyun")).toMatchObject({
+            endpoint: "https://cn-nb1.rains3.com",
+            region: "us-east-1",
+            pathStyle: true,
+        });
+    });
+
     test("provides editable S3 endpoint hints for known presets", () => {
         expect(getS3PresetHints("r2")).toMatchObject({ region: "auto" });
         expect(getS3PresetHints("b2").endpoint).toContain("backblazeb2.com");

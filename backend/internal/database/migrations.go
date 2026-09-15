@@ -10,7 +10,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 10
+const CurrentSchemaVersion int64 = 11
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -66,6 +66,14 @@ var schemaMigrations = []migration{
 	{version: 8, name: "logical_model_active_code", checksum: logicalModelActiveCodeChecksum, apply: migrateSchemaV8},
 	{version: 9, name: "channel_presentation", checksum: "sha256:channel-presentation-v9-20260908", apply: migrateChannelPresentation},
 	{version: 10, name: "creation_runtime", checksum: creationRuntimeChecksum, apply: migrateSchemaV10},
+	{version: 11, name: "task_provider_recovery", checksum: "sha256:task-provider-recovery-v11-20260915", apply: migrateTaskProviderRecovery},
+}
+
+func migrateTaskProviderRecovery(tx *gorm.DB) error {
+	if tx.Migrator().HasColumn(&model.Task{}, "ProviderRecoveryAt") {
+		return nil
+	}
+	return tx.Migrator().AddColumn(&model.Task{}, "ProviderRecoveryAt")
 }
 
 var legacyStableSchemaMigrations = []migration{

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,6 +18,8 @@ import (
 )
 
 func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
+	registerResourceRepairRoutes(r, svc)
+	registerResourcePlaybackRoutes(r, svc)
 	r.POST("/assets/batch", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {
@@ -155,12 +158,24 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		ok(c, gin.H{"resources": resources})
 	})
 	r.GET("/resources/storage-usage", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
 		user, err := currentUser(c, svc)
 		if err != nil {
 			failService(c, err)
 			return
 		}
-		usage, err := svc.AccountFileStorageUsage(user.ID)
+		refresh := c.Query("refresh")
+		if refresh != "" && refresh != "0" && refresh != "1" {
+			fail(c, http.StatusBadRequest, errors.New("refresh 必须为 0 或 1"))
+			return
+		}
+		if !enforceRateLimit(c, "user-storage-usage:"+user.ID, 30, time.Minute) {
+			return
+		}
+		if refresh == "1" && !enforceRateLimit(c, "user-storage-recount:"+user.ID, 6, time.Minute) {
+			return
+		}
+		usage, err := svc.AccountFileStorageUsageContext(c.Request.Context(), user.ID, refresh == "1")
 		if err != nil {
 			failService(c, err)
 			return
@@ -257,7 +272,7 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		resource, err := svc.Resource(user.ID, c.Param("id"))
 		if err != nil {
-			fail(c, http.StatusNotFound, err)
+			failService(c, err)
 			return
 		}
 		ok(c, gin.H{"resource": resource})
@@ -289,9 +304,13 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
+		download := c.Query("download") == "1"
 		delivery, err := svc.PrepareResourceDelivery(user.ID, c.Param("id"), service.ResourceDeliveryOptions{
-			ForceDirect: c.Query("direct") == "1",
-			ForceProxy:  c.Query("proxy") == "1",
+			ForceDirect:      c.Query("direct") == "1",
+			ForceProxy:       c.Query("proxy") == "1",
+			ForceDownload:    download,
+			DownloadFileName: c.Query("filename"),
+			Playback:         c.Query("variant") == "playback",
 		})
 		if err != nil {
 			failService(c, err)
@@ -312,11 +331,10 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		etag := resourceResponseETag(resource)
 		// variant=playback：serve 浏览器兼容播放副本（H.265→H.264 转码）。
 		// 副本就绪时用独立 ETag 后缀，避免浏览器拿原件缓存命中 304 而继续黑屏。
-		usePlayback := c.Query("variant") == "playback" && resource.Provider == "local" &&
-			resource.PlaybackStatus == model.PlaybackStatusReady && resource.PlaybackObjectKey != ""
+		usePlayback := delivery.Playback
 		serveETag := etag
 		if usePlayback {
-			serveETag = etag + ":pb"
+			serveETag = `"` + strings.Trim(etag, `"`) + `:pb:` + resource.PlaybackObjectKey + `"`
 		}
 		// 资源 ID 内容不可变（上传永远生成新 ID，不会原地覆盖）：图片可以放心交给浏览器
 		// 磁盘强缓存 30 天，大画布二次打开零请求直读磁盘缓存。视频/音频涉及转码副本
@@ -329,8 +347,11 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		c.Header("ETag", serveETag)
 		c.Header("Accept-Ranges", "bytes")
 		c.Header("X-Content-Type-Options", "nosniff")
-		if resource.Kind == "file" {
+		if resource.Kind == "file" || download {
 			c.Header("Content-Disposition", "attachment")
+			if name := strings.TrimSpace(c.Query("filename")); download && name != "" && len(name) <= 1024 {
+				c.Header("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+			}
 			c.Header("Content-Security-Policy", "sandbox")
 		}
 		if ifNoneMatch(c.GetHeader("If-None-Match"), serveETag) {

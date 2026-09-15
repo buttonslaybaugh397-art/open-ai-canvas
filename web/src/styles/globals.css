@@ -15173,7 +15173,8 @@ html:not(.dark) .creation-history-drawer-root {
 .assets-header-actions .assets-storage-usage { justify-content: flex-end; }
 .assets-storage-usage {
     display: flex;
-    width: min(100%, 380px);
+    flex-wrap: wrap;
+    width: min(100%, 440px);
     min-height: 24px;
     align-items: center;
     gap: 8px;
@@ -15203,14 +15204,24 @@ html:not(.dark) .creation-history-drawer-root {
 .assets-storage-usage.is-full .assets-storage-usage-track > span { background: var(--progress-bar-fill-error); }
 .assets-storage-usage-percent { min-width: 38px; flex: none; font-size: var(--fs-tiny); font-variant-numeric: tabular-nums; text-align: right; }
 .assets-storage-usage-status { min-width: 0; font-size: var(--fs-label); }
-.assets-storage-usage-status button { margin-left: 6px; color: var(--foreground); text-decoration: underline; text-underline-offset: 2px; }
-.assets-storage-usage-status button:focus-visible { outline: 2px solid var(--control-focus-ring); outline-offset: 2px; }
+.assets-storage-usage-status.is-error,
+.assets-storage-usage-status.is-pending { flex-basis: 100%; overflow-wrap: anywhere; }
+.assets-storage-usage-status.is-error { color: var(--status-error); }
+.assets-storage-usage-refresh { display: grid; flex: none; width: 24px; height: 24px; place-items: center; padding: 0; border: 0; border-radius: var(--r-sm); color: var(--foreground); background: transparent; cursor: pointer; }
+.assets-storage-usage-refresh svg { width: 14px; height: 14px; }
+.assets-storage-usage-refresh:hover:not(:disabled) { background: var(--control-selected-bg); }
+.assets-storage-usage-refresh:disabled { opacity: .45; cursor: default; }
+.assets-storage-usage-refresh:focus-visible { outline: 2px solid var(--control-focus-ring); outline-offset: 2px; }
 @media (max-width: 639px) {
     .assets-header-actions { width: 100%; align-items: stretch; }
     .assets-header-action-buttons,
     .assets-header-actions .assets-storage-usage { justify-content: flex-start; }
     .assets-storage-usage { width: 100%; }
-    .assets-storage-usage-track { min-width: 32px; }
+    .assets-storage-usage-refresh { margin-left: auto; }
+    .assets-storage-usage-track { order: 2; flex-basis: calc(100% - 50px); min-width: 32px; max-width: none; }
+    .assets-storage-usage-percent { order: 3; }
+    .assets-storage-usage-status.is-error,
+    .assets-storage-usage-status.is-pending { order: 4; }
 }
 /* 页头操作：明暗都用描边，压过 light 主题下 app-page-header 的白底实心覆盖。 */
 html .assets-library-page .app-page-header .assets-header-action-buttons .ant-btn {

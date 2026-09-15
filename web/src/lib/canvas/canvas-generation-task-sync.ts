@@ -1,6 +1,7 @@
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { fitNodeSize, nodeSizeFromRatio, VIDEO_NODE_MAX_SIZE } from "@/lib/canvas/canvas-node-size";
 import { compositeEmotionImage } from "@/lib/canvas/canvas-emotion";
+import { getActiveUserScope } from "@/lib/user-scope";
 import { storeGeneratedAudio } from "@/services/api/audio";
 import { storeGeneratedVideo } from "@/services/api/video";
 import { parseBackendGenerationResult } from "@/services/api/generation-task";
@@ -261,22 +262,66 @@ export async function syncGenerationTaskToCanvasStore(task: GenerationTask) {
     // 短剧任务使用业务项目 ID，不能拿它请求同名的画布项目。
     const domainProjectId = task.clientContext?.domainProjectId || generationTaskInput(task)?.metadata?.domainProjectId;
     if (domainProjectId === task.projectId || !generationTaskNodeId(task)) return false;
+    const scope = getActiveUserScope();
     const { loadCanvasProjectForEditing } = await import("@/services/user-data-sync");
     const project = await loadCanvasProjectForEditing(task.projectId);
-    if (!project) return false;
+    if (!project || getActiveUserScope() !== scope) return false;
     const node = findGenerationTaskNode(project.nodes, task);
-    if (!node) return false;
+    if (!node || !generationTaskStillOwnsNode(node, task)) return false;
     if (node.metadata?.taskId === task.id && node.metadata.status === "success" && node.metadata.content) return false;
     const updatedNode = await buildGenerationTaskNodeResult(node, task, project.nodes);
     const latest = useCanvasStore.getState().projects.find((item) => item.id === project.id);
-    if (!latest?.nodes.some((item) => item.id === node.id)) return false;
-    useCanvasStore.getState().updateProject(project.id, { nodes: latest.nodes.map((item) => (item.id === node.id ? updatedNode : item)) });
+    if (!latest || getActiveUserScope() !== scope) return false;
+    const nodes = mergeGenerationTaskResultNodes(latest.nodes, project.nodes, project.nodes.map((item) => item.id === node.id ? updatedNode : item), task, node.id);
+    if (nodes === latest.nodes) return false;
+    useCanvasStore.getState().updateProject(project.id, { nodes });
     return true;
 }
 
 function findGenerationTaskNode(nodes: CanvasNodeData[], task: GenerationTask, targetNodeId?: string) {
     const nodeId = targetNodeId || generationTaskNodeId(task);
-    return nodes.find((node) => node.id === nodeId || node.metadata?.taskId === task.id);
+    return nodes.find((node) => node.metadata?.taskId === task.id && (!targetNodeId || node.id === targetNodeId)) ??
+        nodes.find((node) => node.id === nodeId && !node.metadata?.taskId);
+}
+
+export function generationTaskStillOwnsNode(node: CanvasNodeData | undefined, task: GenerationTask) {
+    if (!node || node.metadata?.taskId !== task.id) return false;
+    const currentRecovery = Date.parse(node.metadata.taskProviderRecoveryAt || "") || 0;
+    const incomingRecovery = Date.parse(task.providerRecoveryAt || "") || 0;
+    if (currentRecovery > incomingRecovery) return false;
+    return (Date.parse(node.metadata.taskUpdatedAt || "") || 0) <= (Date.parse(task.updatedAt || task.updated_at || "") || 0);
+}
+
+// Media resolution is asynchronous. Apply only its delta to the latest editor
+// snapshot, preserving moves/renames and refusing a replacement task or media.
+export function mergeGenerationTaskResultNodes(current: CanvasNodeData[], base: CanvasNodeData[], applied: CanvasNodeData[], task: GenerationTask, nodeId: string) {
+    const previous = base.find((node) => node.id === nodeId);
+    const target = current.find((node) => node.id === nodeId);
+    if (!previous || !target || (previous.metadata?.taskId && !generationTaskStillOwnsNode(target, task))) return current;
+    if (!previous.metadata?.taskId && target.metadata?.taskId && target.metadata.taskId !== task.id) return current;
+    if (target.metadata?.content !== previous.metadata?.content || target.metadata?.storageKey !== previous.metadata?.storageKey) return current;
+    const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
+    return current.map((node) => {
+        const before = base.find((item) => item.id === node.id);
+        const after = applied.find((item) => item.id === node.id);
+        if (!before || !after || before === after) return node;
+        const metadata = { ...node.metadata };
+        for (const key of new Set([...Object.keys(before.metadata || {}), ...Object.keys(after.metadata || {})])) {
+            const field = key as keyof CanvasNodeMetadata;
+            if (same(before.metadata?.[field], after.metadata?.[field])) continue;
+            if (same(node.metadata?.[field], before.metadata?.[field]) || field.startsWith("task") || field === "status") {
+                Object.assign(metadata, { [field]: after.metadata?.[field] });
+            }
+        }
+        return {
+            ...node,
+            type: node.type === before.type ? after.type : node.type,
+            width: node.width === before.width ? after.width : node.width,
+            height: node.height === before.height ? after.height : node.height,
+            position: same(node.position, before.position) ? after.position : node.position,
+            metadata,
+        };
+    });
 }
 
 function completedTaskMetadata(task: GenerationTask): CanvasNodeMetadata {
@@ -290,6 +335,7 @@ function completedTaskMetadata(task: GenerationTask): CanvasNodeMetadata {
         taskDurationMs: task.startedAt && task.completedAt ? Math.max(0, Date.parse(task.completedAt) - Date.parse(task.startedAt)) : undefined,
         taskCreatedAt: task.createdAt || task.created_at,
         taskUpdatedAt: task.updatedAt || task.updated_at,
+        taskProviderRecoveryAt: task.providerRecoveryAt,
         errorDetails: undefined,
         generationErrorCode: undefined,
         failedPromptFingerprint: undefined,

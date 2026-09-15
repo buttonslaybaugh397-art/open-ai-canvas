@@ -100,6 +100,9 @@ HTTP 请求 -> handler -> service（稳定导入面 / 别名）-> app（组合�
 | 存储恢复及管理员显式读取凭据 | `app/settings.go`、`app/storage_location.go`、`handler/auth.go` |
 | 特定渠道请求准备 | `app/provider_aistarslab.go`、`provider_huiquyun.go`、`provider_weijin.go`、`provider_protocol.go` |
 | 自定义渠道注册和多 Provider 宿主清单 | `protocol/channel_plugins.go`、`protocol/manifest.go`、`app/protocol_plugins.go` |
+| 天悦视频渠道 | `protocol/channel_tianyue.go` 负责请求计费用量、真实时长、严格状态和结果映射；`protocol/docs/tianyue-video.md` 为插件内置文档。宿主 `app/provider_protocol.go` 校验公网素材并每 5 秒轮询，恢复复用原上游 ID；`app/model_capability.go` 与 `web/src/lib/model-capabilities.ts` 对齐默认协议枚举。协议与宿主测试分别在 `protocol/channel_tianyue_test.go`、`app/provider_tianyue_test.go` |
+| 渠道插件生成分发与恢复 | `generation/registry.go` 选择声明式或受信任宿主适配器；`app/provider_image.go`、`provider_video.go`、`provider_task_recovery.go` 共用 `provider_protocol.go` 生命周期；回归在 `app/channel_plugin_dispatch_test.go` |
+| 失败视频恢复轮询与画布热更新 | `app/provider_task_recovery.go` 处理人工查询与统一完成结算，`provider_task_recovery_worker.go` 只查询原上游任务，`repository/task_provider_recovery.go` 负责租约交接；`tasks.provider_recovery_at` 由 Schema 11 增加。前端 `services/api/task-center.ts` 持续观察失败视频，`services/canvas-task-recovery.ts` 协调当前画布恢复，`lib/canvas/canvas-generation-task-sync.ts` 校验并合并结果 |
 | Windows 指标 | `app/system_metrics_windows.go`，不再放入稳定导入面 `service` |
 | 牌谱 v2 插件 | `plugin-packages/paipu-net/manifest.json`、`build.ts`、`docs/interface.md`；协议回归在 `protocol/paipu_plugin_test.go` |
 
@@ -114,6 +117,7 @@ HTTP 请求 -> handler -> service（稳定导入面 / 别名）-> app（组合�
 | 异步任务、文本 SSE 与 Agent | `handler/routes.go` | `internal/app` 组合根（`provider_*` 仍在此）+ `internal/generation` + `internal/outbound` + `task_text_stream.go`、`text_replay.go` |
 | 用户画布与素材 | `handler/user_data.go` | `internal/canvas` |
 | 文件和 OSS | `handler/routes.go` | `internal/app/resource.go`、`settings.go` |
+| 账号文件实际容量 | `handler/user_data.go` | `repository/storage_usage.go` 读取归属快照；`app/storage_usage.go` 去重核算；`storage_object_stat.go` 负责本地外的存储元数据协议；`upload_quota.go` 使用实测占用和在途预留，`pages/assets/asset-storage-usage.tsx` 展示及重算 |
 | 画布分享 | `handler/canvas_share.go` | `internal/canvas` |
 | 技能库 | `handler/skills.go` | `internal/skills`、`repository/skills.go` |
 | 提示词模板 | `handler/auth.go`、`handler/user_data.go` | `internal/prompts` |

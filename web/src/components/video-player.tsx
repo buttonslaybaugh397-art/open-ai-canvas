@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps } from "react";
 import { isVideoProvider, MediaPlayer, MediaProvider, type MediaPlayerInstance, type VideoMimeType } from "@vidstack/react";
 import { DefaultVideoLayout, defaultLayoutIcons, type DefaultLayoutTranslations } from "@vidstack/react/player/layouts/default";
+import { AlertCircle, LoaderCircle } from "lucide-react";
+import { useVideoPlayback } from "@/hooks/use-video-playback";
 import { detectVideoAudioTrack, detectVideoAudioTrackFromUrl } from "@/lib/video-poster";
 import "@vidstack/react/player/styles/base.css";
 import "@vidstack/react/player/styles/default/theme.css";
@@ -12,6 +14,7 @@ type MediaPlayerProps = ComponentProps<typeof MediaPlayer>;
 
 type VideoPlayerProps = {
     src: string;
+    storageKey?: string;
     mimeType?: string;
     title?: string;
     className?: string;
@@ -74,9 +77,27 @@ const supportedVideoMimeTypes = new Set<VideoMimeType>(["video/mp4", "video/webm
  * 统一视频播放表面，保留原生媒体 URL 契约，同时提供可访问的完整控件布局。
  * 画布节点需要隔离播放器手势，避免拖动进度条时被误判为拖动画布。
  */
-export function VideoPlayer({ src, mimeType, title = "视频", className, brandColor = "#f5f5f5", preload = "metadata", autoPlay = false, dataCanvasNoZoom = false, compactControls = false, hasAudio, onCanPlay, onPlay }: VideoPlayerProps) {
+export function VideoPlayer({
+    src: originalSrc,
+    storageKey,
+    mimeType,
+    title = "视频",
+    className,
+    brandColor = "#f5f5f5",
+    preload = "metadata",
+    autoPlay = false,
+    dataCanvasNoZoom = false,
+    compactControls = false,
+    hasAudio,
+    onCanPlay,
+    onPlay,
+}: VideoPlayerProps) {
+    const playback = useVideoPlayback(originalSrc, storageKey);
+    const src = playback.src;
     const [detectedHasAudio, setDetectedHasAudio] = useState<boolean | undefined>(undefined);
     const autoPlayAttemptedRef = useRef(false);
+    const resumeRef = useRef<{ time: number; playing: boolean } | null>(null);
+    const playIntentRef = useRef(autoPlay);
     const audioProbeGenerationRef = useRef(0);
     const mediaPlayerRef = useRef<MediaPlayerInstance>(null);
     // Match LibTV's conservative rule: only explicit/container-confirmed
@@ -105,19 +126,23 @@ export function VideoPlayer({ src, mimeType, title = "视频", className, brandC
 
     useEffect(() => {
         setDetectedHasAudio(undefined);
-        autoPlayAttemptedRef.current = false;
         audioProbeGenerationRef.current += 1;
     }, [src]);
 
     useEffect(() => {
+        autoPlayAttemptedRef.current = false;
+        playIntentRef.current = autoPlay;
+        resumeRef.current = null;
+    }, [originalSrc, storageKey, autoPlay]);
+
+    useEffect(() => {
         const player = mediaPlayerRef.current?.el;
         if (!player) return;
-        // Vidstack exposes these controls as custom elements. Setting their
-        // disabled state after layout creation keeps both pointer and keyboard
-        // access consistent when an audio-track probe resolves asynchronously.
+        // Use Vidstack's attribute guard, not a property assignment that can
+        // overwrite a reactive control property when the provider is replaced.
         const muteButton = player.querySelector<HTMLButtonElement>(".vds-mute-button");
         if (muteButton) {
-            muteButton.disabled = noAudio;
+            muteButton.toggleAttribute("data-disabled", noAudio);
             muteButton.setAttribute("aria-disabled", String(noAudio));
         }
         const volumeSlider = player.querySelector<HTMLElement>(".vds-volume-slider");
@@ -152,7 +177,8 @@ export function VideoPlayer({ src, mimeType, title = "视频", className, brandC
         }
         if (dataCanvasNoZoom) event.stopPropagation();
     };
-    const type = mimeType && supportedVideoMimeTypes.has(mimeType as VideoMimeType) ? (mimeType as VideoMimeType) : "video/mp4";
+    const baseMimeType = mimeType?.split(";")[0].trim();
+    const type = playback.phase === "compatible" ? "video/mp4" : baseMimeType && supportedVideoMimeTypes.has(baseMimeType as VideoMimeType) ? (baseMimeType as VideoMimeType) : /\.webm(?:[?#]|$)/i.test(src) ? "video/webm" : "video/object";
     const mediaSource = useMemo(() => ({ src, type }), [src, type]);
     const handleCanPlay = (detail: Parameters<NonNullable<MediaPlayerProps["onCanPlay"]>>[0], event: Parameters<NonNullable<MediaPlayerProps["onCanPlay"]>>[1]) => {
         const provider = event.target.provider;
@@ -160,6 +186,13 @@ export function VideoPlayer({ src, mimeType, title = "视频", className, brandC
         const detected = media ? detectVideoAudioTrack(media) : undefined;
         if (detected !== undefined) setDetectedHasAudio(detected);
         else probeRemoteAudioTrack();
+        const resume = resumeRef.current;
+        if (resume && playback.phase === "compatible") {
+            resumeRef.current = null;
+            autoPlayAttemptedRef.current = true;
+            if (Number.isFinite(resume.time) && resume.time > 0) event.target.currentTime = resume.time;
+            if (resume.playing) void event.target.play().catch(() => undefined);
+        }
         // `canplay` may fire again after buffering or seeking. Only the first
         // event may satisfy the activation autoplay intent; later events must
         // not override a user pause.
@@ -180,15 +213,26 @@ export function VideoPlayer({ src, mimeType, title = "视频", className, brandC
             viewType="video"
             streamType="on-demand"
             playsInline
-            autoPlay={autoPlay}
+            autoPlay={playback.phase === "compatible" ? playIntentRef.current : autoPlay}
             muted={noAudio ? true : undefined}
             load="eager"
             preload={preload}
             data-canvas-no-zoom={dataCanvasNoZoom ? "true" : undefined}
             data-no-audio={noAudio ? "true" : undefined}
+            data-playback-phase={playback.phase}
             style={{ "--video-brand": brandColor }}
             onCanPlay={handleCanPlay}
-            onPlay={onPlay}
+            onError={(detail, event) => {
+                const time = event.target.currentTime;
+                if (playback.onMediaError(detail.code)) resumeRef.current = { time, playing: playIntentRef.current };
+            }}
+            onPlay={(event) => {
+                playIntentRef.current = true;
+                onPlay?.(event);
+            }}
+            onPause={(event) => {
+                if (!event.target.state.error && playback.phase !== "preparing") playIntentRef.current = false;
+            }}
             onLoadedMetadata={(event) => {
                 const provider = event.target.provider;
                 const media = isVideoProvider(provider) ? provider.media : undefined;
@@ -208,7 +252,22 @@ export function VideoPlayer({ src, mimeType, title = "视频", className, brandC
             onClick={stopCanvasControlClick}
             onKeyDown={stopCanvasControlInteraction}
         >
-            <MediaProvider />
+            <MediaProvider
+                onErrorCapture={(event) => {
+                    // Native source-selection failures fire on <source>, not <video>.
+                    // Vidstack can otherwise remain buffering without a MediaError.
+                    if (!(event.target instanceof HTMLSourceElement)) return;
+                    const media = event.target.parentElement;
+                    if (!(media instanceof HTMLVideoElement)) return;
+                    if (playback.onMediaError(4)) resumeRef.current = { time: media.currentTime, playing: playIntentRef.current };
+                }}
+            />
+            {playback.message ? (
+                <div className="canvas-video-playback-status" role={playback.phase === "failed" ? "alert" : "status"} aria-live="polite">
+                    {playback.phase === "preparing" ? <LoaderCircle className="size-5 shrink-0 motion-safe:animate-spin" /> : <AlertCircle className="size-5 shrink-0" />}
+                    <span>{playback.message}</span>
+                </div>
+            ) : null}
             <DefaultVideoLayout
                 icons={layoutIcons}
                 translations={zhCNTranslations}

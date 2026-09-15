@@ -82,6 +82,7 @@ const (
 	ChannelInterfaceAIStarsLabImage       ChannelInterfaceType = "aistarslab-image"
 	ChannelInterfaceAIStarsLabVideo       ChannelInterfaceType = "aistarslab-video"
 	ChannelInterfaceWeijinVideo           ChannelInterfaceType = "weijin-video"
+	ChannelInterfaceTianYueVideo          ChannelInterfaceType = "tianyue-video"
 	ChannelInterfaceXAIVideo              ChannelInterfaceType = "xai-video"
 	ChannelInterfaceVolcengineArkVideo    ChannelInterfaceType = "volcengine-ark-video"
 	ChannelInterfaceVolcengineJiMengVideo ChannelInterfaceType = "volcengine-jimeng-video"

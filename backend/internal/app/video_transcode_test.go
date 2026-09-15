@@ -11,6 +11,7 @@ import (
 	"errors"
 
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/platform"
 )
 
 // stsdBox 构造仅含 first-sample-entry fourcc 的最小 stsd box（置于 moov 切片内）。
@@ -77,6 +78,8 @@ func TestBackfillRejudgesLegacyNoneVideos(t *testing.T) {
 	service, db := newProjectAssetLinkTestService(t)
 	dataDir := t.TempDir()
 	service.dataDir = dataDir
+	service.coordinator, _ = platform.NewCoordinator("sqlite")
+	t.Cleanup(func() { _ = service.Close() })
 
 	seedLegacy := func(id, fourcc string) {
 		t.Helper()
@@ -121,7 +124,8 @@ func TestBackfillRejudgesLegacyNoneVideos(t *testing.T) {
 
 	// MPEG-4 行应被抢占转码。fake mp4 不含真实视频流，ffmpeg 解码必败 → failed；
 	// 若某环境恰有同名 ready 副本则也接受。轮询直到终态，避免 goroutine 竞态。
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
+	binary, binaryErr := renderFfmpegBinary()
+	if _, err := exec.LookPath(binary); binaryErr != nil || err != nil {
 		t.Log("无 ffmpeg，跳过 MPEG-4 终态断言")
 		return
 	}
@@ -144,22 +148,22 @@ func TestBackfillRejudgesLegacyNoneVideos(t *testing.T) {
 	}
 }
 
-type failingResourceSaver struct {
+type failingPlaybackCompleter struct {
 	failTimes int
 	calls     int
 }
 
-func (s *failingResourceSaver) SaveResource(*model.Resource) error {
+func (s *failingPlaybackCompleter) CompleteResourcePlayback(string, string, string, string, string) (bool, error) {
 	s.calls++
 	if s.calls <= s.failTimes {
-		return errors.New("db busy")
+		return false, errors.New("db busy")
 	}
-	return nil
+	return true, nil
 }
 
 func TestPersistPlaybackResourceRetriesThenSucceeds(t *testing.T) {
-	saver := &failingResourceSaver{failTimes: 2}
-	if err := persistPlaybackResource(saver, &model.Resource{ID: "r1"}, "test"); err != nil {
+	saver := &failingPlaybackCompleter{failTimes: 2}
+	if _, err := persistPlaybackCompletion(saver, &model.Resource{ID: "r1"}, model.PlaybackStatusReady, ""); err != nil {
 		t.Fatal(err)
 	}
 	if saver.calls != playbackPersistAttempts {
@@ -168,8 +172,8 @@ func TestPersistPlaybackResourceRetriesThenSucceeds(t *testing.T) {
 }
 
 func TestPersistPlaybackResourceReturnsAfterExhaustedRetries(t *testing.T) {
-	saver := &failingResourceSaver{failTimes: 10}
-	if err := persistPlaybackResource(saver, &model.Resource{ID: "r1"}, "test"); err == nil {
+	saver := &failingPlaybackCompleter{failTimes: 10}
+	if _, err := persistPlaybackCompletion(saver, &model.Resource{ID: "r1"}, model.PlaybackStatusReady, ""); err == nil {
 		t.Fatal("expected persist error")
 	}
 	if saver.calls != playbackPersistAttempts {

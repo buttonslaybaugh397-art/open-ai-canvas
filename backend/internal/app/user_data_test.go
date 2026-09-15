@@ -257,6 +257,29 @@ func TestValidateCanvasMediaAssetsAcceptsMatchingNodeAndTimelineAssets(t *testin
 	}
 }
 
+func TestValidateCanvasMediaAssetsAcceptsMetadataResourceKey(t *testing.T) {
+	svc, db, _ := newResourceDeletionTestService(t)
+	resource := model.Resource{
+		ID: "resource-metadata-key", UserID: "user-1", Status: model.ResourceStatusReady,
+		Provider: "local", ObjectKey: "users/user-1/image/metadata-key.png",
+	}
+	if err := db.Create(&resource).Error; err != nil {
+		t.Fatal(err)
+	}
+	asset := model.Asset{
+		ID: "asset-metadata-key", UserID: "user-1",
+		PayloadJSON: `{"id":"asset-metadata-key","metadata":{"resourceKey":"resource:resource-metadata-key"}}`,
+	}
+	if err := db.Create(&asset).Error; err != nil {
+		t.Fatal(err)
+	}
+	raw := json.RawMessage(`{"nodes":[{"type":"image","metadata":{"assetId":"asset-metadata-key","storageKey":"resource:resource-metadata-key"}}]}`)
+
+	if err := svc.validateCanvasMediaAssets("user-1", raw); err != nil {
+		t.Fatalf("validateCanvasMediaAssets() error = %v", err)
+	}
+}
+
 func TestValidateCanvasMediaAssetsRejectsUnavailableResources(t *testing.T) {
 	for _, test := range []struct {
 		name    string

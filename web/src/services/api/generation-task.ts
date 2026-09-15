@@ -617,6 +617,7 @@ export function backendProviderConfig(config: AiConfig, mode: BackendGenerationM
         allowLocalChannel: requestConfig.allowLocalChannel === true,
         apiKey: requestConfig.apiKey,
         secretKey: requestConfig.secretKey,
+        headers: requestConfig.headers,
         model: requestConfig.model,
         ...generationOptions,
         capabilityConfig: modelCapabilityConfigFor(config, requestConfig.model),

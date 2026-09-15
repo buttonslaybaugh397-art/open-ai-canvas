@@ -11,6 +11,29 @@
     --canvas-video-control-gap: 6px;
 }
 
+.canvas-video-player .canvas-video-playback-status {
+    position: absolute;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    overflow: auto;
+    color: var(--video-controls-color, #fff);
+    background: var(--video-volume-bg, rgba(12, 13, 16, 0.92));
+    font-size: var(--fs-label, 12px);
+    line-height: 1.5;
+    text-align: center;
+    overflow-wrap: anywhere;
+}
+
+.canvas-video-player:is([data-playback-phase="preparing"], [data-playback-phase="failed"]) .vds-video-layout {
+    visibility: hidden;
+}
+
 .canvas-video-player[data-player-variant="compact"] {
     --canvas-video-control-gap: 4px;
     --video-volume-panel-width: 42px;

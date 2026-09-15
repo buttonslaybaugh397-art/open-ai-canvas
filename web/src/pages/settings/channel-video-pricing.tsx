@@ -7,10 +7,10 @@ import { ModelProtocolBrowser } from "@/components/model-protocol-browser";
 import { testChannelModelConnection } from "@/lib/model-connection-test";
 import { ModelCapabilityEditor } from "@/components/model-capability-editor";
 import { type ModelCapabilityChoice } from "@/components/model-protocol-picker";
-import { defaultModelCapabilityConfig } from "@/lib/model-capabilities";
-import { modelProtocolCapability, modelProtocolDefinition, type ModelProtocol, type ModelProtocolDefinition } from "@/lib/model-protocols";
+import type { ModelProtocolDefinition } from "@/lib/model-protocols";
 import { fetchPluginProviderCatalog } from "@/services/api/plugin-catalog";
 import { modelOptionName, type ModelChannel } from "@/stores/use-config-store";
+import { resolveChannelModelSettings, updateChannelModelSettings } from "./channel-model-settings";
 
 type ModelCost = NonNullable<ModelChannel["modelCosts"]>[number];
 
@@ -33,25 +33,20 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
 
     if (!channel.models.length) return null;
 
-    const updateCost = (model: string, patch: Partial<ModelCost>) => {
-        const defaultProtocol = defaultProtocolForModel(model, availableProtocols);
-        const defaultCap = modelProtocolCapability(defaultProtocol, availableProtocols) || inferCapabilityFromModel(model);
-        const current = channel.modelCosts?.find((item) => item.model === model) || {
-            model,
-            capability: defaultCap,
-            protocol: defaultProtocol,
-            billingMode: "fixed_request" as const,
-            unitPriceMicrocredits: 0,
-            capabilityConfig: defaultModelCapabilityConfig(defaultProtocol, model),
-        };
-        const next = [...(channel.modelCosts || []).filter((item) => item.model !== model), { ...current, ...patch, model }];
-        onChange(next.filter((item) => channel.models.includes(item.model)));
+    const updateCost = (model: string, patch: Parameters<typeof updateChannelModelSettings>[2]) => {
+        try {
+            onChange(updateChannelModelSettings(channel, model, patch, availableProtocols));
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "模型配置更新失败");
+        }
     };
 
-    const testModel = async (model: string, capability: ModelCost["capability"], protocol: ModelProtocol) => {
+    const testModel = async (model: string) => {
+        const { capability, availableProtocol } = resolveChannelModelSettings(channel, model, availableProtocols);
+        if (!channel.models.includes(model) || protocolLoading || protocolError || !availableProtocol) return;
         setTestingModel(model);
         try {
-            const detail = await testChannelModelConnection(channel, model, capability, protocol);
+            const detail = await testChannelModelConnection(channel, model, capability, availableProtocol.value);
             message.success(`模型测试通过：${detail}`);
         } catch (error) {
             message.error(error instanceof Error ? error.message : "模型测试失败");
@@ -60,10 +55,9 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
         }
     };
 
-    const activeModelCost = activeModel ? channel.modelCosts?.find((item) => item.model === activeModel) : undefined;
-    const inferredProtocol = activeModel ? defaultProtocolForModel(activeModel, availableProtocols) : "";
-    const activeProtocol = activeModelCost?.protocol || inferredProtocol;
-    const activeCapability = activeModelCost?.capability || modelProtocolCapability(activeProtocol, availableProtocols) || (activeModel ? inferCapabilityFromModel(activeModel) : "text");
+    const activeSettings = resolveChannelModelSettings(channel, activeModel || "", availableProtocols);
+    const { protocol: activeProtocol, capability: activeCapability } = activeSettings;
+    const canTest = Boolean(activeModel && channel.models.includes(activeModel) && activeSettings.availableProtocol && !protocolLoading && !protocolError);
 
     return (
         <div className="mt-4">
@@ -77,9 +71,8 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
             <div className="space-y-2">
                 {channel.models.map((rawModel) => {
                     const model = modelOptionName(rawModel);
-                    const cost = channel.modelCosts?.find((item) => item.model === model);
-                    const protocol = cost?.protocol || defaultProtocolForModel(model, availableProtocols);
-                    const capability = cost?.capability || modelProtocolCapability(protocol, availableProtocols) || inferCapabilityFromModel(model);
+                    const { cost, protocol, capability, availableProtocol } = resolveChannelModelSettings(channel, model, availableProtocols);
+                    const protocolStatus = !protocol ? "待配置请求协议" : protocolLoading ? "正在读取协议…" : protocolError ? "协议目录读取失败" : availableProtocol ? availableProtocol.create || availableProtocol.label : `协议不可用：${protocol}`;
                     const displayName = cost?.displayName?.trim() || model;
                     return (
                         <div key={model} className="flex min-w-0 items-center gap-3 rounded-md bg-surface-active px-3 py-2.5 transition-colors hover:bg-surface-hover">
@@ -94,8 +87,8 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
                                     <Tag className="mr-0 text-[var(--fs-tiny)]" bordered={false}>
                                         {capabilityLabel(capability)}
                                     </Tag>
-                                    <span className="truncate font-mono text-[var(--fs-tiny)] text-foreground/40" title={modelProtocolDefinition(protocol, availableProtocols)?.create}>
-                                        {modelProtocolDefinition(protocol, availableProtocols)?.create || "待配置请求协议"}
+                                    <span className="truncate font-mono text-[var(--fs-tiny)] text-foreground/40" title={protocolStatus}>
+                                        {protocolStatus}
                                     </span>
                                 </div>
                             </div>
@@ -121,8 +114,8 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
                             <Button
                                 icon={<FlaskConical className="size-4" />}
                                 loading={Boolean(testingModel)}
-                                disabled={!activeProtocol || protocolLoading || Boolean(protocolError)}
-                                onClick={() => { if (activeModel && activeProtocol) void testModel(activeModel, activeCapability, activeProtocol); }}
+                                disabled={!canTest}
+                                onClick={() => { if (canTest && activeModel) void testModel(activeModel); }}
                             >
                                 测试模型
                             </Button>
@@ -141,16 +134,7 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
                                     block
                                     options={[{ label: "文本", value: "text" }, { label: "图片", value: "image" }, { label: "视频", value: "video" }, { label: "音频", value: "audio" }]}
                                     value={activeCapability}
-                                    onChange={(nextCapability) => {
-                                        const nextProtocol = availableProtocols.find((item) => item.value === activeProtocol && item.capability === nextCapability)?.value || availableProtocols.find((item) => item.capability === nextCapability && item.enabled !== false)?.value || defaultProtocolForCapability(nextCapability, availableProtocols);
-                                        updateCost(activeModel, {
-                                            protocol: nextProtocol,
-                                            capability: nextCapability,
-                                            billingMode: "fixed_request",
-                                            unitPriceMicrocredits: 0,
-                                            capabilityConfig: nextCapability === "image" || nextCapability === "video" ? defaultModelCapabilityConfig(nextProtocol, activeModel) : undefined,
-                                        });
-                                    }}
+                                    onChange={(capability) => updateCost(activeModel, { capability })}
                                 />
                             </section>
                             <section className="space-y-2">
@@ -161,12 +145,7 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
                                     capability={activeCapability}
                                     value={activeProtocol}
                                     protocols={availableProtocols}
-                                    onChange={(nextProtocol) => updateCost(activeModel, {
-                                        protocol: nextProtocol,
-                                        billingMode: "fixed_request",
-                                        unitPriceMicrocredits: 0,
-                                        capabilityConfig: activeCapability === "image" || activeCapability === "video" ? defaultModelCapabilityConfig(nextProtocol, activeModel) : undefined,
-                                    })}
+                                    onChange={(protocol) => updateCost(activeModel, { protocol })}
                                 />
                             </section>
                         </div>,
@@ -179,7 +158,7 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
                                 <ModelCapabilityEditor
                                     capability={activeCapability}
                                     model={activeModel}
-                                    value={activeModelCost?.capabilityConfig || defaultModelCapabilityConfig(activeProtocol, activeModel)}
+                                    value={activeSettings.capabilityConfig}
                                     protocol={activeProtocol}
                                     onChange={(capabilityConfig) => updateCost(activeModel, { capabilityConfig })}
                                 />
@@ -190,80 +169,6 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
             />
         </div>
     );
-}
-
-function inferCapabilityFromModel(model: string): ModelCapabilityChoice {
-    const lower = model.toLowerCase();
-    if (
-        lower.includes("seedream") ||
-        lower.includes("image") ||
-        lower.includes("dall-e") ||
-        lower.includes("dalle") ||
-        lower.includes("flux") ||
-        lower.includes("imagen") ||
-        lower.includes("banana") ||
-        lower.includes("midjourney") ||
-        lower.includes("sdxl") ||
-        lower.includes("stable-diffusion")
-    ) {
-        return "image";
-    }
-    if (
-        lower.includes("video") ||
-        lower.includes("sora") ||
-        lower.includes("veo") ||
-        lower.includes("kling") ||
-        lower.includes("seedance") ||
-        lower.includes("minimax") ||
-        lower.includes("hailuo") ||
-        lower.includes("pika") ||
-        lower.includes("runway") ||
-        lower.includes("omni") ||
-        lower.includes("cogvideo") ||
-        lower.includes("wan")
-    ) {
-        return "video";
-    }
-    if (
-        lower.includes("audio") ||
-        lower.includes("tts") ||
-        lower.includes("voice") ||
-        lower.includes("speech") ||
-        lower.includes("sound") ||
-        lower.includes("music")
-    ) {
-        return "audio";
-    }
-    return "text";
-}
-
-function defaultProtocolForCapability(capability: ModelCapabilityChoice, availableProtocols: ModelProtocolDefinition[]): ModelProtocol {
-    const standardProtocols: Record<string, string[]> = {
-        text: ["chat-completion", "openai-response"],
-        image: ["openai-image"],
-        video: ["newapi-channel-2", "newapi"],
-        audio: ["openai-audio"],
-    };
-    const preferred = standardProtocols[capability] || [];
-    for (const id of preferred) {
-        if (availableProtocols.some((p) => p.value === id && p.enabled !== false)) {
-            return id;
-        }
-    }
-    const matched = availableProtocols.find((p) => p.capability === capability && p.enabled !== false);
-    if (matched) return matched.value;
-    const fallbackMap: Record<string, string> = {
-        text: "chat-completion",
-        image: "openai-image",
-        video: "newapi-channel-2",
-        audio: "openai-audio",
-    };
-    return fallbackMap[capability] || "chat-completion";
-}
-
-function defaultProtocolForModel(model: string, availableProtocols: ModelProtocolDefinition[] = []): ModelProtocol {
-    const capability = inferCapabilityFromModel(model);
-    return defaultProtocolForCapability(capability, availableProtocols);
 }
 
 function capabilityLabel(value: ModelCost["capability"]) {

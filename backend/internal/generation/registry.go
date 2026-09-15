@@ -117,6 +117,29 @@ func DeclarativeProtocolAdapterForContext(ctx context.Context, id string) (proto
 	return adapter, true
 }
 
+// GenerationProtocolAdapterForContext selects the installed generation engine,
+// not its packaging format. Host channel providers share the same task lifecycle
+// as declarative providers; workflow engines retain their separate dispatcher.
+func GenerationProtocolAdapterForContext(ctx context.Context, id string) (protocol.Adapter, error) {
+	adapter, ok := ProtocolAdapterForContext(ctx, id)
+	if !ok {
+		if _, host := protocol.BundledHostProviderIDs()[strings.TrimSpace(id)]; host {
+			return nil, fmt.Errorf("接口类型 %s 的渠道插件未安装", id)
+		}
+		return nil, nil
+	}
+	info := adapter.Metadata()
+	if !info.Enabled || info.UnavailableReason != "" {
+		return nil, fmt.Errorf("接口类型 %s 当前不可用：%s", id, info.UnavailableReason)
+	}
+	switch info.Execution {
+	case "declarative", "host:providers":
+		return adapter, nil
+	default:
+		return nil, nil
+	}
+}
+
 func AgentProtocolAdapterForContext(ctx context.Context, id string) (protocol.AgentAdapter, bool) {
 	registry, _ := ctx.Value(protocolRegistryContextKey{}).(*protocol.Registry)
 	if registry == nil {

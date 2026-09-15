@@ -38,6 +38,8 @@ export function ApiLogDetailDrawer({ logId, onClose, onLogUpdated }: { logId: st
                 window.dispatchEvent(new CustomEvent("wallet:updated"));
                 if (result.billingSettled) message.success("已获取上游视频，任务已恢复并完成结算");
                 else message.warning("已获取上游视频，任务已恢复，计费状态待核对");
+            } else if (result.pollingResumed) {
+                message.success("上游仍在处理，已恢复自动轮询，用户画布将自动更新");
             } else {
                 message.info(`上游任务仍在处理中${result.providerStatus ? `（${result.providerStatus}）` : ""}`);
             }

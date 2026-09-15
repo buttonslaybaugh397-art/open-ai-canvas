@@ -45,6 +45,7 @@ func BundledHostManifests() []Manifest {
 			"https://www.weijinapi.top",
 			[]string{"weijin-video"},
 		),
+		tianYueChannelManifest(),
 	}
 }
 
@@ -66,6 +67,7 @@ func customChannelAdapters() []Adapter {
 		aiStarsLabImageAdapter(),
 		aiStarsLabVideoAdapter(),
 		weijinVideoAdapter(),
+		tianYueVideoAdapter(),
 	}
 }
 
@@ -716,6 +718,7 @@ func customChannelMetadata() []Metadata {
 		aiStarsLabImage,
 		aiStarsLabVideo,
 		weijinVideo,
+		tianYueVideoMetadata(),
 	}
 }
 
@@ -795,6 +798,13 @@ func bundledChannelManifest(id, name, vendor, description, baseURL string, provi
 }
 
 func bundledChannelManifestResponse(providerID string) ManifestResponse {
+	if providerID == "tianyue-video" {
+		return ManifestResponse{
+			TaskIDPaths: []string{"task_id", "id"}, StatusPaths: []string{"status"},
+			MessagePaths:   []string{"error.message", "error.code", "error", "message"},
+			ResultURLPaths: []string{"video_url", "url", "metadata.url"}, ResultKind: "video", ResultEphemeral: true,
+		}
+	}
 	if providerID == "weijin-video" {
 		return ManifestResponse{
 			TaskIDPaths: []string{"task_id", "id"}, StatusPaths: []string{"status"},

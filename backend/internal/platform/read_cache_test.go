@@ -133,3 +133,34 @@ func TestReadCachePanicDoesNotLeakCapacity(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestReadCacheInvalidateKeyDoesNotRepopulateFromInFlightLoad(t *testing.T) {
+	cache := NewBoundedReadCache[string, int](4, 1024, 2, time.Minute)
+	load := func(context.Context) (int, int, error) { return 2, 256, nil }
+	_, _ = cache.Get(context.Background(), "retained", load)
+	started, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = cache.Get(context.Background(), "invalidate", func(context.Context) (int, int, error) {
+			close(started)
+			<-release
+			return 1, 256, nil
+		})
+	}()
+	<-started
+	cache.Invalidate("invalidate")
+	if value, err := cache.Get(context.Background(), "invalidate", load); err != nil || value != 2 {
+		t.Fatalf("recount reused in-flight query: %d %v", value, err)
+	}
+	close(release)
+	<-done
+	value, err := cache.Get(context.Background(), "invalidate", load)
+	if err != nil || value != 2 || cache.loads != 0 || len(cache.entries) != 2 || cache.bytes != 512 {
+		t.Fatalf("invalidated load repopulated cache: %d %v entries=%d bytes=%d", value, err, len(cache.entries), cache.bytes)
+	}
+	cache.Invalidate("invalidate")
+	cache.Invalidate("missing")
+	if len(cache.entries) != 1 || cache.bytes != 256 {
+		t.Fatal("key invalidation affected unrelated cache entries")
+	}
+}

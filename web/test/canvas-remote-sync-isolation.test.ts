@@ -74,6 +74,7 @@ test("generated asset sync does not submit an unrelated broken canvas or asset",
     const writes: string[] = [];
     apiClient.defaults.adapter = async (config) => {
         writes.push(`${config.method} ${config.url}`);
+        if (config.url === "/resources/ready-image") return { data: { code: 0, data: { resource: { id: "ready-image", status: "ready" } }, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
         if (config.url !== "/assets/generated") throw new Error("unrelated data was submitted");
         return { data: { code: 0, data: {}, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
     };
@@ -93,7 +94,7 @@ test("generated asset sync does not submit an unrelated broken canvas or asset",
     });
     expect(result).toEqual({ assetId: generated.id, created: false, linkedToProject: false });
     await saveRemoteAssetNow(generated.id);
-    expect(writes).toEqual(["put /assets/generated"]);
+    expect(writes).toEqual(["get /resources/ready-image", "put /assets/generated"]);
 });
 
 test("a failed canvas does not block other canvas writes and is not acknowledged", async () => {
@@ -121,6 +122,7 @@ test("scoped asset save propagates failures and retries only unacknowledged writ
     useAssetStore.setState({ assets: [asset("pending")] });
     let writes = 0;
     apiClient.defaults.adapter = async (config) => {
+        if (config.url === "/resources/ready-image") return { data: { code: 0, data: { resource: { id: "ready-image", status: "ready" } }, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
         writes += 1;
         if (writes === 1) throw new Error("asset save rejected");
         return { data: { code: 0, data: {}, msg: "" }, status: 200, statusText: "OK", headers: {}, config };

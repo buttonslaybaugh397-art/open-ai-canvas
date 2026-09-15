@@ -63,15 +63,19 @@ func TestCommitUserUploadQuotaKeepsDailyUsageWithoutPendingStorage(t *testing.T)
 
 func TestReserveUserUploadQuotaRejectsTotalStoredFilesAtLimit(t *testing.T) {
 	svc := newResourceTestService(t)
-	if err := svc.repo.Create(&model.Resource{ID: "resource-1", UserID: "user-1", Status: model.ResourceStatusReady, Size: gigabytes(defaultRuntimePolicy().Resource.StoredFileGB) - 1}); err != nil {
+	writeUsageTestFile(t, svc.dataDir, "resources/ready.png", 1023)
+	if err := svc.repo.Create(&model.Resource{ID: "resource-1", UserID: "user-1", Status: model.ResourceStatusReady, ObjectKey: "ready.png", Size: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.reserveUserUploadQuota("user-1", 1); err == nil || !strings.Contains(err.Error(), "20GB 上限") {
+	if _, err := svc.reserveUserStoredFileQuota("user-1", 1, 100, 10000, 1024, "single"); err == nil || !strings.Contains(err.Error(), "上限") {
+		t.Fatalf("actual stored bytes did not enforce quota: %v", err)
 	}
 }
 
 func TestAccountFileStorageUsageUsesStoredFilePolicy(t *testing.T) {
 	svc := newResourceTestService(t)
+	writeUsageTestFile(t, svc.dataDir, "resources/ready.png", 30)
+	sessionPath := writeUsageTestFile(t, svc.dataDir, "uploads/attachment.txt", 20)
 	if err := svc.repo.Create(&model.Resource{ID: "resource-1", UserID: "user-1", Status: model.ResourceStatusReady, Provider: "local", ObjectKey: "ready.png", Size: 3 << 20}); err != nil {
 		t.Fatal(err)
 	}
@@ -84,14 +88,14 @@ func TestAccountFileStorageUsageUsesStoredFilePolicy(t *testing.T) {
 	if err := svc.repo.Create(&model.Resource{ID: "resource-pending", UserID: "user-1", Status: model.ResourceStatusPending, Provider: "local", ObjectKey: "pending.png", Size: 11 << 20}); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.repo.Create(&model.SessionFile{ID: "session-file-1", UserID: "user-1", SessionID: "session-1", Size: 2 << 20}); err != nil {
+	if err := svc.repo.Create(&model.SessionFile{ID: "session-file-1", UserID: "user-1", SessionID: "session-1", Path: sessionPath, Size: 2 << 20}); err != nil {
 		t.Fatal(err)
 	}
 	usage, err := svc.AccountFileStorageUsage("user-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if usage.UsedBytes != 5<<20 || usage.TotalBytes != gigabytes(defaultRuntimePolicy().Resource.StoredFileGB) {
+	if usage.UsedBytes != 50 || usage.ResourceBytes != 30 || usage.SessionBytes != 20 || usage.TotalBytes != gigabytes(defaultRuntimePolicy().Resource.StoredFileGB) {
 		t.Fatalf("AccountFileStorageUsage() = %#v", usage)
 	}
 }
