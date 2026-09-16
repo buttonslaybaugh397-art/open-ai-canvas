@@ -57,10 +57,6 @@ export type UserOSSSettingInput = Pick<UserOSSSetting, "enabled" | "provider" | 
 export type AccountFileStorageUsage = {
     usedBytes: number;
     totalBytes: number;
-    resourceBytes: number;
-    sessionBytes: number;
-    pendingDeletionBytes: number;
-    checkedAt: string;
 };
 
 export type ArkPrivateAssetSync = {
@@ -117,26 +113,9 @@ export function testUserOSSConnection(input: OSSConnectionTestInput) {
     return http.post<OSSConnectionTestResult>("/settings/oss/test", input);
 }
 
-export function parseAccountFileStorageUsage(value: unknown): AccountFileStorageUsage {
-    if (!value || typeof value !== "object") throw new Error("容量统计返回无效数据");
-    const usage = value as AccountFileStorageUsage;
-    const sizes = [usage.usedBytes, usage.totalBytes, usage.resourceBytes, usage.sessionBytes, usage.pendingDeletionBytes];
-    if (sizes.some((size) => !Number.isSafeInteger(size) || size < 0)
-        || usage.totalBytes <= 0
-        || usage.usedBytes !== usage.resourceBytes + usage.sessionBytes + usage.pendingDeletionBytes
-        || typeof usage.checkedAt !== "string" || !Number.isFinite(Date.parse(usage.checkedAt))) {
-        throw new Error("容量统计返回无效数据");
-    }
-    return usage;
-}
-
-export async function getAccountFileStorageUsage(options: { signal?: AbortSignal; refresh?: boolean } = {}) {
-    const data = await http.get<{ usage: unknown }>("/resources/storage-usage", {
-        signal: options.signal,
-        params: options.refresh ? { refresh: 1 } : undefined,
-        timeout: 35_000,
-    });
-    return parseAccountFileStorageUsage(data.usage);
+export async function getAccountFileStorageUsage() {
+    const data = await http.get<{ usage: AccountFileStorageUsage }>("/resources/storage-usage");
+    return data.usage;
 }
 
 export async function syncResourceToArkPrivateAsset(id: string) {
@@ -146,19 +125,6 @@ export async function syncResourceToArkPrivateAsset(id: string) {
 
 export function resourceIdFromStorageKey(storageKey?: string) {
     return storageKey?.startsWith("resource:") ? storageKey.slice("resource:".length) : "";
-}
-
-export function resourceIdFromFileUrl(value: string) {
-    try {
-        const origin = typeof window === "undefined" ? "http://localhost" : window.location.origin;
-        const base = new URL(`${String(apiBaseURL).replace(/\/+$/, "")}/resources/`, origin);
-        const url = new URL(value, origin);
-        if (url.origin !== base.origin || !url.pathname.startsWith(base.pathname)) return "";
-        const match = /^([^/]+)\/file$/.exec(url.pathname.slice(base.pathname.length));
-        return match ? decodeURIComponent(match[1]) : "";
-    } catch {
-        return "";
-    }
 }
 
 export function isResourceUrl(url?: string) {
@@ -330,26 +296,14 @@ export function getResource(id: string): Promise<RemoteResource> {
 }
 
 // refreshResource 绕过缓存强制拉取资源最新状态（转码副本就绪轮询用），并回写缓存。
-export function refreshResource(id: string, signal?: AbortSignal): Promise<RemoteResource> {
+export function refreshResource(id: string): Promise<RemoteResource> {
     const cacheKey = resourceCacheKey(id);
-    return http.get<{ resource: RemoteResource }>(`/resources/${encodeURIComponent(id)}`, { signal })
+    return http.get<{ resource: RemoteResource }>(`/resources/${encodeURIComponent(id)}`)
         .then((data) => {
             resourceCache.set(cacheKey, data.resource);
             missingResourceIds.delete(cacheKey);
             return data.resource;
         });
-}
-
-export async function requestResourcePlayback(id: string, signal?: AbortSignal): Promise<RemoteResource> {
-    const cacheKey = resourceCacheKey(id);
-    const data = await http.post<{ resource: RemoteResource }>(`/resources/${encodeURIComponent(id)}/playback`, undefined, { signal });
-    resourceCache.set(cacheKey, data.resource);
-    return data.resource;
-}
-
-export async function repairResourceReferences(id: string, replacementResourceId: string) {
-    const result = await http.post<{ repaired: boolean }>(`/resources/${encodeURIComponent(id)}/repair-references`, { replacementResourceId });
-    if (result?.repaired !== true) throw new Error("服务端未确认资源引用修复，已停止保存");
 }
 
 export async function getResourceOSSUrl(storageKey?: string) {
@@ -412,8 +366,4 @@ function extensionFromMime(mimeType: string, kind: string) {
     if (mimeType.includes("mpeg")) return "mp3";
     if (mimeType.includes("wav")) return "wav";
     return kind === "image" ? "png" : "bin";
-}
-// 用户点击下载时交给浏览器直接流式接收，避免前端先聚合完整 Blob。
-export function resourceDownloadUrl(id: string, fileName?: string) {
-    return `${resourceFileUrl(id)}?direct=1&download=1${fileName ? `&filename=${encodeURIComponent(fileName)}` : ""}`;
 }

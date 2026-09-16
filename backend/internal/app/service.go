@@ -36,9 +36,6 @@ type Service struct {
 	characterTaskMu            sync.Mutex
 	activeCancels              map[string]context.CancelFunc
 	pendingStorage             map[string]int64
-	storageUsageOnce           sync.Once
-	storageObjectStats         *platform.BoundedReadCache[string, storedObjectStat]
-	storageMeasurementSlots    chan struct{}
 	coordinator                *platform.Coordinator
 	platform                   *platform.Service
 	taskBillingCoordinator     *taskBillingCoordinator
@@ -62,8 +59,6 @@ type Service struct {
 	routeHealthMu              sync.Mutex
 	routeHealthBlocked         map[string]time.Time
 	workers                    *platform.Worker
-	playbackWorkers            *platform.Worker
-	playbackClosed             bool
 	updateManager              UpdateManager
 	readCachesOnce             sync.Once
 	concurrencyReadCache       *platform.BoundedReadCache[string, platform.RuntimeTaskPolicy]

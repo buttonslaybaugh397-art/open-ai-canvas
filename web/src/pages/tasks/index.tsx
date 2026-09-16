@@ -363,18 +363,13 @@ export default function TasksPage() {
         setActingId(task.id);
         try {
             const result = await queryFailedVideoProviderTask(task.id);
-            setDetailTask(result.task);
-            setTasks((items) => items.map((item) => (item.id === task.id ? { ...item, ...result.task } : item)));
             if (!result.recovered) {
                 setTaskLogs(await listTaskLogs(task.id));
-                if (result.pollingResumed) {
-                    void loadTasks(false);
-                    message.success("已恢复自动轮询，画布会自动接收生成结果");
-                } else {
-                    message.info(`上游任务仍在处理中${result.providerStatus ? `（${result.providerStatus}）` : ""}`);
-                }
+                message.info(`上游任务仍在处理中${result.providerStatus ? `（${result.providerStatus}）` : ""}`);
                 return;
             }
+            setDetailTask(result.task);
+            setTasks((items) => items.map((item) => (item.id === task.id ? { ...item, ...result.task } : item)));
             setTaskLogs(await listTaskLogs(task.id));
             await syncGenerationTaskToCanvasStore(result.task);
             window.dispatchEvent(new CustomEvent("wallet:updated"));

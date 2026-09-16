@@ -107,7 +107,6 @@ export type AdminProviderTaskQueryResult = {
     task: GenerationTask;
     providerStatus: string;
     recovered: boolean;
-    pollingResumed: boolean;
     billingSettled: boolean;
 };
 
@@ -137,8 +136,7 @@ export type AdminUserDetail = {
         taskBytes: number;
         apiCallCount: number;
     };
-    storedFileBytes: number | null;
-    fileStorageError?: string;
+    storedFileBytes: number;
     dailyUploadBytes: number;
     quota: RuntimeResourcePolicy;
 };

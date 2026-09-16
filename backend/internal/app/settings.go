@@ -525,13 +525,6 @@ func (s *Service) settingsEncryptionKey() ([]byte, error) {
 }
 
 func (s *Service) protectTaskSecrets(value interface{}) error {
-	if err := s.transformTaskHeaderSecrets(value, false); err != nil {
-		return err
-	}
-	return s.protectTaskSecretFields(value)
-}
-
-func (s *Service) protectTaskSecretFields(value interface{}) error {
 	switch item := value.(type) {
 	case map[string]interface{}:
 		for key, child := range item {
@@ -546,13 +539,13 @@ func (s *Service) protectTaskSecretFields(value interface{}) error {
 				}
 				continue
 			}
-			if err := s.protectTaskSecretFields(child); err != nil {
+			if err := s.protectTaskSecrets(child); err != nil {
 				return err
 			}
 		}
 	case []interface{}:
 		for _, child := range item {
-			if err := s.protectTaskSecretFields(child); err != nil {
+			if err := s.protectTaskSecrets(child); err != nil {
 				return err
 			}
 		}
@@ -561,7 +554,7 @@ func (s *Service) protectTaskSecretFields(value interface{}) error {
 }
 
 func (s *Service) decryptTaskInputJSON(raw string) (string, error) {
-	if strings.TrimSpace(raw) == "" {
+	if strings.TrimSpace(raw) == "" || !strings.Contains(raw, encryptedSettingPrefix) {
 		return raw, nil
 	}
 	var input interface{}
@@ -576,13 +569,6 @@ func (s *Service) decryptTaskInputJSON(raw string) (string, error) {
 }
 
 func (s *Service) decryptTaskSecrets(value interface{}) error {
-	if err := s.transformTaskHeaderSecrets(value, true); err != nil {
-		return err
-	}
-	return s.decryptTaskSecretFields(value)
-}
-
-func (s *Service) decryptTaskSecretFields(value interface{}) error {
 	switch item := value.(type) {
 	case map[string]interface{}:
 		for key, child := range item {
@@ -597,94 +583,16 @@ func (s *Service) decryptTaskSecretFields(value interface{}) error {
 				}
 				continue
 			}
-			if err := s.decryptTaskSecretFields(child); err != nil {
+			if err := s.decryptTaskSecrets(child); err != nil {
 				return err
 			}
 		}
 	case []interface{}:
 		for _, child := range item {
-			if err := s.decryptTaskSecretFields(child); err != nil {
+			if err := s.decryptTaskSecrets(child); err != nil {
 				return err
 			}
 		}
-	}
-	return nil
-}
-
-// Only the root provider config owns request headers; tool schemas and workflow
-// payloads can also contain "config" or "headers" without carrying credentials.
-func (s *Service) transformTaskHeaderSecrets(value interface{}, decrypt bool) error {
-	input, ok := value.(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	// encoding/json accepts case-insensitive struct fields during execution.
-	// Reject aliases here so they cannot bypass the canonical persistence path.
-	for key := range input {
-		if key != "config" && strings.EqualFold(key, "config") {
-			return BadAuthRequest("任务模型配置字段必须使用 config")
-		}
-	}
-	rawConfig := input["config"]
-	if rawConfig == nil {
-		return nil
-	}
-	config, ok := rawConfig.(map[string]interface{})
-	if !ok {
-		return BadAuthRequest("任务模型配置必须是 JSON 对象")
-	}
-	for key := range config {
-		if key != "headers" && strings.EqualFold(key, "headers") {
-			return BadAuthRequest("任务自定义请求头字段必须使用 headers")
-		}
-	}
-	rawHeaders := config["headers"]
-	if rawHeaders == nil {
-		return nil
-	}
-	headers, ok := rawHeaders.([]interface{})
-	if !ok {
-		return BadAuthRequest("任务自定义请求头必须是数组")
-	}
-	plainHeaders := make([]OutboundHeader, len(headers))
-	for index, rawHeader := range headers {
-		header, ok := rawHeader.(map[string]interface{})
-		if !ok || len(header) != 2 {
-			return BadAuthRequest("任务自定义请求头必须仅包含字符串 name 和 value")
-		}
-		name, nameOK := header["name"].(string)
-		secret, valueOK := header["value"].(string)
-		if !nameOK || !valueOK {
-			return BadAuthRequest("任务自定义请求头必须仅包含字符串 name 和 value")
-		}
-		plain, err := s.decryptSettingSecret(secret)
-		if err != nil {
-			return fmt.Errorf("任务自定义请求头解密失败：%w", err)
-		}
-		plainHeaders[index] = OutboundHeader{Name: name, Value: plain}
-	}
-	// Validate plaintext, not the longer ciphertext. Keep the original names,
-	// values and ordering rather than applying outbound normalization here.
-	if _, err := NormalizeOutboundHeaders(plainHeaders); err != nil {
-		return err
-	}
-	values := make([]string, len(headers))
-	for index, rawHeader := range headers {
-		secret := rawHeader.(map[string]interface{})["value"].(string)
-		if decrypt {
-			values[index] = plainHeaders[index].Value
-		} else if strings.HasPrefix(secret, encryptedSettingPrefix) {
-			values[index] = secret
-		} else {
-			encrypted, err := s.encryptSettingSecret(secret)
-			if err != nil {
-				return err
-			}
-			values[index] = encrypted
-		}
-	}
-	for index, rawHeader := range headers {
-		rawHeader.(map[string]interface{})["value"] = values[index]
 	}
 	return nil
 }

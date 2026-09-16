@@ -57,15 +57,11 @@ func runVideoTask(ctx context.Context, input canvasGenerationInput) (map[string]
 	if strings.TrimSpace(input.Mode) == "" {
 		input.Mode = "video"
 	}
-	// 声明式插件和受信任宿主渠道共用适配器生命周期。未注入 registry 时补官方包，
-	// 已知插件缺失或停用时不能回退到通用 OpenAI 请求。
+	// 已有官方声明式插件的 InterfaceType 只走适配器。未注入 registry 时补官方包，
+	// 显式空 registry 则报“插件未安装”，不再回退到手写协议。
 	ctx = ensureOfficialProtocolAdapter(ctx, input.Config.InterfaceType)
-	adapter, err := generationProtocolAdapterForContext(ctx, input.Config.InterfaceType)
-	if err != nil {
-		return nil, err
-	}
-	if adapter != nil {
-		return runProtocolAdapterTask(ctx, input, adapter)
+	if _, ok := declarativeProtocolAdapterForContext(ctx, input.Config.InterfaceType); ok {
+		return runDeclarativeProtocolTask(ctx, input)
 	}
 	if label, official := officialDeclarativeVideoInterface(input.Config.InterfaceType); official {
 		return nil, fmt.Errorf("%s 视频插件未安装", label)

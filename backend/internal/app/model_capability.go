@@ -230,9 +230,6 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		DefaultOperation:  "text_to_video",
 	}
 	switch model.ChannelInterfaceType(protocol) {
-	case model.ChannelInterfaceTianYueVideo:
-		video.Ratios = []string{"16:9", "9:16", "4:3", "3:4", "1:1"}
-		video.Resolutions = []string{"480p", "720p", "1080p"}
 	case model.ChannelInterfaceVolcengineJiMengVideo:
 		video.Duration = VideoDurationConfig{Selection: "enum", Values: []int{5, 10}, Default: 5}
 		video.Resolutions = []string{"720p"}

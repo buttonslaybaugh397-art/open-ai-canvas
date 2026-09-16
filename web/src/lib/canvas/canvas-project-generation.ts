@@ -166,7 +166,6 @@ export function generationTaskMetadata(task: GenerationTask): CanvasNodeMetadata
         taskReceiptRecorded: task.receiptRecorded,
         taskCreatedAt: task.createdAt || task.created_at,
         taskUpdatedAt: task.updatedAt || task.updated_at,
-        taskProviderRecoveryAt: task.providerRecoveryAt,
     };
 }
 
@@ -196,7 +195,6 @@ export function resetGenerationTaskMetadata(metadata: CanvasNodeMetadata | undef
     delete next.taskReceiptRecorded;
     delete next.taskCreatedAt;
     delete next.taskUpdatedAt;
-    delete next.taskProviderRecoveryAt;
     return next;
 }
 

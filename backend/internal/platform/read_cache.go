@@ -142,14 +142,6 @@ func (c *BoundedReadCache[K, V]) Clear() {
 	c.ClearAndCount()
 }
 
-func (c *BoundedReadCache[K, V]) Invalidate(key K) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if entry := c.entries[key]; entry != nil {
-		c.remove(entry)
-	}
-}
-
 func (c *BoundedReadCache[K, V]) ClearAndCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()

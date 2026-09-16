@@ -59,15 +59,6 @@ func (s *Service) Resources(userID string, limit int) ([]model.Resource, error) 
 
 func (s *Service) Resource(userID string, id string) (*model.Resource, error) {
 	resource, err := s.repo.ResourceForUser(userID, id)
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, NotFound("资源不存在")
-	}
-	if err == nil && resource.PlaybackStatus == model.PlaybackStatusProcessing && time.Since(resource.UpdatedAt) > playbackLeaseTTL {
-		if err := s.repo.ExpireResourcePlayback(userID, id, time.Now().Add(-playbackLeaseTTL)); err != nil {
-			return nil, err
-		}
-		resource, err = s.repo.ResourceForUser(userID, id)
-	}
 	if resource != nil {
 		resource.PublicURL = ""
 	}
@@ -125,19 +116,10 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 	if resource.Status != model.ResourceStatusReady {
 		return nil, BadAuthRequest("资源尚未上传完成")
 	}
-	if options.Playback && !options.ForceDownload && resource.Kind == "video" &&
-		resource.PlaybackStatus == model.PlaybackStatusReady && resource.PlaybackObjectKey != "" {
-		return &ResourceDelivery{Resource: resource, Playback: true}, nil
-	}
 	if resource.Provider != "local" && !options.ForceProxy {
 		setting, err := s.ossSettingForResource(userID, resource)
 		if err != nil {
 			return nil, err
-		}
-		// Only Qiniu's signed CDN URL supports our attachment filename contract.
-		// Other downloads stream through the same-origin endpoint, without buffering in the browser.
-		if options.ForceDownload && (setting.Provider != qiniuKodoProvider || setting.CDNBaseURL == "") {
-			return &ResourceDelivery{Resource: resource}, nil
 		}
 		// S3 兼容 Endpoint 可能是私网服务；浏览器默认始终使用同源代理。
 		// 只有明确的服务端上游需求才签发可公开访问的短时地址。
@@ -145,15 +127,10 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 			return &ResourceDelivery{Resource: resource}, nil
 		}
 		if setting.Provider == qiniuKodoProvider && setting.CDNBaseURL != "" {
-			if !options.ForceDirect {
-				// 预览保持同源代理，避免跨域 Range/CORS 影响播放器。
-				return &ResourceDelivery{Resource: resource}, nil
-			}
-			redirectURL, err := signedQiniuObjectURL(setting, resource.ObjectKey, time.Now().Add(directResourceURLTTL), resourceDownloadFileName(resource, options.ForceDownload, options.DownloadFileName))
-			if err != nil {
-				return nil, err
-			}
-			return &ResourceDelivery{Resource: resource, RedirectURL: redirectURL}, nil
+			// Keep the browser on the current origin even when a Qiniu binding domain is configured.
+			// The backend still reads through the signed Qiniu CDN URL, preserving CDN acceleration
+			// while avoiding cross-origin redirects and Range/CORS failures in reverse-proxy setups.
+			return &ResourceDelivery{Resource: resource}, nil
 		}
 		if setting.CDNBaseURL != "" {
 			redirectURL, err := ossCDNObjectURL(setting.CDNBaseURL, resource.ObjectKey)
@@ -163,13 +140,6 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 			return &ResourceDelivery{Resource: resource, RedirectURL: redirectURL}, nil
 		}
 		if options.ForceDirect {
-			if setting.Provider == qiniuKodoProvider {
-				redirectURL, err := signedQiniuObjectURL(setting, resource.ObjectKey, time.Now().Add(directResourceURLTTL), resourceDownloadFileName(resource, options.ForceDownload))
-				if err != nil {
-					return nil, err
-				}
-				return &ResourceDelivery{Resource: resource, RedirectURL: redirectURL}, nil
-			}
 			if setting.Provider == s3Provider && !publicHTTPSStorageEndpoint(setting.Endpoint) {
 				redirectURL, err := s.signedHTTPSPublicResourceURL(resource, time.Now().Add(directResourceURLTTL))
 				if err != nil {
@@ -490,23 +460,11 @@ func (s *Service) OpenPublicResourceRange(id string, expires string, signature s
 }
 
 func (s *Service) openResourceRange(userID string, resource *model.Resource, rangeHeader string) (*ResourceStream, error) {
-	return s.openResourceRangeContext(context.Background(), userID, resource, rangeHeader)
-}
-
-func (s *Service) openResourceRangeContext(ctx context.Context, userID string, resource *model.Resource, rangeHeader string) (*ResourceStream, error) {
-	if resource == nil || resource.UserID != userID {
-		return nil, NotFound("资源不存在")
-	}
 	if resource.Status != model.ResourceStatusReady {
 		return nil, BadAuthRequest("资源尚未上传完成")
 	}
 	if resource.Provider == "local" {
-		root, err := os.OpenRoot(filepath.Join(s.dataDir, "resources"))
-		if err != nil {
-			return nil, err
-		}
-		defer root.Close()
-		body, err := root.Open(filepath.FromSlash(resource.ObjectKey))
+		body, err := os.Open(filepath.Join(s.dataDir, "resources", filepath.FromSlash(resource.ObjectKey)))
 		if err != nil {
 			return nil, err
 		}
@@ -522,7 +480,7 @@ func (s *Service) openResourceRangeContext(ctx context.Context, userID string, r
 	setting.Provider = firstNonEmpty(resource.Provider, setting.Provider)
 	setting.Endpoint = firstNonEmpty(resource.Endpoint, setting.Endpoint)
 	setting.Bucket = firstNonEmpty(resource.Bucket, setting.Bucket)
-	stream, err := getOSSObjectRangeContext(ctx, setting, resource.ObjectKey, normalizeSingleByteRange(rangeHeader))
+	stream, err := getOSSObjectRange(setting, resource.ObjectKey, normalizeSingleByteRange(rangeHeader))
 	if err != nil {
 		return nil, err
 	}
@@ -1215,31 +1173,23 @@ type ossObjectStream struct {
 }
 
 func getOSSObjectRange(setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
-	return getOSSObjectRangeContext(context.Background(), setting, objectKey, rangeHeader)
-}
-
-func getOSSObjectRangeContext(ctx context.Context, setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
 	setting = normalizeOSSSetting(setting)
 	if setting.Provider == s3Provider {
-		return getS3ObjectRangeContext(ctx, setting, objectKey, rangeHeader)
+		return getS3ObjectRange(setting, objectKey, rangeHeader)
 	}
 	if setting.CDNBaseURL != "" {
-		return getOSSObjectRangeViaCDNContext(ctx, setting, objectKey, rangeHeader)
+		return getOSSObjectRangeViaCDN(setting, objectKey, rangeHeader)
 	}
 	if setting.Provider == tencentCOSProvider {
-		return getCOSObjectRangeContext(ctx, setting, objectKey, rangeHeader)
+		return getCOSObjectRange(setting, objectKey, rangeHeader)
 	}
 	if setting.Provider == qiniuKodoProvider {
-		return getQiniuObjectRangeContext(ctx, setting, objectKey, rangeHeader)
+		return getQiniuObjectRange(setting, objectKey, rangeHeader)
 	}
-	return getAliyunOSSObjectRangeContext(ctx, setting, objectKey, rangeHeader)
+	return getAliyunOSSObjectRange(setting, objectKey, rangeHeader)
 }
 
 func getAliyunOSSObjectRange(setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
-	return getAliyunOSSObjectRangeContext(context.Background(), setting, objectKey, rangeHeader)
-}
-
-func getAliyunOSSObjectRangeContext(ctx context.Context, setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
 	req, err := newOSSRequest(http.MethodGet, setting, objectKey, "", nil)
 	if err != nil {
 		return nil, err
@@ -1247,7 +1197,7 @@ func getAliyunOSSObjectRangeContext(ctx context.Context, setting ossSettingValue
 	if rangeHeader != "" {
 		req.Header.Set("Range", rangeHeader)
 	}
-	resp, err := OutboundHTTPClient(2 * time.Minute).Do(req.WithContext(ctx))
+	resp, err := OutboundHTTPClient(2 * time.Minute).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1363,16 +1313,12 @@ func putQiniuObject(setting ossSettingValue, objectKey string, mimeType string, 
 }
 
 func getCOSObjectRange(setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
-	return getCOSObjectRangeContext(context.Background(), setting, objectKey, rangeHeader)
-}
-
-func getCOSObjectRangeContext(ctx context.Context, setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
 	client, err := newCOSClient(setting, 2*time.Minute)
 	if err != nil {
 		return nil, err
 	}
 	options := &cos.ObjectGetOptions{Range: rangeHeader}
-	resp, err := client.Object.Get(ctx, objectKey, options)
+	resp, err := client.Object.Get(context.Background(), objectKey, options)
 	if err != nil {
 		if resp != nil && resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 			return &ossObjectStream{body: io.NopCloser(bytes.NewReader(nil)), statusCode: resp.StatusCode, contentRange: resp.Header.Get("Content-Range"), acceptRanges: firstNonEmpty(resp.Header.Get("Accept-Ranges"), "bytes")}, nil
@@ -1383,15 +1329,11 @@ func getCOSObjectRangeContext(ctx context.Context, setting ossSettingValue, obje
 }
 
 func getQiniuObjectRange(setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
-	return getQiniuObjectRangeContext(context.Background(), setting, objectKey, rangeHeader)
-}
-
-func getQiniuObjectRangeContext(ctx context.Context, setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
 	signedURL, err := signedQiniuObjectURL(setting, objectKey, time.Now().Add(directResourceURLTTL))
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, signedURL, nil)
+	req, err := http.NewRequest(http.MethodGet, signedURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1412,15 +1354,11 @@ func getQiniuObjectRangeContext(ctx context.Context, setting ossSettingValue, ob
 }
 
 func getOSSObjectRangeViaCDN(setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
-	return getOSSObjectRangeViaCDNContext(context.Background(), setting, objectKey, rangeHeader)
-}
-
-func getOSSObjectRangeViaCDNContext(ctx context.Context, setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
 	signedURL, err := signedOSSObjectURL(setting, objectKey, time.Now().Add(directResourceURLTTL))
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, signedURL, nil)
+	req, err := http.NewRequest(http.MethodGet, signedURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1463,7 +1401,7 @@ func signedCOSObjectURL(setting ossSettingValue, objectKey string, expiresAt tim
 	return signedURL.String(), nil
 }
 
-func signedQiniuObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time, downloadFileName ...string) (string, error) {
+func signedQiniuObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time) (string, error) {
 	if setting.AccessKeyID == "" || setting.AccessKeySecret == "" {
 		return "", errors.New("七牛云 Kodo 访问密钥不可用")
 	}
@@ -1479,33 +1417,7 @@ func signedQiniuObjectURL(setting ossSettingValue, objectKey string, expiresAt t
 		return signedQiniuS3ObjectURL(setting, objectKey, expiresAt)
 	}
 	mac := qiniuAuth.New(setting.AccessKeyID, setting.AccessKeySecret)
-	var query url.Values
-	if len(downloadFileName) > 0 && downloadFileName[0] != "" {
-		query = url.Values{"attname": []string{downloadFileName[0]}}
-	}
-	return qiniuStorage.MakePrivateURLv2WithQuery(mac, strings.TrimRight(setting.CDNBaseURL, "/"), objectKey, query, deadline), nil
-}
-
-func resourceDownloadFileName(resource *model.Resource, forceDownload bool, requestedName ...string) string {
-	if !forceDownload || resource == nil {
-		return ""
-	}
-	name := path.Base(strings.TrimRight(strings.TrimSpace(resource.ObjectKey), "/"))
-	if len(requestedName) > 0 && strings.TrimSpace(requestedName[0]) != "" {
-		name = path.Base(strings.ReplaceAll(requestedName[0], "\\", "/"))
-	}
-	if name == "." || name == "/" || name == "" {
-		name = resource.ID + resourceFileExtension(resource.ObjectKey, resource.MimeType, resource.Kind)
-	}
-	name = strings.Map(func(r rune) rune {
-		switch r {
-		case '\r', '\n', '"', '\\':
-			return '-'
-		default:
-			return r
-		}
-	}, strings.TrimSpace(name))
-	return strings.Trim(name, ". ")
+	return qiniuStorage.MakePrivateURLv2(mac, strings.TrimRight(setting.CDNBaseURL, "/"), objectKey, deadline), nil
 }
 
 // signedQiniuS3ObjectURL 用七牛兼容 S3 的 AWS Signature V4 访问私有空间。

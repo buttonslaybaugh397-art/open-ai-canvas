@@ -9,7 +9,6 @@ import { VideoSettingsPanel } from "../src/components/video-settings-panel";
 import { canvasThemes } from "../src/lib/canvas-theme";
 import { mergeFetchedChannelModelCosts, type ChannelModelCatalogItem } from "../src/lib/channel-model-catalog";
 import { defaultModelCapabilityConfig, pluginWorkflowCapabilityConfig } from "../src/lib/model-capabilities";
-import type { ModelProtocolDefinition } from "../src/lib/model-protocols";
 import { ChannelModelSettings } from "../src/pages/settings/channel-video-pricing";
 import { fetchChannelModels } from "../src/services/api/image";
 import { apiClient } from "../src/services/api/request";
@@ -23,20 +22,6 @@ afterEach(() => {
     axios.request = originalAxiosRequest;
     apiClient.request = originalApiRequest;
 });
-
-function protocolDefinition(value: string, capability: ModelProtocolDefinition["capability"], enabled = true): ModelProtocolDefinition {
-    return { value, label: value, capability, enabled, create: "POST /test", contentType: "application/json", media: "test" };
-}
-
-const availableProtocols = [
-    protocolDefinition("chat-completion", "text"),
-    protocolDefinition("openai-image", "image"),
-    protocolDefinition("newapi", "video"),
-    protocolDefinition("openai-audio", "audio"),
-    protocolDefinition("gemini-image", "image"),
-    protocolDefinition("gemini-veo", "video"),
-    protocolDefinition("deepseek-chat", "text"),
-];
 
 const omniCatalog: ChannelModelCatalogItem = {
     id: "omni",
@@ -61,7 +46,7 @@ function configForCatalog(catalog: ChannelModelCatalogItem[], input: Partial<AiC
         apiFormat: "openai",
         models: catalog.map((item) => item.id),
     });
-    const configured = { ...channel, modelCosts: mergeFetchedChannelModelCosts(channel, catalog, availableProtocols) };
+    const configured = { ...channel, modelCosts: mergeFetchedChannelModelCosts(channel, catalog) };
     const normalized = normalizeConfigSnapshot({
         config: {
             ...defaultConfig,
@@ -80,60 +65,6 @@ function formEntries(body: unknown) {
 }
 
 describe("public channel model catalog", () => {
-    for (const [protocol, capability] of [
-        ["gemini-image", "image"],
-        ["gemini-veo", "video"],
-        ["deepseek-chat", "text"],
-    ] as const) {
-        test(`inherits the installed ${protocol} channel protocol for new catalog models`, () => {
-            const channel = createModelChannel({ id: "selected", interfaceType: protocol, models: ["opaque-model"] });
-            const costs = mergeFetchedChannelModelCosts(channel, [{ id: "opaque-model", modelType: capability }], availableProtocols);
-            const config = { ...defaultConfig, channels: [{ ...channel, modelCosts: costs }] };
-
-            expect(costs[0]?.protocol).toBe(protocol);
-            expect(costs[0]?.capability).toBe(capability);
-            expect(resolveModelRequestConfig(config, "selected::opaque-model").interfaceType).toBe(protocol);
-        });
-    }
-
-    test("uses the selected plugin capability for an ID-only new model", () => {
-        const channel = createModelChannel({ interfaceType: "gemini-veo", models: ["opaque-model"] });
-        const costs = mergeFetchedChannelModelCosts(channel, [{ id: "opaque-model" }], availableProtocols);
-
-        expect(costs[0]).toMatchObject({ model: "opaque-model", capability: "video", protocol: "gemini-veo" });
-    });
-
-    test("does not replace an unavailable or incompatible channel protocol with a standard protocol", () => {
-        for (const protocols of [[], availableProtocols.map((item) => ({ ...item, enabled: item.value !== "gemini-veo" })), [protocolDefinition("gemini-veo", "text"), ...availableProtocols.filter((item) => item.value !== "gemini-veo")]]) {
-            const channel = createModelChannel({ interfaceType: "gemini-veo", models: ["opaque-model"] });
-            const costs = mergeFetchedChannelModelCosts(channel, [{ id: "opaque-model", modelType: "video", defaultParameters: { durationSeconds: "8" } }], protocols);
-
-            expect(costs[0]?.protocol).toBeUndefined();
-            expect(costs[0]?.capability).toBe("video");
-            expect(costs[0]?.capabilityConfig?.video?.duration.default).toBe(8);
-        }
-    });
-
-    test("does not invent a standard protocol when it is absent or disabled in the catalog", () => {
-        const channel = createModelChannel({ models: ["opaque-model"] });
-        for (const protocols of [[], [protocolDefinition("newapi", "video", false)], [protocolDefinition("newapi", "text")], [protocolDefinition("gemini-veo", "video")]]) {
-            const costs = mergeFetchedChannelModelCosts(channel, [{ id: "opaque-model", modelType: "video" }], protocols);
-
-            expect(costs[0]?.protocol).toBeUndefined();
-            expect(costs[0]?.capability).toBe("video");
-        }
-    });
-
-    test("preserves an existing explicit model protocol and pricing even when its plugin is unavailable", () => {
-        const channel = createModelChannel({
-            interfaceType: "chat-completion",
-            models: ["manual-video"],
-            modelCosts: [{ model: "manual-video", protocol: "gemini-veo", capability: "video", billingMode: "per_second", unitPriceMicrocredits: 1234 }],
-        });
-
-        expect(mergeFetchedChannelModelCosts(channel, [{ id: "manual-video", modelType: "video" }], [])).toEqual(channel.modelCosts);
-    });
-
     test("projects Manifest video workflow parameters without inventing a size capability", () => {
         const profile = pluginWorkflowCapabilityConfig("autodl-comfyui", {
             id: "minimax_h3_lightx2v_no_pic",
@@ -224,7 +155,7 @@ describe("public channel model catalog", () => {
         capabilityConfig.video!.defaultResolution = "1440p";
         channel.modelCosts = [{ model: "manual-video", displayName: "Manual Video", capability: "video", protocol: "newapi", billingMode: "fixed_request", unitPriceMicrocredits: 0, capabilityConfig }];
 
-        const costs = mergeFetchedChannelModelCosts(channel, [{ id: "manual-video" }], availableProtocols);
+        const costs = mergeFetchedChannelModelCosts(channel, [{ id: "manual-video" }]);
 
         expect(costs[0]?.capabilityConfig).toEqual(capabilityConfig);
         expect(costs[0]?.displayName).toBe("Manual Video");
@@ -256,7 +187,7 @@ describe("public channel model catalog", () => {
         };
         channel.modelCosts = [existing];
 
-        const costs = mergeFetchedChannelModelCosts(channel, [{ id: "manual-video", displayName: "Catalog Video" }], availableProtocols);
+        const costs = mergeFetchedChannelModelCosts(channel, [{ id: "manual-video", displayName: "Catalog Video" }]);
 
         expect(costs[0]).toEqual({ ...existing, displayName: "Catalog Video" });
     });
@@ -276,7 +207,7 @@ describe("public channel model catalog", () => {
         capabilityConfig.video!.defaultResolution = "1440p";
         channel.modelCosts = [{ model: "video-x", capability: "video", protocol: "gemini-veo", billingMode: "per_second", unitPriceMicrocredits: 7654, capabilityConfig }];
 
-        const costs = mergeFetchedChannelModelCosts(channel, [{ id: "video-x", modelType: "video" }], availableProtocols);
+        const costs = mergeFetchedChannelModelCosts(channel, [{ id: "video-x", modelType: "video" }]);
 
         expect(costs).toEqual(channel.modelCosts);
     });
@@ -322,7 +253,7 @@ describe("public channel model catalog", () => {
         };
         channel.modelCosts = [existing];
 
-        const costs = mergeFetchedChannelModelCosts(channel, [{ id: "manual-video", displayName: "Catalog Video" }], availableProtocols);
+        const costs = mergeFetchedChannelModelCosts(channel, [{ id: "manual-video", displayName: "Catalog Video" }]);
 
         expect(costs).toEqual([{ ...existing, displayName: "Catalog Video" }]);
     });

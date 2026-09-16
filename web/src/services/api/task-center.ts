@@ -1,5 +1,4 @@
 import { DREAMINA_SUBMIT_ERROR_MESSAGES, generationErrorMessage } from "@/lib/generation-error";
-import { getActiveUserScope } from "@/lib/user-scope";
 import { http, apiBaseURL, type BackendEnvelope } from "@/services/api/request";
 import { consumeTaskTextStream, createTaskTextStreamParser, type TaskTextStreamEvent } from "@/services/api/task-text-stream";
 import { recordDiagnosticEvent } from "@/services/diagnostics/client-diagnostics";
@@ -44,7 +43,6 @@ export type GenerationTask = {
     provider?: string;
     model?: string;
     providerRequestId?: string;
-    providerRecoveryAt?: string;
     providerCancelStatus?: ProviderCancelStatus;
     providerCancelError?: string;
     providerCancelAttempts?: number;
@@ -92,7 +90,6 @@ export type ProviderTaskQueryResult = {
     task: GenerationTask;
     providerStatus: string;
     recovered: boolean;
-    pollingResumed: boolean;
     billingSettled: boolean;
 };
 
@@ -344,11 +341,9 @@ export function splitGenerationTaskObservationIds(ids: readonly string[]) {
 }
 
 type GenerationTaskSubscriptionDependencies = {
-    queryTask(id: string, options?: { signal?: AbortSignal }): Promise<GenerationTask>;
-    waitTask(id: string, options?: { initialTask?: GenerationTask; onTaskUpdate?: (task: GenerationTask) => void; signal?: AbortSignal }): Promise<GenerationTask>;
+    queryTask(id: string): Promise<GenerationTask>;
+    waitTask(id: string, options?: { initialTask?: GenerationTask; onTaskUpdate?: (task: GenerationTask) => void }): Promise<GenerationTask>;
     retryDelayMs?: number;
-    recoveryPollMs?: number;
-    getScope?: () => string;
 };
 
 export function createGenerationTaskSubscriptionService(dependencies: GenerationTaskSubscriptionDependencies) {
@@ -357,70 +352,50 @@ export function createGenerationTaskSubscriptionService(dependencies: Generation
         latest?: GenerationTask;
         observation?: Promise<void>;
         retryTimer?: ReturnType<typeof setTimeout>;
-        controller: AbortController;
-        scope: string;
     };
     const entries = new Map<string, Entry>();
-    const getScope = dependencies.getScope ?? getActiveUserScope;
-    const isCurrent = (entry: Entry) => !entry.controller.signal.aborted && entry.scope === getScope();
     const publish = (entry: Entry, task: GenerationTask) => {
-        if (!isCurrent(entry)) {
-            entry.controller.abort();
-            return;
-        }
         if (entry.latest && !generationTaskSnapshotCanAdvance(entry.latest, task)) return;
         entry.latest = task;
         for (const listener of entry.listeners) listener(task);
     };
     const observe = (id: string, entry: Entry) => {
-        if (!isCurrent(entry) || entry.observation || (generationTaskTerminal(entry.latest) && !generationTaskCanRecover(entry.latest))) return;
+        if (entry.observation || generationTaskTerminal(entry.latest)) return;
         let failed = false;
         const observation = (async () => {
-            const initial = await dependencies.queryTask(id, { signal: entry.controller.signal });
-            if (!isCurrent(entry)) return;
+            const initial = await dependencies.queryTask(id);
             publish(entry, initial);
             if (initial.status === "succeeded" || initial.status === "failed" || initial.status === "cancelled") return;
             const terminal = await dependencies.waitTask(id, {
                 initialTask: initial,
                 onTaskUpdate: (task) => publish(entry, task),
-                signal: entry.controller.signal,
             });
             publish(entry, terminal);
         })()
             .catch((error) => {
-                if (!isCurrent(entry)) return;
                 failed = true;
-                if (!generationTaskTerminal(entry.latest)) console.warn("生成任务观察中断，将自动重新建立连接", { taskId: id, error });
+                console.warn("生成任务观察中断，将自动重新建立连接", { taskId: id, error });
             })
             .finally(() => {
                 if (entry.observation !== observation) return;
                 entry.observation = undefined;
-                const recoverable = generationTaskCanRecover(entry.latest);
-                if (isCurrent(entry) && entry.listeners.size && (recoverable || (failed && !generationTaskTerminal(entry.latest)))) {
+                if (failed && entry.listeners.size && !generationTaskTerminal(entry.latest)) {
                     entry.retryTimer = setTimeout(() => {
                         entry.retryTimer = undefined;
                         observe(id, entry);
-                    }, recoverable ? dependencies.recoveryPollMs ?? 5000 : dependencies.retryDelayMs ?? 2000);
+                    }, dependencies.retryDelayMs ?? 2000);
                     return;
                 }
-                if ((!entry.listeners.size || !isCurrent(entry)) && entries.get(id) === entry) entries.delete(id);
+                if (!entry.listeners.size) entries.delete(id);
             });
         entry.observation = observation;
     };
     return {
         subscribe(ids: readonly string[], listener: (task: GenerationTask) => void) {
             const uniqueIds = [...new Set(ids)];
-            const subscribed = new Map<string, Entry>();
             for (const id of uniqueIds) {
-                let entry = entries.get(id);
-                if (entry && !isCurrent(entry)) {
-                    entry.controller.abort();
-                    if (entry.retryTimer) clearTimeout(entry.retryTimer);
-                    entry = undefined;
-                }
-                entry ??= { listeners: new Set<(task: GenerationTask) => void>(), controller: new AbortController(), scope: getScope() };
+                const entry = entries.get(id) ?? { listeners: new Set<(task: GenerationTask) => void>() };
                 entries.set(id, entry);
-                subscribed.set(id, entry);
                 entry.listeners.add(listener);
                 if (entry.latest) listener(entry.latest);
                 if (entry.retryTimer) {
@@ -430,25 +405,16 @@ export function createGenerationTaskSubscriptionService(dependencies: Generation
                 observe(id, entry);
             }
             return () => {
-                for (const [id, entry] of subscribed) {
+                for (const id of uniqueIds) {
+                    const entry = entries.get(id);
+                    if (!entry) continue;
                     entry.listeners.delete(listener);
                     if (entry.listeners.size) continue;
                     if (entry.retryTimer) {
                         clearTimeout(entry.retryTimer);
                         entry.retryTimer = undefined;
                     }
-                    if (entry.observation) {
-                        // A same-turn remount can reuse the in-flight observation.
-                        entry.retryTimer = setTimeout(() => {
-                            entry.retryTimer = undefined;
-                            if (entry.listeners.size) return;
-                            entry.controller.abort();
-                            if (entries.get(id) === entry) entries.delete(id);
-                        }, 0);
-                    } else {
-                        entry.controller.abort();
-                        if (entries.get(id) === entry) entries.delete(id);
-                    }
+                    if (!entry.observation) entries.delete(id);
                 }
             };
         },
@@ -459,20 +425,8 @@ function generationTaskTerminal(task?: GenerationTask) {
     return task?.status === "succeeded" || task?.status === "failed" || task?.status === "cancelled";
 }
 
-export function generationTaskCanRecover(task?: GenerationTask) {
-    return task?.status === "failed" && Boolean(task.providerRequestId) && (task.type === "canvas_video" || task.type.startsWith("video_"));
-}
-
 export function generationTaskSnapshotCanAdvance(current: GenerationTask, incoming: GenerationTask) {
     if (current.id !== incoming.id || current === incoming) return false;
-    const currentRecovery = Date.parse(current.providerRecoveryAt || "") || 0;
-    const incomingRecovery = Date.parse(incoming.providerRecoveryAt || "") || 0;
-    if (incomingRecovery < currentRecovery) return false;
-    if (incomingRecovery > currentRecovery) {
-        // Only an explicit server recovery epoch can reopen a failed task.
-        return current.status !== "succeeded" && current.status !== "cancelled" &&
-            (taskSnapshotTimestamp(incoming) ?? 0) >= (taskSnapshotTimestamp(current) ?? 0);
-    }
     const currentIsTerminal = generationTaskTerminal(current);
     const incomingIsTerminal = generationTaskTerminal(incoming);
     if (currentIsTerminal && !incomingIsTerminal) return false;
@@ -515,7 +469,7 @@ function taskSnapshotTimestamp(task: GenerationTask) {
 }
 
 const generationTaskSubscriptionService = createGenerationTaskSubscriptionService({
-    queryTask: (id, options) => queryGenerationTask(id, options),
+    queryTask: (id) => queryGenerationTask(id),
     waitTask: (id, options) => waitForGenerationTask(id, options),
 });
 

@@ -176,8 +176,7 @@ describe("video canvas controls", () => {
         expect(videoPlayerSource).toContain('data-no-audio={noAudio ? "true" : undefined}');
         expect(videoPlayerSource).toContain("VolumeLow: defaultLayoutIcons.MuteButton.Mute");
         expect(videoPlayerSource).toContain("VolumeHigh: defaultLayoutIcons.MuteButton.Mute");
-        expect(videoPlayerSource).toContain('muteButton.toggleAttribute("data-disabled", noAudio)');
-        expect(videoPlayerSource).not.toContain("muteButton.disabled = noAudio;");
+        expect(videoPlayerSource).toContain("muteButton.disabled = noAudio;");
         expect(videoPlayerSource).not.toContain("volumeSlider as HTMLElement & { disabled?: boolean }");
         expect(videoPlayerSource).toContain('volumeSlider.setAttribute("aria-disabled", String(noAudio))');
         expect(videoPlayerSource).toContain('event.target.closest(".vds-volume,.vds-mute-button,.vds-volume-slider")');

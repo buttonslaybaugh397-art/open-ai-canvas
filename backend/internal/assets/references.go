@@ -100,7 +100,7 @@ func isBareResourceIDField(field string) bool {
 
 func isResourceLocatorField(field string) bool {
 	switch field {
-	case "storageKey", "resourceKey", "content", "url", "dataUrl", "coverUrl", "imageUrl", "videoUrl", "audioUrl", "referenceUrl", "referenceUrls", "artifactRef", "providerArtifactRef":
+	case "storageKey", "content", "url", "dataUrl", "coverUrl", "imageUrl", "videoUrl", "audioUrl", "referenceUrl", "referenceUrls", "artifactRef", "providerArtifactRef":
 		return true
 	default:
 		return false

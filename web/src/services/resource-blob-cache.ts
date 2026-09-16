@@ -110,17 +110,16 @@ export async function primeResourceBlobCache(storageKey: string, blob: Blob) {
     return url;
 }
 
-export async function getCachedResourceBlob(storageKey: string, options?: { localOnly?: boolean }) {
+export async function getCachedResourceBlob(storageKey: string) {
     const target = await cacheTarget(storageKey);
     if (!target) return null;
-    const sessionBlob = sessionBlobs.get(target.key);
-    if (sessionBlob) return sessionBlob;
     const cached = await blobStore.getItem<Blob>(target.key);
     if (cached) {
         touchCacheMetaSafely(target);
         return cached;
     }
-    if (options?.localOnly) return null;
+    const sessionBlob = sessionBlobs.get(target.key);
+    if (sessionBlob) return sessionBlob;
     const pending = inFlight.get(target.key);
     if (pending) {
         await pending;

@@ -468,7 +468,7 @@ func (r *Repository) RetryTaskWithBilling(userID string, prepared *model.Task, o
 		updates := map[string]any{
 			"status": model.TaskStatusQueued, "stage": "等待队列调度", "progress": 5, "error": "", "result_json": "",
 			"text_draft": "", "started_at": nil, "completed_at": nil,
-			"provider_request_id": "", "provider_recovery_at": nil, "poll_stage": "", "next_poll_at": nil,
+			"provider_request_id": "", "poll_stage": "", "next_poll_at": nil,
 			"provider_cancel_status": "", "provider_cancel_error": "", "provider_cancel_attempts": 0,
 			"provider_cancel_requested_at": nil, "provider_cancelled_at": nil, "provider_cancel_next_check_at": nil,
 			"route_run":                 gorm.Expr("route_run + ?", 1),
@@ -485,7 +485,6 @@ func (r *Repository) RetryTaskWithBilling(userID string, prepared *model.Task, o
 		}
 		updated := tx.Model(&model.Task{}).
 			Where("id = ? AND user_id = ? AND status IN ?", taskID, userID, []model.TaskStatus{model.TaskStatusFailed, model.TaskStatusCancelled}).
-			Where("(lease_owner NOT LIKE ? OR lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ?)", "manual-recovery:%", time.Now()).
 			Updates(updates)
 		if updated.Error != nil {
 			return updated.Error

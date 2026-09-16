@@ -1,5 +1,5 @@
 import { defaultModelCapabilityConfig, type ModelCapabilityConfig } from "@/lib/model-capabilities";
-import { modelProtocolCapability, protocolForModelCatalog, type ModelProtocol, type ModelProtocolDefinition } from "@/lib/model-protocols";
+import { modelProtocolCapability, protocolForModelCatalog, type ModelProtocol } from "@/lib/model-protocols";
 import type { ModelChannel } from "@/stores/use-config-store";
 
 export type ChannelModelCatalogOption = { value: string; label?: string };
@@ -61,14 +61,13 @@ export function sanitizeChannelModelCatalogItem(value: unknown): ChannelModelCat
     });
 }
 
-export function mergeFetchedChannelModelCosts(channel: ModelChannel, catalog: ChannelModelCatalogItem[], protocols: ModelProtocolDefinition[]): ChannelModelCost[] {
-    const availableProtocols = protocols.filter((item) => item.enabled !== false);
+export function mergeFetchedChannelModelCosts(channel: ModelChannel, catalog: ChannelModelCatalogItem[]): ChannelModelCost[] {
     const existingByModel = new Map((channel.modelCosts || []).map((cost) => [cost.model, cost]));
     const next: ChannelModelCost[] = [];
     for (const item of catalog) {
         const existing = existingByModel.get(item.id);
         const inferredProtocol = protocolForModelCatalog(item.supportedEndpointTypes);
-        const inferredCapability = modelProtocolCapability(inferredProtocol, availableProtocols) || item.modelType;
+        const inferredCapability = modelProtocolCapability(inferredProtocol) || item.modelType;
         if (existing) {
             const protocol = inferredProtocol || existing.protocol;
             const capability = inferredCapability || existing.capability;
@@ -89,9 +88,9 @@ export function mergeFetchedChannelModelCosts(channel: ModelChannel, catalog: Ch
             continue;
         }
 
-        const capability = inferredCapability || modelProtocolCapability(channel.interfaceType, availableProtocols);
-        const protocol = inferredProtocol || protocolTemplateForNewCatalogModel(capability, channel.interfaceType, availableProtocols);
-        if (!capability) continue;
+        const capability = inferredCapability || modelProtocolCapability(channel.interfaceType);
+        const protocol = inferredProtocol || protocolTemplateForNewCatalogModel(capability, channel.interfaceType);
+        if (!protocol || !capability) continue;
         const capabilityConfig = capability === "image" || capability === "video" ? catalogCapabilityConfig(item, protocol, capability, undefined, true) : undefined;
         next.push({
             model: item.id,
@@ -106,12 +105,11 @@ export function mergeFetchedChannelModelCosts(channel: ModelChannel, catalog: Ch
     return next;
 }
 
-function protocolTemplateForNewCatalogModel(capability: ChannelModelCost["capability"] | undefined, channelProtocol: ModelProtocol | undefined, protocols: ModelProtocolDefinition[]): ModelProtocol | undefined {
-    if (!capability) return undefined;
-    // Missing or incompatible plugins require an explicit choice, not a different provider.
-    if (channelProtocol) return protocols.find((item) => item.value === channelProtocol && item.capability === capability)?.value;
+function protocolTemplateForNewCatalogModel(capability: ChannelModelCost["capability"] | undefined, channelProtocol: ModelProtocol | undefined): ModelProtocol | undefined {
+    if (!capability) return channelProtocol;
+    if (modelProtocolCapability(channelProtocol) === capability) return channelProtocol;
     const templates: Record<ChannelModelCost["capability"], ModelProtocol> = { text: "chat-completion", image: "openai-image", video: "newapi", audio: "openai-audio" };
-    return protocols.find((item) => item.value === templates[capability] && item.capability === capability)?.value;
+    return templates[capability];
 }
 
 function hasCatalogCapabilityConfig(item: ChannelModelCatalogItem) {

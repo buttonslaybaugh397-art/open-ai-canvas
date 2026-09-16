@@ -155,13 +155,7 @@ func (s *Service) RecordChannelResult(ctx context.Context, channelID string, fai
 }
 
 func (s *Service) Close() error {
-	if s == nil {
-		return nil
-	}
-	if err := s.stopPlaybackWorkers(); err != nil {
-		return err
-	}
-	if s.coordinator == nil {
+	if s == nil || s.coordinator == nil {
 		return nil
 	}
 	if !s.coordinator.HasRedis() {

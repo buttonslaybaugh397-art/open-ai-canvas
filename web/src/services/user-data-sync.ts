@@ -3,7 +3,6 @@ import { getImageBlob } from "@/services/image-storage";
 import { deleteRemoteAsset, deleteRemoteCanvasProject, getRemoteAsset, getRemoteAssetsByIds, getRemoteCanvasProject, getRemoteUserDataSnapshot, listRemoteAssetsPage, upsertRemoteAsset, upsertRemoteCanvasProject } from "@/services/api/user-data";
 import { appQueryClient } from "@/lib/query-client";
 import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
-import { CanvasResourceRecovery, notifyResourceRepairs, remapResourceReferences } from "@/services/canvas-resource-recovery";
 import { parseAssetRecordList } from "@/lib/asset-record";
 import { assetForRemoteSync } from "@/lib/asset-remote-sync";
 import type { Asset } from "@/stores/use-asset-store";
@@ -401,9 +400,7 @@ export async function saveRemoteAssetNow(id: string) {
         if (!source) throw new Error("素材不存在，请重新选择");
         await verifyRemoteAssetBaseline(source);
         if (sameEntitySnapshot(acknowledgedAssets.get(assetId), source)) return;
-        const recovery = createResourceRecovery();
-        await recovery.prepare(source);
-        await saveRemoteAssetSnapshot(remapResourceReferences(source, recovery.remaps), new Map());
+        await saveRemoteAssetSnapshot(source, new Map());
     });
 }
 
@@ -446,7 +443,6 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>) {
     repairMissingCanvasAssets(incrementalSession ? changedProjectIds : undefined, incrementalSession);
     const currentProjects = useCanvasStore.getState().projects;
     const currentAssets = useAssetStore.getState().assets;
-    const recovery = createResourceRecovery();
     const dirtyProjects = currentProjects.filter((project) => !sameEntitySnapshot(acknowledgedProjects.get(project.id), project));
     const dirtyAssets = currentAssets.filter((asset) => !sameEntitySnapshot(acknowledgedAssets.get(asset.id), asset));
     if (!dirtyProjects.length && !dirtyAssets.length) return;
@@ -468,45 +464,16 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>) {
         }
     }
 
-    // 先恢复缺失资源；已保存的素材和画布由服务端原子修复，未保存的实体继续按素材优先提交。
-    const assetPreflightErrors = new Map<string, unknown>();
-    for (const source of dirtyProjects) {
-        useSyncProgressStore.getState().setProjectProgress(source.id, {
-            projectId: source.id, total: 0, completed: 0, phase: "uploading", message: "正在检查并修复云端媒体",
-        });
-    }
-    for (const source of dirtyAssets) {
-        try {
-            await recovery.prepare(source);
-        } catch (error) {
-            assetPreflightErrors.set(source.id, error);
-        }
-    }
-    const canvasPreflightErrors = new Map<string, unknown>();
-    for (const source of dirtyProjects) {
-        try {
-            await recovery.prepare(source);
-        } catch (error) {
-            canvasPreflightErrors.set(source.id, error);
-        }
-    }
-    // 只重写捕获快照中的引用，上传期间的新编辑留给下一轮，不能把未提交的编辑标记为已确认。
-    const preparedAssets = dirtyAssets.map((source) => remapResourceReferences(source, recovery.remaps));
-    const preparedProjects = dirtyProjects.map((source) => remapResourceReferences(source, recovery.remaps));
-    for (const source of preparedAssets) {
-        if (assetPreflightErrors.has(source.id)) continue;
-        try {
-            await saveRemoteAssetSnapshot(source, uploaded);
-        } catch (error) {
-            assetPreflightErrors.set(source.id, error);
-        }
-    }
-
+    // 转换后的 resource: 引用只属于发往服务端的 payload，不能反写整份实时 store。
+    // 已确认快照记录的是本次上传所依据的本地实体；上传期间的新编辑会在下一轮继续提交。
     // 素材先于画布提交。这样画布中的 resource: 引用一旦成为远端事实，
     // 对应 Asset 已经存在，刷新或换设备不会出现只占容量、不见素材的窗口。
-    const canvasErrors: unknown[] = [...assetPreflightErrors.values()];
+    for (const source of dirtyAssets) {
+        await saveRemoteAssetSnapshot(source, uploaded);
+    }
+    const canvasErrors: unknown[] = [];
     let savedProjects = 0;
-    for (const source of preparedProjects) {
+    for (const source of dirtyProjects) {
         const keysToUpload = collectLocalMediaKeys(source);
         const total = keysToUpload.length;
         if (total > 0) {
@@ -524,10 +491,6 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>) {
             }
         };
         try {
-            const preflightError = canvasPreflightErrors.get(source.id);
-            if (preflightError) throw preflightError;
-            const failedAsset = [...collectAssetIds(source)].find((id) => assetPreflightErrors.has(id));
-            if (failedAsset) throw assetPreflightErrors.get(failedAsset);
             const remotePayload = await ensureRemoteResourceReferences(source, uploaded, onMediaUploaded);
             if (total > 0) {
                 useSyncProgressStore.getState().setProjectProgress(source.id, {
@@ -554,34 +517,7 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>) {
     if (savedProjects) void appQueryClient.invalidateQueries({ queryKey: ["canvas-library"] });
     // 失败画布不更新确认基线，也不能阻塞其他画布的独立写入。
     if (canvasErrors.length === 1) throw canvasErrors[0];
-    const uniqueErrors = [...new Set(canvasErrors)];
-    if (uniqueErrors.length === 1) throw uniqueErrors[0];
-    if (uniqueErrors.length > 1) throw new AggregateError(uniqueErrors, `${uniqueErrors.length} 个${assetPreflightErrors.size ? "画布或素材" : "画布"}云端保存失败，请检查同步状态`);
-}
-
-function createResourceRecovery() {
-    const epoch = sessionEpoch;
-    return new CanvasResourceRecovery(
-        () => ({ projects: useCanvasStore.getState().projects, assets: useAssetStore.getState().assets }),
-        async (from, to) => {
-            const remaps = new Map([[from, to]]);
-            const state = useCanvasStore.getState();
-            const projects = remapResourceReferences(state.projects, remaps);
-            if (projects !== state.projects) useCanvasStore.setState({ projects });
-            const assets = useAssetStore.getState().assets;
-            const repairedAssets = remapResourceReferences(assets, remaps);
-            if (repairedAssets !== assets) useAssetStore.setState({ assets: repairedAssets });
-            notifyResourceRepairs(remaps);
-            await Promise.all([flushCanvasStorePersistence(), flushAssetStorePersistence()]);
-            if (epoch !== sessionEpoch) throw new Error("账号已切换，已停止旧会话资源补传");
-            // This reference-only change was already committed atomically by the server.
-            acknowledgedAssets = new Map([...acknowledgedAssets].map(([id, asset]) => [id, remapResourceReferences(asset, remaps)]));
-            acknowledgedProjects = new Map([...acknowledgedProjects].map(([id, project]) => [id, remapResourceReferences(project, remaps)]));
-        },
-        () => {
-            if (epoch !== sessionEpoch) throw new Error("账号已切换，已停止旧会话资源补传");
-        },
-    );
+    if (canvasErrors.length > 1) throw new AggregateError(canvasErrors, `${canvasErrors.length} 个画布云端保存失败，请检查各画布的同步状态`);
 }
 
 async function verifyRemoteAssetBaseline(source: Asset) {
@@ -627,24 +563,12 @@ async function ensureRemoteResourceReferences<T>(value: T, uploaded = new Map<st
         return result as T;
     }
 
-    const record = value as Record<string, unknown>;
-    const data = record.data as Record<string, unknown> | undefined;
-    const metadata = record.metadata as Record<string, unknown> | undefined;
-    const primaryKey = (typeof data?.storageKey === "string" ? data.storageKey : "") || (typeof metadata?.resourceKey === "string" ? metadata.resourceKey : "");
     const next: Record<string, unknown> = {};
-    if (primaryKey && data) next.data = await ensureRemoteResourceReferences({ ...data, storageKey: primaryKey }, uploaded, onUploaded);
     for (const [key, child] of Object.entries(value)) {
-        if (key === "data" && primaryKey && data) continue;
-        // A primary image cover shares the same resource; do not upload it a second time.
-        if (key === "coverUrl" && record.kind === "image" && primaryKey) next[key] = child;
-        else next[key] = await ensureRemoteResourceReferences(child, uploaded, onUploaded);
-    }
-    if (primaryKey && record.kind === "image" && next.data && typeof next.data === "object") {
-        const key = (next.data as Record<string, unknown>).storageKey;
-        if (typeof key === "string" && resourceIdFromStorageKey(key)) next.coverUrl = resourceFileUrl(resourceIdFromStorageKey(key));
+        next[key] = await ensureRemoteResourceReferences(child, uploaded, onUploaded);
     }
 
-    const storageKey = typeof next.storageKey === "string" ? next.storageKey : typeof next.resourceKey === "string" ? next.resourceKey : "";
+    const storageKey = typeof next.storageKey === "string" ? next.storageKey : "";
     const remoteResourceId = resourceIdFromStorageKey(storageKey);
     if (remoteResourceId) return applyResourceReference(next, storageKey) as T;
 
@@ -674,8 +598,7 @@ function applyResourceReference(payload: Record<string, unknown>, storageKey: st
         throw new Error(`远端资源引用无效：${storageKey}`);
     }
     const url = resourceFileUrl(resourceId);
-    if (typeof payload.resourceKey === "string") payload.resourceKey = storageKey;
-    if ("storageKey" in payload || !("resourceKey" in payload)) payload.storageKey = storageKey;
+    payload.storageKey = storageKey;
     for (const key of ["content", "dataUrl", "url", "coverUrl"]) {
         if (typeof payload[key] === "string") payload[key] = url;
     }

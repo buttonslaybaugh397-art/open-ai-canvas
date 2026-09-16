@@ -26,7 +26,6 @@ type Task struct {
 	RouteRun                  int                  `json:"-" gorm:"index"`
 	BillingOrderID            string               `json:"billingOrderId,omitempty" gorm:"index;size:36"`
 	ProviderRequestID         string               `json:"providerRequestId,omitempty" gorm:"index;size:160"`
-	ProviderRecoveryAt        *time.Time           `json:"providerRecoveryAt,omitempty"`
 	ProviderCancelStatus      ProviderCancelStatus `json:"providerCancelStatus,omitempty" gorm:"index;size:24;index:idx_tasks_provider_cancel,priority:2"`
 	ProviderCancelError       string               `json:"providerCancelError,omitempty" gorm:"type:text"`
 	ProviderCancelAttempts    int                  `json:"providerCancelAttempts,omitempty"`

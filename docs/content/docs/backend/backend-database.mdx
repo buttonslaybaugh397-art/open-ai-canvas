@@ -15,9 +15,7 @@ description: 影策后端核心持久化表与状态边界
 
 容器内命令 `migrate-schema up` 应用缺失迁移，`migrate-schema status` 输出当前和期望版本，`migrate-schema verify` 只检查兼容性。`CANVAS_AUTO_MIGRATE=true` 仅用于开发和旧部署兼容；受管生产部署设置为 `false`，并由 Compose 的一次性 `migrate` 服务先完成迁移。后续迁移必须新增版本，不得修改已经发布迁移的实现或校验和。
 
-当前结构版本为 11。版本 2 为 `schema_migrations.applied_at` 增加 `idx_schema_migrations_applied_at` 索引；版本 3 `asset_taxonomy_candidate_identity` 为资产候选增加规范化名称和来源，收敛资产分类，并为待确认候选建立项目内部分唯一索引；版本 4 `resource_upload_key` 为资源上传幂等补充 `resources.upload_key` 列和用户维度唯一索引；版本 5 `payment_topup` 创建积分充值、支付通知和对账所需结构；版本 6 `resource_playback_variant` 增加资源播放副本状态；版本 7 `asset_library_folders` 增加用户素材自定义分类及 `assets.folder_id`；版本 8 `logical_model_active_code` 将前台模型 code 的唯一约束限定为未归档记录；版本 9 `channel_presentation` 为渠道添加 `public_alias`（默认空字符串）与 `sort_order`（默认 0），为渠道模型添加 `sort_order`（默认 0），不重写既有凭据、价格或能力配置；版本 10 `creation_runtime` 创建创作运行与提交表，并为任务增加可空且唯一的 `creation_submission_id`，旧任务无需伪造提交标识即可继续使用；版本 11 `task_provider_recovery` 为任务增加可空时间戳 `provider_recovery_at`，标记人工确认后的原任务查询恢复阶段，不改写历史状态或计费记录。
-
-`provider_recovery_at` 只在人工查询确认上游仍在处理或已经成功时写入，并保留到任务终态。恢复的运行任务由 worker 只查询已有 `provider_request_id`，不进入模型路由、降级重提或新计费预占；主动重新生成会清空该标记。配套使用已有 `next_poll_at`、有效租约和条件更新，重复恢复不能重复交接队列。发布前先应用版本 11 迁移；没有降级迁移，回滚需排空恢复任务并恢复匹配的数据库备份，不混跑旧 worker。
+当前结构版本为 10。版本 2 为 `schema_migrations.applied_at` 增加 `idx_schema_migrations_applied_at` 索引；版本 3 `asset_taxonomy_candidate_identity` 为资产候选增加规范化名称和来源，收敛资产分类，并为待确认候选建立项目内部分唯一索引；版本 4 `resource_upload_key` 为资源上传幂等补充 `resources.upload_key` 列和用户维度唯一索引；版本 5 `payment_topup` 创建积分充值、支付通知和对账所需结构；版本 6 `resource_playback_variant` 增加资源播放副本状态；版本 7 `asset_library_folders` 增加用户素材自定义分类及 `assets.folder_id`；版本 8 `logical_model_active_code` 将前台模型 code 的唯一约束限定为未归档记录；版本 9 `channel_presentation` 为渠道添加 `public_alias`（默认空字符串）与 `sort_order`（默认 0），为渠道模型添加 `sort_order`（默认 0），不重写既有凭据、价格或能力配置；版本 10 `creation_runtime` 创建创作运行与提交表，并为任务增加可空且唯一的 `creation_submission_id`，旧任务无需伪造提交标识即可继续使用。
 
 历史发布曾使用版本 6 `asset_library_folders`，之后合并引入了上述 6/7 顺序冲突。迁移器仅在该历史记录的名称和校验和均精确匹配时选择历史顺序：保留版本 6 的素材目录记录及时间，在版本 7 应用 `resource_playback_variant`，再继续版本 8。新数据库及已采用“6 播放副本、7 素材目录”的数据库保持原顺序；状态检查与启动校验采用同一套识别规则。未知名称、被改动的校验和或冲突的版本 7 记录仍会拒绝迁移，不通过删除、改名或伪造已应用记录绕过检查。
 

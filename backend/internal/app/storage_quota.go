@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -10,29 +9,23 @@ import (
 )
 
 type AccountFileStorageUsage struct {
-	UsedBytes            int64     `json:"usedBytes"`
-	TotalBytes           int64     `json:"totalBytes"`
-	ResourceBytes        int64     `json:"resourceBytes"`
-	SessionBytes         int64     `json:"sessionBytes"`
-	PendingDeletionBytes int64     `json:"pendingDeletionBytes"`
-	CheckedAt            time.Time `json:"checkedAt"`
+	UsedBytes  int64 `json:"usedBytes"`
+	TotalBytes int64 `json:"totalBytes"`
 }
 
 func (s *Service) AccountFileStorageUsage(userID string) (*AccountFileStorageUsage, error) {
-	return s.AccountFileStorageUsageContext(context.Background(), userID, false)
-}
-
-func (s *Service) AccountFileStorageUsageContext(ctx context.Context, userID string, refresh bool) (*AccountFileStorageUsage, error) {
 	policy, err := s.RuntimePolicy()
 	if err != nil {
 		return nil, err
 	}
-	measured, err := s.measureAccountStorage(ctx, userID, refresh)
+	usedBytes, err := s.repo.UserStoredFileBytes(userID)
 	if err != nil {
 		return nil, err
 	}
-	measured.Usage.TotalBytes = gigabytes(policy.Resource.StoredFileGB)
-	return &measured.Usage, nil
+	return &AccountFileStorageUsage{
+		UsedBytes:  usedBytes,
+		TotalBytes: gigabytes(policy.Resource.StoredFileGB),
+	}, nil
 }
 
 func structuredBytes(usage repository.UserStorageUsage) int64 {

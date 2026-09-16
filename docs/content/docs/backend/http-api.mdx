@@ -9,47 +9,6 @@ description: 信封、错误码与 OpenAPI
 
 机器可读规范：运行中的 `GET /api/openapi.yaml`，源文件 `backend/internal/handler/openapi.yaml`。前端 TypeScript 仍走 `web/src/services/api` 的 `http`，不从 OpenAPI 生成客户端。
 
-## 账号文件容量
-
-`GET /api/resources/storage-usage` 只核算登录 Cookie 对应账号，返回 `data.usage`：
-
-```json
-{
-  "usedBytes": 100,
-  "totalBytes": 21474836480,
-  "resourceBytes": 60,
-  "sessionBytes": 10,
-  "pendingDeletionBytes": 30,
-  "checkedAt": "2026-09-15T01:02:03Z"
-}
-```
-
-`usedBytes` 是三个分项之和；`totalBytes` 取运行时账号文件容量策略。资源按 provider、endpoint、bucket、objectKey 去重，本地文件以实际文件长度为准，S3 / OSS / COS 查询源站 HEAD，七牛查询管理 API 的 `fsize`，不使用 CDN 长度或数据库声明的 `size` 代替实际占用。资源表和物理删除 outbox 在同一数据库快照读取，避免交接窗口漏计。
-
-回收站仍持有文件，继续占用；失败资源留下的文件也计入。彻底删除后，待清理对象只有物理消失才释放容量。明确不存在的对象计零，权限不足、网络或数据库失败、长度缺失、越界路径均返回真实错误，不返回部分合计或零用量。读取不删除文件、不修改资源状态。
-
-核算范围是当前归属记录指向的资源原件和 Agent 会话附件，不是整台服务器的磁盘使用量；播放派生缓存、临时上传分片、未归属文件、数据库和结构化 JSON 不纳入此配额。全站后台资源表的数据库汇总仍是另一种口径，不替代本接口。管理员用户详情的 `storedFileBytes` 使用相同实测口径，文件核验最多等待 3 秒；失败时仅该字段返回 `null` 并提供 `fileStorageError`，其他账号详情照常读取，页面不展示伪造的零容量进度。
-
-普通读取允许最多 30 秒的云端元数据缓存；`?refresh=1` 强制重新核验，`checkedAt` 表示本次合计中最早的文件观测时间。每账号每分钟最多 30 次读取，其中强制重算最多 6 次。一次核算最长 30 秒，每次最多 4 个对象并发，单服务实例最多 4 次核算同时执行；超时明确失败，不把未检查的文件算零。大账号冷核验耗时取决于对象数及存储延迟，发布前须用实际账号验收。
-
-素材库每分钟刷新，待物理清理期间每 5 秒刷新，后台标签页不定时轮询。上传、彻底删除、批量删除和清空回收站后失效容量缓存，部分删除失败也触发刷新；手动重算按钮直接回源。查询按用户 ID 隔离并传递取消信号；刷新失败且存在旧结果时标记上次统计，不能冒充最新值。
-
-上传额度校验同样核验实际文件，并绕过读缓存；网络核验在预留锁外完成，进入锁后复核归属快照，有变化则有限重试，再叠加本实例在途上传预留量。无法确认占用时拒绝本次上传，不影响读取原文件。现有多实例上传预留协议未改变，不宣称本改动新增了跨实例原子预留。每日上传量是独立的 UTC 当日累计流量，删除文件不会清零或返还每日额度。
-
-本项无数据库表结构迁移、不回填历史文件。前后端需同版本发布，新前端会拒绝缺少分项和核验时间的旧统计响应；回滚应同时回退接口与页面。与任务恢复功能一同发布时仍须执行其 Schema 11 迁移。
-
-## 失败视频任务恢复
-
-`POST /api/tasks/:id/query-provider` 校验登录用户的任务归属；`POST /api/admin/api-logs/:id/query-task` 额外校验管理员权限及日志与任务归属，并记录审计。两者只接受已有上游任务 ID 的失败视频任务，使用同一渠道适配器查询，绝不创建新的上游生成。
-
-成功信封的 `data` 为 `{ task, providerStatus, recovered, pollingResumed, billingSettled }`：
-
-- 上游仍为 pending / processing：持久化恢复轮询，返回 `task.status=running`、`pollingResumed=true`、`recovered=false`，此时不扣费；原输入配置、上游 ID 和订单保持不变。
-- 已取得并保存结果：返回 `task.status=succeeded`、`recovered=true`、`pollingResumed=false`；退款订单按原订单恢复结算，其他订单沿用原结算路径。
-- 上游失败、协议不可用、资源保存或计费失败继续返回真实错误；并发人工恢复返回冲突，不用假成功绕过校验。
-
-任务详情和列表摘要新增可选 `providerRecoveryAt`。前端以此识别失败后的恢复世代，拒绝迟到的旧失败状态。用户已打开画布中绑定的失败视频任务每 5 秒读取一次本用户任务状态，恢复运行后接回正常任务观察，成功后消费结果；不依赖管理员浏览器的本地事件，也不要求刷新。该机制是短轮询，不是 WebSocket 推送；离线、后台节流和网络错误可能延迟更新。
-
 ## 管理员支付订单
 
 `GET /api/admin/payments/orders` 需要管理员权限，支持 `status`、`keyword`、`page`、`pageSize`。关键词匹配订单号、渠道交易号、用户名称、用户名或邮箱，也支持完整用户 ID 精确匹配。用户名和邮箱搜索忽略大小写；状态过滤同时生效，返回匹配总数和当前页订单。
@@ -98,14 +57,6 @@ description: 信封、错误码与 OpenAPI
 模型错误把已有字符串码放进 `reason`（如 `model_capability_not_supported`），`code` 仍为 400。
 
 常量：后端 `service/error_codes.go`，前端 `web/src/services/api/error-codes.ts`。
-
-## 生成任务的自定义请求头
-
-`POST /api/tasks` 的 `input.config.headers` 为可选数组，每项仅包含字符串 `name`、`value`；省略、`null` 或空数组表示无自定义头。统一校验重复名称、控制字符、大小限制和系统管理的头部，不能用自定义头覆盖登录凭据、Host、Cookie 或转发边界。文本、图片、视频、音频和工具任务均保留所选自定义渠道的请求头；系统模型执行仍从服务端渠道配置取值。
-
-任务持久化时，非空头值与 API Key 一样使用 `.settings-key` 加密，执行或恢复时解密，名称及 API 形状不变。无效结构或损坏密文直接失败，公开任务响应不返回 `config`。保护只针对根级 `config.headers`，不改写工具参数 schema 或工作流中的同名字段。
-
-没有数据库表结构迁移，也不自动改写历史记录。发布时保留 `.settings-key`；新版写入的加密请求头任务不能交给旧版 worker，回滚前应先排空这些任务，不通过删除密钥或重新提交收费任务处理。
 
 ## 用户自己修改显示名称
 
@@ -170,42 +121,6 @@ description: 信封、错误码与 OpenAPI
 分片落库重试沿用分片大小合同，不套用普通 multipart 的单文件上限；每日上传及总空间仍重新校验和预留。失败与 pending 资源不计入已用空间，不能以已有失败记录为由跳过总空间检查；成功提交、失败释放预留。
 
 上传响应新增 `Server-Timing`：普通上传含 `receive` / `store`，单片含 `receive`，合并成功路径含 `merge` / `store`。失败仅包含已执行的阶段，不保证鉴权失败或代理失败响应携带计时。仅暴露阶段与毫秒值，不包含密钥或存储 URL；计时不包含前置代理缓冲。
-
-## 视频兼容播放副本
-
-`POST /api/resources/:id/playback` 无请求体，需要登录且只能操作本人 `kind=video`、`status=ready` 的资源；缺失或跨账号返回 404，非视频返回 400，原件未就绪返回 409。成功信封为 `{ "code": 0, "data": { "resource": {} }, "msg": "ok" }`，`resource` 保持现有资源结构，通过 `playbackStatus`、`playbackObjectKey`、`playbackError` 表达处理进度。
-
-浏览器解码错误 3/4 后可调用一次：空状态或 `none` 可抢占转码，包括 H.264 特殊 profile、像素格式及非 MP4 容器；`processing`、`ready` 直接复用，`failed` 是终态，不自动重试。`processing` 可通过 `GET /api/resources/:id` 轮询；`ready` 使用 `GET /api/resources/:id/file?variant=playback`。前端最多等待 5 分钟，这只是停止当前预览等待，不取消最长 15 分钟的后台处理。FFmpeg 缺失或配置路径不可执行也明确返回资源 `failed`，错误说明可安全显示，不把失败伪装成 `none`。此时 HTTP 200 表示状态查询/创建请求已处理，不代表转码成功。
-
-本地与 OSS/COS/Kodo/S3 原件均可按需适配。自动上传探测和启动补判仍仅处理本地视频，不批量下载云端原件。按账号使用 `request.resourceImportPerMinute` 频控；全局最多 2 路后台任务，协调器不可用返回 503，并发占满返回 429 和 `Retry-After`，不无限排队。PostgreSQL 多实例复用 Redis 并发租约，数据库条件更新确保同一资源只有一个 claim；独立输出键同时作为处理标识，过期 worker 不得覆盖新状态或其他 Resource 字段。仅超过 16 分钟的 processing 记录才可失效，启动检查或本人资源查询会将其标记 failed，不在实例启动时重置其他实例的活跃工作。
-
-读取原件复用安全资源层、私网上游精确白名单和当前资源存储凭据，下载支持取消，落盘后才启动 FFmpeg。整个后台任务最多 15 分钟，输入和输出分别限 1GiB；服务关闭会取消任务并清理临时文件。FFmpeg 使用现有 `CANVAS_FFMPEG_PATH`，未配置时从 PATH 查找；只允许 `file` 协议和 MOV/MP4、Matroska/WebM、AVI、FLV、MPEG-TS、MPEG、Ogg 容器，禁用 MOV 外部数据引用，不接受 HLS、DASH、concat 等嵌套清单。FFmpeg 不直接读取用户 URL；原件和副本读取被限制在各自数据目录内。
-
-输出为 H.264 Main、yuv420p、AAC 双声道、faststart MP4。只有本次 FFmpeg 成功退出、输出校验通过，才从临时文件原子发布为唯一副本并条件更新 ready；不能仅因旧 `.mp4` 文件含 H.264 头就复用半成品。原件不改写，失败响应和持久错误不暴露凭据、原件地址或本机路径。未新增数据库列；多实例提供同一资源时需共享后端 playback 数据目录，否则无法读取另一个实例生成的本地副本。
-
-播放副本是额外的本地磁盘占用，不计入原件 `Resource.size` 或当前账号已用资源空间；单个副本最多 1GiB。临时输入/输出在成功、失败和正常取消时清理，但已发布副本目前不随原资源删除自动回收，进程被强制终止也可能留下临时目录。部署需要单独预留和监控 playback 卷空间；引用感知的孤立副本与崩溃临时目录回收尚待实现，不能用直接删除在用副本的方式替代资源删除校验。
-
-`variant=playback` 的 ready 副本在服务层优先选择，不受原件 Provider 影响，也不因 `direct=1` 跳回云端原件；支持 Range、If-Range 和副本独立 ETag。`download=1` 优先级更高，始终下载原件，保留原件文件名及此前的 CDN/代理下载路径。尚无 ready 副本时 file 仍按原件读取规则处理。
-
-## 失效资源引用修复
-
-`POST /api/resources/:id/repair-references` 需要登录，请求体为 `{ "replacementResourceId": "新资源ID" }`，路径 `id` 是旧资源 ID。两个 ID 必须非空、有效且不同；替换资源必须属于当前用户并处于 `ready`。旧资源可以不存在，或属于当前用户且处于 `failed` / `deleted`；旧记录属于其他账号时返回 403，旧记录仍为 `ready` / `pending` 或其他状态时返回 409。替换记录不存在或不属于当前账号返回 404，替换记录未就绪返回 409。
-
-由于修复需要扫描账号已有文档，接口按运行时策略 `request.assetWritePerMinute` 单独对账号限流；超限返回 429 和 `Retry-After`。请求体上限为 1KB。
-
-接口在存储锁下读取当前用户已有的全部 Asset 与 Canvas JSON，包括浏览器尚未加载的画布；仅递归改写 `storageKey`、`resourceKey`、`content`、`dataUrl`、`url`、`coverUrl` 中完整的 `resource:旧ID` 或已知 `/api/resources/旧ID/file`、`/api/public/resources/旧ID/file[/文件名]` HTTP(S) / 根相对文件地址。URL 查询参数与片段原样保留，不做正文子串替换，不改其他字段、其他用户、项目、任务或资源记录，也不删除或修改旧 Resource。
-
-Asset 与 Canvas 改写同事务提交；仓储重新核对资源归属和状态，以完整原 JSON 和 `updated_at` 做 CAS，仅更新匹配文档的引用字段。作为基础设施修复，JSON 内的 `updatedAt` 和数据库 `updated_at` 均保持原值，前端可只改写已确认同步快照中的引用而不接受其他内容。并发变更返回 409，任一写入失败则全部回滚；正常素材与画布保存校验不变。JSON 解析、内嵌媒体、文档大小和新增结构化存储用量仍强校验。
-
-成功统一返回 `{ "code": 0, "data": { "repaired": true }, "msg": "ok" }`。不存在匹配的已持久化记录时也是幂等成功，支持前端刚创建、尚未上传的 Asset；重复修复不会新增记录或重复改写。前端先确认旧资源失效，再使用旧 `resource:ID` 作为上传幂等标识上传本地文件，取得 ready 的新 ID 后调用本接口；成功后同步本地引用，按 Asset 先于 Canvas 的顺序保存。失败不得宣称已修复或绕过后续保存校验。
-
-资源记录探测使用 `GET /api/resources/:id`；仅记录缺失返回 404，数据库故障返回真实服务端错误，避免误触发补传。浏览器按本轮待保存实体去重探测，明确缺失后只读取当前账号本地缓存，不再下载已知缺失的资源。找不到本地副本时明确报错；不根据网络错误、权限错误或 pending 状态创建替代资源。此流程不检测 ready 记录背后的物理对象是否被外部删除。
-
-## 资源下载
-
-`GET /api/resources/:id/file?direct=1&download=1&filename=编码后的文件名` 使用登录 Cookie 鉴权，返回二进制而非 JSON 信封。`filename` 是可选下载名称，需 URL 编码；同源响应通过标准 `Content-Disposition` 编码文件名。Range 请求仍支持 206，不需要浏览器先把整个文件读取成 Blob。
-
-带七牛 CDN 配置的显式下载可重定向到含 `attname` 的短时签名地址；其他尚未实现附件响应头覆盖的存储继续同源流式传输。预览路径与显式 `proxy=1` 保持原语义；签名重定向禁止缓存。下载页面命中当前会话 Blob URL 时直接保存，未命中时交给浏览器下载管理器接收；这优化开始下载前的等待，不保证公网传输速率。
 
 ## 存储设置恢复
 

@@ -16,16 +16,12 @@ type ResourceStream struct {
 }
 
 type ResourceDeliveryOptions struct {
-	ForceDirect      bool
-	ForceProxy       bool
-	ForceDownload    bool
-	DownloadFileName string
-	Playback         bool
+	ForceDirect bool
+	ForceProxy  bool
 }
 
 type ResourceDelivery struct {
 	Resource    *model.Resource
 	Stream      *ResourceStream
 	RedirectURL string
-	Playback    bool
 }

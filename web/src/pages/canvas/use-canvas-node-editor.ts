@@ -10,8 +10,7 @@ import { applyBatchPrimaryImage, applyNodeConfigPatch } from "@/lib/canvas/canva
 import { resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
 import { CONTENT_MODERATION_ERROR_CODE, isContentModerationError } from "@/lib/generation-error";
 import { ensureCanvasNodeAsset } from "@/services/project-asset-sync";
-import { peekCachedResourceObjectUrl } from "@/services/resource-blob-cache";
-import { resourceDownloadUrl } from "@/services/api/resources";
+import { getCachedResourceBlob } from "@/services/resource-blob-cache";
 import { CanvasNodeType, type CanvasFolderStyle, type CanvasFolderTheme, type CanvasNodeData, type CanvasNodeMetadata, type Position } from "@/types/canvas";
 
 type UseCanvasNodeEditorOptions = {
@@ -206,21 +205,10 @@ export function useCanvasNodeEditor({
             return;
         }
         try {
-            // 已经在本会话缓存的媒体直接保存；冷资源交给浏览器流式下载，避免先完整读成 Blob。
-            const cachedUrl = peekCachedResourceObjectUrl(`resource:${resourceId}`);
-            if (cachedUrl) {
-                saveAs(cachedUrl, fileName);
-                return;
-            }
-            const anchor = document.createElement("a");
-            anchor.href = resourceDownloadUrl(resourceId, fileName);
-            anchor.download = fileName;
-            anchor.target = "_blank";
-            anchor.rel = "noopener noreferrer";
-            anchor.style.display = "none";
-            document.body.appendChild(anchor);
-            anchor.click();
-            anchor.remove();
+            // Download remote resources through the same-origin proxy so a CDN redirect never navigates the canvas.
+            const blob = await getCachedResourceBlob(`resource:${resourceId}`);
+            if (!blob) throw new Error("资源文件暂时无法读取，请稍后重试");
+            saveAs(blob, fileName);
         } catch (error) {
             message.error(error instanceof Error ? error.message : "资源下载失败");
         }

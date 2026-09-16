@@ -2,9 +2,7 @@ import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateA
 import { useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
 
-import { applyGenerationTaskResultToNodes, generationTaskCanReloadResource, generationTaskNodeId, generationTaskStillOwnsNode, mergeGenerationTaskResultNodes } from "@/lib/canvas/canvas-generation-task-sync";
-import { getActiveUserScope } from "@/lib/user-scope";
-import { observeCanvasTaskRecovery } from "@/services/canvas-task-recovery";
+import { applyGenerationTaskResultToNodes, generationTaskCanReloadResource, generationTaskNodeId } from "@/lib/canvas/canvas-generation-task-sync";
 import { applyCanvasGenerationTaskNodeEffect, isCanvasGenerationDurableAckError } from "@/services/canvas-generation-consumer";
 import { consumeGenerationTaskNode, ensureCanvasNodeAsset, retryCanvasAssetSyncAfterRateLimit } from "@/services/project-asset-sync";
 import { listGenerationTasks, listTaskLogs, queryGenerationTask, subscribeGenerationTasks, type GenerationTask, type TaskLog } from "@/services/api/task-center";
@@ -59,7 +57,6 @@ export function createCanvasGenerationRecoveryCoordinator() {
     return {
         switchProject(projectId: string, operation: (context: CanvasGenerationRecoveryContext) => Promise<void>) {
             active?.controller.abort();
-            const scope = getActiveUserScope();
             const token = Symbol(projectId);
             const controller = new AbortController();
             const previousTail = transitionTail;
@@ -69,7 +66,7 @@ export function createCanvasGenerationRecoveryCoordinator() {
                     projectId,
                     controller,
                     signal: controller.signal,
-                    isCurrentProject: () => active?.token === token && !controller.signal.aborted && getActiveUserScope() === scope,
+                    isCurrentProject: () => active?.token === token && !controller.signal.aborted,
                 });
             });
             active = { token, controller };
@@ -288,18 +285,12 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
     );
 
     const applyGenerationTaskResult = useCallback(
-        async (nodeId: string, task: GenerationTask, signal = consumerControllerRef.current.signal) => {
-            const scope = getActiveUserScope();
-            const isCurrent = () => !signal.aborted && getActiveUserScope() === scope;
+        async (nodeId: string, task: GenerationTask) => {
             const applyStoredTaskResult = async () => {
-                if (!isCurrent()) return;
-                const previousNodes = nodesRef.current;
-                const applied = await applyGenerationTaskResultToNodes(previousNodes, task, nodeId);
+                const applied = await applyGenerationTaskResultToNodes(nodesRef.current, task, nodeId);
                 if (!applied.updated || !applied.node) throw new Error("画布中找不到对应任务节点");
-                if (!isCurrent()) return;
-                const merged = mergeGenerationTaskResultNodes(nodesRef.current, previousNodes, applied.nodes, task, nodeId);
-                nodesRef.current = merged;
-                setNodes(merged);
+                nodesRef.current = applied.nodes;
+                setNodes(applied.nodes);
             };
             if (!task.outputs?.length && task.type === "canvas_text") {
                 await applyStoredTaskResult();
@@ -322,9 +313,8 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                             setNodes,
                         });
                     },
-                    { signal },
+                    { signal: consumerControllerRef.current.signal },
                 );
-                if (!isCurrent()) return;
                 const currentNode = nodesRef.current.find((node) => node.id === nodeId || node.metadata?.taskId === task.id);
                 if (task.status === "succeeded" && (!currentNode?.metadata?.content || currentNode.metadata.status !== NODE_STATUS_SUCCESS)) {
                     // attach effect 可能已经完成，但旧画布快照仍停留在 loading。
@@ -332,7 +322,6 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                     await applyStoredTaskResult();
                 }
             } catch (error) {
-                if (!isCurrent()) return;
                 // 成功任务的副作用确认失败时，直接用已持久化结果回写节点，避免永久停留在生成中。
                 if (task.status === "succeeded") {
                     await applyStoredTaskResult().catch(() => {
@@ -348,31 +337,6 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
         },
         [nodesRef, projectId, setNodes],
     );
-
-    const recoveryTaskIds = JSON.stringify(Array.from(new Set(nodes.filter((node) => (node.type === CanvasNodeType.Video || node.metadata?.generationMode === "video") && node.metadata?.taskId).map((node) => node.metadata!.taskId!))).sort());
-    useEffect(() => {
-        if (!projectLoaded) return;
-        return observeCanvasTaskRecovery({
-            projectId,
-            taskIds: JSON.parse(recoveryTaskIds) as string[],
-            nodes: () => nodesRef.current,
-            onUpdate: (nodeId, task) => {
-                const node = nodesRef.current.find((item) => item.id === nodeId);
-                if (!generationTaskStillOwnsNode(node, task)) return;
-                if (node?.metadata?.taskUpdatedAt === task.updatedAt && node.metadata.taskStatus === task.status) return;
-                bindGenerationTask(nodeId, task);
-            },
-            onSuccess: async (nodeId, task, signal) => {
-                await runGenerationConsumer(signal, (consumerSignal) => applyGenerationTaskResult(nodeId, task, consumerSignal));
-                if (!signal.aborted) window.dispatchEvent(new CustomEvent("wallet:updated"));
-            },
-            onError: (error) =>
-                message.warning({
-                    key: `canvas-task-recovery:${projectId}`,
-                    content: error instanceof Error ? `任务已恢复，画布结果同步将自动重试：${error.message}` : "画布结果同步失败，将自动重试",
-                }),
-        });
-    }, [applyGenerationTaskResult, bindGenerationTask, message, nodesRef, projectId, projectLoaded, recoveryTaskIds]);
 
     const observeSubscribedGenerationTask = useCallback(
         (taskId: string, signal: AbortSignal, onUpdate?: (task: GenerationTask) => void) =>

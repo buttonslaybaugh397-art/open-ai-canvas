@@ -167,11 +167,6 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task, globalSlot 
 	if task.Type == model.TaskTypeTimelineRender {
 		return w.processTimelineRender(task, ctx)
 	}
-	if task.ProviderRecoveryAt != nil {
-		// Recovery only polls the known provider job. Do not enter routing,
-		// fallback, reservation or create paths, even after a worker restart.
-		return s.processRecoveredVideoTask(ctx, task)
-	}
 
 	task.Stage = "调用生成模型"
 	task.Progress = 35

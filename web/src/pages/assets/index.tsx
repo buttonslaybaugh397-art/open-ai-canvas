@@ -196,8 +196,6 @@ export default function AssetsPage() {
     ], [folders]);
 
     const invalidateAssetLibrary = async () => {
-        // Metadata recounts may take longer than the library mutation itself.
-        void queryClient.invalidateQueries({ queryKey: assetStorageUsageQueryKey });
         await Promise.all([
             queryClient.invalidateQueries({ queryKey: ASSET_LIBRARY_QUERY_KEY }),
             queryClient.invalidateQueries({ queryKey: ASSET_FOLDER_QUERY_KEY }),
@@ -489,8 +487,6 @@ export default function AssetsPage() {
             message.success(`已彻底清空回收站 ${count} 个素材`);
         } catch (error) {
             message.error(error instanceof Error ? error.message : "清空回收站失败");
-        } finally {
-            await invalidateAssetLibrary();
         }
     };
 
@@ -502,8 +498,6 @@ export default function AssetsPage() {
             setDeletingAsset(null);
         } catch (error) {
             message.error(error instanceof Error ? error.message : "素材删除失败");
-        } finally {
-            await invalidateAssetLibrary();
         }
     };
 
@@ -521,8 +515,6 @@ export default function AssetsPage() {
             setBatchDeleteOpen(false);
         } catch (error) {
             message.error(error instanceof Error ? error.message : "批量删除失败");
-        } finally {
-            await invalidateAssetLibrary();
         }
     };
 

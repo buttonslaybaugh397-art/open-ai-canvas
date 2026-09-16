@@ -9,7 +9,6 @@ import { normalizeCanvasNodeTimestamps } from "@/lib/canvas/canvas-node-timestam
 import { hydrateAssistantImages, resetInterruptedGeneration } from "@/lib/canvas/canvas-project-generation";
 import { listAddedSkills, type Skill } from "@/services/api/skills";
 import { createCanvasProjectWithRemoteSync, deleteCanvasProjectsWithRemoteSync, loadCanvasProjectForEditing, localSavedRemotePendingMessage, saveRemoteUserDataNow } from "@/services/user-data-sync";
-import { remapResourceReferences, subscribeResourceRepairs } from "@/services/canvas-resource-recovery";
 import { flushCanvasStorePersistence, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -90,13 +89,6 @@ export function useCanvasProjectLifecycle({
         const progress = state.syncingProjects[projectId];
         return progress?.phase === "error" ? progress.message || "云端保存失败" : "";
     });
-
-    useEffect(() => subscribeResourceRepairs((remaps) => {
-        // Update live editor state as well as the store, or its next autosave would restore stale IDs.
-        nodesRef.current = remapResourceReferences(nodesRef.current, remaps);
-        setNodes((current) => remapResourceReferences(current, remaps));
-        setChatSessions((current) => remapResourceReferences(current, remaps));
-    }), [nodesRef, setNodes, setChatSessions]);
 
     useEffect(() => {
         if (!projectLoaded || !remoteSaveError) return;

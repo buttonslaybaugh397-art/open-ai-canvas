@@ -4773,43 +4773,6 @@ test("canvas asset repair backfills node and timeline media with one shared asse
     }
 });
 
-test("canvas asset repair replaces a stale asset id from the matching storage key", () => {
-    const previousProjects = useCanvasStore.getState().projects;
-    const previousAssets = useAssetStore.getState().assets;
-    const storageKey = "resource:stale-asset-id";
-    const localAsset: Asset = {
-        ...storedAsset("asset-correct", "正确素材"),
-        data: { dataUrl: "", storageKey, width: 1, height: 1, bytes: 1, mimeType: "image/png" },
-        metadata: { resourceKey: storageKey },
-    };
-    const project: CanvasProject = {
-        ...storedCanvasProject("canvas-stale-asset-id", "旧素材引用"),
-        nodes: [{
-            id: "stale-image",
-            type: CanvasNodeType.Image,
-            title: "旧引用图片",
-            position: { x: 0, y: 0 },
-            width: 320,
-            height: 180,
-            metadata: { assetId: "asset-old", content: "/api/resources/stale-asset-id/file", storageKey },
-        }],
-    };
-
-    try {
-        useAssetStore.getState().replaceAssets([localAsset]);
-        withCanvasStorePersistenceSuppressed(() => useCanvasStore.setState({ projects: [project] }));
-        const result = withCanvasStorePersistenceSuppressed(() => repairMissingCanvasAssets(new Set([project.id])));
-        const repaired = useCanvasStore.getState().projects[0];
-
-        expect(result).toEqual({ createdAssets: 0, updatedProjects: 1 });
-        expect(repaired?.nodes[0]?.metadata?.assetId).toBe("asset-correct");
-        expect(useAssetStore.getState().assets).toHaveLength(1);
-    } finally {
-        useAssetStore.getState().replaceAssets(previousAssets);
-        withCanvasStorePersistenceSuppressed(() => useCanvasStore.setState({ projects: previousProjects }));
-    }
-});
-
 test("login repair persists the missing asset before its canvas", async () => {
     const originalWindow = (globalThis as { window?: unknown }).window;
     const originalGetItem = localforage.getItem.bind(localforage);
@@ -4848,9 +4811,6 @@ test("login repair persists the missing asset before its canvas", async () => {
         const method = String(config.method || "get").toLowerCase();
         if (url.includes("user-data/snapshot")) {
             return { data: { code: 0, data: { projects: [project], assets: [] }, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
-        }
-        if (method === "get" && url === "/resources/remote-ghost") {
-            return { data: { code: 0, data: { resource: { id: "remote-ghost", status: "ready" } }, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
         }
         const body = (typeof config.data === "string" ? JSON.parse(config.data) : config.data) as Record<string, unknown>;
         if (method === "put" && url.startsWith("/assets/")) writes.push({ kind: "asset", body });

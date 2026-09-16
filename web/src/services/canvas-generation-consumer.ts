@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from "react";
 
-import { applyMaterializedGenerationTaskResultToNodes, mergeGenerationTaskResultNodes } from "@/lib/canvas/canvas-generation-task-sync";
+import { applyMaterializedGenerationTaskResultToNodes } from "@/lib/canvas/canvas-generation-task-sync";
 import { parseCanvasStorageDocument, rebaseCanvasProjects, serializeCanvasStorageDocument } from "@/lib/canvas/canvas-storage-revision";
 import { localForageStorageForScope } from "@/lib/localforage-storage";
 import { getActiveUserScope } from "@/lib/user-scope";
@@ -114,27 +114,18 @@ export async function applyCanvasGenerationTaskNodeEffect(input: {
     setNodes: Dispatch<SetStateAction<CanvasNodeData[]>>;
 }) {
     throwIfAborted(input.signal);
-    const scope = getActiveUserScope();
     const previousNodes = input.nodesRef.current;
     const applied = await applyMaterializedGenerationTaskResultToNodes(previousNodes, input.task, input.output, input.effectKey, input.nodeId);
     if (!applied.updated || !applied.node) throw new Error("画布中找不到对应任务节点");
-    throwIfAborted(input.signal);
-    if (getActiveUserScope() !== scope) throw new DOMException("Account changed", "AbortError");
-    const liveNodes = input.nodesRef.current;
-    const merged = mergeGenerationTaskResultNodes(liveNodes, previousNodes, applied.nodes, input.task, input.nodeId);
-    if (merged === liveNodes) return;
     const persistedProject = await persistCanvasGenerationEffect({
         projectId: input.projectId,
         effectKey: input.effectKey,
-        previousNodes: liveNodes,
-        nodes: merged,
+        previousNodes,
+        nodes: applied.nodes,
         signal: input.signal,
     });
-    throwIfAborted(input.signal);
-    if (getActiveUserScope() !== scope) throw new DOMException("Account changed", "AbortError");
-    const reconciled = mergeGenerationTaskResultNodes(input.nodesRef.current, liveNodes, persistedProject.nodes, input.task, input.nodeId);
-    input.nodesRef.current = reconciled;
-    input.setNodes(reconciled);
+    input.nodesRef.current = persistedProject.nodes;
+    input.setNodes(persistedProject.nodes);
 }
 
 export async function persistCanvasAgentGenerationContinuationEffect(input: {

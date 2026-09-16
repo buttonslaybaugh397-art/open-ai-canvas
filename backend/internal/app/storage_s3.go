@@ -118,10 +118,6 @@ func putS3Object(setting ossSettingValue, objectKey string, mimeType string, siz
 }
 
 func getS3ObjectRange(setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
-	return getS3ObjectRangeContext(context.Background(), setting, objectKey, rangeHeader)
-}
-
-func getS3ObjectRangeContext(ctx context.Context, setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
 	client, err := newS3Client(setting, 2*time.Minute)
 	if err != nil {
 		return nil, err
@@ -130,7 +126,7 @@ func getS3ObjectRangeContext(ctx context.Context, setting ossSettingValue, objec
 	if rangeHeader != "" {
 		input.Range = aws.String(rangeHeader)
 	}
-	output, err := client.GetObjectWithContext(ctx, input)
+	output, err := client.GetObjectWithContext(context.Background(), input)
 	if err != nil {
 		if requestFailure, ok := err.(awserr.RequestFailure); ok && requestFailure.StatusCode() == http.StatusRequestedRangeNotSatisfiable {
 			return &ossObjectStream{body: io.NopCloser(bytes.NewReader(nil)), statusCode: http.StatusRequestedRangeNotSatisfiable, acceptRanges: "bytes"}, nil

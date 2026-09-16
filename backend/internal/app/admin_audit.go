@@ -1,9 +1,7 @@
 package app
 
 import (
-	"context"
 	"encoding/json"
-	"log"
 	"strings"
 	"time"
 
@@ -16,8 +14,7 @@ type AdminUserDetail struct {
 	Account          model.CreditAccount         `json:"account"`
 	Counts           repository.AdminUserCounts  `json:"counts"`
 	StorageUsage     repository.UserStorageUsage `json:"storageUsage"`
-	StoredFileBytes  *int64                      `json:"storedFileBytes"`
-	FileStorageError string                      `json:"fileStorageError,omitempty"`
+	StoredFileBytes  int64                       `json:"storedFileBytes"`
 	DailyUploadBytes int64                       `json:"dailyUploadBytes"`
 	Quota            RuntimeResourcePolicy       `json:"quota"`
 }
@@ -82,18 +79,9 @@ func (s *Service) AdminUserDetail(actor *model.User, userID string) (*AdminUserD
 	if err != nil {
 		return nil, err
 	}
-	storageContext, cancelStorage := context.WithTimeout(context.Background(), 3*time.Second)
-	fileUsage, err := s.AccountFileStorageUsageContext(storageContext, user.ID, false)
-	cancelStorage()
-	var storedFileBytes *int64
-	fileStorageError := ""
+	storedFileBytes, err := s.repo.UserStoredFileBytes(user.ID)
 	if err != nil {
-		// Capacity is a read projection; a storage outage must not hide account
-		// controls. Null is deliberately distinct from a verified empty account.
-		fileStorageError = "容量暂时无法核实"
-		log.Printf("admin account storage measurement failed: user=%s error_type=%T", user.ID, err)
-	} else {
-		storedFileBytes = &fileUsage.UsedBytes
+		return nil, err
 	}
 	dailyUploadBytes, err := s.repo.DailyUploadBytes(user.ID, time.Now().UTC().Format("2006-01-02"))
 	if err != nil {
@@ -105,7 +93,7 @@ func (s *Service) AdminUserDetail(actor *model.User, userID string) (*AdminUserD
 	}
 	return &AdminUserDetail{
 		User: *user, Account: *account, Counts: counts, StorageUsage: usage,
-		StoredFileBytes: storedFileBytes, FileStorageError: fileStorageError, DailyUploadBytes: dailyUploadBytes, Quota: policy.Resource,
+		StoredFileBytes: storedFileBytes, DailyUploadBytes: dailyUploadBytes, Quota: policy.Resource,
 	}, nil
 }
 

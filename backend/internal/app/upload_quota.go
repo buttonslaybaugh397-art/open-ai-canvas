@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -52,45 +51,17 @@ func (s *Service) reserveUserStoredFileQuota(userID string, size int64, exclusiv
 	if size >= exclusiveSingleFileLimit {
 		return "", BadAuthRequest(singleFileMessage)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), storageMeasurementTimeout)
-	defer cancel()
-	// Network I/O stays outside storageMu. Recheck the ownership snapshot under
-	// the reservation lock so a completed upload cannot evade this measurement.
-	for range 3 {
-		measured, err := s.measureAccountStorage(ctx, userID, true)
-		if err != nil {
-			return "", err
-		}
-		s.storageMu.Lock()
-		current, err := s.repo.UserFileStorageSnapshot(ctx, userID)
-		if err != nil {
-			s.storageMu.Unlock()
-			return "", err
-		}
-		revision, err := storageSnapshotRevision(current)
-		if err != nil {
-			s.storageMu.Unlock()
-			return "", err
-		}
-		if revision != measured.Revision {
-			s.storageMu.Unlock()
-			continue
-		}
-		day, err := s.reserveMeasuredUploadQuota(userID, size, dailyLimit, storedLimit, measured.Usage.UsedBytes)
-		s.storageMu.Unlock()
-		return day, err
-	}
-	return "", errors.New("账号文件正在变化，无法确认可用容量，请重试上传")
-}
-
-// Caller holds storageMu through both the pending reservation and daily quota.
-func (s *Service) reserveMeasuredUploadQuota(userID string, size, dailyLimit, storedLimit, storedBytes int64) (string, error) {
 	day := time.Now().UTC().Format("2006-01-02")
+	s.storageMu.Lock()
+	defer s.storageMu.Unlock()
+	storedBytes, err := s.repo.UserStoredFileBytes(userID)
+	if err != nil {
+		return "", err
+	}
 	if s.pendingStorage == nil {
 		s.pendingStorage = map[string]int64{}
 	}
-	pending := s.pendingStorage[userID]
-	if storedBytes >= storedLimit || pending >= storedLimit-storedBytes || size >= storedLimit-storedBytes-pending {
+	if storedBytes+s.pendingStorage[userID]+size >= storedLimit {
 		return "", QuotaExceeded(fmt.Sprintf("账号资源和会话附件已达到 %s 上限，请联系管理员清理历史文件", formatStorageLimit(storedLimit)))
 	}
 	s.pendingStorage[userID] += size
