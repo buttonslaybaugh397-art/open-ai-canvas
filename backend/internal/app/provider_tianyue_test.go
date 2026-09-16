@@ -101,6 +101,7 @@ func TestTianYueReferencesRejectNonPublicURLs(t *testing.T) {
 }
 
 func TestTianYueResumeOnlyQueriesExistingTask(t *testing.T) {
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
 	var polls, downloads, creates int
 	var upstream *httptest.Server
 	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -130,8 +131,8 @@ func TestTianYueResumeOnlyQueriesExistingTask(t *testing.T) {
 		}
 	}))
 	defer upstream.Close()
-	config := providerConfig{InterfaceType: "tianyue-video", BaseURL: upstream.URL, Model: "test-model", APIKey: "test-key", AllowLocalChannel: true}
-	ctx := withProviderOutboundPolicy(context.Background(), config)
+	config := providerConfig{InterfaceType: "tianyue-video", BaseURL: upstream.URL, Model: "test-model", APIKey: "test-key"}
+	ctx := context.Background()
 	ctx = context.WithValue(ctx, providerAnalyticsKey{}, providerAnalyticsContext{ProviderRequestID: "existing"})
 	adapter, _ := protocol.Builtins().Get("tianyue-video")
 	// Expired creation inputs must not be revalidated, uploaded or submitted on resume.
@@ -148,11 +149,11 @@ func TestTianYueResumeOnlyQueriesExistingTask(t *testing.T) {
 }
 
 func TestTianYuePollTimingAndBaseURL(t *testing.T) {
-	if timing := protocolPollTimingFor("tianyue-video"); timing.PollInterval != 5*time.Second {
-		t.Fatalf("TianYue poll timing=%+v", timing)
+	if policy := protocolPollPolicyFor("tianyue-video", defaultVideoPollPolicy()); policy.InitialDelay != 5*time.Second || policy.Interval != 5*time.Second {
+		t.Fatalf("TianYue poll policy=%+v", policy)
 	}
-	if timing := protocolPollTimingFor("weijin-video"); timing.PollInterval != 10*time.Second {
-		t.Fatalf("Weijin poll timing changed: %+v", timing)
+	if policy := protocolPollPolicyFor("weijin-video", defaultVideoPollPolicy()); policy.InitialDelay != 10*time.Second || policy.Interval != 10*time.Second {
+		t.Fatalf("Weijin poll policy changed: %+v", policy)
 	}
 	for _, baseURL := range []string{"https://api.tianyue.xyz", "https://api.tianyue.xyz/", "https://api.tianyue.xyz/v1", "https://api.tianyue.xyz/v1/"} {
 		for _, path := range []string{"/v1/videos", "/v1/videos/task-1"} {

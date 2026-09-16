@@ -15,6 +15,7 @@ import (
 )
 
 func TestPrepareWeijinGenerationMediaUploadsReferences(t *testing.T) {
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
 	var uploads atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -48,8 +49,8 @@ func TestPrepareWeijinGenerationMediaUploadsReferences(t *testing.T) {
 	}))
 	defer server.Close()
 
-	config := providerConfig{BaseURL: server.URL, APIKey: "test-key", InterfaceType: string(model.ChannelInterfaceWeijinVideo), AllowLocalChannel: true}
-	ctx := withProviderOutboundPolicy(context.Background(), config)
+	config := providerConfig{BaseURL: server.URL, APIKey: "test-key", InterfaceType: string(model.ChannelInterfaceWeijinVideo)}
+	ctx := context.Background()
 	input := canvasGenerationInput{
 		Config: config,
 		ReferenceImages: []providerMedia{
@@ -77,6 +78,7 @@ func TestPrepareWeijinGenerationMediaUploadsReferences(t *testing.T) {
 }
 
 func TestPrepareWeijinGenerationMediaReportsUploadFailure(t *testing.T) {
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/source.png" {
 			w.Header().Set("Content-Type", "image/png")
@@ -86,8 +88,8 @@ func TestPrepareWeijinGenerationMediaReportsUploadFailure(t *testing.T) {
 		http.Error(w, "upstream unavailable", http.StatusBadGateway)
 	}))
 	defer server.Close()
-	config := providerConfig{BaseURL: server.URL, APIKey: "test-key", InterfaceType: string(model.ChannelInterfaceWeijinVideo), AllowLocalChannel: true}
-	_, err := prepareWeijinGenerationMedia(withProviderOutboundPolicy(context.Background(), config), canvasGenerationInput{
+	config := providerConfig{BaseURL: server.URL, APIKey: "test-key", InterfaceType: string(model.ChannelInterfaceWeijinVideo)}
+	_, err := prepareWeijinGenerationMedia(context.Background(), canvasGenerationInput{
 		Config:          config,
 		ReferenceImages: []providerMedia{{ID: "image-1", URL: server.URL + "/source.png"}},
 	})
@@ -97,6 +99,7 @@ func TestPrepareWeijinGenerationMediaReportsUploadFailure(t *testing.T) {
 }
 
 func TestRunProtocolAdapterTaskResumeSkipsWeijinUpload(t *testing.T) {
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
 	var uploads atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/upload/video" {
@@ -115,9 +118,8 @@ func TestRunProtocolAdapterTaskResumeSkipsWeijinUpload(t *testing.T) {
 	if !ok {
 		t.Fatal("weijin adapter is missing")
 	}
-	config := providerConfig{BaseURL: server.URL, APIKey: "test-key", InterfaceType: string(model.ChannelInterfaceWeijinVideo), AllowLocalChannel: true, Model: "dreamina-2.0-720p"}
+	config := providerConfig{BaseURL: server.URL, APIKey: "test-key", InterfaceType: string(model.ChannelInterfaceWeijinVideo), Model: "dreamina-2.0-720p"}
 	ctx := context.WithValue(context.Background(), providerAnalyticsKey{}, providerAnalyticsContext{ProviderRequestID: "task-existing"})
-	ctx = withProviderOutboundPolicy(ctx, config)
 	_, err := runProtocolAdapterTask(ctx, canvasGenerationInput{
 		Mode:            "video",
 		Prompt:          "test",

@@ -49,7 +49,6 @@ export type AuthSessionPayload = {
 export type RuntimeLimits = {
     activeTaskLimit: number;
     resourceUploadMB: number;
-    sessionUploadMB: number;
     recycleBinRetentionDays?: number;
 };
 
@@ -130,8 +129,6 @@ export type AdminUserDetail = {
         assetBytes: number;
         canvasCount: number;
         canvasBytes: number;
-        sessionCount: number;
-        sessionBytes: number;
         taskCount: number;
         taskBytes: number;
         apiCallCount: number;
@@ -513,7 +510,6 @@ export type AdminArkPrivateAssetSetting = {
 
 export type RuntimeResourcePolicy = {
     resourceUploadMB: number;
-    sessionUploadMB: number;
     generatedFileMB: number;
     dailyUploadMB: number;
     storedFileGB: number;
@@ -521,7 +517,6 @@ export type RuntimeResourcePolicy = {
     taskDataGB: number;
     assetCount: number;
     canvasCount: number;
-    sessionCount: number;
     taskCount: number;
     apiCallLogCount: number;
     recycleBinRetentionDays?: number;
@@ -541,10 +536,8 @@ export type RuntimeTaskPolicy = {
 
 export type RuntimeRequestPolicy = {
     taskCreatePerMinute: number;
-    sessionCreatePerMinute: number;
     resourceUploadPerMinute: number;
     resourceImportPerMinute: number;
-    sessionFilePerMinute: number;
     assetWritePerMinute: number;
     canvasWritePerMinute: number;
     registerPerHour: number;
@@ -614,7 +607,7 @@ export function getAdminFeatureAvailability() {
     return http.get<{ features: FeatureAvailability }>("/admin/settings/features");
 }
 
-export function updateAdminFeatureAvailability(features: Pick<FeatureAvailability, "shortDramaEnabled" | "taskCenterEnabled" | "creditsEnabled" | "customChannelsEnabled" | "frontendModelsEnabled" | "pluginCenterEnabled" | "systemPluginsVisibleToUsers">) {
+export function updateAdminFeatureAvailability(features: Partial<Pick<FeatureAvailability, "welcomeEnabled" | "shortDramaEnabled" | "taskCenterEnabled" | "creditsEnabled" | "customChannelsEnabled" | "frontendModelsEnabled" | "pluginCenterEnabled" | "systemPluginsVisibleToUsers">>) {
     return http.patch<{ features: FeatureAvailability }>("/admin/settings/features", features);
 }
 
@@ -703,6 +696,10 @@ export function listAdminChannels(params: AdminListParams = {}) {
 
 export function createAdminChannel(input: Partial<ModelChannel> & { useGlobalConcurrency?: boolean }) {
     return http.post<{ channel: ModelChannel }>("/admin/channels", input);
+}
+
+export function duplicateAdminChannel(id: string) {
+    return http.post<{ channel: ModelChannel }>(`/admin/channels/${encodeURIComponent(id)}/duplicate`);
 }
 
 export function updateAdminChannel(id: string, input: Partial<ModelChannel> & { useGlobalConcurrency?: boolean }) {

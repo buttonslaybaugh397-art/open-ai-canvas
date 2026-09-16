@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"infinite-canvas/backend/internal/protocol"
 )
@@ -35,11 +36,22 @@ var hostChannelDispatchCases = []hostChannelDispatchCase{
 }
 
 func TestHostChannelPluginsDispatchThroughCanvasGeneration(t *testing.T) {
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
 	center, err := newPluginRuntime(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := &Service{pluginRuntime: center, runtimeCapabilities: RuntimeCapabilities{desktopLocalChannels: true}}
+	run := func(ctx context.Context, tt hostChannelDispatchCase, input canvasGenerationInput) (map[string]interface{}, error) {
+		ctx = withProtocolRegistry(ctx, center.registrySnapshot())
+		if tt.mode == "image" {
+			return runImageTask(ctx, input)
+		}
+		policy := defaultVideoPollPolicy()
+		policy.InitialDelay = time.Millisecond
+		policy.Interval = time.Millisecond
+		policy.Sleep = func(context.Context, time.Duration) error { return nil }
+		return runVideoTaskWithPolicy(ctx, input, policy)
+	}
 	for _, tt := range hostChannelDispatchCases {
 		t.Run(tt.providerID, func(t *testing.T) {
 			var creates, polls, downloads atomic.Int32
@@ -105,15 +117,11 @@ func TestHostChannelPluginsDispatchThroughCanvasGeneration(t *testing.T) {
 				Mode: tt.mode, Prompt: "channel dispatch test",
 				Config: providerConfig{
 					InterfaceType: tt.providerID, Model: tt.model, BaseURL: upstream.URL + tt.basePath,
-					APIFormat: "openai", APIKey: "test-key", AllowLocalChannel: true,
+					APIFormat: "openai", APIKey: "test-key",
 					Size: "16:9", VideoSeconds: "6", VQuality: "720p",
 				},
 			}
-			raw, err := json.Marshal(input)
-			if err != nil {
-				t.Fatal(err)
-			}
-			result, err := svc.processCanvasGenerationTask(context.Background(), "test-user", "", "canvas_"+tt.mode, input.Prompt, string(raw))
+			result, err := run(context.Background(), tt, input)
 			if err != nil {
 				t.Fatalf("canvas generation: %v", err)
 			}
@@ -121,7 +129,7 @@ func TestHostChannelPluginsDispatchThroughCanvasGeneration(t *testing.T) {
 				t.Fatalf("mode=%v, create/poll/download=%d/%d/%d", result["mode"], creates.Load(), polls.Load(), downloads.Load())
 			}
 			resumeCtx := context.WithValue(context.Background(), providerAnalyticsKey{}, providerAnalyticsContext{ProviderRequestID: "task-1"})
-			if _, err := svc.processCanvasGenerationTask(resumeCtx, "test-user", "", "canvas_"+tt.mode, input.Prompt, string(raw)); err != nil {
+			if _, err := run(resumeCtx, tt, input); err != nil {
 				t.Fatalf("resume canvas generation: %v", err)
 			}
 			if creates.Load() != 1 || polls.Load() != 2 || downloads.Load() != 2 {
@@ -157,8 +165,8 @@ func TestHostChannelPluginsNeverFallBackWhenUnavailable(t *testing.T) {
 	} {
 		for _, tt := range hostChannelDispatchCases {
 			t.Run(state.name+"/"+tt.providerID, func(t *testing.T) {
-				config := providerConfig{InterfaceType: tt.providerID, Model: tt.model, BaseURL: upstream.URL, APIKey: "test-key", AllowLocalChannel: true}
-				ctx := withProviderOutboundPolicy(withProtocolRegistry(context.Background(), state.registry), config)
+				config := providerConfig{InterfaceType: tt.providerID, Model: tt.model, BaseURL: upstream.URL, APIKey: "test-key"}
+				ctx := withProtocolRegistry(context.Background(), state.registry)
 				input := canvasGenerationInput{Mode: tt.mode, Prompt: "test", Config: config}
 				var err error
 				if tt.mode == "image" {

@@ -216,6 +216,7 @@ export type BillingOrder = {
     quantity: number;
     amountMicrocredits: number;
     reservedAmountMicrocredits: number;
+    chargeLimitMicrocredits?: number;
     actualAmountMicrocredits: number;
     refundedAmountMicrocredits: number;
     inputTokenPriceMicrocredits: number;

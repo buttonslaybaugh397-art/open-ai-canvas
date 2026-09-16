@@ -137,7 +137,7 @@ export async function applyCanvasGenerationTaskNodeEffect(input: {
     input.setNodes(reconciled);
 }
 
-export async function persistCanvasAgentGenerationContinuationEffect(input: {
+export async function persistCanvasOperationContinuationEffect(input: {
     projectId: string;
     nodeId: string;
     continuation: NonNullable<NonNullable<CanvasNodeData["metadata"]>["agentGenerationContinuation"]>;
