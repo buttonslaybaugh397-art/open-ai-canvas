@@ -152,10 +152,11 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 		return nil, err
 	}
 	// 使用服务端保存的渠道密钥和请求头访问上游，避免敏感配置再次经过浏览器。
-	models, err := s.FetchChannelModels(ctx, actor, ChannelModelsRequest{BaseURL: channel.BaseURL, APIKey: channel.APIKey, APIFormat: channel.APIFormat, Headers: headers})
+	catalog, err := s.FetchChannelModelCatalog(ctx, actor, ChannelModelsRequest{BaseURL: channel.BaseURL, APIKey: channel.APIKey, APIFormat: channel.APIFormat, Headers: headers})
 	if err != nil {
 		return nil, err
 	}
+	models := channelModelCatalogIDs(catalog)
 	// 只按当前未删除记录去重；普通手动删除的模型仍可重新拉取，已合并进模型家族的 SKU 除外。
 	existing, err := s.repo.ChannelModels(channelID, true)
 	if err != nil {
@@ -178,7 +179,9 @@ func (s *Service) FetchAdminChannelModels(ctx context.Context, actor *model.User
 		if idErr != nil {
 			return nil, idErr
 		}
-		missing = append(missing, model.ChannelModel{ID: modelID, ChannelID: channelID, ModelKey: name, ProviderModelKey: name, DisplayName: name, BillingMode: "fixed_request", Enabled: false, PriceVersion: 1})
+		discovered := discoveredChannelModel(*channel, name, catalogItemByID(catalog, name))
+		discovered.ID = modelID
+		missing = append(missing, discovered)
 	}
 	added, err := s.repo.CreateMissingChannelModels(missing)
 	if err != nil {
@@ -207,7 +210,7 @@ func (s *Service) ImportAdminChannelModels(ctx context.Context, actor *model.Use
 	if err != nil {
 		return nil, err
 	}
-	models, err := s.fetchAdminChannelModelCatalog(ctx, actor, channelID)
+	_, catalog, err := s.fetchAdminChannelModelCatalogItems(ctx, actor, channelID)
 	if err != nil {
 		return nil, err
 	}
@@ -217,9 +220,9 @@ func (s *Service) ImportAdminChannelModels(ctx context.Context, actor *model.Use
 	if len(selected) > 500 {
 		return nil, BadAuthRequest("单次最多导入 500 个模型")
 	}
-	available := make(map[string]string, len(models))
-	for _, name := range models {
-		available[channelModelCatalogKey(name)] = name
+	available := make(map[string]*ChannelModelCatalogItem, len(catalog))
+	for index := range catalog {
+		available[channelModelCatalogKey(catalog[index].ID)] = &catalog[index]
 	}
 	chosen := make([]string, 0, len(selected))
 	seen := make(map[string]struct{}, len(selected))
@@ -229,7 +232,7 @@ func (s *Service) ImportAdminChannelModels(ctx context.Context, actor *model.Use
 		if key == "" {
 			continue
 		}
-		canonical, ok := available[key]
+		catalogItem, ok := available[key]
 		if !ok {
 			return nil, BadAuthRequest("所选模型不在上游模型目录中：" + name)
 		}
@@ -237,7 +240,7 @@ func (s *Service) ImportAdminChannelModels(ctx context.Context, actor *model.Use
 			continue
 		}
 		seen[key] = struct{}{}
-		chosen = append(chosen, canonical)
+		chosen = append(chosen, catalogItem.ID)
 	}
 	if len(chosen) == 0 {
 		return nil, BadAuthRequest("请至少选择一个有效的模型")
@@ -263,7 +266,9 @@ func (s *Service) ImportAdminChannelModels(ctx context.Context, actor *model.Use
 		if idErr != nil {
 			return nil, idErr
 		}
-		missing = append(missing, model.ChannelModel{ID: modelID, ChannelID: channelID, ModelKey: name, DisplayName: name, BillingMode: "fixed_request", Enabled: false, PriceConfigured: false, PriceVersion: 1})
+		discovered := discoveredChannelModel(*channel, name, available[key])
+		discovered.ID = modelID
+		missing = append(missing, discovered)
 		known[key] = struct{}{}
 	}
 	added, err := s.repo.CreateMissingChannelModels(missing)
@@ -277,19 +282,118 @@ func (s *Service) ImportAdminChannelModels(ctx context.Context, actor *model.Use
 }
 
 func (s *Service) fetchAdminChannelModelCatalog(ctx context.Context, actor *model.User, channelID string) ([]string, error) {
-	channel, err := s.adminSystemChannel(channelID)
+	_, catalog, err := s.fetchAdminChannelModelCatalogItems(ctx, actor, channelID)
 	if err != nil {
 		return nil, err
+	}
+	return channelModelCatalogIDs(catalog), nil
+}
+
+func (s *Service) fetchAdminChannelModelCatalogItems(ctx context.Context, actor *model.User, channelID string) (*model.ModelChannel, []ChannelModelCatalogItem, error) {
+	channel, err := s.adminSystemChannel(channelID)
+	if err != nil {
+		return nil, nil, err
 	}
 	headers, err := ParseOutboundHeadersJSON(channel.HeadersJSON)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	models, err := s.FetchChannelModels(ctx, actor, ChannelModelsRequest{BaseURL: channel.BaseURL, APIKey: channel.APIKey, APIFormat: channel.APIFormat, Headers: headers})
+	catalog, err := s.FetchChannelModelCatalog(ctx, actor, ChannelModelsRequest{BaseURL: channel.BaseURL, APIKey: channel.APIKey, APIFormat: channel.APIFormat, Headers: headers})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return uniqueNonEmpty(models), nil
+	return channel, catalog, nil
+}
+
+func channelModelCatalogIDs(catalog []ChannelModelCatalogItem) []string {
+	models := make([]string, 0, len(catalog))
+	for _, item := range catalog {
+		if id := strings.TrimSpace(item.ID); id != "" {
+			models = append(models, id)
+		}
+	}
+	return uniqueNonEmpty(models)
+}
+
+func catalogItemByID(items []ChannelModelCatalogItem, id string) *ChannelModelCatalogItem {
+	for index := range items {
+		if items[index].ID == id {
+			return &items[index]
+		}
+	}
+	return nil
+}
+
+func discoveredChannelModel(channel model.ModelChannel, name string, catalog *ChannelModelCatalogItem) model.ChannelModel {
+	displayName := name
+	if catalog != nil && strings.TrimSpace(catalog.DisplayName) != "" {
+		displayName = strings.TrimSpace(catalog.DisplayName)
+	}
+	item := model.ChannelModel{ChannelID: channel.ID, ModelKey: name, DisplayName: displayName, BillingMode: "fixed_request", Enabled: false, PriceConfigured: false, PriceVersion: 1}
+	syncChannelModelContract(&item, catalog)
+	return item
+}
+
+func syncChannelModelContract(item *model.ChannelModel, catalog *ChannelModelCatalogItem) bool {
+	if item == nil || catalog == nil || catalog.AIStarsLab == nil {
+		return false
+	}
+	route := catalog.AIStarsLab
+	capability := "video"
+	channelProtocol := model.ChannelInterfaceAIStarsLabVideo
+	if strings.EqualFold(strings.TrimSpace(route.Capability), "image") {
+		capability = "image"
+		channelProtocol = model.ChannelInterfaceAIStarsLabImage
+	}
+	changed := item.Protocol != channelProtocol || item.Capability != capability
+	item.Protocol = channelProtocol
+	item.Capability = capability
+	config := DefaultModelCapabilityConfigForModel(string(channelProtocol), route.Model)
+	config.AIStarsLab = &AIStarsLabCapabilityConfig{
+		Channel: route.Channel, Capability: route.Capability, Model: route.Model,
+		Qualities: append([]string(nil), route.Qualities...), AspectRatios: append([]string(nil), route.AspectRatios...),
+		Duration: append([]int(nil), route.Duration...), DurationMin: route.DurationMin, DurationMax: route.DurationMax,
+		Modes: append([]string(nil), route.Modes...), InputImagesMax: route.InputImagesMax,
+		InputVideosMax: route.InputVideosMax, InputAudiosMax: route.InputAudiosMax,
+	}
+	if capability == "image" && config.Image != nil {
+		config.Image.References.MaxImages = route.InputImagesMax
+		if len(route.AspectRatios) > 0 {
+			config.Image.Size.Values = append([]string(nil), route.AspectRatios...)
+			config.Image.Size.Default = route.AspectRatios[0]
+			config.Image.Size.AllowCustom = false
+		}
+		if len(route.Qualities) > 0 {
+			config.Image.Quality.Supported = true
+			config.Image.Quality.Values = append([]string(nil), route.Qualities...)
+			config.Image.Quality.Default = route.Qualities[0]
+		}
+	}
+	if capability == "video" && config.Video != nil {
+		config.Video.References.MaxImages = route.InputImagesMax
+		config.Video.References.MaxVideos = route.InputVideosMax
+		config.Video.References.MaxAudios = route.InputAudiosMax
+		if len(route.Qualities) > 0 {
+			config.Video.Resolutions = append([]string(nil), route.Qualities...)
+			config.Video.DefaultResolution = route.Qualities[0]
+		}
+		if len(route.Duration) > 0 {
+			config.Video.Duration = VideoDurationConfig{Selection: "enum", Values: append([]int(nil), route.Duration...), Default: route.Duration[0]}
+		} else if route.DurationMin > 0 && route.DurationMax >= route.DurationMin {
+			config.Video.Duration = VideoDurationConfig{Selection: "range", Min: route.DurationMin, Max: route.DurationMax, Step: 1, Default: route.DurationMin}
+		}
+		if len(route.AspectRatios) > 0 {
+			config.Video.Ratios = append([]string(nil), route.AspectRatios...)
+			config.Video.DefaultRatio = route.AspectRatios[0]
+		}
+	}
+	encoded, err := json.Marshal(config)
+	if err == nil && item.CapabilityConfigJSON != string(encoded) {
+		item.CapabilityConfigJSON = string(encoded)
+		item.CapabilityVersion++
+		changed = true
+	}
+	return changed
 }
 
 func (s *Service) SaveAdminChannelModel(actor *model.User, channelID string, id string, req ChannelModelRequest) (*model.ChannelModel, error) {

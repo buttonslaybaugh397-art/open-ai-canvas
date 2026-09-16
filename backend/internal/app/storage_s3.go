@@ -131,6 +131,9 @@ func getS3ObjectRange(setting ossSettingValue, objectKey string, rangeHeader str
 		if requestFailure, ok := err.(awserr.RequestFailure); ok && requestFailure.StatusCode() == http.StatusRequestedRangeNotSatisfiable {
 			return &ossObjectStream{body: io.NopCloser(bytes.NewReader(nil)), statusCode: http.StatusRequestedRangeNotSatisfiable, acceptRanges: "bytes"}, nil
 		}
+		if requestFailure, ok := err.(awserr.RequestFailure); ok && (requestFailure.StatusCode() == http.StatusNotFound || requestFailure.StatusCode() == http.StatusGone) {
+			return nil, errResourceObjectMissing
+		}
 		return nil, fmt.Errorf("S3 读取失败：%w", err)
 	}
 	status := http.StatusOK
@@ -138,6 +141,24 @@ func getS3ObjectRange(setting ossSettingValue, objectKey string, rangeHeader str
 		status = http.StatusPartialContent
 	}
 	return &ossObjectStream{body: output.Body, statusCode: status, contentLength: aws.Int64Value(output.ContentLength), contentRange: aws.StringValue(output.ContentRange), acceptRanges: firstNonEmpty(aws.StringValue(output.AcceptRanges), "bytes")}, nil
+}
+
+func headS3Object(ctx context.Context, setting ossSettingValue, objectKey string) (bool, error) {
+	client, err := newS3Client(setting, resourceRedirectProbeTimeout)
+	if err != nil {
+		return false, err
+	}
+	_, err = client.HeadObjectWithContext(ctx, &awss3.HeadObjectInput{
+		Bucket: aws.String(setting.Bucket),
+		Key:    aws.String(strings.TrimLeft(objectKey, "/")),
+	})
+	if requestFailure, ok := err.(awserr.RequestFailure); ok && (requestFailure.StatusCode() == http.StatusNotFound || requestFailure.StatusCode() == http.StatusGone) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("S3 对象探测失败：%w", err)
+	}
+	return true, nil
 }
 
 func signedS3ObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time) (string, error) {

@@ -1,6 +1,7 @@
 package assets
 
 import (
+	"context"
 	"io"
 
 	"infinite-canvas/backend/internal/model"
@@ -16,6 +17,7 @@ type ResourceStream struct {
 }
 
 type ResourceDeliveryOptions struct {
+	Context     context.Context
 	ForceDirect bool
 	ForceProxy  bool
 }

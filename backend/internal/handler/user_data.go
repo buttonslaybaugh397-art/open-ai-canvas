@@ -291,6 +291,7 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			return
 		}
 		delivery, err := svc.PrepareResourceDelivery(user.ID, c.Param("id"), service.ResourceDeliveryOptions{
+			Context:     c.Request.Context(),
 			ForceDirect: c.Query("direct") == "1",
 			ForceProxy:  c.Query("proxy") == "1",
 		})

@@ -219,4 +219,6 @@ docker compose -f docker-compose.deploy.yml up -d backend web
 
 账号文件容量只统计 `ready` 资源，并按 Provider、Endpoint、Bucket、ObjectKey 对同一物理对象去重。上传中或失败记录不占用已存储容量。后台每小时检查资源生命周期：超过 1 小时的 `pending/failed` 记录，以及超过 24 小时仍没有任何素材、画布、任务或其他业务引用的 `ready` 记录，会在再次校验引用后删除数据库记录并写入 `resource_deletion_jobs`，由幂等 Worker 清理物理对象。
 
+资源读取发现 CDN 对象缺失时不继续跳转，改由同源接口依次尝试对象存储源站和服务器本地副本。对象存储缺失但本地副本仍存在时，当前读取先返回本地内容，并在响应流关闭后自动回传原对象位置；本地资源被读取且当前已启用对象存储时，也会在响应完成后自动迁移。云端和本地均不存在时资源立即标记为 `failed`，再复用统一引用快照：无业务引用的记录进入删除 Outbox，有画布、素材、任务或其他引用的记录保留失败状态供用户修复，不直接破坏业务文档。
+
 素材状态为 `archived` 时进入回收站。后台按“资源与请求策略”中的 `recycleBinRetentionDays` 定期扫描过期项；`0` 表示永久保留。自动清理与用户手动彻底删除复用同一 service 引用校验和 `resource_deletion_jobs` Outbox，仍被画布、项目、任务或其他业务记录引用的素材不会被删除。

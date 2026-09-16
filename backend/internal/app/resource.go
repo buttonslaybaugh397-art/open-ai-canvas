@@ -42,8 +42,11 @@ import (
 
 const providerResourceURLTTL = 4 * time.Hour
 const directResourceURLTTL = 5 * time.Minute
+const resourceRedirectProbeTTL = 2 * time.Minute
+const resourceRedirectProbeTimeout = 2 * time.Second
 
 var errInvalidGeneratedDataURL = errors.New("生成内容 data URL 无效")
+var errResourceObjectMissing = errors.New("资源对象不存在")
 
 type ResourceStream = assets.ResourceStream
 type ResourceDeliveryOptions = assets.ResourceDeliveryOptions
@@ -137,9 +140,27 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 			if err != nil {
 				return nil, err
 			}
+			available, probeErr := s.redirectResourceAvailable(options.Context, resource, redirectURL)
+			if probeErr != nil {
+				log.Printf("resource CDN probe failed, using same-origin proxy: resource=%s err=%v", resource.ID, probeErr)
+				return &ResourceDelivery{Resource: resource}, nil
+			}
+			if !available {
+				return &ResourceDelivery{Resource: resource}, nil
+			}
 			return &ResourceDelivery{Resource: resource, RedirectURL: redirectURL}, nil
 		}
 		if options.ForceDirect {
+			availability, availabilityErr := s.cloudResourceAvailability(options.Context, resource, setting)
+			if availabilityErr != nil {
+				return nil, availabilityErr
+			}
+			if availability == resourceUnavailable {
+				return nil, NotFound("资源文件已失效并进入自动清理")
+			}
+			if availability == resourceAvailableLocally {
+				return &ResourceDelivery{Resource: resource}, nil
+			}
 			if setting.Provider == s3Provider && !publicHTTPSStorageEndpoint(setting.Endpoint) {
 				redirectURL, err := s.signedHTTPSPublicResourceURL(resource, time.Now().Add(directResourceURLTTL))
 				if err != nil {
@@ -155,6 +176,78 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 		}
 	}
 	return &ResourceDelivery{Resource: resource}, nil
+}
+
+func resourceRedirectProbeKey(resource *model.Resource, redirectURL string) string {
+	if resource == nil {
+		return redirectURL
+	}
+	return strings.Join([]string{resource.Provider, resource.Endpoint, resource.Bucket, resource.ObjectKey, redirectURL}, "\x00")
+}
+
+func probeResourceURL(ctx context.Context, target string) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, target, nil)
+	if err != nil {
+		return false, err
+	}
+	ApplyDefaultOutboundHeaders(req)
+	resp, err := OutboundHTTPClient(resourceRedirectProbeTimeout).Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return true, nil
+	}
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		return false, nil
+	}
+	return false, fmt.Errorf("资源地址探测失败：%s", resp.Status)
+}
+
+func probeOSSObject(ctx context.Context, setting ossSettingValue, objectKey string) (bool, error) {
+	setting = normalizeOSSSetting(setting)
+	if setting.Provider == s3Provider {
+		return headS3Object(ctx, setting, objectKey)
+	}
+	if setting.Provider == tencentCOSProvider {
+		client, err := newCOSClient(setting, resourceRedirectProbeTimeout)
+		if err != nil {
+			return false, err
+		}
+		resp, err := client.Object.Head(ctx, strings.TrimLeft(objectKey, "/"), nil)
+		if err != nil {
+			if resp != nil && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone) {
+				return false, nil
+			}
+			return false, err
+		}
+		return resp.StatusCode >= 200 && resp.StatusCode < 300, nil
+	}
+	if setting.Provider == qiniuKodoProvider {
+		target, err := signedQiniuObjectURL(setting, objectKey, time.Now().Add(directResourceURLTTL))
+		if err != nil {
+			return false, err
+		}
+		return probeResourceURL(ctx, target)
+	}
+	req, err := newOSSRequest(http.MethodHead, setting, objectKey, "", nil)
+	if err != nil {
+		return false, err
+	}
+	req = req.WithContext(ctx)
+	resp, err := OutboundHTTPClient(resourceRedirectProbeTimeout).Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return true, nil
+	}
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		return false, nil
+	}
+	return false, fmt.Errorf("OSS 对象探测失败：%s", resp.Status)
 }
 
 func (s *Service) signedPublicResourceURL(resource *model.Resource, expiresAt time.Time) (string, error) {
@@ -450,7 +543,7 @@ func (s *Service) OpenPublicResourceRange(id string, expires string, signature s
 	if err != nil {
 		return nil, Forbidden("匿名下载链接无效")
 	}
-	if resource.Provider != "local" && resource.Provider != s3Provider {
+	if resource.Provider != "local" && resource.Provider != s3Provider && !s.localResourceObjectAvailable(resource.ObjectKey, resource.Size) {
 		return nil, Forbidden("匿名下载链接无效")
 	}
 	if err := s.verifyPublicResourceSignature(resource.ID, expires, signature); err != nil {
@@ -466,9 +559,20 @@ func (s *Service) openResourceRange(userID string, resource *model.Resource, ran
 	if resource.Provider == "local" {
 		body, err := os.Open(filepath.Join(s.dataDir, "resources", filepath.FromSlash(resource.ObjectKey)))
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				s.markResourceUnrecoverable(resource, "服务器本地文件不存在")
+				return nil, NotFound("资源文件已失效并进入自动清理")
+			}
 			return nil, err
 		}
-		return &ResourceStream{Resource: resource, Body: body, StatusCode: http.StatusOK, ContentLength: resource.Size, AcceptRanges: "bytes"}, nil
+		stream := &ResourceStream{
+			Resource: resource,
+			Body: &afterCloseReadCloser{ReadCloser: body, afterClose: func() {
+				s.scheduleLocalResourcePromotion(resource)
+			}},
+			StatusCode: http.StatusOK, ContentLength: resource.Size, AcceptRanges: "bytes",
+		}
+		return stream, nil
 	}
 	setting, err := s.ossSettingForResource(userID, resource)
 	if err != nil {
@@ -481,6 +585,21 @@ func (s *Service) openResourceRange(userID string, resource *model.Resource, ran
 	setting.Endpoint = firstNonEmpty(resource.Endpoint, setting.Endpoint)
 	setting.Bucket = firstNonEmpty(resource.Bucket, setting.Bucket)
 	stream, err := getOSSObjectRange(setting, resource.ObjectKey, normalizeSingleByteRange(rangeHeader))
+	if errors.Is(err, errResourceObjectMissing) && setting.CDNBaseURL != "" {
+		originSetting := setting
+		originSetting.CDNBaseURL = ""
+		stream, err = getOSSObjectRange(originSetting, resource.ObjectKey, normalizeSingleByteRange(rangeHeader))
+	}
+	if errors.Is(err, errResourceObjectMissing) {
+		if s.localResourceObjectAvailable(resource.ObjectKey, resource.Size) {
+			localStream, localErr := s.openLocalRecoveryStream(resource)
+			if localErr == nil {
+				return localStream, nil
+			}
+		}
+		s.markResourceUnrecoverable(resource, "对象存储与服务器本地副本均不存在")
+		return nil, NotFound("资源文件已失效并进入自动清理")
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1203,6 +1322,9 @@ func getAliyunOSSObjectRange(setting ossSettingValue, objectKey string, rangeHea
 	}
 	if (resp.StatusCode < 200 || resp.StatusCode >= 300) && resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
 		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+			return nil, errResourceObjectMissing
+		}
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("OSS 读取失败：%s %s", resp.Status, strings.TrimSpace(string(detail)))
 	}
@@ -1323,6 +1445,9 @@ func getCOSObjectRange(setting ossSettingValue, objectKey string, rangeHeader st
 		if resp != nil && resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 			return &ossObjectStream{body: io.NopCloser(bytes.NewReader(nil)), statusCode: resp.StatusCode, contentRange: resp.Header.Get("Content-Range"), acceptRanges: firstNonEmpty(resp.Header.Get("Accept-Ranges"), "bytes")}, nil
 		}
+		if resp != nil && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone) {
+			return nil, errResourceObjectMissing
+		}
 		return nil, fmt.Errorf("COS 读取失败：%w", err)
 	}
 	return &ossObjectStream{body: resp.Body, statusCode: resp.StatusCode, contentLength: resp.ContentLength, contentRange: resp.Header.Get("Content-Range"), acceptRanges: firstNonEmpty(resp.Header.Get("Accept-Ranges"), "bytes")}, nil
@@ -1347,6 +1472,9 @@ func getQiniuObjectRange(setting ossSettingValue, objectKey string, rangeHeader 
 	}
 	if (resp.StatusCode < 200 || resp.StatusCode >= 300) && resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
 		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+			return nil, errResourceObjectMissing
+		}
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("七牛云 Kodo 读取失败：%s %s", resp.Status, strings.TrimSpace(string(detail)))
 	}
@@ -1372,6 +1500,9 @@ func getOSSObjectRangeViaCDN(setting ossSettingValue, objectKey string, rangeHea
 	}
 	if (resp.StatusCode < 200 || resp.StatusCode >= 300) && resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
 		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+			return nil, errResourceObjectMissing
+		}
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("对象存储 CDN 读取失败：%s %s", resp.Status, strings.TrimSpace(string(detail)))
 	}
