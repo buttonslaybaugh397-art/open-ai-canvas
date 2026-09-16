@@ -85,7 +85,7 @@ func uploadWeijinMedia(ctx context.Context, config providerConfig, media provide
 		return "", fmt.Errorf("完成微进素材上传请求失败：%w", err)
 	}
 
-	uploadURL, err := protocolRequestURL(config.BaseURL, protocolUploadRequestSpec())
+	uploadURL, err := protocolRequestURL(config, protocolUploadRequestSpec())
 	if err != nil {
 		return "", fmt.Errorf("微进素材上传地址无效：%w", err)
 	}

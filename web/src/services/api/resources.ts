@@ -328,6 +328,13 @@ export function resourceFileUrl(id: string) {
     return `${base}/resources/${encodeURIComponent(id)}/file`;
 }
 
+// Let the browser receive the object-storage/CDN response directly instead of buffering a large media file in the canvas tab.
+export function resourceDownloadUrl(id: string, fileName?: string) {
+    const query = new URLSearchParams({ direct: "1", download: "1" });
+    if (fileName?.trim()) query.set("filename", fileName.trim());
+    return resourceFileUrl(id) + "?" + query.toString();
+}
+
 function resourceProxyFileUrl(id: string) {
     const base = String(apiBaseURL).replace(/\/+$/, "");
     return `${base}/resources/${encodeURIComponent(id)}/file?proxy=1`;

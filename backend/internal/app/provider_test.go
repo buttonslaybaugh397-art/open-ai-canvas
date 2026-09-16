@@ -138,6 +138,22 @@ func TestChannelAPIURLForProtocolUsesGeminiDefault(t *testing.T) {
 	}
 }
 
+func TestChannelAPIURLForProtocolPreservesAIStarsLabBasePath(t *testing.T) {
+	for _, interfaceType := range []model.ChannelInterfaceType{model.ChannelInterfaceAIStarsLabImage, model.ChannelInterfaceAIStarsLabVideo} {
+		for _, base := range []string{"https://provider.test", "https://provider.test/openapi", "https://provider.test/openapi/"} {
+			config := providerConfig{BaseURL: base, InterfaceType: string(interfaceType)}
+			got, err := protocolRequestURL(config, protocol.RequestSpec{Path: "/generation/status?taskId=task-1", Query: map[string][]string{"detail": {"1"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := strings.TrimRight(base, "/") + "/generation/status?detail=1&taskId=task-1"
+			if got != want {
+				t.Fatalf("protocol %s URL = %q, want %q", interfaceType, got, want)
+			}
+		}
+	}
+}
+
 func TestChannelAPIURLForProtocolUsesAgnesOriginPollPath(t *testing.T) {
 	got := ChannelAPIURLForProtocol("https://apihub.agnes-ai.com/v1", "/agnesapi?video_id=video-1&model_name=agnes-video-2.5", model.ChannelInterfaceAgnesVideo)
 	if got != "https://apihub.agnes-ai.com/agnesapi?video_id=video-1&model_name=agnes-video-2.5" {
@@ -146,7 +162,7 @@ func TestChannelAPIURLForProtocolUsesAgnesOriginPollPath(t *testing.T) {
 }
 
 func TestProtocolRequestURLCanResolveSameOriginRootPath(t *testing.T) {
-	got, err := protocolRequestURL("https://apihub.agnes-ai.com/v1", protocol.RequestSpec{Path: "/agnesapi?video_id=video-1&model_name=agnes-video-2.5", OriginPath: true})
+	got, err := protocolRequestURL(providerConfig{BaseURL: "https://apihub.agnes-ai.com/v1"}, protocol.RequestSpec{Path: "/agnesapi?video_id=video-1&model_name=agnes-video-2.5", OriginPath: true})
 	if err != nil {
 		t.Fatal(err)
 	}

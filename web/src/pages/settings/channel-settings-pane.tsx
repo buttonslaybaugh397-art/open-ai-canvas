@@ -8,6 +8,7 @@ import { WorkspaceState } from "@/components/layout/workspace-state";
 import { mergeFetchedChannelModelCosts } from "@/lib/channel-model-catalog";
 import { desktopLocalChannelFormState, desktopLocalChannelPayloadValue, DESKTOP_LOCAL_CHANNEL_EXAMPLE_BASE_URL } from "@/lib/desktop-local-channel";
 import { fetchChannelModels } from "@/services/api/image";
+import { fetchPluginProviderCatalog } from "@/services/api/plugin-catalog";
 import {
     createModelChannel,
     defaultBaseUrlForApiFormat,
@@ -99,7 +100,10 @@ export function ChannelSettingsPane({ onOpenModels, onOpenRunningHub, onOpenComf
         setChannelLoading(channel.id, true);
         try {
             const projectedChannel = { ...channel, allowLocalChannel: userLocalChannelFormOwner(desktopLocalChannelsEnabled, desktopLocalChannelHostname, channel.allowLocalChannel).payloadValue };
-            const result = await fetchChannelModels(projectedChannel, true);
+            const [result, protocols] = await Promise.all([
+                fetchChannelModels(projectedChannel, true),
+                fetchPluginProviderCatalog("user.custom-channel"),
+            ]);
             if (!result.models.length) {
                 message.warning(`${channel.name || "当前渠道"}未返回模型，已保留现有手工模型`);
                 return;
@@ -112,7 +116,7 @@ export function ChannelSettingsPane({ onOpenModels, onOpenRunningHub, onOpenComf
                 return;
             }
             updateChannels(
-                latestConfig.channels.map((item) => (item.id === channel.id ? { ...item, models: result.models, modelCosts: mergeFetchedChannelModelCosts(item, result.catalog) } : item)),
+                latestConfig.channels.map((item) => (item.id === channel.id ? { ...item, models: result.models, modelCosts: mergeFetchedChannelModelCosts(item, result.catalog, protocols) } : item)),
                 latestConfig,
             );
             message.success(`${latestChannel.name || "当前渠道"}模型列表已更新`);
@@ -133,6 +137,7 @@ export function ChannelSettingsPane({ onOpenModels, onOpenRunningHub, onOpenComf
         }
         setChannelLoading("all", true);
         try {
+            const protocols = await fetchPluginProviderCatalog("user.custom-channel");
             const results = await Promise.all(
                 runnable.map(async (channel) => {
                     try {
@@ -159,7 +164,7 @@ export function ChannelSettingsPane({ onOpenModels, onOpenRunningHub, onOpenComf
                 updateChannels(
                     latestConfig.channels.map((channel) => {
                         const fetched = resultMap.get(channel.id);
-                        return fetched ? { ...channel, models: fetched.models, modelCosts: mergeFetchedChannelModelCosts(channel, fetched.catalog) } : channel;
+                        return fetched ? { ...channel, models: fetched.models, modelCosts: mergeFetchedChannelModelCosts(channel, fetched.catalog, protocols) } : channel;
                     }),
                     latestConfig,
                 );

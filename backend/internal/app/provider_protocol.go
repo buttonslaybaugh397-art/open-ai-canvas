@@ -57,11 +57,19 @@ var defaultProtocolPollTiming = protocolPollTiming{
 }
 
 func runProtocolAdapterTask(ctx context.Context, input canvasGenerationInput, adapter protocol.Adapter) (map[string]interface{}, error) {
-	timing := defaultProtocolPollTiming
-	if input.Config.InterfaceType == string(model.ChannelInterfaceWeijinVideo) {
-		timing.PollInterval = 10 * time.Second
-	}
+	timing := protocolPollTimingFor(input.Config.InterfaceType)
 	return runProtocolAdapterTaskWithTiming(ctx, input, adapter, timing)
+}
+
+func protocolPollTimingFor(interfaceType string) protocolPollTiming {
+	timing := defaultProtocolPollTiming
+	switch interfaceType {
+	case string(model.ChannelInterfaceWeijinVideo):
+		timing.PollInterval = 10 * time.Second
+	case string(model.ChannelInterfaceTianYueVideo):
+		timing.PollInterval = 5 * time.Second
+	}
+	return timing
 }
 
 func runProtocolAdapterTaskWithTiming(ctx context.Context, input canvasGenerationInput, adapter protocol.Adapter, timing protocolPollTiming) (map[string]interface{}, error) {
@@ -75,9 +83,14 @@ func runProtocolAdapterTaskWithTiming(ctx context.Context, input canvasGeneratio
 		}
 		input = prepared
 	}
-	request, err := prepareCustomProtocolRequest(input)
-	if err != nil {
-		return nil, err
+	request := protocolRequestFromInput(input)
+	// Polling an existing task does not depend on creation-only media or route validation.
+	if taskID == "" {
+		var err error
+		request, err = prepareCustomProtocolRequest(input)
+		if err != nil {
+			return nil, err
+		}
 	}
 	var created protocol.CreateResult
 	createdProviderTask := false
@@ -395,7 +408,8 @@ func validateCustomProtocolMediaURLs(interfaceType string, request protocol.Gene
 		string(model.ChannelInterfaceHuiQuYunVideo),
 		string(model.ChannelInterfaceAIStarsLabImage),
 		string(model.ChannelInterfaceAIStarsLabVideo),
-		string(model.ChannelInterfaceWeijinVideo):
+		string(model.ChannelInterfaceWeijinVideo),
+		string(model.ChannelInterfaceTianYueVideo):
 	default:
 		return nil
 	}
@@ -403,6 +417,11 @@ func validateCustomProtocolMediaURLs(interfaceType string, request protocol.Gene
 		value := strings.TrimSpace(media.URL)
 		if !isPublicMediaURL(value) {
 			return fmt.Errorf("%s 参考素材需要公网 URL；请先保存到对象存储", interfaceType)
+		}
+		if interfaceType == string(model.ChannelInterfaceTianYueVideo) {
+			if _, err := ValidateOutboundURL(value); err != nil {
+				return fmt.Errorf("天悦参考素材地址不可用：%w", err)
+			}
 		}
 	}
 	return nil
@@ -490,7 +509,7 @@ func executeProtocolBinaryRequest(ctx context.Context, config providerConfig, sp
 	if err != nil {
 		return nil, "", err
 	}
-	requestURL, err := protocolRequestURL(config.BaseURL, spec)
+	requestURL, err := protocolRequestURL(config, spec)
 	if err != nil {
 		return nil, "", err
 	}
@@ -873,11 +892,11 @@ func protocolCredentialField(config providerConfig, field string) string {
 	}
 }
 
-func protocolRequestURL(baseURL string, spec protocol.RequestSpec) (string, error) {
+func protocolRequestURL(config providerConfig, spec protocol.RequestSpec) (string, error) {
 	if !spec.OriginPath {
-		return appendProtocolQuery(apiURL(baseURL, spec.Path), spec.Query)
+		return appendProtocolQuery(ChannelAPIURLForProtocol(config.BaseURL, spec.Path, model.ChannelInterfaceType(config.InterfaceType)), spec.Query)
 	}
-	base, err := url.Parse(strings.TrimSpace(baseURL))
+	base, err := url.Parse(strings.TrimSpace(config.BaseURL))
 	if err != nil || base.Scheme == "" || base.Host == "" {
 		return "", fmt.Errorf("协议根路径请求的 Base URL 无效")
 	}

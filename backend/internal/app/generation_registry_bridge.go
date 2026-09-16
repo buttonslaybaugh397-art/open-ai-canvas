@@ -44,6 +44,10 @@ func declarativeProtocolAdapterForContext(ctx context.Context, id string) (proto
 	return generation.DeclarativeProtocolAdapterForContext(ctx, id)
 }
 
+func generationProtocolAdapterForContext(ctx context.Context, id string) (protocol.Adapter, error) {
+	return generation.GenerationProtocolAdapterForContext(ctx, id)
+}
+
 func agentProtocolAdapterForContext(ctx context.Context, id string) (protocol.AgentAdapter, bool) {
 	return generation.AgentProtocolAdapterForContext(ctx, id)
 }

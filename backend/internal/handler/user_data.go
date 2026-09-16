@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -297,6 +298,13 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
+		if c.Query("download") == "1" {
+			fileName := strings.TrimSpace(c.Query("filename"))
+			if fileName == "" {
+				fileName = delivery.Resource.ID
+			}
+			c.Header("Content-Disposition", attachmentContentDisposition(fileName))
+		}
 		if delivery.RedirectURL != "" {
 			// RedirectURL may contain a short-lived signed CDN URL (for example Qiniu).
 			// Never cache the redirect beyond the signature lifetime, otherwise a reverse proxy can
@@ -329,7 +337,7 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		c.Header("ETag", serveETag)
 		c.Header("Accept-Ranges", "bytes")
 		c.Header("X-Content-Type-Options", "nosniff")
-		if resource.Kind == "file" {
+		if resource.Kind == "file" && c.Query("download") != "1" {
 			c.Header("Content-Disposition", "attachment")
 			c.Header("Content-Security-Policy", "sandbox")
 		}
@@ -682,6 +690,10 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"id": c.Param("id")})
 	})
+}
+
+func attachmentContentDisposition(fileName string) string {
+	return mime.FormatMediaType("attachment", map[string]string{"filename": fileName})
 }
 
 func hasUserAssetPageFilters(c *gin.Context) bool {

@@ -19,8 +19,12 @@ import (
 )
 
 func runImageTask(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
-	if _, ok := declarativeProtocolAdapterForContext(ctx, input.Config.InterfaceType); ok {
-		return runDeclarativeProtocolTask(ctx, input)
+	adapter, err := generationProtocolAdapterForContext(ctx, input.Config.InterfaceType)
+	if err != nil {
+		return nil, err
+	}
+	if adapter != nil {
+		return runProtocolAdapterTask(ctx, input, adapter)
 	}
 	if input.Config.InterfaceType == string(model.ChannelInterfaceGrokImage) {
 		return runGrokImageTask(ctx, input)

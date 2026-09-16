@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { buildImageGenerationNodeTitle } from "@/lib/canvas/canvas-generation-title";
 import { buildCanvasMediaDownloadFileName, canvasMediaFileExtension } from "@/lib/canvas/canvas-media-download";
+import { resourceDownloadUrl } from "@/services/api/resources";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 
 function mediaNode(overrides: Partial<CanvasNodeData> = {}): CanvasNodeData {
@@ -18,6 +19,14 @@ function mediaNode(overrides: Partial<CanvasNodeData> = {}): CanvasNodeData {
 }
 
 describe("canvas media download", () => {
+    test("资源下载使用对象存储/CDN 直连参数并编码文件名", () => {
+        const url = new URL(resourceDownloadUrl("resource/a", "终稿 video.mp4"), "http://localhost");
+        expect(url.pathname).toContain("/resources/resource%2Fa/file");
+        expect(url.searchParams.get("direct")).toBe("1");
+        expect(url.searchParams.get("download")).toBe("1");
+        expect(url.searchParams.get("filename")).toBe("终稿 video.mp4");
+    });
+
     test("按画布名、节点名和本地日期生成文件名", () => {
         expect(buildCanvasMediaDownloadFileName("写给阿妈的情书", mediaNode(), new Date(2026, 7, 28, 12))).toBe("写给阿妈的情书_女明星角色三视图_20260828.png");
     });

@@ -270,13 +270,56 @@ export async function syncGenerationTaskToCanvasStore(task: GenerationTask) {
     const updatedNode = await buildGenerationTaskNodeResult(node, task, project.nodes);
     const latest = useCanvasStore.getState().projects.find((item) => item.id === project.id);
     if (!latest?.nodes.some((item) => item.id === node.id)) return false;
-    useCanvasStore.getState().updateProject(project.id, { nodes: latest.nodes.map((item) => (item.id === node.id ? updatedNode : item)) });
+    const applied = applySuccessfulVersionSelection(project.nodes, updatedNode);
+    const merged = mergeGenerationTaskResultNodes(latest.nodes, project.nodes, applied, task, node.id);
+    if (merged === latest.nodes) return false;
+    useCanvasStore.getState().updateProject(project.id, { nodes: merged });
     return true;
 }
 
 function findGenerationTaskNode(nodes: CanvasNodeData[], task: GenerationTask, targetNodeId?: string) {
     const nodeId = targetNodeId || generationTaskNodeId(task);
-    return nodes.find((node) => node.id === nodeId || node.metadata?.taskId === task.id);
+    return nodes.find((node) => node.metadata?.taskId === task.id && (!targetNodeId || node.id === targetNodeId)) ??
+        nodes.find((node) => node.id === nodeId && !node.metadata?.taskId);
+}
+
+export function generationTaskStillOwnsNode(node: CanvasNodeData | undefined, task: GenerationTask) {
+    if (!node || node.metadata?.taskId !== task.id) return false;
+    const nodeUpdatedAt = Date.parse(node.metadata.taskUpdatedAt || "") || 0;
+    const taskUpdatedAt = Date.parse(task.updatedAt || task.updated_at || "") || 0;
+    return nodeUpdatedAt <= taskUpdatedAt;
+}
+
+// Media resolution is asynchronous. Apply only fields that still match the
+// snapshot used for resolution, preserving edits made while it was pending.
+export function mergeGenerationTaskResultNodes(current: CanvasNodeData[], base: CanvasNodeData[], applied: CanvasNodeData[], task: GenerationTask, nodeId: string) {
+    const previous = base.find((node) => node.id === nodeId);
+    const target = current.find((node) => node.id === nodeId);
+    if (!previous || !target || (previous.metadata?.taskId && !generationTaskStillOwnsNode(target, task))) return current;
+    if (!previous.metadata?.taskId && target.metadata?.taskId && target.metadata.taskId !== task.id) return current;
+    if (target.metadata?.content !== previous.metadata?.content || target.metadata?.storageKey !== previous.metadata?.storageKey) return current;
+    const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
+    return current.map((node) => {
+        const before = base.find((item) => item.id === node.id);
+        const after = applied.find((item) => item.id === node.id);
+        if (!before || !after || before === after) return node;
+        const metadata = { ...node.metadata };
+        for (const key of new Set([...Object.keys(before.metadata || {}), ...Object.keys(after.metadata || {})])) {
+            const field = key as keyof CanvasNodeMetadata;
+            if (same(before.metadata?.[field], after.metadata?.[field])) continue;
+            if (same(node.metadata?.[field], before.metadata?.[field]) || field.startsWith("task") || field === "status") {
+                Object.assign(metadata, { [field]: after.metadata?.[field] });
+            }
+        }
+        return {
+            ...node,
+            type: node.type === before.type ? after.type : node.type,
+            width: node.width === before.width ? after.width : node.width,
+            height: node.height === before.height ? after.height : node.height,
+            position: same(node.position, before.position) ? after.position : node.position,
+            metadata,
+        };
+    });
 }
 
 function completedTaskMetadata(task: GenerationTask): CanvasNodeMetadata {

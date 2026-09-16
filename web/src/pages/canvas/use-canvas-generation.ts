@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateA
 import { useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
 
-import { applyGenerationTaskResultToNodes, generationTaskCanReloadResource, generationTaskNodeId } from "@/lib/canvas/canvas-generation-task-sync";
+import { applyGenerationTaskResultToNodes, generationTaskCanReloadResource, generationTaskNodeId, mergeGenerationTaskResultNodes } from "@/lib/canvas/canvas-generation-task-sync";
+import { getActiveUserScope } from "@/lib/user-scope";
 import { applyCanvasGenerationTaskNodeEffect, isCanvasGenerationDurableAckError } from "@/services/canvas-generation-consumer";
 import { consumeGenerationTaskNode, ensureCanvasNodeAsset, retryCanvasAssetSyncAfterRateLimit } from "@/services/project-asset-sync";
 import { listGenerationTasks, listTaskLogs, queryGenerationTask, subscribeGenerationTasks, type GenerationTask, type TaskLog } from "@/services/api/task-center";
@@ -285,12 +286,18 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
     );
 
     const applyGenerationTaskResult = useCallback(
-        async (nodeId: string, task: GenerationTask) => {
+        async (nodeId: string, task: GenerationTask, signal = consumerControllerRef.current.signal) => {
+            const scope = getActiveUserScope();
+            const isCurrent = () => !signal.aborted && getActiveUserScope() === scope;
             const applyStoredTaskResult = async () => {
-                const applied = await applyGenerationTaskResultToNodes(nodesRef.current, task, nodeId);
+                if (!isCurrent()) return;
+                const previousNodes = nodesRef.current;
+                const applied = await applyGenerationTaskResultToNodes(previousNodes, task, nodeId);
                 if (!applied.updated || !applied.node) throw new Error("画布中找不到对应任务节点");
-                nodesRef.current = applied.nodes;
-                setNodes(applied.nodes);
+                if (!isCurrent()) return;
+                const merged = mergeGenerationTaskResultNodes(nodesRef.current, previousNodes, applied.nodes, task, nodeId);
+                nodesRef.current = merged;
+                setNodes(merged);
             };
             if (!task.outputs?.length && task.type === "canvas_text") {
                 await applyStoredTaskResult();
@@ -313,8 +320,9 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                             setNodes,
                         });
                     },
-                    { signal: consumerControllerRef.current.signal },
+                    { signal },
                 );
+                if (!isCurrent()) return;
                 const currentNode = nodesRef.current.find((node) => node.id === nodeId || node.metadata?.taskId === task.id);
                 if (task.status === "succeeded" && (!currentNode?.metadata?.content || currentNode.metadata.status !== NODE_STATUS_SUCCESS)) {
                     // attach effect 可能已经完成，但旧画布快照仍停留在 loading。
@@ -322,6 +330,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                     await applyStoredTaskResult();
                 }
             } catch (error) {
+                if (!isCurrent()) return;
                 // 成功任务的副作用确认失败时，直接用已持久化结果回写节点，避免永久停留在生成中。
                 if (task.status === "succeeded") {
                     await applyStoredTaskResult().catch(() => {
