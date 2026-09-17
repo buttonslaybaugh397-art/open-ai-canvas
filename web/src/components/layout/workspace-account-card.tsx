@@ -4,6 +4,7 @@ import { Link } from "react-router";
 import { useWalletBalance } from "@/hooks/use-wallet-balance";
 import { useWorkspaceLogout } from "@/hooks/use-workspace-logout";
 import { useUserStore } from "@/stores/use-user-store";
+import { IdentityProviderBadge } from "./identity-provider-badge";
 import { UserAvatar } from "./user-avatar";
 import "./workspace-account-card.css";
 
@@ -16,7 +17,10 @@ export function WorkspaceAccountCard({ onWallet, onNavigate }: { onWallet: () =>
     if (!user) return null;
     return <section className="workspace-account-card" aria-label="我的账户">
         <header className="workspace-account-card-identity">
-            <UserAvatar user={user} className="workspace-account-card-avatar" />
+            <span className="workspace-account-card-portrait">
+                <UserAvatar user={user} className="workspace-account-card-avatar" />
+                <IdentityProviderBadge user={user} compact />
+            </span>
             <div><strong>{user.displayName || user.username}</strong><span>@{user.username}</span></div>
             <em>{user.role === "admin" ? "管理员" : "创作者"}</em>
         </header>

@@ -20,7 +20,8 @@ description: 当前项目已实现功能的手工验证清单与未确认边界
 
 - `bun test` 在本机剩 21 项失败，均已逐项核对为非本次合并引入：`director-diagnostics-recorder`（11）、`canvas-toolbar-mode-switch`、`channel-generation-config` 的 runninghub 用例单独运行均通过，属整套运行时的跨用例状态污染；`http-ownership`（2）用正斜杠白名单比对 `path.relative()`，在 Windows 下恒不匹配；`canvas-keyboard`、`settings-preference-spacing` 断言里写死 `\n`，CRLF 检出下不匹配。
 - 三项是本地分支既有的陈旧断言或能力缺口：`canvas-resource-mention-editor` 断言 `.agent-tool-row:hover` 已移除（该选择器合并前后都在）；`task-media-fallback` 断言的「任务正在执行，不能删除本机记录」文案在仓库中从未出现，任务页也没有本机记录删除入口；`channel-generation-config` 的 comfyui 用例仍假设存在 comfyui 工作流提供方，而 `generation-workflow-execution.ts` 目前只保留 runninghub。
-- 上游重构后 `web/src/components/layout/workspace-sidebar-footer.tsx` 已无任何引用，顶栏与侧栏都改用 `WorkspaceAccountCard`；是否删除该文件待确认。
+- 已删除失去引用的 `web/src/components/layout/workspace-sidebar-footer.tsx`：顶栏与侧栏都改用 `WorkspaceAccountCard`，上游设计文档也记录该文件应随重构删除。逐项比对后确认卡片覆盖旧 footer 的全部能力（公告入口在侧栏本体，更新日志与深色模式在顶栏菜单），且多出余额刷新、充值兑换入口、角色标签和退出 loading；`.app-workspace-sidebar-footer` 样式仍由 `workspace-sidebar-nav.tsx` 的同名容器使用，未删除。
+- 旧 footer 唯一比卡片多的能力是登录来源徽标，已补回：账户卡片头像右下角重新显示 `IdentityProviderBadge`（仅 Linux.do 身份显示）。待浏览器核对顶栏与侧栏卡片的徽标位置、明暗主题和窄屏不被裁切。
 
 ## 画布节点快速引用 Agent
 
