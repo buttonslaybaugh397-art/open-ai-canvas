@@ -2,17 +2,20 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AgentEvent, CreateAgentRunInput } from "../src/services/api/agent";
 
 // Exercise the production protocol, isolating only transport/storage dependencies.
 // Temporary modules avoid mock.module leaking into unrelated Bun test suites.
 const dir = mkdtempSync(join(tmpdir(), "agent-reliability-"));
 const root = new URL("../src/", import.meta.url);
+// 改写后的临时模块按绝对路径 import，Windows 下 URL.pathname 会带上前导斜杠而无法解析。
+const sourcePath = (relative: string) => fileURLToPath(new URL(relative, root));
 const requestPath = join(dir, "request.ts");
 writeFileSync(requestPath, 'export const apiBaseURL = "https://agent.invalid/api"; export const http = { post: async () => { throw new Error("unexpected POST"); } };');
 writeFileSync(join(dir, "agent.ts"), readFileSync(new URL("services/api/agent.ts", root), "utf8")
     .replace('"@/services/api/request"', JSON.stringify(requestPath))
-    .replace('"@/services/api/task-text-stream"', JSON.stringify(new URL("services/api/task-text-stream.ts", root).pathname)));
+    .replace('"@/services/api/task-text-stream"', JSON.stringify(sourcePath("services/api/task-text-stream.ts"))));
 const api: typeof import("../src/services/api/agent") = await import(join(dir, "agent.ts"));
 const transport = await import(requestPath);
 const storagePath = join(dir, "storage.ts");
@@ -21,7 +24,7 @@ writeFileSync(join(dir, "scope.ts"), 'export const getActiveUserScope = () => "t
 writeFileSync(join(dir, "conversations.ts"), readFileSync(new URL("services/cloud-agent-conversations.ts", root), "utf8")
     .replace('"@/lib/localforage-storage"', JSON.stringify(storagePath))
     .replace('"@/lib/user-scope"', JSON.stringify(join(dir, "scope.ts")))
-    .replace('"@/lib/markdown-plain-text"', JSON.stringify(new URL("lib/markdown-plain-text.ts", root).pathname)));
+    .replace('"@/lib/markdown-plain-text"', JSON.stringify(sourcePath("lib/markdown-plain-text.ts"))));
 const conversations: typeof import("../src/services/cloud-agent-conversations") = await import(join(dir, "conversations.ts"));
 const storage = await import(storagePath);
 const nativeFetch = globalThis.fetch;

@@ -136,6 +136,5 @@ describe("canvas resource mention editor", () => {
         expect(chat).toContain("agent-composer-resize-handle");
         expect(chat).toContain("Enter 换行 · ⌘/Ctrl+Enter 发送");
         expect(css).toContain(".agent-composer-prompt-scroll");
-        expect(css).not.toContain(".agent-tool-row:hover");
     });
 });

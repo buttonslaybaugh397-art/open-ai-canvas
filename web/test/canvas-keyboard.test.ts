@@ -11,7 +11,8 @@ test("Canvas copy shortcut yields to a real browser text selection", () => {
 });
 
 test("Canvas keyboard keeps node copy as the fallback when no text is selected", async () => {
-    const source = await Bun.file(new URL("../src/pages/canvas/use-canvas-keyboard.ts", import.meta.url)).text();
+    // 换行统一成 LF，避免 Windows 检出的 CRLF 让跨行断言失配。
+    const source = (await Bun.file(new URL("../src/pages/canvas/use-canvas-keyboard.ts", import.meta.url)).text()).replace(/\r\n/g, "\n");
     expect(source).toContain("if (hasCanvasTextSelection(window.getSelection())) return;");
     expect(source).toContain("event.preventDefault();\n                copySelectedNodes();");
 });

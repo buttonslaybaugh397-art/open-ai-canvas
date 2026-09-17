@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import {
     DEFAULT_CANVAS_BACKGROUND_MODE,
@@ -14,6 +14,7 @@ import {
 } from "../src/lib/canvas/canvas-appearance";
 
 const values = new Map<string, string>();
+const previousWindow = globalThis.window;
 
 beforeEach(() => {
     values.clear();
@@ -27,6 +28,12 @@ beforeEach(() => {
             },
         },
     });
+});
+
+// 桩 window 只在本文件生效，否则后续用例会拿到缺少 location 的假 window。
+afterEach(() => {
+    if (previousWindow === undefined) delete (globalThis as { window?: unknown }).window;
+    else Object.defineProperty(globalThis, "window", { configurable: true, value: previousWindow });
 });
 
 describe("canvas custom appearance", () => {

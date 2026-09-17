@@ -107,27 +107,18 @@ describe("channel generation configuration", () => {
         expect(backendProviderConfig(config, "text")).not.toHaveProperty("headers");
     });
 
-    for (const provider of ["runninghub", "comfyui"] as const) {
-        test(`does not inherit ordinary channel headers in a ${provider} task`, () => {
-            usePluginStore.setState({ runtimeStatuses: { "runninghub-workflow-provider": "enabled", "comfyui-workflow-provider": "enabled" } });
-            const config = channelConfig();
-            config.taskWorkflowProvider = provider;
-            config.runningHub = {
-                ...config.runningHub,
-                enabled: true,
-                apiKey: "synthetic-workflow-key",
-                workflowId: "workflow-test",
-                workflows: [{ workflowId: "workflow-test", capability: "image", fields: [] }],
-            };
-            config.comfyBridge = {
-                ...config.comfyBridge,
-                enabled: true,
-                bridgeId: "bridge-test",
-                workflowId: "workflow-test",
-                workflows: [{ workflowId: "workflow-test", capability: "image", fields: [] }],
-            };
+    test("does not inherit ordinary channel headers in a runninghub task", () => {
+        usePluginStore.setState({ runtimeStatuses: { "runninghub-workflow-provider": "enabled" } });
+        const config = channelConfig();
+        config.taskWorkflowProvider = "runninghub";
+        config.runningHub = {
+            ...config.runningHub,
+            enabled: true,
+            apiKey: "synthetic-workflow-key",
+            workflowId: "workflow-test",
+            workflows: [{ workflowId: "workflow-test", capability: "image", fields: [] }],
+        };
 
-            expect(backendProviderConfig(config, "image")).toHaveProperty("headers", []);
-        });
-    }
+        expect(backendProviderConfig(config, "image")).toHaveProperty("headers", []);
+    });
 });

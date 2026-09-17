@@ -16,10 +16,12 @@ description: 当前项目已实现功能的手工验证清单与未确认边界
 - [ ] 登录后用真实自定义渠道（带 `X-` 前缀鉴权头或自定义 `User-Agent`）发起文本、图片、视频、音频生成，确认上游实际收到该头；再用系统渠道和托管逻辑模型确认头不被前端下发。
 - [ ] 核对首屏无内置 logo 闪现、更新日志弹窗内边距正常、顶栏与侧栏账户卡片点击「账户与设置」直达账号分区。
 
-### 本机未解决的既有失败（与本次合并无关）
+### 既有失败清理（合并前就存在，已随本次一并修完）
 
-- `bun test` 在本机剩 21 项失败，均已逐项核对为非本次合并引入：`director-diagnostics-recorder`（11）、`canvas-toolbar-mode-switch`、`channel-generation-config` 的 runninghub 用例单独运行均通过，属整套运行时的跨用例状态污染；`http-ownership`（2）用正斜杠白名单比对 `path.relative()`，在 Windows 下恒不匹配；`canvas-keyboard`、`settings-preference-spacing` 断言里写死 `\n`，CRLF 检出下不匹配。
-- 三项是本地分支既有的陈旧断言或能力缺口：`canvas-resource-mention-editor` 断言 `.agent-tool-row:hover` 已移除（该选择器合并前后都在）；`task-media-fallback` 断言的「任务正在执行，不能删除本机记录」文案在仓库中从未出现，任务页也没有本机记录删除入口；`channel-generation-config` 的 comfyui 用例仍假设存在 comfyui 工作流提供方，而 `generation-workflow-execution.ts` 目前只保留 runninghub。
+- 跨用例状态污染（13 项）：`canvas-appearance.test.ts` 在 `beforeEach` 里给 `globalThis.window` 装了只含 `localStorage` 的桩却没有 `afterEach` 还原，后续文件拿到的假 window 没有 `location` 与 `matchMedia`。补上还原后 `director-diagnostics-recorder`（11）、`canvas-toolbar-mode-switch`、`channel-generation-config` 的 runninghub 用例恢复通过。
+- Windows 平台失配（5 项）：`http-ownership` 改用统一的 POSIX 相对路径再比对白名单；`canvas-keyboard`、`settings-preference-spacing` 读取源码后把 CRLF 归一成 LF；`agent-api-reliability` 改写临时模块时用 `fileURLToPath` 代替 `URL.pathname`，否则 Windows 下得到 `/C:/...` 无法解析，整个文件加载即失败。
+- 陈旧断言（3 项）：`canvas-resource-mention-editor` 移除对 `.agent-tool-row:hover` 的禁止断言（该 hover 是后续「工具分组」改版刻意加回的，`--plain` 变体另行关闭）；`task-media-fallback` 改为断言任务页不存在「删除本机记录」入口，原先断言的守卫文案随该入口整体移除；`channel-generation-config` 删掉 comfyui 用例，ComfyUI Bridge 的前后端与插件包已整体下线，`generation-workflow-execution.ts` 只保留 runninghub。
+- 复验：`bun test` 217 个文件 1767 项全部通过，`tsc --noEmit`、`eslint src test`、`vite build`、`go test ./...` 均通过。
 - 已删除失去引用的 `web/src/components/layout/workspace-sidebar-footer.tsx`：顶栏与侧栏都改用 `WorkspaceAccountCard`，上游设计文档也记录该文件应随重构删除。逐项比对后确认卡片覆盖旧 footer 的全部能力（公告入口在侧栏本体，更新日志与深色模式在顶栏菜单），且多出余额刷新、充值兑换入口、角色标签和退出 loading；`.app-workspace-sidebar-footer` 样式仍由 `workspace-sidebar-nav.tsx` 的同名容器使用，未删除。
 - 旧 footer 唯一比卡片多的能力是登录来源徽标，已补回：账户卡片头像右下角重新显示 `IdentityProviderBadge`（仅 Linux.do 身份显示）。待浏览器核对顶栏与侧栏卡片的徽标位置、明暗主题和窄屏不被裁切。
 
