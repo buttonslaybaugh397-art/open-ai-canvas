@@ -5,6 +5,23 @@ description: 当前项目已实现功能的手工验证清单与未确认边界
 
 # 待测试
 
+## 上游合并回退修复与渠道自定义头
+
+- 合并 upstream/main 后修复上游带回的本地约定回退：`web/index.html` 去掉内置 `/logo.svg` favicon，恢复公开外观解析前的首屏品牌中性；`app-changelog-dialog.tsx` 改回 `AppModal flush`，不再用 `styles={{ body: { padding: 0 } }}`。
+- 顶栏与侧栏共用的 `WorkspaceAccountCard` 恢复 `/settings?section=account` 深链。设置页无 `section` 参数会落到渠道或模型分区，上游的 `/settings` 链接够不到账号设置。
+- 修复自定义渠道回归：`backendProviderConfig` 逐字段拼装时漏掉 `headers`，后端预备任务因此收不到渠道的鉴权与路由头。现按「自定义渠道随任务提交、系统渠道由后端按渠道记录覆盖、托管逻辑模型不下发」三种情况处理，工作流 Provider 仍固定空头。
+- 随上游重构同步更新本地源码契约测试：`brand-logo.tsx` 改用 `useActiveTheme`（画布主题隔离）；创作页模式切换移出底部 dock、`motion/react` 导入合并、提交积分角标类名改为 `creation-submit-cost`。
+- [x] `cd web && bun run typecheck`、`bun run lint`、`vite build`
+- [x] `cd backend && go test ./...`
+- [ ] 登录后用真实自定义渠道（带 `X-` 前缀鉴权头或自定义 `User-Agent`）发起文本、图片、视频、音频生成，确认上游实际收到该头；再用系统渠道和托管逻辑模型确认头不被前端下发。
+- [ ] 核对首屏无内置 logo 闪现、更新日志弹窗内边距正常、顶栏与侧栏账户卡片点击「账户与设置」直达账号分区。
+
+### 本机未解决的既有失败（与本次合并无关）
+
+- `bun test` 在本机剩 21 项失败，均已逐项核对为非本次合并引入：`director-diagnostics-recorder`（11）、`canvas-toolbar-mode-switch`、`channel-generation-config` 的 runninghub 用例单独运行均通过，属整套运行时的跨用例状态污染；`http-ownership`（2）用正斜杠白名单比对 `path.relative()`，在 Windows 下恒不匹配；`canvas-keyboard`、`settings-preference-spacing` 断言里写死 `\n`，CRLF 检出下不匹配。
+- 三项是本地分支既有的陈旧断言或能力缺口：`canvas-resource-mention-editor` 断言 `.agent-tool-row:hover` 已移除（该选择器合并前后都在）；`task-media-fallback` 断言的「任务正在执行，不能删除本机记录」文案在仓库中从未出现，任务页也没有本机记录删除入口；`channel-generation-config` 的 comfyui 用例仍假设存在 comfyui 工作流提供方，而 `generation-workflow-execution.ts` 目前只保留 runninghub。
+- 上游重构后 `web/src/components/layout/workspace-sidebar-footer.tsx` 已无任何引用，顶栏与侧栏都改用 `WorkspaceAccountCard`；是否删除该文件待确认。
+
 ## 画布节点快速引用 Agent
 
 - 多选节点后，选区浮动工具栏应显示 `@` 图标；点击「发送到 Agent」后，Agent 输入框应自动带入所有选中节点引用。

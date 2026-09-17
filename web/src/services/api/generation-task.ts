@@ -414,6 +414,8 @@ export function backendProviderConfig(config: AiConfig, mode: BackendGenerationM
         baseUrl: requestConfig.baseUrl,
         apiKey: requestConfig.apiKey,
         secretKey: requestConfig.secretKey,
+        // 自定义渠道的鉴权/路由头必须随任务提交；系统渠道由后端按渠道记录覆盖，托管逻辑模型在上面已提前返回。
+        headers: requestConfig.headers || [],
         model: requestConfig.model,
         ...generationOptions,
         capabilityConfig: modelCapabilityConfigFor(config, requestConfig.model),
