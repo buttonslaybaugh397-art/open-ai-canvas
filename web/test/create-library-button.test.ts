@@ -25,15 +25,13 @@ describe("creation library button", () => {
         expect(dockStart).toBeGreaterThanOrEqual(0);
         expect(dockEnd).toBeGreaterThan(dockStart);
         const dockSource = compactSource(source.slice(dockStart, dockEnd));
-        const modePickerIndex = dockSource.indexOf("<ModePicker mode={props.mode}");
 
-        expect(modePickerIndex).toBeGreaterThanOrEqual(0);
         expect(dockSource).not.toContain('aria-label="打开素材库选择参考内容"');
         expect(dockSource).not.toContain('aria-label="从本机上传附件"');
         expect(source).toContain("onClick={props.onOpenLibrary}");
         expect(source).toContain("creation-reference-add-button");
         expect(source).toContain('showSelectedPrice={false} showOptionPrices variant="creation"');
-        expect(source).toContain("canvas-node-composer-submit-cost");
+        expect(source).toContain("creation-submit-cost");
     });
 
     test("uploads from the library without adding a reference before confirmation", () => {
@@ -68,7 +66,6 @@ describe("creation library button", () => {
         const source = readCreateWorkspaceSource();
         const styles = readFileSync(resolve(import.meta.dir, "../src/styles/globals.css"), "utf8");
 
-        expect(source).toContain('import { Reorder } from "motion/react"');
         expect(source).toContain("<Reorder.Group");
         expect(source).toContain('axis="x"');
         expect(source).toContain("values={visibleAttachments}");

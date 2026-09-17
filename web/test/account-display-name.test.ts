@@ -86,14 +86,17 @@ test("display name update preserves login and session metadata and ignores anoth
 });
 
 test("account settings are reachable from both menus and submit the dedicated self endpoint", async () => {
-    const [pane, page, topMenu, sidebar] = await Promise.all([
+    const [pane, page, topMenu, sidebar, accountCard] = await Promise.all([
         Bun.file(new URL("../src/pages/settings/account-settings-pane.tsx", import.meta.url)).text(),
         Bun.file(new URL("../src/pages/settings/index.tsx", import.meta.url)).text(),
         Bun.file(new URL("../src/components/layout/workspace-account-menu.tsx", import.meta.url)).text(),
-        Bun.file(new URL("../src/components/layout/workspace-sidebar-footer.tsx", import.meta.url)).text(),
+        Bun.file(new URL("../src/components/layout/workspace-sidebar-nav.tsx", import.meta.url)).text(),
+        Bun.file(new URL("../src/components/layout/workspace-account-card.tsx", import.meta.url)).text(),
     ]);
     expect(page).toContain("account: <SettingsPane><AccountSettingsPane /></SettingsPane>");
-    for (const source of [topMenu, sidebar]) expect(source).toContain("/settings?section=account");
+    // 顶栏与侧栏共用同一账户卡片；设置页无 section 参数会落到渠道/模型，入口必须保留深链。
+    for (const source of [topMenu, sidebar]) expect(source).toContain("<WorkspaceAccountCard");
+    expect(accountCard).toContain("/settings?section=account");
     expect(pane).toContain("await updateOwnDisplayName({ displayName: values.displayName.trim() })");
     expect(pane).toMatch(/name="displayName"\s+label="显示名称"/);
     expect(pane).toContain("Array.from(name).length > 40");
