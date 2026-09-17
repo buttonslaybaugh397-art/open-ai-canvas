@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -564,13 +565,18 @@ func TestCloudAgentToolLoopPersistsApprovalAndAppliesCanvasWrite(t *testing.T) {
 func TestCloudAgentNodeTypesExposeExecutableAllowList(t *testing.T) {
 	result := cloudAgentNodeTypes()
 	nodes, ok := result["nodes"].([]map[string]any)
-	if !ok || len(nodes) != 7 {
+	if !ok {
 		t.Fatalf("unexpected node registry: %#v", result)
 	}
+	types := make([]string, 0, len(nodes))
 	for _, node := range nodes {
-		if node["type"] == "panorama" {
-			t.Fatal("UI-only node must not be exposed")
-		}
+		name, _ := node["type"].(string)
+		types = append(types, name)
+	}
+	slices.Sort(types)
+	// 精确名单同时锁定可执行节点集合与「UI 专用节点（如 panorama）不得暴露」。
+	if want := []string{"audio", "batch-table", "frame", "image", "markdown", "script", "text", "video"}; !slices.Equal(types, want) {
+		t.Fatalf("unexpected executable node types: %v", types)
 	}
 }
 
