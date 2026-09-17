@@ -185,3 +185,89 @@ func TestMigrateSchemaRejectsTamperedLegacyStableLineage(t *testing.T) {
 		t.Fatalf("expected legacy checksum rejection, got %v", err)
 	}
 }
+
+// forkTaskRecoveryDatabase 复刻本仓库合并上游前的线上库：迁移 1..10 与当前谱系相同，
+// 11 是自建的 task_provider_recovery，只给 tasks 加了一列可空的 provider_recovery_at。
+func forkTaskRecoveryDatabase(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:" + t.Name() + "?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	if err := db.AutoMigrate(&schemaMigration{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range schemaMigrations[:10] {
+		if err := item.apply(db); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Create(&schemaMigration{Version: item.version, Name: item.name, Checksum: item.checksum, AppliedAt: time.Now().UTC()}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Exec("ALTER TABLE tasks ADD COLUMN provider_recovery_at datetime").Error; err != nil {
+		t.Fatal(err)
+	}
+	record := schemaMigration{Version: 11, Name: forkTaskProviderRecoveryName, Checksum: forkTaskProviderRecoveryChecksum, AppliedAt: time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func TestMigrateSchemaAdoptsForkTaskRecoveryLineage(t *testing.T) {
+	db := forkTaskRecoveryDatabase(t)
+	if err := db.Exec("INSERT INTO tasks (id, user_id, status, provider_recovery_at) VALUES ('kept-task', 'owner', 'failed', '2026-09-15 00:00:00')").Error; err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := MigrateSchema(db); err != nil {
+			t.Fatal(err)
+		}
+		if err := RequireSchemaVersion(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status, err := ReadSchemaStatus(db)
+	if err != nil || !status.Ready || status.Current != CurrentSchemaVersion {
+		t.Fatalf("unexpected schema status: %+v %v", status, err)
+	}
+	var cloudAgent schemaMigration
+	if err := db.First(&cloudAgent, "version = 11").Error; err != nil {
+		t.Fatal(err)
+	}
+	if cloudAgent.Name != "cloud_agent_runtime" {
+		t.Fatalf("migration 11 was not adopted: %+v", cloudAgent)
+	}
+	// 废弃列留在原地，任务行不能因为谱系归并而丢失。
+	var recovered string
+	if err := db.Raw("SELECT provider_recovery_at FROM tasks WHERE id = 'kept-task'").Scan(&recovered).Error; err != nil || recovered == "" {
+		t.Fatalf("legacy column dropped or task lost: %q %v", recovered, err)
+	}
+}
+
+func TestMigrateSchemaRejectsUnknownTaskRecoveryLineage(t *testing.T) {
+	for _, scenario := range []string{"checksum", "ahead"} {
+		t.Run(scenario, func(t *testing.T) {
+			db := forkTaskRecoveryDatabase(t)
+			switch scenario {
+			case "checksum":
+				if err := db.Model(&schemaMigration{}).Where("version = 11").Update("checksum", "unknown").Error; err != nil {
+					t.Fatal(err)
+				}
+			case "ahead":
+				if err := db.Create(&schemaMigration{Version: 12, Name: "agent_token_charge_limit", Checksum: "sha256:agent-token-charge-limit-v12-20260913", AppliedAt: time.Now().UTC()}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := MigrateSchema(db); err == nil {
+				t.Fatal("expected unknown task recovery lineage to be rejected")
+			}
+		})
+	}
+}

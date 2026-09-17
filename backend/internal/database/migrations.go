@@ -32,6 +32,9 @@ const legacyAssetTaxonomyCandidateIdentityChecksum = "sha256:asset-taxonomy-cand
 const legacyPaymentTopupChecksum = "sha256:payment-topup-v9-20260902"
 const legacyAssetLibraryFoldersChecksum = "sha256:asset-library-folders-v10-20260902"
 
+const forkTaskProviderRecoveryName = "task_provider_recovery"
+const forkTaskProviderRecoveryChecksum = "sha256:task-provider-recovery-v11-20260915"
+
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
 type SchemaStatus struct {
@@ -227,6 +230,38 @@ func migrateLegacyStableLineage(tx *gorm.DB) (bool, error) {
 	return true, nil
 }
 
+// migrateForkTaskProviderRecoveryLineage 归并本仓库早期自建的迁移 11。该编号随后被上游的
+// cloud_agent_runtime 占用，而它新增的 tasks.provider_recovery_at 已随任务恢复改用租约字段
+// 而废弃。只接受版本恰好停在 11 的完整旧记录，移除记录后由当前谱系继续应用 11 起的迁移；
+// 该列可空且无人读写，保留它以避免破坏性 DDL。
+func migrateForkTaskProviderRecoveryLineage(tx *gorm.DB) (bool, error) {
+	var applied schemaMigration
+	err := tx.First(&applied, "version = ?", 11).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("读取数据库迁移 11：%w", err)
+	}
+	if applied.Name != forkTaskProviderRecoveryName {
+		return false, nil
+	}
+	if applied.Checksum != forkTaskProviderRecoveryChecksum {
+		return false, fmt.Errorf("数据库迁移 11 记录为 %s，但校验和 %s 不属于已知的任务恢复谱系", applied.Name, applied.Checksum)
+	}
+	var maxVersion int64
+	if err := tx.Model(&schemaMigration{}).Select("COALESCE(MAX(version), 0)").Scan(&maxVersion).Error; err != nil {
+		return false, fmt.Errorf("读取任务恢复谱系数据库版本：%w", err)
+	}
+	if maxVersion != 11 {
+		return false, fmt.Errorf("任务恢复谱系的最高迁移版本应为 11，实际为 %d", maxVersion)
+	}
+	if err := tx.Delete(&schemaMigration{}, "version = ?", 11).Error; err != nil {
+		return false, fmt.Errorf("移除旧任务恢复迁移记录：%w", err)
+	}
+	return true, nil
+}
+
 func migrateSchemaV2(tx *gorm.DB) error {
 	return tx.Exec("CREATE INDEX IF NOT EXISTS idx_schema_migrations_applied_at ON schema_migrations (applied_at)").Error
 }
@@ -374,6 +409,9 @@ func MigrateSchema(db *gorm.DB) error {
 			return fmt.Errorf("初始化数据库迁移记录：%w", err)
 		}
 		if _, err := migrateLegacyStableLineage(tx); err != nil {
+			return err
+		}
+		if _, err := migrateForkTaskProviderRecoveryLineage(tx); err != nil {
 			return err
 		}
 		plan, err := migrationsForDatabase(tx)

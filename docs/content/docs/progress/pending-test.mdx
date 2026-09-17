@@ -5,6 +5,16 @@ description: 当前项目已实现功能的手工验证清单与未确认边界
 
 # 待测试
 
+## 迁移 11 谱系冲突导致线上后端启动崩溃
+
+- 现象：1Panel 更新后 backend 容器反复重启，日志固定输出「数据库迁移 11 名称不一致：记录为 task_provider_recovery，程序期望 cloud_agent_runtime」，web 因 `depends_on: service_healthy` 连带失败，1Panel 回滚编排同样起不来。
+- 根因：合并上游前本仓库自建版本 11 `task_provider_recovery`，上游把同一编号用于 `cloud_agent_runtime`。合并采用上游编号后，线上库里的历史记录与当前谱系对不上，`validateMigrationRecord` 在迁移事务内报错，`main` 走 `log.Fatal` 退出并被 `restart: unless-stopped` 拉起，形成崩溃循环。迁移事务从未提交，数据库仍停在版本 11。
+- 处理：新增 `migrateForkTaskProviderRecoveryLineage`，在 `MigrateSchema` 里紧接既有的 `migrateLegacyStableLineage` 执行。仅当版本 11 的名称与校验和精确匹配、且最高版本恰好是 11 时移除该记录，再由当前谱系应用 11~15。`provider_recovery_at` 是可空列且已无人读写（任务恢复改用 `lease_owner` / `lease_expires_at`），保留不删。
+- [x] `cd backend && go test ./...`（20 个包全通过），新增 `TestMigrateSchemaAdoptsForkTaskRecoveryLineage` 覆盖归并与幂等重跑，`TestMigrateSchemaRejectsUnknownTaskRecoveryLineage` 覆盖校验和被改与版本已越过 11 两种拒绝路径。
+- [ ] 线上以新镜像执行 `migrate-schema up`，确认输出版本 15、`migrate-schema verify` 通过、backend 转为 healthy。
+- [ ] 归并后核对任务中心历史任务完整、失败任务的人工恢复可正常抢占租约。
+- [ ] 仅 SQLite 覆盖了归并路径，PostgreSQL 属同一套 GORM 逻辑但未在本机实测；线上迁移前务必先备份数据库。
+
 ## 积分中心侧栏入口与后台令牌收口
 
 - 侧栏「资源与工具」分组新增「积分」入口指向 `/wallet`，与路由同用 `features.creditsEnabled` 开关。个人消耗统计只在 `/wallet` 页面，积分弹窗没有；此前该页只能靠命令面板或直接改地址栏进入。
