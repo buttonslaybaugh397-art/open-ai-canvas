@@ -12305,56 +12305,7 @@ html:not(.dark) .creation-media-preview-modal .ant-modal-container { background:
     .creation-image-result-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-/* 管理端专用视觉收口：不覆盖创作端 workspace 的导航、状态和图表样式。 */
-.admin-shell,
-.admin-drawer,
-.admin-secondary-drawer,
-.admin-modal-root,
-.admin-channel-modal-root {
-    --admin-layer-0: var(--workspace-content);
-    --admin-layer-1: var(--workspace-surface);
-    --admin-layer-2: color-mix(in srgb, var(--foreground) 4%, var(--workspace-content));
-    --admin-sidebar: var(--workspace-navigation);
-    --admin-text-primary: var(--foreground);
-    --admin-text-secondary: color-mix(in srgb, var(--foreground) 72%, transparent);
-    --admin-text-muted: color-mix(in srgb, var(--foreground) 52%, transparent);
-    --admin-text-placeholder: color-mix(in srgb, var(--foreground) 42%, transparent);
-    --admin-control-border: color-mix(in srgb, var(--foreground) 18%, transparent);
-    --admin-divider: color-mix(in srgb, var(--foreground) 8%, transparent);
-    --admin-card-border: color-mix(in srgb, var(--foreground) 8%, transparent);
-    --admin-card-shadow: none;
-    --admin-status-success: oklch(0.52 0.14 155);
-    --admin-status-warning: oklch(0.62 0.14 78);
-    --admin-status-error: var(--destructive);
-    --admin-status-info: var(--foreground);
-    --admin-chart-primary: var(--workspace-accent);
-    --admin-chart-secondary: oklch(0.55 0.11 180);
-    --admin-chart-warning: oklch(0.64 0.14 78);
-}
-
-.dark .admin-shell,
-.dark .admin-drawer,
-.dark .admin-secondary-drawer,
-.dark .admin-modal-root,
-.dark .admin-channel-modal-root {
-    --admin-layer-0: var(--workspace-content);
-    --admin-layer-1: var(--workspace-surface);
-    --admin-layer-2: color-mix(in srgb, var(--foreground) 5%, var(--workspace-content));
-    --admin-sidebar: var(--workspace-navigation);
-    --admin-text-primary: var(--foreground);
-    --admin-text-secondary: color-mix(in srgb, var(--foreground) 74%, transparent);
-    --admin-text-muted: color-mix(in srgb, var(--foreground) 54%, transparent);
-    --admin-text-placeholder: color-mix(in srgb, var(--foreground) 43%, transparent);
-    --admin-control-border: color-mix(in srgb, var(--foreground) 18%, transparent);
-    --admin-divider: color-mix(in srgb, var(--foreground) 8%, transparent);
-    --admin-card-border: color-mix(in srgb, var(--foreground) 8%, transparent);
-    --admin-card-shadow: none;
-    --admin-status-success: oklch(0.72 0.14 155);
-    --admin-status-warning: oklch(0.78 0.14 78);
-    --admin-status-info: var(--foreground);
-    --admin-chart-secondary: oklch(0.72 0.11 180);
-    --admin-chart-warning: oklch(0.78 0.14 78);
-}
+/* 管理端令牌的唯一来源是 styles/admin-ui.css，这里只放消费这些令牌的规则，不再重复定义一套。 */
 
 .admin-shell .admin-nav-group-label {
     display: flex;

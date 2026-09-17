@@ -44,6 +44,15 @@ describe("workspace route loading", () => {
         expect(navigation).not.toContain('to: "/home"');
     });
 
+    test("credits center is reachable from the sidebar under the same feature gate as its route", () => {
+        const navigation = source("../src/components/layout/workspace-sidebar-nav.tsx");
+        const router = source("../src/router.tsx");
+
+        // 个人消耗统计只在 /wallet 页面，弹窗没有；侧栏必须有常驻入口，不能只靠命令面板。
+        expect(navigation).toContain('features.creditsEnabled ? [{ ...toolItem("wallet", "/wallet"), title: "积分" }]');
+        expect(router).toContain('<RequireFeature feature="creditsEnabled">{deferred(<WalletPage />)}</RequireFeature>');
+    });
+
     test("preloads canvas detail and paints opening feedback before navigation", () => {
         const modules = source("../src/lib/workspace-route-modules.ts");
         const router = source("../src/router.tsx");

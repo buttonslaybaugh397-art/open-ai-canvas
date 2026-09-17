@@ -1347,7 +1347,7 @@
 .admin-channel-modal-root {
     --admin-layer-0: var(--skin-admin-layer-0, #f5f5f5);
     --admin-layer-1: var(--skin-admin-layer-1, #ffffff);
-    --admin-layer-2: var(--skin-admin-layer-2, #f6f6f6);
+    --admin-layer-2: var(--skin-admin-layer-2, #f7f7f7);
     --admin-layer-3: var(--skin-admin-layer-3, #ececec);
     --admin-sidebar: var(--admin-layer-0);
     --admin-text-primary: var(--foreground);
@@ -1375,9 +1375,9 @@
 .dark .admin-secondary-drawer,
 .dark .admin-modal-root,
 .dark .admin-channel-modal-root {
-    --admin-layer-0: var(--skin-admin-layer-0, #0f0f0f);
+    --admin-layer-0: var(--skin-admin-layer-0, #101010);
     --admin-layer-1: var(--skin-admin-layer-1, #181818);
-    --admin-layer-2: var(--skin-admin-layer-2, #222222);
+    --admin-layer-2: var(--skin-admin-layer-2, #202020);
     --admin-layer-3: var(--skin-admin-layer-3, #2a2a2a);
     --admin-sidebar: var(--admin-layer-0);
     --admin-text-primary: var(--foreground);

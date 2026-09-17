@@ -171,7 +171,8 @@ func defaultClassicAppearanceSkin() AppearanceSkinTheme {
 				Control: "#ffffff", ControlHover: "#f5f5f5", ControlActive: "#ececec", ControlBorder: "#d1d1d1", ControlFocus: "#171717", ControlDisabledBackground: "#f2f2f2", ControlDisabledForeground: "#a3a3a3", SwitchChecked: "#16a34a", SwitchCheckedHover: "#15803d", SwitchCheckedHandle: "#ffffff", SwitchUnchecked: "#b8b8b8", SwitchUncheckedHover: "#9f9f9f", SwitchUncheckedHandle: "#ffffff",
 				Primary: "#171717", PrimaryHover: "#303030", PrimaryActive: "#404040", PrimaryForeground: "#ffffff", Selected: "#e8e8e8", SelectedHover: "#dedede", SelectedActive: "#d5d5d5", SelectedForeground: "#171717",
 				Icon: "#3f3f46", IconMuted: "#a1a1aa", IconActive: "#171717", Success: "#16a34a", Warning: "#d97706", Danger: "#dc2626", DangerHover: "#b91c1c", DangerActive: "#991b1b", DangerForeground: "#ffffff", Info: "#2563eb", Workspace: "#ffffff", WorkspaceGrid: "#f3f3f3",
-				AdminBackground: "#f3f4f6", AdminSurface: "#ffffff", AdminSubtle: "#f7f8fa", AdminStrong: "#eceff3", AuthBackground: "#08090c", AuthPanel: "#0b0c10", AuthCard: "#121318", AuthAccent: "#93c5fd", AuthMuted: "#8a8b91",
+				// 后台层级沿用经典皮肤自身的中性灰阶（ControlHover / Surface / SurfaceSubtle / SurfaceRaised），不引入蓝调灰。
+				AdminBackground: "#f5f5f5", AdminSurface: "#ffffff", AdminSubtle: "#f7f7f7", AdminStrong: "#ececec", AuthBackground: "#08090c", AuthPanel: "#0b0c10", AuthCard: "#121318", AuthAccent: "#93c5fd", AuthMuted: "#8a8b91",
 			},
 			Dark: AppearanceSkinModeTokens{
 				Canvas: "#0a0a0a", Surface: "#181818", SurfaceSubtle: "#202020", SurfaceRaised: "#2a2a2a", Overlay: "#1f1f20", Text: "#f5f5f5", TextMuted: "#a3a3a3", Border: "#2d2d2d",

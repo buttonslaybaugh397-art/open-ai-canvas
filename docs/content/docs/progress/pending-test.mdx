@@ -5,6 +5,16 @@ description: 当前项目已实现功能的手工验证清单与未确认边界
 
 # 待测试
 
+## 积分中心侧栏入口与后台令牌收口
+
+- 侧栏「资源与工具」分组新增「积分」入口指向 `/wallet`，与路由同用 `features.creditsEnabled` 开关。个人消耗统计只在 `/wallet` 页面，积分弹窗没有；此前该页只能靠命令面板或直接改地址栏进入。
+- 删除 `globals.css` 里与 `admin-ui.css` 重复的一整套 `--admin-*` 定义。两处同时定义会让管理端首屏按加载顺序短暂使用另一套层级色，令牌唯一来源现在是 `styles/admin-ui.css`。
+- 经典黑白皮肤的后台层级色改用皮肤自身的中性灰阶：后端 `appearance_skins.go` 的 `AdminBackground/Surface/Subtle/Strong` 从蓝调灰（`#f3f4f6`、`#f7f8fa`、`#eceff3`）改为 `#f5f5f5`、`#f7f7f7`、`#ececec`，前端 `skin-themes.ts` 与 `admin-ui.css` 的兜底值同步对齐，避免后台比创作端偏冷。
+- [x] `cd web && bun test`、`bun run typecheck`、`bun run lint`、`vite build`
+- [x] `cd backend && go test ./...`，并确认外观接口返回的经典皮肤后台色为中性灰
+- [ ] 登录后核对侧栏「积分」入口在 `creditsEnabled` 关闭时消失、点击进入 `/wallet` 且个人消耗统计正常。
+- [ ] 逐个切换皮肤进管理端：核对首屏无层级色闪变、经典皮肤后台与创作端灰阶一致、明暗主题下卡片与分隔线仍可辨。分隔线、行悬停和卡片描边仍有字面量颜色未接入皮肤，带色皮肤下可能偏灰，本次未改。
+
 ## 上游合并回退修复与渠道自定义头
 
 - 合并 upstream/main 后修复上游带回的本地约定回退：`web/index.html` 去掉内置 `/logo.svg` favicon，恢复公开外观解析前的首屏品牌中性；`app-changelog-dialog.tsx` 改回 `AppModal flush`，不再用 `styles={{ body: { padding: 0 } }}`。
