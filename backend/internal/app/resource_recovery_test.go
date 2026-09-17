@@ -78,6 +78,56 @@ func TestMissingCloudResourceUsesLocalCopyAndUploadsAfterDelivery(t *testing.T) 
 	})
 }
 
+func TestTemporaryCloudFailureUsesLocalCopyWithoutMarkingResourceFailed(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	storage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("test server does not support connection hijacking")
+		}
+		connection, _, err := hijacker.Hijack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = connection.Close()
+	}))
+	defer storage.Close()
+
+	svc, db, dataDir := newResourceDeletionTestService(t)
+	configureRecoveryStorage(t, svc, storage.URL)
+	resource := model.Resource{
+		ID: "resource-cloud-temporary-failure", UserID: "user-1", Kind: "image", Status: model.ResourceStatusReady,
+		Provider: tencentCOSProvider, Endpoint: storage.URL, Bucket: "test-bucket", ObjectKey: "users/user-1/image/temporary.png",
+		MimeType: "image/png", Size: int64(len("local-copy")),
+	}
+	if err := db.Create(&resource).Error; err != nil {
+		t.Fatal(err)
+	}
+	writeRecoveryFile(t, dataDir, resource.ObjectKey, []byte("local-copy"))
+
+	stream, err := svc.openResourceRange(resource.UserID, &resource, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := io.ReadAll(stream.Body)
+	if closeErr := stream.Body.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "local-copy" {
+		t.Fatalf("recovery stream = %q", content)
+	}
+	var current model.Resource
+	if err := db.First(&current, "id = ?", resource.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != model.ResourceStatusReady || current.Error != "" {
+		t.Fatalf("temporary failure changed resource status: %#v", current)
+	}
+}
+
 func TestLocalResourcePromotesToActiveObjectStorage(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
 	uploaded := make(chan []byte, 1)

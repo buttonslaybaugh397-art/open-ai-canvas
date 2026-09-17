@@ -780,19 +780,53 @@ func (s *Service) hydrateProviderMedia(userID string, media *providerMedia, poli
 	if strings.HasPrefix(strings.TrimSpace(media.DataURL), "data:") {
 		return nil
 	}
-	resource, body, err := s.OpenResource(userID, resourceID)
-	if err != nil {
-		return fmt.Errorf("读取任务参考资源失败：%w", err)
-	}
-	defer body.Close()
 	runtimePolicy, err := s.RuntimePolicy()
 	if err != nil {
 		return err
 	}
 	resourceLimit := megabytes(runtimePolicy.Resource.ResourceUploadMB)
-	data, err := io.ReadAll(io.LimitReader(body, resourceLimit+1))
-	if err != nil {
-		return err
+	var data []byte
+	for attempt := 0; attempt < 3; attempt++ {
+		var body io.ReadCloser
+		var openErr error
+		if attempt == 0 || !resourceUsesObjectStorage(resource) {
+			_, body, openErr = s.OpenResource(userID, resourceID)
+		} else {
+			var stream *ResourceStream
+			stream, openErr = s.openResourceRangeFromOrigin(userID, resource, "")
+			if openErr == nil {
+				body = stream.Body
+			}
+		}
+		if openErr != nil {
+			if attempt == 2 || !retryableResourceReadError(openErr) {
+				return fmt.Errorf("读取任务参考资源失败：%w", openErr)
+			}
+			if waitErr := sleepContext(context.Background(), time.Duration(attempt+1)*150*time.Millisecond); waitErr != nil {
+				return fmt.Errorf("读取任务参考资源失败：%w", openErr)
+			}
+			continue
+		}
+		data, err = io.ReadAll(io.LimitReader(body, resourceLimit+1))
+		closeErr := body.Close()
+		if err == nil && closeErr != nil {
+			err = closeErr
+		}
+		if err == nil && int64(len(data)) > resourceLimit {
+			break
+		}
+		if err == nil && resource.Size > 0 && int64(len(data)) < resource.Size {
+			err = io.ErrUnexpectedEOF
+		}
+		if err == nil {
+			break
+		}
+		if attempt == 2 || !retryableResourceReadError(err) {
+			return fmt.Errorf("读取任务参考资源失败：%w", err)
+		}
+		if waitErr := sleepContext(context.Background(), time.Duration(attempt+1)*150*time.Millisecond); waitErr != nil {
+			return fmt.Errorf("读取任务参考资源失败：%w", err)
+		}
 	}
 	if int64(len(data)) > resourceLimit {
 		return fmt.Errorf("任务参考资源超过 %dMB", runtimePolicy.Resource.ResourceUploadMB)

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -292,6 +293,116 @@ func TestGetOSSObjectRangeUsesAliyunCDNBaseURLWithoutOSSSignature(t *testing.T) 
 	}
 	if stream.statusCode != http.StatusPartialContent || stream.contentRange != "bytes 0-3/7" || string(data) != "data" {
 		t.Fatalf("stream = %#v, data = %q", stream, data)
+	}
+}
+
+func TestOpenResourceRangeFallsBackToOriginAfterCDNConnectionReset(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	var cdnRequests atomic.Int32
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cdnRequests.Add(1)
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("test server does not support connection hijacking")
+		}
+		connection, _, err := hijacker.Hijack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = connection.Close()
+	}))
+	defer cdn.Close()
+	var originRequests atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originRequests.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("origin-data"))
+	}))
+	defer origin.Close()
+
+	svc := newResourceTestService(t)
+	settingJSON, err := json.Marshal(ossSettingValue{
+		Enabled: true, Provider: tencentCOSProvider, Endpoint: origin.URL, CDNBaseURL: cdn.URL,
+		Bucket: "test-bucket-1250000000", AccessKeyID: "access-id", AccessKeySecret: "secret-value",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(settingJSON)}); err != nil {
+		t.Fatal(err)
+	}
+	resource := &model.Resource{
+		ID: "resource-cdn-reset", UserID: "user-1", Kind: "file", Status: model.ResourceStatusReady,
+		Provider: tencentCOSProvider, Endpoint: origin.URL, Bucket: "test-bucket-1250000000",
+		ObjectKey: "users/user-1/file/reset.bin", Size: int64(len("origin-data")),
+	}
+	if err := svc.repo.CreateResource(resource); err != nil {
+		t.Fatal(err)
+	}
+
+	stream, err := svc.openResourceRange(resource.UserID, resource, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(stream.Body)
+	if closeErr := stream.Body.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "origin-data" {
+		t.Fatalf("resource data = %q, want origin-data", data)
+	}
+	if cdnRequests.Load() < 2 || originRequests.Load() != 1 {
+		t.Fatalf("requests: cdn=%d origin=%d, want CDN retry then one origin request", cdnRequests.Load(), originRequests.Load())
+	}
+}
+
+func TestHydrateProviderMediaRetriesOriginAfterTruncatedCDNBody(t *testing.T) {
+	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
+	var cdnRequests atomic.Int32
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cdnRequests.Add(1)
+		w.Header().Set("Content-Length", strconv.Itoa(len("origin-data")))
+		_, _ = w.Write([]byte("partial"))
+	}))
+	defer cdn.Close()
+	var originRequests atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		originRequests.Add(1)
+		_, _ = w.Write([]byte("origin-data"))
+	}))
+	defer origin.Close()
+
+	svc := newResourceTestService(t)
+	settingJSON, err := json.Marshal(ossSettingValue{
+		Enabled: true, Provider: tencentCOSProvider, Endpoint: origin.URL, CDNBaseURL: cdn.URL,
+		Bucket: "test-bucket-1250000000", AccessKeyID: "access-id", AccessKeySecret: "secret-value",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(settingJSON)}); err != nil {
+		t.Fatal(err)
+	}
+	resource := &model.Resource{
+		ID: "resource-cdn-truncated", UserID: "user-1", Kind: "file", Status: model.ResourceStatusReady,
+		Provider: tencentCOSProvider, Endpoint: origin.URL, Bucket: "test-bucket-1250000000",
+		ObjectKey: "users/user-1/file/truncated.bin", MimeType: "application/octet-stream", Size: int64(len("origin-data")),
+	}
+	if err := svc.repo.CreateResource(resource); err != nil {
+		t.Fatal(err)
+	}
+	media := providerMedia{StorageKey: "resource:" + resource.ID}
+	if err := svc.hydrateProviderMedia(resource.UserID, &media, providerMediaHydrationPolicy{}); err != nil {
+		t.Fatal(err)
+	}
+	if media.DataURL != dataURL("text/plain", []byte("origin-data")) {
+		t.Fatalf("hydrated data URL = %q", media.DataURL)
+	}
+	if cdnRequests.Load() != 1 || originRequests.Load() != 1 {
+		t.Fatalf("requests: cdn=%d origin=%d, want one truncated CDN read then one origin read", cdnRequests.Load(), originRequests.Load())
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"log"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -47,6 +48,7 @@ const resourceRedirectProbeTimeout = 2 * time.Second
 
 var errInvalidGeneratedDataURL = errors.New("生成内容 data URL 无效")
 var errResourceObjectMissing = errors.New("资源对象不存在")
+var errResourceCDNTemporary = errors.New("对象存储 CDN 临时不可用")
 
 type ResourceStream = assets.ResourceStream
 type ResourceDeliveryOptions = assets.ResourceDeliveryOptions
@@ -553,6 +555,14 @@ func (s *Service) OpenPublicResourceRange(id string, expires string, signature s
 }
 
 func (s *Service) openResourceRange(userID string, resource *model.Resource, rangeHeader string) (*ResourceStream, error) {
+	return s.openResourceRangeWithOriginPreference(userID, resource, rangeHeader, false)
+}
+
+func (s *Service) openResourceRangeFromOrigin(userID string, resource *model.Resource, rangeHeader string) (*ResourceStream, error) {
+	return s.openResourceRangeWithOriginPreference(userID, resource, rangeHeader, true)
+}
+
+func (s *Service) openResourceRangeWithOriginPreference(userID string, resource *model.Resource, rangeHeader string, preferOrigin bool) (*ResourceStream, error) {
 	if resource.Status != model.ResourceStatusReady {
 		return nil, BadAuthRequest("资源尚未上传完成")
 	}
@@ -584,8 +594,11 @@ func (s *Service) openResourceRange(userID string, resource *model.Resource, ran
 	setting.Provider = firstNonEmpty(resource.Provider, setting.Provider)
 	setting.Endpoint = firstNonEmpty(resource.Endpoint, setting.Endpoint)
 	setting.Bucket = firstNonEmpty(resource.Bucket, setting.Bucket)
+	if preferOrigin {
+		setting.CDNBaseURL = ""
+	}
 	stream, err := getOSSObjectRange(setting, resource.ObjectKey, normalizeSingleByteRange(rangeHeader))
-	if errors.Is(err, errResourceObjectMissing) && setting.CDNBaseURL != "" {
+	if setting.CDNBaseURL != "" && (errors.Is(err, errResourceObjectMissing) || retryableResourceReadError(err)) {
 		originSetting := setting
 		originSetting.CDNBaseURL = ""
 		stream, err = getOSSObjectRange(originSetting, resource.ObjectKey, normalizeSingleByteRange(rangeHeader))
@@ -600,10 +613,39 @@ func (s *Service) openResourceRange(userID string, resource *model.Resource, ran
 		s.markResourceUnrecoverable(resource, "对象存储与服务器本地副本均不存在")
 		return nil, NotFound("资源文件已失效并进入自动清理")
 	}
+	if retryableResourceReadError(err) && s.localResourceObjectAvailable(resource.ObjectKey, resource.Size) {
+		localStream, localErr := s.openLocalRecoveryStream(resource)
+		if localErr == nil {
+			return localStream, nil
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
 	return &ResourceStream{Resource: resource, Body: stream.body, StatusCode: stream.statusCode, ContentLength: stream.contentLength, ContentRange: stream.contentRange, AcceptRanges: stream.acceptRanges}, nil
+}
+
+func retryableResourceReadError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, errResourceCDNTemporary) {
+		return true
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && (networkErr.Timeout() || networkErr.Temporary()) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"connection reset", "unexpected eof", "broken pipe", "tls handshake timeout",
+		"server closed idle connection", "connection aborted", "connection refused",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) storeResource(userID string, kind string, fileName string, mimeType string, size int64, width int, height int, durationMs int64, body io.Reader, uploadKey *string, forceLocal bool) (*model.Resource, bool, error) {
@@ -1494,19 +1536,37 @@ func getOSSObjectRangeViaCDN(setting ossSettingValue, objectKey string, rangeHea
 		req.Header.Set("Range", rangeHeader)
 	}
 	ApplyDefaultOutboundHeaders(req)
-	resp, err := OutboundHTTPClient(2 * time.Minute).Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("对象存储 CDN 读取失败：%w", err)
-	}
-	if (resp.StatusCode < 200 || resp.StatusCode >= 300) && resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
-		defer resp.Body.Close()
-		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
-			return nil, errResourceObjectMissing
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		resp, requestErr := OutboundHTTPClient(2 * time.Minute).Do(req)
+		if requestErr != nil {
+			lastErr = fmt.Errorf("对象存储 CDN 读取失败：%w", requestErr)
+			if !retryableResourceReadError(requestErr) || attempt == 1 {
+				return nil, lastErr
+			}
+			time.Sleep(120 * time.Millisecond)
+			continue
 		}
-		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("对象存储 CDN 读取失败：%s %s", resp.Status, strings.TrimSpace(string(detail)))
+		if (resp.StatusCode < 200 || resp.StatusCode >= 300) && resp.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+			if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+				_ = resp.Body.Close()
+				return nil, errResourceObjectMissing
+			}
+			detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+			_ = resp.Body.Close()
+			lastErr = fmt.Errorf("对象存储 CDN 读取失败：%s %s", resp.Status, strings.TrimSpace(string(detail)))
+			if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
+				lastErr = fmt.Errorf("%w：%v", errResourceCDNTemporary, lastErr)
+			}
+			if (resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests) || attempt == 1 {
+				return nil, lastErr
+			}
+			time.Sleep(120 * time.Millisecond)
+			continue
+		}
+		return &ossObjectStream{body: resp.Body, statusCode: resp.StatusCode, contentLength: resp.ContentLength, contentRange: resp.Header.Get("Content-Range"), acceptRanges: firstNonEmpty(resp.Header.Get("Accept-Ranges"), "bytes")}, nil
 	}
-	return &ossObjectStream{body: resp.Body, statusCode: resp.StatusCode, contentLength: resp.ContentLength, contentRange: resp.Header.Get("Content-Range"), acceptRanges: firstNonEmpty(resp.Header.Get("Accept-Ranges"), "bytes")}, nil
+	return nil, lastErr
 }
 
 func signedCOSObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time) (string, error) {
