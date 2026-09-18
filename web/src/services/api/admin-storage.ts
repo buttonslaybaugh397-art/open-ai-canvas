@@ -84,22 +84,11 @@ export function deleteAdminResources(resourceIds: string[]) {
     return http.post<AdminResourceDeleteResult>("/admin/resources/delete", { resourceIds });
 }
 
-export function adminResourceFileUrl(id: string, download = false) {
+export function adminResourceFileUrl(id: string, download = false, fileName?: string) {
     const base = String(apiBaseURL).replace(/\/+$/, "");
-    return `${base}/admin/resources/${encodeURIComponent(id)}/file${download ? "?download=1" : ""}`;
-}
-
-export async function downloadAdminResource(resource: AdminStorageResource) {
-    const response = await fetch(adminResourceFileUrl(resource.id, true), { credentials: "include" });
-    if (!response.ok) {
-        let message = "下载资源失败";
-        try {
-            const body = (await response.json()) as { msg?: string };
-            if (body.msg) message = body.msg;
-        } catch {
-            // 文件接口失败时不保证返回 JSON。
-        }
-        throw new Error(message);
-    }
-    return response.blob();
+    const url = `${base}/admin/resources/${encodeURIComponent(id)}/file`;
+    if (!download) return url;
+    const query = new URLSearchParams({ direct: "1", download: "1" });
+    if (fileName?.trim()) query.set("filename", fileName.trim());
+    return `${url}?${query.toString()}`;
 }

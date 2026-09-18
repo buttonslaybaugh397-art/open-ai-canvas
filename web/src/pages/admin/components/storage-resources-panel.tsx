@@ -1,13 +1,12 @@
 import { App, Button, Input, Modal, Select } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { Download, Eye, Search, Trash2 } from "lucide-react";
-import { saveAs } from "file-saver";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 
 import { PaginationBar } from "@/components/layout/workspace-page";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
-import { adminResourceFileUrl, deleteAdminResources, downloadAdminResource, getAdminStorageStats, listAdminResources, type AdminStorageResource, type AdminStorageStats } from "@/services/api/admin-storage";
+import { adminResourceFileUrl, deleteAdminResources, getAdminStorageStats, listAdminResources, type AdminStorageResource, type AdminStorageStats } from "@/services/api/admin-storage";
 import { AdminBatchBar, AdminDataTable, AdminFilterChip, AdminStatTile, AdminStatusBadge, AdminTableEmpty } from "./admin-ui";
 
 const pageSizes = [20, 50, 100];
@@ -29,7 +28,6 @@ export default function StorageResourcesPanel() {
     const [total, setTotal] = useState(0);
     const [loading, setLoading] = useState(true);
     const [previewing, setPreviewing] = useState<AdminStorageResource | null>(null);
-    const [downloadingId, setDownloadingId] = useState("");
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
     const [deleting, setDeleting] = useState(false);
     const [refreshKey, setRefreshKey] = useState(0);
@@ -131,7 +129,7 @@ export default function StorageResourcesPanel() {
                         <Button type="text" size="small" icon={<Eye className="size-3.5" />} disabled={resource.status !== "ready"} onClick={() => setPreviewing(resource)}>
                             预览
                         </Button>
-                        <Button type="text" size="small" icon={<Download className="size-3.5" />} loading={downloadingId === resource.id} disabled={resource.status !== "ready"} onClick={() => void download(resource)}>
+                        <Button type="text" size="small" icon={<Download className="size-3.5" />} disabled={resource.status !== "ready"} href={adminResourceFileUrl(resource.id, true, fileName(resource.objectKey) || resource.id)} download={fileName(resource.objectKey) || resource.id} rel="noreferrer">
                             下载
                         </Button>
                         <Button type="text" danger size="small" icon={<Trash2 className="size-3.5" />} disabled={deleting} onClick={() => confirmDelete([resource.id])}>
@@ -141,20 +139,8 @@ export default function StorageResourcesPanel() {
                 ),
             },
         ],
-        [downloadingId, deleting],
+        [deleting],
     );
-
-    const download = async (resource: AdminStorageResource) => {
-        setDownloadingId(resource.id);
-        try {
-            const blob = await downloadAdminResource(resource);
-            saveAs(blob, fileName(resource.objectKey) || resource.id);
-        } catch (error) {
-            message.error(error instanceof Error ? error.message : "下载资源失败");
-        } finally {
-            setDownloadingId("");
-        }
-    };
 
     const confirmDelete = (resourceIds: string[]) => {
         const uniqueIds = Array.from(new Set(resourceIds));
@@ -263,7 +249,7 @@ export default function StorageResourcesPanel() {
                 onCancel={() => setPreviewing(null)}
                 footer={
                     previewing ? (
-                        <Button icon={<Download className="size-4" />} loading={downloadingId === previewing.id} onClick={() => void download(previewing)}>
+                        <Button icon={<Download className="size-4" />} disabled={previewing.status !== "ready"} href={adminResourceFileUrl(previewing.id, true, fileName(previewing.objectKey) || previewing.id)} download={fileName(previewing.objectKey) || previewing.id} rel="noreferrer">
                             下载原文件
                         </Button>
                     ) : null

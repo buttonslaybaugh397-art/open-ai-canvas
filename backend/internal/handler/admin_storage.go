@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 
 	"infinite-canvas/backend/internal/service"
 
@@ -70,6 +71,31 @@ func RegisterAdminStorageRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
+		downloadFileName := ""
+		if c.Query("download") == "1" {
+			downloadFileName = strings.TrimSpace(c.Query("filename"))
+			if downloadFileName == "" {
+				downloadFileName = c.Param("id")
+			}
+		}
+		delivery, err := svc.PrepareResourceDeliveryAsAdmin(user, c.Param("id"), service.ResourceDeliveryOptions{
+			Context:          c.Request.Context(),
+			ForceDirect:      c.Query("direct") == "1",
+			ForceProxy:       c.Query("proxy") == "1",
+			DownloadFileName: downloadFileName,
+		})
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		if delivery.RedirectURL != "" {
+			c.Header("Cache-Control", "private, no-store")
+			c.Header("Vary", "Cookie")
+			c.Header("Referrer-Policy", "no-referrer")
+			c.Header("X-Content-Type-Options", "nosniff")
+			c.Redirect(http.StatusTemporaryRedirect, delivery.RedirectURL)
+			return
+		}
 		stream, err := svc.OpenResourceRangeAsAdmin(user, c.Param("id"), c.GetHeader("Range"))
 		if err != nil {
 			failService(c, err)
@@ -86,8 +112,8 @@ func RegisterAdminStorageRoutes(r *gin.RouterGroup, svc *service.Service) {
 		if stream.ContentRange != "" {
 			c.Header("Content-Range", stream.ContentRange)
 		}
-		if c.Query("download") == "1" {
-			c.Header("Content-Disposition", "attachment")
+		if downloadFileName != "" {
+			c.Header("Content-Disposition", attachmentContentDisposition(downloadFileName))
 		}
 		c.DataFromReader(stream.StatusCode, stream.ContentLength, mimeType, stream.Body, nil)
 	})

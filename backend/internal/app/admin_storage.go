@@ -113,6 +113,23 @@ func (s *Service) AdminStorageStats(actor *model.User) (*AdminStorageStats, erro
 }
 
 func (s *Service) OpenResourceRangeAsAdmin(actor *model.User, id string, rangeHeader string) (*ResourceStream, error) {
+	resource, err := s.resourceForAdmin(actor, id)
+	if err != nil {
+		return nil, err
+	}
+	return s.openResourceRange(resource.UserID, resource, rangeHeader)
+}
+
+func (s *Service) PrepareResourceDeliveryAsAdmin(actor *model.User, id string, options ResourceDeliveryOptions) (*ResourceDelivery, error) {
+	resource, err := s.resourceForAdmin(actor, id)
+	if err != nil {
+		return nil, err
+	}
+	// Storage credentials belong to the resource owner, not the visiting administrator.
+	return s.prepareResourceDelivery(resource.UserID, resource, options)
+}
+
+func (s *Service) resourceForAdmin(actor *model.User, id string) (*model.Resource, error) {
 	if err := s.RequireAdmin(actor); err != nil {
 		return nil, err
 	}
@@ -124,7 +141,7 @@ func (s *Service) OpenResourceRangeAsAdmin(actor *model.User, id string, rangeHe
 		return nil, err
 	}
 	resource.Provider = normalizedResourceProvider(resource.Provider)
-	return s.openResourceRange(resource.UserID, resource, rangeHeader)
+	return resource, nil
 }
 
 func normalizeAdminResourceQuery(query AdminResourceQuery) (repository.AdminResourceFilter, int, int, error) {

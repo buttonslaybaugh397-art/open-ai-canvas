@@ -82,6 +82,10 @@ func TestAdminStorageListStatsAndPreview(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stream.Body.Close()
+	delivery, deliveryErr := svc.PrepareResourceDeliveryAsAdmin(admin, resources[0].ID, ResourceDeliveryOptions{})
+	if deliveryErr != nil || delivery.RedirectURL != "" || delivery.Resource.Provider != "local" {
+		t.Fatalf("legacy local delivery = %#v, err=%v", delivery, deliveryErr)
+	}
 	data, err := io.ReadAll(stream.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -94,6 +98,14 @@ func TestAdminStorageListStatsAndPreview(t *testing.T) {
 func TestAdminStorageRejectsNonAdminAndInvalidFilters(t *testing.T) {
 	svc := &Service{}
 	user := &model.User{ID: "user", Role: model.UserRoleUser, Status: model.UserStatusActive}
+	for _, actor := range []*model.User{nil, user} {
+		if _, err := svc.PrepareResourceDeliveryAsAdmin(actor, "resource", ResourceDeliveryOptions{}); err == nil {
+			t.Fatal("non-admin CDN delivery must be rejected before reading storage")
+		}
+		if _, err := svc.OpenResourceRangeAsAdmin(actor, "resource", ""); err == nil {
+			t.Fatal("non-admin proxy delivery must be rejected before reading storage")
+		}
+	}
 	if _, err := svc.AdminResourcePage(user, AdminResourceQuery{}); err == nil {
 		t.Fatal("expected non-admin resource list to be rejected")
 	}

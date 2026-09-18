@@ -456,6 +456,52 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/Envelope"
+  /admin/resources/{id}/file:
+    get:
+      tags: [admin-storage]
+      summary: 管理员预览或下载资源（CDN 跳转或文件流）
+      description: 校验管理员权限后按资源所属用户的存储配置交付。CDN 可用时返回短时签名跳转；显式代理、CDN 不可用或本地资源返回文件流。
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: direct
+          schema: { type: string, enum: ["1"] }
+          description: 请求对象存储直连，无 CDN 时沿用源站签名及安全限制。
+        - in: query
+          name: proxy
+          schema: { type: string, enum: ["1"] }
+          description: 显式同源读取，优先于 direct。
+        - in: query
+          name: download
+          schema: { type: string, enum: ["1"] }
+        - in: query
+          name: filename
+          schema: { type: string }
+          description: 下载文件名；七牛 CDN 通过签名 attname 设置，代理通过 Content-Disposition 设置。
+        - in: header
+          name: Range
+          schema: { type: string }
+      responses:
+        "200":
+          description: 文件流
+        "206":
+          description: 部分文件流
+        "307":
+          description: CDN 或对象存储跳转；签名跳转禁止缓存。
+          headers:
+            Location:
+              schema: { type: string, format: uri }
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
   /admin/settings/oss/credentials:
     get:
       tags: [admin-storage]
