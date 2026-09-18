@@ -5,6 +5,15 @@ description: 当前项目已实现功能的手工验证清单与未确认边界
 
 # 待测试
 
+## 七牛预览恢复 CDN 直连
+
+- 删除七牛配置 CDN 后强制同源代理的分支，预览和直连下载改为签名 CDN 跳转；下载文件名通过签名 `attname` 保留。无效资源检查、失败回源、本地副本补传和显式 `proxy=1` 不变。
+- 画布恢复、图片及引用缩略图、视频播放、时间线/字幕预览和音频试听不再自动代理下载整份媒体填充 Blob 缓存；已有缓存仍可复用，截帧和编辑主动读取 Blob 的能力不变。
+- [x] 后端 `go test -p 1 ./internal/app ./internal/handler ./internal/assets -count=1`；覆盖 307 签名跳转、Range 直读、下载附件参数、签名探测缓存、未登录/跨用户拒绝、显式代理、失效探测和原有资源恢复。
+- [x] 前端预览、下载、素材库、音频专项 50 项通过，`bun run build`（TypeScript + Vite）通过；构建仍有大 chunk 提示。
+- [ ] 部署后在无本地 Blob 缓存的浏览器中预览七牛图片/视频，确认资源入口返回 307，后续 GET/Range 由浏览器直达 CDN，播放后没有自动新增 `proxy=1` 全量下载。
+- [ ] 确认真实 CDN 的 HEAD、Range、CORS 和私有签名可用；检查视频首帧、拖动进度、反向代理部署、中文文件名下载及 CDN 失效后的资源恢复。
+
 ## 迁移 11 谱系冲突导致线上后端启动崩溃
 
 - 现象：1Panel 更新后 backend 容器反复重启，日志固定输出「数据库迁移 11 名称不一致：记录为 task_provider_recovery，程序期望 cloud_agent_runtime」，web 因 `depends_on: service_healthy` 连带失败，1Panel 回滚编排同样起不来。

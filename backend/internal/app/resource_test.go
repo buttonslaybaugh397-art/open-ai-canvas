@@ -640,10 +640,22 @@ func TestPrepareResourceDeliveryAllowsExplicitProxyWithCDN(t *testing.T) {
 	}
 }
 
-func TestPrepareResourceDeliveryProxiesQiniuWithCDNBaseURL(t *testing.T) {
+func TestPrepareResourceDeliveryRedirectsQiniuWithCDNBaseURL(t *testing.T) {
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
+	var probes atomic.Int32
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probes.Add(1)
+		if r.Method != http.MethodHead || r.URL.Query().Get("e") == "" || r.URL.Query().Get("token") == "" {
+			t.Error("expected a signed HEAD probe, not a media download")
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer cdn.Close()
 	svc := newResourceTestService(t)
 	settingJSON, _ := json.Marshal(ossSettingValue{
-		Enabled: true, Provider: qiniuKodoProvider, Endpoint: "https://up-z0.qiniup.com", CDNBaseURL: "https://media.example.com",
+		Enabled: true, Provider: qiniuKodoProvider, Endpoint: "https://up-z0.qiniup.com", CDNBaseURL: cdn.URL,
 		Bucket: "private-bucket", AccessKeyID: "access-id", AccessKeySecret: "secret-value",
 	})
 	if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(settingJSON)}); err != nil {
@@ -657,12 +669,83 @@ func TestPrepareResourceDeliveryProxiesQiniuWithCDNBaseURL(t *testing.T) {
 	if err := svc.repo.CreateResource(&resource); err != nil {
 		t.Fatal(err)
 	}
-	delivery, err := svc.PrepareResourceDelivery("user-1", resource.ID, ResourceDeliveryOptions{})
-	if err != nil {
-		t.Fatal(err)
+	for _, options := range []ResourceDeliveryOptions{{}, {ForceDirect: true}, {ForceDirect: true, DownloadFileName: "final image.png"}} {
+		delivery, err := svc.PrepareResourceDelivery("user-1", resource.ID, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if delivery.Resource == nil || delivery.Resource.ID != resource.ID || !strings.HasPrefix(delivery.RedirectURL, cdn.URL+"/"+resource.ObjectKey+"?") {
+			t.Fatalf("delivery = %#v, want signed CDN redirect", delivery)
+		}
+		target, err := url.Parse(delivery.RedirectURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		query := target.Query()
+		expires, _ := strconv.ParseInt(query.Get("e"), 10, 64)
+		if query.Get("token") == "" || expires <= time.Now().Unix() || expires > time.Now().Add(directResourceURLTTL).Unix() || query.Get("attname") != options.DownloadFileName {
+			t.Fatal("missing CDN signature, expiry or attachment filename")
+		}
 	}
-	if delivery.Resource == nil || delivery.RedirectURL != "" {
-		t.Fatalf("PrepareResourceDelivery() = %#v, want same-origin proxy delivery", delivery)
+	for _, options := range []ResourceDeliveryOptions{{ForceProxy: true}, {ForceProxy: true, ForceDirect: true}} {
+		delivery, err := svc.PrepareResourceDelivery("user-1", resource.ID, options)
+		if err != nil || delivery.RedirectURL != "" {
+			t.Fatalf("explicit proxy ignored: delivery=%#v, err=%v", delivery, err)
+		}
+	}
+	if probes.Load() != 1 {
+		t.Fatalf("probe count = %d, want one cached HEAD request", probes.Load())
+	}
+	if _, err := svc.PrepareResourceDelivery("other-user", resource.ID, ResourceDeliveryOptions{}); err == nil {
+		t.Fatal("another user must not receive a signed resource URL")
+	}
+}
+
+func TestPrepareResourceDeliveryDoesNotRedirectUnavailableQiniuCDN(t *testing.T) {
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
+	for _, status := range []int{http.StatusNotFound, http.StatusGone, http.StatusForbidden, http.StatusServiceUnavailable} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+			}))
+			defer cdn.Close()
+			svc := newResourceTestService(t)
+			settingJSON, _ := json.Marshal(ossSettingValue{
+				Enabled: true, Provider: qiniuKodoProvider, Endpoint: "https://up-z0.qiniup.com", CDNBaseURL: cdn.URL,
+				Bucket: "private-bucket", AccessKeyID: "access-id", AccessKeySecret: "secret-value",
+			})
+			if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(settingJSON)}); err != nil {
+				t.Fatal(err)
+			}
+			resource := model.Resource{
+				ID: "unavailable-video", UserID: "user-1", Kind: "video", Status: model.ResourceStatusReady,
+				Provider: qiniuKodoProvider, Endpoint: "https://up-z0.qiniup.com", Bucket: "private-bucket",
+				ObjectKey: "users/user-1/video/unavailable.mp4", MimeType: "video/mp4",
+			}
+			if err := svc.repo.CreateResource(&resource); err != nil {
+				t.Fatal(err)
+			}
+			delivery, err := svc.PrepareResourceDelivery(resource.UserID, resource.ID, ResourceDeliveryOptions{})
+			if err != nil || delivery.RedirectURL != "" {
+				t.Fatalf("unavailable CDN should use recovery delivery: %#v, %v", delivery, err)
+			}
+			current, err := svc.repo.Resource(resource.ID)
+			if err != nil || current.Status != model.ResourceStatusReady {
+				t.Fatal("a CDN probe failure must not delete or mark the resource failed")
+			}
+		})
+	}
+}
+
+func TestQiniuRedirectProbeCacheIgnoresRotatingSignatures(t *testing.T) {
+	resource := &model.Resource{Provider: qiniuKodoProvider, ObjectKey: "video.mp4", Bucket: "bucket"}
+	first := resourceRedirectProbeKey(resource, "https://cdn.example/video.mp4?e=1&token=first")
+	next := resourceRedirectProbeKey(resource, "https://cdn.example/video.mp4?e=2&token=second&attname=final.mp4")
+	if first != next || strings.Contains(first, "token=") {
+		t.Fatal("signatures must not be retained in the probe cache key")
+	}
+	if first == resourceRedirectProbeKey(resource, "https://other.example/video.mp4?e=1&token=first") {
+		t.Fatal("different CDN hosts must not share a probe result")
 	}
 }
 

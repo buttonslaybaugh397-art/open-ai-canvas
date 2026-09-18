@@ -131,20 +131,19 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 		if setting.Provider == s3Provider && !options.ForceDirect {
 			return &ResourceDelivery{Resource: resource}, nil
 		}
-		if setting.Provider == qiniuKodoProvider && setting.CDNBaseURL != "" {
-			// Keep the browser on the current origin even when a Qiniu binding domain is configured.
-			// The backend still reads through the signed Qiniu CDN URL, preserving CDN acceleration
-			// while avoiding cross-origin redirects and Range/CORS failures in reverse-proxy setups.
-			return &ResourceDelivery{Resource: resource}, nil
-		}
 		if setting.CDNBaseURL != "" {
 			redirectURL, err := ossCDNObjectURL(setting.CDNBaseURL, resource.ObjectKey)
+			if err == nil && setting.Provider == qiniuKodoProvider {
+				// Private Qiniu buckets require a signed CDN URL, including attachment parameters.
+				redirectURL, err = signedQiniuObjectURL(setting, resource.ObjectKey, time.Now().Add(directResourceURLTTL), options.DownloadFileName)
+			}
 			if err != nil {
 				return nil, err
 			}
 			available, probeErr := s.redirectResourceAvailable(options.Context, resource, redirectURL)
 			if probeErr != nil {
-				log.Printf("resource CDN probe failed, using same-origin proxy: resource=%s err=%v", resource.ID, probeErr)
+				// Transport errors can contain the full signed URL; do not log its credentials.
+				log.Printf("resource CDN probe failed, using same-origin proxy: resource=%s error_type=%T", resource.ID, probeErr)
 				return &ResourceDelivery{Resource: resource}, nil
 			}
 			if !available {
@@ -183,6 +182,17 @@ func (s *Service) prepareResourceDelivery(userID string, resource *model.Resourc
 func resourceRedirectProbeKey(resource *model.Resource, redirectURL string) string {
 	if resource == nil {
 		return redirectURL
+	}
+	if resource.Provider == qiniuKodoProvider && redirectURL != "" {
+		// Rotating signatures and download names must not trigger a new probe per playback.
+		if target, err := url.Parse(redirectURL); err == nil {
+			query := target.Query()
+			query.Del("e")
+			query.Del("token")
+			query.Del("attname")
+			target.RawQuery = query.Encode()
+			redirectURL = target.String()
+		}
 	}
 	return strings.Join([]string{resource.Provider, resource.Endpoint, resource.Bucket, resource.ObjectKey, redirectURL}, "\x00")
 }
@@ -1592,7 +1602,7 @@ func signedCOSObjectURL(setting ossSettingValue, objectKey string, expiresAt tim
 	return signedURL.String(), nil
 }
 
-func signedQiniuObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time) (string, error) {
+func signedQiniuObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time, downloadFileName ...string) (string, error) {
 	if setting.AccessKeyID == "" || setting.AccessKeySecret == "" {
 		return "", errors.New("七牛云 Kodo 访问密钥不可用")
 	}
@@ -1608,7 +1618,18 @@ func signedQiniuObjectURL(setting ossSettingValue, objectKey string, expiresAt t
 		return signedQiniuS3ObjectURL(setting, objectKey, expiresAt)
 	}
 	mac := qiniuAuth.New(setting.AccessKeyID, setting.AccessKeySecret)
-	return qiniuStorage.MakePrivateURLv2(mac, strings.TrimRight(setting.CDNBaseURL, "/"), objectKey, deadline), nil
+	var query url.Values
+	if len(downloadFileName) > 0 && downloadFileName[0] != "" {
+		name := path.Base(strings.ReplaceAll(downloadFileName[0], "\\", "/"))
+		name = strings.Map(func(r rune) rune {
+			if r < 32 || r == 127 {
+				return '-'
+			}
+			return r
+		}, name)
+		query = url.Values{"attname": []string{name}}
+	}
+	return qiniuStorage.MakePrivateURLv2WithQuery(mac, strings.TrimRight(setting.CDNBaseURL, "/"), objectKey, query, deadline), nil
 }
 
 // signedQiniuS3ObjectURL 用七牛兼容 S3 的 AWS Signature V4 访问私有空间。

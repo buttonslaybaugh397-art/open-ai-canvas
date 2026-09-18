@@ -1,5 +1,5 @@
-import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
-import { resourceIdFromStorageKey } from "@/services/api/resources";
+import { getCachedResourceObjectUrl } from "@/services/resource-blob-cache";
+import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 
 export type CanvasAudioSource = {
     nodeId: string;
@@ -255,9 +255,10 @@ function sameSource(left: CanvasAudioSource, right: CanvasAudioSource) {
 }
 
 async function resolveAudioSource(source: CanvasAudioSource) {
-    if (source.storageKey && resourceIdFromStorageKey(source.storageKey)) {
-        const cached = await cacheResourceObjectUrl(source.storageKey).catch(() => "");
-        return cached || source.content;
+    const resourceId = resourceIdFromStorageKey(source.storageKey);
+    if (source.storageKey && resourceId) {
+        const cached = await getCachedResourceObjectUrl(source.storageKey).catch(() => "");
+        return cached || resourceFileUrl(resourceId);
     }
     return source.content;
 }

@@ -17,9 +17,10 @@ type ResourceStream struct {
 }
 
 type ResourceDeliveryOptions struct {
-	Context     context.Context
-	ForceDirect bool
-	ForceProxy  bool
+	Context          context.Context
+	ForceDirect      bool
+	ForceProxy       bool
+	DownloadFileName string
 }
 
 type ResourceDelivery struct {

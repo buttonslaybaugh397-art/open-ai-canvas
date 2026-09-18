@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ImgHTMLAttributes, type ReactNode } from "react";
 
-import { resourceIdFromStorageKey } from "@/services/api/resources";
-import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
+import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
+import { getCachedResourceObjectUrl } from "@/services/resource-blob-cache";
 import { resolveImageUrl } from "@/services/image-storage";
 
 type CachedResourceImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, "src"> & {
@@ -13,7 +13,7 @@ type CachedResourceImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, "src">
 };
 
 /**
- * 资源图片优先读取按用户隔离的本地 Blob 缓存，避免刷新后再次从对象存储下载。
+ * 资源图片复用已有的用户隔离 Blob 缓存，未命中时由浏览器直连 CDN，不触发代理填充缓存。
  * 本地 image: 类型的 storageKey 也会自动从 LocalForage 恢复有效的 Object URL。
  */
 export function CachedResourceImage({ storageKey, src = "", fallback = null, loadingFallback = fallback, eager = false, onError, ...props }: CachedResourceImageProps) {
@@ -58,20 +58,19 @@ export function CachedResourceImage({ storageKey, src = "", fallback = null, loa
                     cancelled = true;
                 };
             }
-            setCachedSrc("");
-            const resolve = cacheResourceObjectUrl(storageKey);
+            const previewUrl = resourceFileUrl(resourceIdFromStorageKey(storageKey));
+            setCachedSrc(previewUrl);
+            const resolve = getCachedResourceObjectUrl(storageKey);
             void resolve
                 .then((url) => {
                     if (!cancelled) {
-                        setCachedSrc(url || src);
-                        setCacheFailed(!url && !src);
+                        setCachedSrc(url || previewUrl);
                     }
                 })
                 .catch(() => {
                     if (!cancelled) {
-                        // 缓存读取失败时仍允许原始地址加载，真正的解码失败再显示占位。
-                        setCacheFailed(!src);
-                        setCachedSrc(src);
+                        // 本地缓存不可用不影响资源入口重新签发 CDN 地址。
+                        setCachedSrc(previewUrl);
                     }
                 });
             return () => {

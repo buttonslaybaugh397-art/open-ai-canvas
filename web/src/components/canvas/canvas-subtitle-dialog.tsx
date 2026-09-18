@@ -9,7 +9,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { resolveMediaUrl } from "@/services/file-storage";
-import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
+import { getCachedResourceObjectUrl } from "@/services/resource-blob-cache";
 import { resourceIdFromStorageKey } from "@/services/api/resources";
 import { parseSrt, serializeSrtEntries } from "@/lib/timeline/srt-parser";
 import { DEFAULT_MAX_CHARS_PER_ENTRY, MAX_CHARS_PER_ENTRY_LIMIT, MIN_CHARS_PER_ENTRY, resegmentSrtEntries, splitLongEntry } from "@/lib/timeline/srt-resegment";
@@ -63,7 +63,7 @@ export function CanvasSubtitleDialog({ node, open, projectId, config, onClose, o
     }, []);
 
     // 打开弹窗时解析视频地址，用于字幕叠加预览。
-    // 远端资源优先走节点同款缓存下载（对象 URL），失败再退回资源代理地址。
+    // 只复用已有缓存；未命中时从资源入口跳转 CDN，不为预览下载整个视频。
     useEffect(() => {
         if (!open) return;
         let cancelled = false;
@@ -76,7 +76,7 @@ export function CanvasSubtitleDialog({ node, open, projectId, config, onClose, o
             if (!cancelled) setVideoUrl(url);
         };
         if (resourceIdFromStorageKey(storageKey)) {
-            void cacheResourceObjectUrl(storageKey)
+            void getCachedResourceObjectUrl(storageKey)
                 .then((cached) => {
                     if (cancelled) return;
                     if (cached) {

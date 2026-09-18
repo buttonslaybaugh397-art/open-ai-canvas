@@ -3,7 +3,7 @@ import { Pause, Play } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { resolveMediaUrl } from "@/services/file-storage";
-import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
+import { getCachedResourceObjectUrl } from "@/services/resource-blob-cache";
 import { resourceIdFromStorageKey } from "@/services/api/resources";
 import { formatTimelineTime } from "@/lib/timeline/timeline-view";
 import { createDefaultSubtitleStyle } from "@/types/timeline";
@@ -64,7 +64,7 @@ export function CanvasTimelinePreview({ clips, nodes, playheadMs, playing, theme
             if (!cancelled) setVideoUrl(url);
         };
         if (resourceIdFromStorageKey(storageKey)) {
-            void cacheResourceObjectUrl(storageKey)
+            void getCachedResourceObjectUrl(storageKey)
                 .then((cached) => {
                     if (cancelled) return;
                     if (cached) {

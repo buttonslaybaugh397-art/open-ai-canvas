@@ -290,21 +290,25 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
+		downloadFileName := ""
+		if c.Query("download") == "1" {
+			downloadFileName = strings.TrimSpace(c.Query("filename"))
+			if downloadFileName == "" {
+				downloadFileName = c.Param("id")
+			}
+		}
 		delivery, err := svc.PrepareResourceDelivery(user.ID, c.Param("id"), service.ResourceDeliveryOptions{
-			Context:     c.Request.Context(),
-			ForceDirect: c.Query("direct") == "1",
-			ForceProxy:  c.Query("proxy") == "1",
+			Context:          c.Request.Context(),
+			ForceDirect:      c.Query("direct") == "1",
+			ForceProxy:       c.Query("proxy") == "1",
+			DownloadFileName: downloadFileName,
 		})
 		if err != nil {
 			failService(c, err)
 			return
 		}
-		if c.Query("download") == "1" {
-			fileName := strings.TrimSpace(c.Query("filename"))
-			if fileName == "" {
-				fileName = delivery.Resource.ID
-			}
-			c.Header("Content-Disposition", attachmentContentDisposition(fileName))
+		if downloadFileName != "" {
+			c.Header("Content-Disposition", attachmentContentDisposition(downloadFileName))
 		}
 		if delivery.RedirectURL != "" {
 			// RedirectURL may contain a short-lived signed CDN URL (for example Qiniu).
