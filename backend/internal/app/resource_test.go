@@ -606,18 +606,20 @@ func TestPrepareResourceDeliveryDoesNotRedirectMissingCDNObject(t *testing.T) {
 		t.Fatal(err)
 	}
 	delivery, err := svc.PrepareResourceDelivery("user-1", resource.ID, ResourceDeliveryOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if delivery.Resource == nil || delivery.Resource.ID != resource.ID || delivery.RedirectURL != "" {
-		t.Fatalf("PrepareResourceDelivery() = %#v, want same-origin proxy fallback", delivery)
+	if delivery != nil || err == nil {
+		t.Fatalf("missing CDN must fail without origin/proxy: %#v, %v", delivery, err)
 	}
 }
 
-func TestPrepareResourceDeliveryAllowsExplicitProxyWithCDN(t *testing.T) {
+func TestPrepareResourceDeliveryDoesNotAllowProxyToBypassCDN(t *testing.T) {
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer cdn.Close()
 	svc := newResourceTestService(t)
 	settingJSON, _ := json.Marshal(ossSettingValue{
-		Enabled: true, Provider: aliyunOSSProvider, Endpoint: "https://oss-cn-test.aliyuncs.com", CDNBaseURL: "https://media.example.com",
+		Enabled: true, Provider: aliyunOSSProvider, Endpoint: "https://oss-cn-test.aliyuncs.com", CDNBaseURL: cdn.URL,
 		Bucket: "private-bucket", AccessKeyID: "access-id", AccessKeySecret: "secret-value",
 	})
 	if err := svc.repo.SaveSystemSetting(&model.SystemSetting{Key: ossSettingKey, ValueJSON: string(settingJSON)}); err != nil {
@@ -635,8 +637,8 @@ func TestPrepareResourceDeliveryAllowsExplicitProxyWithCDN(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if delivery.Resource == nil || delivery.Resource.ID != resource.ID || delivery.RedirectURL != "" {
-		t.Fatalf("PrepareResourceDelivery(force proxy) = %#v", delivery)
+	if delivery.Resource == nil || delivery.Resource.ID != resource.ID || !strings.HasPrefix(delivery.RedirectURL, cdn.URL) {
+		t.Fatalf("legacy proxy flag must still deliver CDN: %#v", delivery)
 	}
 }
 
@@ -689,8 +691,8 @@ func TestPrepareResourceDeliveryRedirectsQiniuWithCDNBaseURL(t *testing.T) {
 	}
 	for _, options := range []ResourceDeliveryOptions{{ForceProxy: true}, {ForceProxy: true, ForceDirect: true}} {
 		delivery, err := svc.PrepareResourceDelivery("user-1", resource.ID, options)
-		if err != nil || delivery.RedirectURL != "" {
-			t.Fatalf("explicit proxy ignored: delivery=%#v, err=%v", delivery, err)
+		if err != nil || !strings.HasPrefix(delivery.RedirectURL, cdn.URL) {
+			t.Fatalf("legacy proxy flag bypassed CDN: delivery=%#v, err=%v", delivery, err)
 		}
 	}
 	if probes.Load() != 1 {
@@ -726,8 +728,9 @@ func TestPrepareResourceDeliveryDoesNotRedirectUnavailableQiniuCDN(t *testing.T)
 				t.Fatal(err)
 			}
 			delivery, err := svc.PrepareResourceDelivery(resource.UserID, resource.ID, ResourceDeliveryOptions{})
-			if err != nil || delivery.RedirectURL != "" {
-				t.Fatalf("unavailable CDN should use recovery delivery: %#v, %v", delivery, err)
+			var appErr *AppError
+			if delivery != nil || !errors.As(err, &appErr) || appErr.Status != http.StatusServiceUnavailable || !appErr.Retryable {
+				t.Fatalf("unavailable CDN must return retryable error: %#v, %v", delivery, err)
 			}
 			current, err := svc.repo.Resource(resource.ID)
 			if err != nil || current.Status != model.ResourceStatusReady {
@@ -749,7 +752,7 @@ func TestQiniuRedirectProbeCacheIgnoresRotatingSignatures(t *testing.T) {
 	}
 }
 
-func TestPrepareResourceDeliveryProxiesQiniuWithoutCDNBaseURL(t *testing.T) {
+func TestPrepareResourceDeliveryRejectsQiniuWithoutCDNBaseURL(t *testing.T) {
 	svc := newResourceTestService(t)
 	settingJSON, _ := json.Marshal(ossSettingValue{
 		Enabled: true, Provider: qiniuKodoProvider, Region: "z0", Endpoint: "https://up-z0.qiniup.com",
@@ -767,11 +770,8 @@ func TestPrepareResourceDeliveryProxiesQiniuWithoutCDNBaseURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	delivery, err := svc.PrepareResourceDelivery("user-1", resource.ID, ResourceDeliveryOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if delivery.Resource == nil || delivery.RedirectURL != "" {
-		t.Fatalf("PrepareResourceDelivery() = %#v, want backend proxy delivery", delivery)
+	if delivery != nil || err == nil {
+		t.Fatalf("unconfigured CDN must not proxy: %#v, %v", delivery, err)
 	}
 }
 
@@ -909,7 +909,7 @@ func TestHistoricalUserResourceWithoutStorageSettingIDKeepsItsProviderCDN(t *tes
 	}
 }
 
-func TestPrepareResourceDeliveryKeepsForcedOriginDirectWithoutCDN(t *testing.T) {
+func TestPrepareResourceDeliveryRejectsForcedOriginDirectWithoutCDN(t *testing.T) {
 	t.Setenv("CANVAS_ALLOW_PRIVATE_UPSTREAMS", "true")
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodHead {
@@ -935,11 +935,8 @@ func TestPrepareResourceDeliveryKeepsForcedOriginDirectWithoutCDN(t *testing.T) 
 		t.Fatal(err)
 	}
 	delivery, err := svc.PrepareResourceDelivery("user-1", resource.ID, ResourceDeliveryOptions{ForceDirect: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(delivery.RedirectURL, origin.URL+"/users/user-1/image/direct.png") || !strings.Contains(delivery.RedirectURL, "q-signature=") {
-		t.Fatalf("PrepareResourceDelivery(force direct) = %#v", delivery)
+	if delivery != nil || err == nil {
+		t.Fatalf("forced direct must not bypass missing CDN: %#v, %v", delivery, err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -24,6 +25,12 @@ const (
 	resourceAvailableLocally
 	resourceUnavailable
 )
+
+func resourceDeliveryUnavailable(message string, cause error) *AppError {
+	err := WrapAppError(http.StatusServiceUnavailable, message, cause)
+	err.Retryable = true
+	return err
+}
 
 func (s *Service) cloudResourceAvailability(ctx context.Context, resource *model.Resource, setting ossSettingValue) (resourceAvailability, error) {
 	if ctx == nil {
@@ -59,8 +66,12 @@ func (s *Service) redirectResourceAvailable(ctx context.Context, resource *model
 		if exists {
 			return resourceAvailableInCloud, 256, nil
 		}
-		return resourceUnavailable, 256, nil
+		// A missing CDN edge object can become available on the next retry.
+		return resourceUnavailable, 256, errResourceObjectMissing
 	})
+	if errors.Is(err, errResourceObjectMissing) {
+		return false, nil
+	}
 	return availability == resourceAvailableInCloud, err
 }
 
@@ -117,7 +128,10 @@ func (s *Service) recoverCloudResourceFromLocal(resourceID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), resourceRedirectProbeTimeout)
 	exists, probeErr := probeOSSObject(ctx, setting, resource.ObjectKey)
 	cancel()
-	if probeErr == nil && exists {
+	if probeErr != nil {
+		return resourceDeliveryUnavailable("无法确认云端对象状态，稍后重试补传", probeErr)
+	}
+	if exists {
 		return nil
 	}
 	body, info, err := s.openLocalResourceObject(resource.ObjectKey)
@@ -224,20 +238,20 @@ func (s *Service) openLocalRecoveryStream(resource *model.Resource) (*ResourceSt
 	if err != nil {
 		return nil, err
 	}
-	recoveryBody := &afterCloseReadCloser{ReadCloser: body, afterClose: func() {
+	recoveryBody := &afterCloseReadSeekCloser{ReadSeekCloser: body, afterClose: func() {
 		s.scheduleCloudResourceRecovery(resource.ID)
 	}}
 	return &ResourceStream{Resource: resource, Body: recoveryBody, StatusCode: 200, ContentLength: info.Size(), AcceptRanges: "bytes"}, nil
 }
 
-type afterCloseReadCloser struct {
-	io.ReadCloser
+type afterCloseReadSeekCloser struct {
+	io.ReadSeekCloser
 	once       sync.Once
 	afterClose func()
 }
 
-func (body *afterCloseReadCloser) Close() error {
-	err := body.ReadCloser.Close()
+func (body *afterCloseReadSeekCloser) Close() error {
+	err := body.ReadSeekCloser.Close()
 	body.once.Do(body.afterClose)
 	return err
 }

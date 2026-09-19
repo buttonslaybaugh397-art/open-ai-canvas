@@ -1,7 +1,8 @@
 import localforage from "localforage";
 
 import { getActiveUserScope } from "@/lib/user-scope";
-import { getResourceBlob, resourceIdFromStorageKey } from "@/services/api/resources";
+import { getResourceBlob, resourceIdFromStorageKey, type ResourceBlobAccess } from "@/services/api/resources";
+import { ApiError } from "@/services/api/request";
 
 type ResourceCacheMeta = {
     key: string;
@@ -30,8 +31,9 @@ const MIN_CACHE_BYTES = 64 * 1024 * 1024;
 const MAX_CACHE_ENTRIES = 500;
 const TOUCH_INTERVAL_MS = 10 * 60 * 1000;
 const BUDGET_REFRESH_MS = 5 * 60 * 1000;
-// 现代浏览器对同源 HTTP/2 连接多路复用；上限给到 16 让大画布冷启动在 1~2 轮内完成并发拉取。
-const MAX_CONCURRENT_DOWNLOADS = 16;
+const MAX_CONCURRENT_DOWNLOADS = 4;
+const DOWNLOAD_ATTEMPTS = 3;
+const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 
 export async function getCachedResourceObjectUrl(storageKey: string) {
     const target = await cacheTarget(storageKey);
@@ -48,34 +50,37 @@ export function peekCachedResourceObjectUrl(storageKey: string) {
     return objectUrls.get(`${userScope}:${resourceId}:file`) || "";
 }
 
-export async function cacheResourceObjectUrl(storageKey: string) {
-    const target = await cacheTarget(storageKey);
+export async function cacheResourceObjectUrl(storageKey: string, access: ResourceBlobAccess = "user") {
+    const target = await cacheTarget(storageKey, access);
     if (!target) return "";
     const cached = await readCachedObjectUrl(target);
     if (cached) return cached;
     const pending = inFlight.get(target.key);
     if (pending) return pending;
 
-    const task = withDownloadSlot(() => downloadAndCacheResource(storageKey, target)).finally(() => inFlight.delete(target.key));
+    const task = withDownloadSlot(() => downloadAndCacheResource(storageKey, target, access)).finally(() => inFlight.delete(target.key));
     inFlight.set(target.key, task);
     return task;
 }
 
-/**
- * 播放器先使用支持 Range 的资源 URL 起播；确认用户实际播放后，再延迟下载完整 Blob。
- * 这样不会让 IndexedDB 缓存阻塞首帧，同时后续打开可直接复用本地 Object URL。
- */
+/** 延迟预取仍走同一个缓存/CDN 入口，不产生源站回退。 */
 export function scheduleResourceBlobCache(storageKey: string, delayMs = 4_000) {
-    if (!resourceIdFromStorageKey(storageKey) || scheduled.has(storageKey)) return;
-    scheduled.add(storageKey);
+    const scope = getActiveUserScope();
+    const key = `${scope}:${storageKey}`;
+    if (!resourceIdFromStorageKey(storageKey) || scheduled.has(key)) return;
+    scheduled.add(key);
     const run = () => {
+        if (scope !== getActiveUserScope()) {
+            scheduled.delete(key);
+            return;
+        }
         void cacheResourceObjectUrl(storageKey)
             .catch((error) => {
                 // 这是播放后的后台缓存优化，不应让播放器失败；但下载/持久化异常必须可观测。
                 console.warn("后台缓存资源 Blob 失败", { storageKey, error });
                 return "";
             })
-            .finally(() => scheduled.delete(storageKey));
+            .finally(() => scheduled.delete(key));
     };
     if (typeof window === "undefined") {
         run();
@@ -113,34 +118,59 @@ export async function primeResourceBlobCache(storageKey: string, blob: Blob) {
 export async function getCachedResourceBlob(storageKey: string) {
     const target = await cacheTarget(storageKey);
     if (!target) return null;
-    const cached = await blobStore.getItem<Blob>(target.key);
+    const sessionBlob = sessionBlobs.get(target.key);
+    if (sessionBlob) return sessionBlob;
+    const cached = await readPersistedBlob(target);
+    assertActiveScope(target);
     if (cached) {
         touchCacheMetaSafely(target);
         return cached;
     }
-    const sessionBlob = sessionBlobs.get(target.key);
-    if (sessionBlob) return sessionBlob;
     const pending = inFlight.get(target.key);
     if (pending) {
         await pending;
-        return sessionBlobs.get(target.key) || blobStore.getItem<Blob>(target.key);
+    } else {
+        await cacheResourceObjectUrl(storageKey);
     }
-    await cacheResourceObjectUrl(storageKey);
-    return sessionBlobs.get(target.key) || blobStore.getItem<Blob>(target.key);
+    assertActiveScope(target);
+    const blob = sessionBlobs.get(target.key) || await readPersistedBlob(target);
+    assertActiveScope(target);
+    return blob;
 }
 
-async function downloadAndCacheResource(storageKey: string, target: ResourceCacheMeta) {
-    const blob = await downloadResourceBlob(storageKey, target);
+async function downloadAndCacheResource(storageKey: string, target: ResourceCacheMeta, access: ResourceBlobAccess) {
+    const blob = await downloadResourceBlob(storageKey, target, access);
+    assertActiveScope(target);
     if (!blob) return "";
     return objectUrl(target.key, blob);
 }
 
-async function downloadResourceBlob(storageKey: string, target: ResourceCacheMeta) {
-    const blob = await getResourceBlob(storageKey);
-    if (!blob) return null;
-    sessionBlobs.set(target.key, blob);
-    if (blob.size <= MAX_CACHE_BYTES) await enqueuePersist(target, blob);
-    return blob;
+async function downloadResourceBlob(storageKey: string, target: ResourceCacheMeta, access: ResourceBlobAccess) {
+    for (let attempt = 0; ; attempt++) {
+        assertActiveScope(target);
+        const controller = new AbortController();
+        const timeout = globalThis.setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
+        try {
+            // Every attempt resolves a fresh CDN signature. Never substitute an origin/proxy URL.
+            const blob = await getResourceBlob(storageKey, controller.signal, access);
+            assertActiveScope(target);
+            if (!blob?.size) throw new Error("CDN 返回了空资源");
+            sessionBlobs.set(target.key, blob);
+            if (blob.size <= MAX_CACHE_BYTES) await enqueuePersist(target, blob);
+            return blob;
+        } catch (error) {
+            assertActiveScope(target);
+            if (attempt >= DOWNLOAD_ATTEMPTS - 1 || (error instanceof ApiError && !error.retryable)) throw error;
+        } finally {
+            globalThis.clearTimeout(timeout);
+        }
+        // The delivery probe caches failures for one second to protect the API.
+        await new Promise((resolve) => globalThis.setTimeout(resolve, 1_500 * 2 ** attempt));
+    }
+}
+
+function assertActiveScope(target: ResourceCacheMeta) {
+    if (target.userScope !== getActiveUserScope()) throw new DOMException("用户已切换", "AbortError");
 }
 
 function enqueuePersist(target: ResourceCacheMeta, blob: Blob) {
@@ -199,25 +229,37 @@ async function persistBlob(target: ResourceCacheMeta, blob: Blob) {
 }
 
 async function readCachedObjectUrl(target: ResourceCacheMeta) {
+    assertActiveScope(target);
     const existing = objectUrls.get(target.key);
     if (existing) {
         touchCacheMetaSafely(target);
         return existing;
     }
-    const blob = await blobStore.getItem<Blob>(target.key);
+    const blob = sessionBlobs.get(target.key) || await readPersistedBlob(target);
+    assertActiveScope(target);
     if (!blob) return "";
     touchCacheMetaSafely(target);
     return objectUrl(target.key, blob);
 }
 
-async function cacheTarget(storageKey: string): Promise<ResourceCacheMeta | null> {
+async function readPersistedBlob(target: ResourceCacheMeta) {
+    try {
+        const blob = await blobStore.getItem<Blob>(target.key);
+        return blob instanceof Blob && blob.size > 0 ? blob : null;
+    } catch {
+        console.warn("本地媒体缓存不可读，将从 CDN 重试", { resourceId: target.resourceId });
+        return null;
+    }
+}
+
+async function cacheTarget(storageKey: string, access: ResourceBlobAccess = "user"): Promise<ResourceCacheMeta | null> {
     const resourceId = resourceIdFromStorageKey(storageKey);
     if (!resourceId) return null;
     const userScope = getActiveUserScope();
     if (userScope === "guest") throw new Error("游客不能读取远程媒体缓存");
     // resource ID 是不可变资源的稳定标识，文件接口本身负责鉴权。
     // 缓存初始化不能先对每个资源读取一遍元数据，否则首屏会重新形成 N+1 请求。
-    const version = "file";
+    const version = access === "admin" ? "admin-file" : "file";
     return {
         key: `${userScope}:${resourceId}:${version}`,
         userScope,

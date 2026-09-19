@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ImgHTMLAttributes, type ReactNode } from "react";
 
-import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
-import { getCachedResourceObjectUrl } from "@/services/resource-blob-cache";
+import { resourceIdFromStorageKey } from "@/services/api/resources";
+import { cacheResourceObjectUrl, peekCachedResourceObjectUrl } from "@/services/resource-blob-cache";
 import { resolveImageUrl } from "@/services/image-storage";
 
 type CachedResourceImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, "src"> & {
@@ -13,7 +13,7 @@ type CachedResourceImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, "src">
 };
 
 /**
- * 资源图片复用已有的用户隔离 Blob 缓存，未命中时由浏览器直连 CDN，不触发代理填充缓存。
+ * 先读取本地缓存，未命中时通过 CDN 缓存后显示，失败由缓存层重试。
  * 本地 image: 类型的 storageKey 也会自动从 LocalForage 恢复有效的 Object URL。
  */
 export function CachedResourceImage({ storageKey, src = "", fallback = null, loadingFallback = fallback, eager = false, onError, ...props }: CachedResourceImageProps) {
@@ -58,19 +58,18 @@ export function CachedResourceImage({ storageKey, src = "", fallback = null, loa
                     cancelled = true;
                 };
             }
-            const previewUrl = resourceFileUrl(resourceIdFromStorageKey(storageKey));
-            setCachedSrc(previewUrl);
-            const resolve = getCachedResourceObjectUrl(storageKey);
+            setCachedSrc(peekCachedResourceObjectUrl(storageKey));
+            const resolve = cacheResourceObjectUrl(storageKey);
             void resolve
                 .then((url) => {
                     if (!cancelled) {
-                        setCachedSrc(url || previewUrl);
+                        setCachedSrc(url);
                     }
                 })
                 .catch(() => {
                     if (!cancelled) {
-                        // 本地缓存不可用不影响资源入口重新签发 CDN 地址。
-                        setCachedSrc(previewUrl);
+                        setCachedSrc("");
+                        setCacheFailed(true);
                     }
                 });
             return () => {

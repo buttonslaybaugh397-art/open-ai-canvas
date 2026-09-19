@@ -335,11 +335,6 @@ export function resourceDownloadUrl(id: string, fileName?: string) {
     return resourceFileUrl(id) + "?" + query.toString();
 }
 
-function resourceProxyFileUrl(id: string) {
-    const base = String(apiBaseURL).replace(/\/+$/, "");
-    return `${base}/resources/${encodeURIComponent(id)}/file?proxy=1`;
-}
-
 export function resolveResourceUrl(storageKey?: string, fallback = "") {
     const id = resourceIdFromStorageKey(storageKey);
     // 资源引用本身已经包含稳定 ID；恢复/展示阶段不需要再查一遍元数据。
@@ -354,12 +349,36 @@ export function playbackVariantUrl(id: string) {
     return `${base}/resources/${encodeURIComponent(id)}/file?variant=playback`;
 }
 
-export async function getResourceBlob(storageKey: string) {
+export type ResourceBlobAccess = "user" | "admin";
+
+export async function getResourceBlob(storageKey: string, signal?: AbortSignal, access: ResourceBlobAccess = "user") {
     const id = resourceIdFromStorageKey(storageKey);
     if (!id) return null;
-    const url = resourceProxyFileUrl(id);
-    const response = await fetch(url, { credentials: isResourceUrl(url) ? "include" : "same-origin" });
-    if (!response.ok) return null;
+    // Resolve with API credentials, then read CDN bytes without application cookies.
+    // An empty URL is reserved for resources actually stored on the local server.
+    const endpoint = `${access === "admin" ? "/admin" : ""}/resources/${encodeURIComponent(id)}/file`;
+    const delivery = await http.get<{ url: string }>(endpoint, {
+        params: { resolve: "1" }, signal,
+    });
+    if (!delivery || typeof delivery.url !== "string") throw new Error("后端未返回有效的媒体读取地址");
+    let response: Response;
+    try {
+        response = await fetch(delivery.url || `${String(apiBaseURL).replace(/\/+$/, "")}${endpoint}`, {
+            credentials: delivery.url ? "omit" : "include",
+            // A local resource can be promoted between resolve and fetch. Retry
+            // resolution instead of following a new URL with API credentials.
+            redirect: "error",
+            referrerPolicy: "no-referrer",
+            signal,
+        });
+    } catch (error) {
+        if (signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) throw error;
+        throw new Error("媒体读取失败，请检查网络及对象存储/CDN 的 CORS 配置", { cause: error });
+    }
+    if (!response.ok) throw new ApiError(`媒体读取失败（HTTP ${response.status}）`, {
+        status: response.status,
+        retryable: [403, 404, 410, 408, 429].includes(response.status) || response.status >= 500,
+    });
     return response.blob();
 }
 

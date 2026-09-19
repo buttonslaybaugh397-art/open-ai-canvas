@@ -80,6 +80,11 @@ func RegisterCanvasShareRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		delivery, err := svc.PrepareSharedCanvasResourceDelivery(c.Param("token"), c.Param("resourceId"), c.GetHeader("Range"))
 		if err != nil {
+			var appErr *service.AppError
+			if errors.As(err, &appErr) && appErr.Status == http.StatusServiceUnavailable {
+				failService(c, err)
+				return
+			}
 			fail(c, http.StatusNotFound, errors.New("分享资源不存在"))
 			return
 		}
@@ -110,12 +115,10 @@ func RegisterCanvasShareRoutes(r *gin.RouterGroup, svc *service.Service) {
 		for key, value := range headers {
 			c.Header(key, value)
 		}
-		if resource.Provider == "local" {
-			if seeker, ok := stream.Body.(io.ReadSeeker); ok {
-				c.Header("Content-Type", mimeType)
-				http.ServeContent(c.Writer, c.Request, resource.ID, resource.UpdatedAt, seeker)
-				return
-			}
+		if seeker, ok := stream.Body.(io.ReadSeeker); ok {
+			c.Header("Content-Type", mimeType)
+			http.ServeContent(c.Writer, c.Request, resource.ID, resource.UpdatedAt, seeker)
+			return
 		}
 		if stream.ContentRange != "" {
 			c.Header("Content-Range", stream.ContentRange)

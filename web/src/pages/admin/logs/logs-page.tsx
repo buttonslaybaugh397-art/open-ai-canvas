@@ -1,7 +1,7 @@
 import { App, Button, Input, Modal, Select } from "antd";
 import { IconButton } from "@/components/ui/base/buttons";
 import type { ColumnsType } from "antd/es/table";
-import { Download, Eye, Play, Search } from "lucide-react";
+import { Download, Eye, LoaderCircle, Play, RotateCw, Search } from "lucide-react";
 import { saveAs } from "file-saver";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
@@ -11,6 +11,8 @@ import { MediaPreview } from "@/components/media-preview";
 import { formatCredits } from "@/constant/credits";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { exportAdminApiLogs, listAdminApiLogs, type ApiCallLog } from "@/services/api/auth";
+import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
+import { downloadMediaFile } from "@/services/media-download";
 import { ApiLogDetailDrawer } from "../components/api-log-detail-drawer";
 import { AdminPageFrame } from "../components/admin-shell";
 import { AdminBatchBar, AdminDataTable, AdminExportButton, AdminFilterChip, AdminStatusBadge, AdminTableEmpty } from "../components/admin-ui";
@@ -215,7 +217,7 @@ export default function LogsPage() {
                 onCancel={() => setMediaPreview(null)}
                 footer={
                     mediaPreview ? (
-                        <Button icon={<Download className="size-4" />} onClick={() => downloadMedia(mediaPreview.url, mediaPreview.kind)}>
+                        <Button icon={<Download className="size-4" />} onClick={() => downloadMediaFile(mediaPreview.url, `api-call-${mediaPreview.kind}.${mediaPreview.kind === "video" ? "mp4" : "png"}`, (error) => message.error(error.message))}>
                             下载原文件
                         </Button>
                     ) : null
@@ -276,9 +278,26 @@ function BillingSummary({ log }: { log: ApiCallLog }) {
 }
 
 function MediaResult({ log, onPreview }: { log: ApiCallLog; onPreview: (url: string, kind: "image" | "video") => void }) {
-    const url = log.mediaPreviewUrl;
+    const { message } = App.useApp();
+    const [cachedUrl, setCachedUrl] = useState("");
+    const [loadError, setLoadError] = useState("");
+    const [attempt, setAttempt] = useState(0);
+    useEffect(() => {
+        let cancelled = false;
+        setCachedUrl("");
+        setLoadError("");
+        if (log.mediaResourceId) {
+            void cacheResourceObjectUrl(`resource:${log.mediaResourceId}`, "admin")
+                .then((url) => { if (!cancelled) setCachedUrl(url); })
+                .catch((error: unknown) => { if (!cancelled) setLoadError(error instanceof Error ? error.message : "资源加载失败"); });
+        }
+        return () => { cancelled = true; };
+    }, [log.mediaResourceId, attempt]);
+    const url = log.mediaResourceId ? cachedUrl : log.mediaPreviewUrl;
     const kind = log.mediaPreviewKind;
     const [unavailableUrl, setUnavailableUrl] = useState("");
+    if (loadError) return <IconButton size="sm" variant="ghost" icon={RotateCw} title={`${loadError}，点击重试`} aria-label="重试媒体预览" onClick={() => setAttempt((value) => value + 1)} />;
+    if (log.mediaResourceId && !cachedUrl) return <span role="status" aria-label="正在加载资源"><LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" /></span>;
     if (!url || (kind !== "image" && kind !== "video")) return <span className="text-foreground/30">--</span>;
     const previewUnavailable = unavailableUrl === url;
     return (
@@ -299,13 +318,9 @@ function MediaResult({ log, onPreview }: { log: ApiCallLog; onPreview: (url: str
                 ) : null}
                 {!previewUnavailable && log.mediaCount > 1 ? <span className="absolute bottom-0.5 right-0.5 rounded-sm bg-black/65 px-1 text-[var(--fs-micro)] leading-4 text-white">{log.mediaCount}</span> : null}
             </button>
-            <IconButton size="sm" variant="ghost" icon={Download} onClick={() => downloadMedia(url, kind)} title="下载原文件" aria-label="下载原文件" />
+            <IconButton size="sm" variant="ghost" icon={Download} onClick={() => downloadMediaFile(url, `api-call-${kind}.${kind === "video" ? "mp4" : "png"}`, (error) => message.error(error.message))} title="下载原文件" aria-label="下载原文件" />
         </div>
     );
-}
-
-function downloadMedia(url: string, kind: "image" | "video") {
-    saveAs(url, `api-call-${kind}.${kind === "video" ? "mp4" : "png"}`);
 }
 
 function CallStatus({ log }: { log: ApiCallLog }) {

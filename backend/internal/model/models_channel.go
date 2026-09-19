@@ -127,6 +127,7 @@ type ApiCallLog struct {
 	UsageAvailable      bool          `json:"usageAvailable"`
 	MediaCount          int           `json:"mediaCount"`
 	MediaPreviewURL     string        `json:"mediaPreviewUrl,omitempty" gorm:"-"`
+	MediaResourceID     string        `json:"mediaResourceId,omitempty" gorm:"-"`
 	MediaPreviewKind    string        `json:"mediaPreviewKind,omitempty" gorm:"-"`
 	VideoSeconds        int           `json:"videoSeconds"`
 	ProviderRequestID   string        `json:"providerRequestId" gorm:"size:160"`

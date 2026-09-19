@@ -1,12 +1,14 @@
 import { App, Button, Input, Modal, Select } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { Download, Eye, Search, Trash2 } from "lucide-react";
+import { Download, Eye, LoaderCircle, RotateCw, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 
 import { PaginationBar } from "@/components/layout/workspace-page";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
-import { adminResourceFileUrl, deleteAdminResources, getAdminStorageStats, listAdminResources, type AdminStorageResource, type AdminStorageStats } from "@/services/api/admin-storage";
+import { deleteAdminResources, getAdminStorageStats, listAdminResources, type AdminStorageResource, type AdminStorageStats } from "@/services/api/admin-storage";
+import { downloadResourceFile } from "@/services/media-download";
+import { cacheResourceObjectUrl } from "@/services/resource-blob-cache";
 import { AdminBatchBar, AdminDataTable, AdminFilterChip, AdminStatTile, AdminStatusBadge, AdminTableEmpty } from "./admin-ui";
 
 const pageSizes = [20, 50, 100];
@@ -33,6 +35,11 @@ export default function StorageResourcesPanel() {
     const [refreshKey, setRefreshKey] = useState(0);
     const requestSequence = useRef(0);
     const hasFilters = Boolean(keyword || userId || kind !== "all" || status !== "all" || provider !== "all");
+
+    const downloadResource = (resource: AdminStorageResource) => {
+        const name = fileName(resource.objectKey) || resource.id;
+        void downloadResourceFile(`resource:${resource.id}`, name, (error) => message.error(error.message), "admin");
+    };
 
     const updateUrl = (patch: Record<string, string | number>, replace = false) => {
         const next = new URLSearchParams(searchParams);
@@ -129,7 +136,7 @@ export default function StorageResourcesPanel() {
                         <Button type="text" size="small" icon={<Eye className="size-3.5" />} disabled={resource.status !== "ready"} onClick={() => setPreviewing(resource)}>
                             预览
                         </Button>
-                        <Button type="text" size="small" icon={<Download className="size-3.5" />} disabled={resource.status !== "ready"} href={adminResourceFileUrl(resource.id, true, fileName(resource.objectKey) || resource.id)} download={fileName(resource.objectKey) || resource.id} rel="noreferrer">
+                        <Button type="text" size="small" icon={<Download className="size-3.5" />} disabled={resource.status !== "ready"} onClick={() => downloadResource(resource)}>
                             下载
                         </Button>
                         <Button type="text" danger size="small" icon={<Trash2 className="size-3.5" />} disabled={deleting} onClick={() => confirmDelete([resource.id])}>
@@ -249,7 +256,7 @@ export default function StorageResourcesPanel() {
                 onCancel={() => setPreviewing(null)}
                 footer={
                     previewing ? (
-                        <Button icon={<Download className="size-4" />} disabled={previewing.status !== "ready"} href={adminResourceFileUrl(previewing.id, true, fileName(previewing.objectKey) || previewing.id)} download={fileName(previewing.objectKey) || previewing.id} rel="noreferrer">
+                        <Button icon={<Download className="size-4" />} disabled={previewing.status !== "ready"} onClick={() => downloadResource(previewing)}>
                             下载原文件
                         </Button>
                     ) : null
@@ -285,7 +292,20 @@ function DeleteBlockedSummary({ blocked }: { blocked: Array<{ id: string; reason
 }
 
 function ResourcePreview({ resource }: { resource: AdminStorageResource }) {
-    const url = adminResourceFileUrl(resource.id);
+    const [url, setUrl] = useState("");
+    const [error, setError] = useState("");
+    const [attempt, setAttempt] = useState(0);
+    useEffect(() => {
+        let cancelled = false;
+        setUrl("");
+        setError("");
+        void cacheResourceObjectUrl(`resource:${resource.id}`, "admin")
+            .then((cached) => { if (!cancelled) setUrl(cached); })
+            .catch((failure: unknown) => { if (!cancelled) setError(failure instanceof Error ? failure.message : "资源加载失败"); });
+        return () => { cancelled = true; };
+    }, [resource.id, attempt]);
+    if (error) return <div role="alert" className="py-12 text-center"><p>{error}</p><Button icon={<RotateCw className="size-4" />} onClick={() => setAttempt((value) => value + 1)}>重试</Button></div>;
+    if (!url) return <div role="status" className="flex items-center justify-center gap-2 py-12"><LoaderCircle className="size-4 animate-spin" />正在加载资源</div>;
     if (resource.kind === "image" || resource.mimeType.startsWith("image/")) return <img className="mx-auto max-h-[65vh] max-w-full object-contain" src={url} alt={fileName(resource.objectKey) || "资源预览"} />;
     if (resource.kind === "video" || resource.mimeType.startsWith("video/")) return <video className="mx-auto max-h-[65vh] max-w-full bg-black" src={url} controls playsInline />;
     if (resource.kind === "audio" || resource.mimeType.startsWith("audio/"))

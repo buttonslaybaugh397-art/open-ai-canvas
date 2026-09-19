@@ -12,7 +12,7 @@ describe("admin storage CDN delivery", () => {
         const url = new URL(adminResourceFileUrl("resource/a"), "http://localhost");
         expect(url.pathname).toEndWith("/admin/resources/resource%2Fa/file");
         expect(url.search).toBe("");
-        expect(source).toContain("const url = adminResourceFileUrl(resource.id)");
+        expect(source).toContain('cacheResourceObjectUrl(`resource:${resource.id}`, "admin")');
     });
 
     test("download requests direct delivery and encodes the attachment name", () => {
@@ -33,12 +33,13 @@ describe("admin storage CDN delivery", () => {
         }
     });
 
-    test("both download buttons use native links instead of fetching the complete media blob", () => {
-        expect(source).toContain("href={adminResourceFileUrl(resource.id, true,");
-        expect(source).toContain("href={adminResourceFileUrl(previewing.id, true,");
+    test("both download buttons isolate CDN navigation away from the admin page", () => {
+        expect(source).toContain("onClick={() => downloadResource(resource)}");
+        expect(source).toContain("onClick={() => downloadResource(previewing)}");
+        expect(source).toContain('downloadResourceFile(`resource:${resource.id}`, name,');
+        expect(source).not.toContain("href={adminResourceFileUrl(");
         expect(source).toContain('disabled={resource.status !== "ready"}');
         expect(source).toContain('disabled={previewing.status !== "ready"}');
-        expect(source.match(/rel="noreferrer"/g)).toHaveLength(2);
         expect(source).not.toContain("downloadAdminResource");
         expect(source).not.toContain("saveAs");
         expect(apiSource).not.toContain("fetch(");

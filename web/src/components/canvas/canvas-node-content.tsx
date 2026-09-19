@@ -13,9 +13,9 @@ import { buildLibTVImagePreviewUrl, buildLibTVVideoSourceUrl } from "@/lib/canva
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import type { CanvasTheme } from "@/lib/canvas-theme";
 import { formatBytes } from "@/lib/image-utils";
-import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
+import { resourceIdFromStorageKey } from "@/services/api/resources";
 import type { GenerationTask } from "@/services/api/task-center";
-import { getCachedResourceObjectUrl, peekCachedResourceObjectUrl } from "@/services/resource-blob-cache";
+import { cacheResourceObjectUrl, peekCachedResourceObjectUrl } from "@/services/resource-blob-cache";
 import { resolveMediaUrl } from "@/services/file-storage";
 import { hydrateCanvasVideoPreview } from "@/services/canvas-video-preview";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
@@ -561,9 +561,10 @@ function useVideoPlaybackUrl(node: CanvasNodeData, active: boolean) {
             return;
         }
         setLoading(true);
+        setUrl("");
         void resolveMediaUrl(storageKey, fallback)
             .then((resolved) => { if (!cancelled) setUrl(resolved); })
-            .catch(() => { if (!cancelled) setUrl(fallback); })
+            .catch(() => { if (!cancelled) setUrl(""); })
             .finally(() => { if (!cancelled) setLoading(false); });
         return () => { cancelled = true; };
     }, [active, fallback, storageKey]);
@@ -650,14 +651,13 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
             || (node.type === CanvasNodeType.Image && node.metadata?.importSource?.provider === "libtv" ? buildLibTVImagePreviewUrl(content) : content);
     const resourceId = resourceIdFromStorageKey(storageKey);
     const isRemoteResource = Boolean(resourceId);
-    // 预览由资源入口跳转 CDN；只复用已有 Blob，不为展示再代理下载完整媒体。
-    const synchronousUrl = eager && isRemoteResource && node.type === CanvasNodeType.Image ? peekCachedResourceObjectUrl(storageKey) || resourceFileUrl(resourceId) : "";
+    const synchronousUrl = eager && isRemoteResource ? peekCachedResourceObjectUrl(storageKey) : "";
     // Inline data URLs are already local, but decoding thousands of them is
     // still expensive. Images must wait for the same viewport gate as remote
     // resources; otherwise DOM virtualization does not reduce image work.
     const isLazyVisual = node.type === CanvasNodeType.Image;
     const isHttpUrl = Boolean(fallback && !fallback.startsWith("data:"));
-    const initialUrl = synchronousUrl || (eager && isLazyVisual && isHttpUrl ? fallback : (isRemoteResource || isLazyVisual ? "" : fallback));
+    const initialUrl = synchronousUrl || (isRemoteResource ? "" : eager && isLazyVisual && isHttpUrl ? fallback : isLazyVisual ? "" : fallback);
     const [url, setUrl] = useState(() => initialUrl);
     const [loading, setLoading] = useState(() => !initialUrl && isRemoteResource && eager);
 
@@ -669,23 +669,17 @@ function useNodeResourceUrl(node: CanvasNodeData, eager: boolean) {
             return;
         }
         const cachedSync = peekCachedResourceObjectUrl(storageKey);
-        if (cachedSync) {
+        if (!eager || cachedSync) {
             setUrl(cachedSync);
             setLoading(false);
             return;
         }
-        if (!url && eager && isHttpUrl) {
-            setUrl(resourceFileUrl(resourceId));
-            setLoading(false);
-        } else if (!url) {
-            setLoading(eager);
-        }
-        const previewUrl = resourceFileUrl(resourceId);
-        void getCachedResourceObjectUrl(storageKey).then((cached) => {
-            if (!cancelled && cached) setUrl(cached);
-            else if (!cancelled && eager) setUrl(previewUrl);
+        setUrl("");
+        setLoading(true);
+        void cacheResourceObjectUrl(storageKey).then((cached) => {
+            if (!cancelled) setUrl(cached);
         }).catch(() => {
-            if (!cancelled && eager) setUrl(previewUrl);
+            if (!cancelled) setUrl("");
         }).finally(() => {
             if (!cancelled) setLoading(false);
         });

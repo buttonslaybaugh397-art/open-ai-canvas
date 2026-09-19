@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { App } from "antd";
-import { saveAs } from "file-saver";
 
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { FOLDER_COLLAPSED_HEIGHT, FOLDER_COLLAPSED_WIDTH, FRAME_COLLAPSED_HEIGHT, FRAME_COLLAPSED_WIDTH, getFrameChildIds, isCanvasFolderNode, isFrameNode } from "@/lib/canvas/canvas-frame";
@@ -10,7 +9,7 @@ import { writeCanvasNodePrompt } from "@/lib/canvas/canvas-node-prompt";
 import { applyBatchPrimaryImage, applyNodeConfigPatch } from "@/lib/canvas/canvas-project-domain";
 import { resetGenerationTaskMetadata } from "@/lib/canvas/canvas-project-generation";
 import { CONTENT_MODERATION_ERROR_CODE, isContentModerationError } from "@/lib/generation-error";
-import { resourceDownloadUrl } from "@/services/api/resources";
+import { downloadMediaFile, downloadResourceFile } from "@/services/media-download";
 import { ensureCanvasNodeAsset } from "@/services/project-asset-sync";
 import { CanvasNodeType, type CanvasFolderStyle, type CanvasFolderTheme, type CanvasNodeData, type CanvasNodeMetadata, type Position } from "@/types/canvas";
 
@@ -201,19 +200,12 @@ export function useCanvasNodeEditor({
         if ((node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || (!node.metadata?.content && !node.metadata?.storageKey)) return;
         const fileName = buildCanvasMediaDownloadFileName(canvasTitle, node);
         const resourceId = node.metadata?.storageKey?.startsWith("resource:") ? node.metadata.storageKey.slice("resource:".length) : "";
-        if (!resourceId) {
-            if (node.metadata?.content) saveAs(node.metadata.content, fileName);
-            return;
-        }
         try {
-            const anchor = document.createElement("a");
-            anchor.href = resourceDownloadUrl(resourceId, fileName);
-            anchor.download = fileName;
-            anchor.rel = "noreferrer";
-            anchor.style.display = "none";
-            document.body.appendChild(anchor);
-            anchor.click();
-            anchor.remove();
+            if (resourceId) {
+                void downloadResourceFile(`resource:${resourceId}`, fileName, (error) => message.error(error.message));
+            } else if (node.metadata?.content) {
+                downloadMediaFile(node.metadata.content, fileName, (error) => message.error(error.message));
+            }
         } catch (error) {
             message.error(error instanceof Error ? error.message : "资源下载失败");
         }

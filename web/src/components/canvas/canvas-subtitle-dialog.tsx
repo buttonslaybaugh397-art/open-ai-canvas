@@ -2,15 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { App, Button, ColorPicker, Input, InputNumber, Progress, Segmented } from "antd";
 import { AppModal } from "@/components/ui/product/app-modal";
 import { Switch } from "@/components/ui/base/switch";
-import { Captions, FileDown, FileUp, ListPlus, LoaderCircle, Plus, Scissors, Sparkles, Trash2 } from "lucide-react";
+import { Captions, FileDown, FileUp, ListPlus, LoaderCircle, Plus, RotateCw, Scissors, Sparkles, Trash2 } from "lucide-react";
 import { saveAs } from "file-saver";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { resolveMediaUrl } from "@/services/file-storage";
-import { getCachedResourceObjectUrl } from "@/services/resource-blob-cache";
-import { resourceIdFromStorageKey } from "@/services/api/resources";
 import { parseSrt, serializeSrtEntries } from "@/lib/timeline/srt-parser";
 import { DEFAULT_MAX_CHARS_PER_ENTRY, MAX_CHARS_PER_ENTRY_LIMIT, MIN_CHARS_PER_ENTRY, resegmentSrtEntries, splitLongEntry } from "@/lib/timeline/srt-resegment";
 import { buildFallbackHighlights, remapHighlightsAfterResegment } from "@/lib/timeline/subtitle-highlights";
@@ -43,6 +41,7 @@ export function CanvasSubtitleDialog({ node, open, projectId, config, onClose, o
     const [previewBoxWidth, setPreviewBoxWidth] = useState(0);
     const [viewportHeight, setViewportHeight] = useState(0);
     const [videoError, setVideoError] = useState(false);
+    const [videoAttempt, setVideoAttempt] = useState(0);
     const abortRef = useRef<AbortController | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const textInputRef = useRef<HTMLInputElement>(null);
@@ -63,38 +62,23 @@ export function CanvasSubtitleDialog({ node, open, projectId, config, onClose, o
     }, []);
 
     // 打开弹窗时解析视频地址，用于字幕叠加预览。
-    // 只复用已有缓存；未命中时从资源入口跳转 CDN，不为预览下载整个视频。
+    // 读取共享缓存；CDN 失败由缓存层重试，不能回退到源站。
     useEffect(() => {
         if (!open) return;
         let cancelled = false;
         setCurrentTimeMs(0);
         setVideoSize(null);
         setVideoError(false);
+        setVideoUrl("");
         const storageKey = node.metadata?.storageKey || "";
         const fallback = node.metadata?.content || "";
-        const applyUrl = (url: string) => {
-            if (!cancelled) setVideoUrl(url);
-        };
-        if (resourceIdFromStorageKey(storageKey)) {
-            void getCachedResourceObjectUrl(storageKey)
-                .then((cached) => {
-                    if (cancelled) return;
-                    if (cached) {
-                        setVideoUrl(cached);
-                    } else {
-                        void resolveMediaUrl(storageKey, fallback).then(applyUrl);
-                    }
-                })
-                .catch(() => {
-                    if (!cancelled) void resolveMediaUrl(storageKey, fallback).then(applyUrl);
-                });
-        } else {
-            void resolveMediaUrl(storageKey, fallback).then(applyUrl);
-        }
+        void resolveMediaUrl(storageKey, fallback)
+            .then((url) => { if (!cancelled) setVideoUrl(url); })
+            .catch(() => { if (!cancelled) setVideoError(true); });
         return () => {
             cancelled = true;
         };
-    }, [open, node]);
+    }, [open, node, videoAttempt]);
 
     // 监听预览容器与视口尺寸，视频按分辨率等比缩放，不撑满也不变形。
     useEffect(() => {
@@ -348,7 +332,7 @@ export function CanvasSubtitleDialog({ node, open, projectId, config, onClose, o
                         ) : null}
                     </div>
                 ) : (
-                    <div className="grid h-40 w-full max-w-[640px] place-items-center px-4 text-center text-xs opacity-60">{videoError ? "视频预览加载失败，请检查素材是否仍然可用" : "暂无视频素材可预览，可先在节点上传或生成视频"}</div>
+                    <div className="grid h-40 w-full max-w-[640px] place-items-center px-4 text-center text-xs opacity-60">{videoError ? <div role="alert">视频预览加载失败<Button type="text" icon={<RotateCw className="size-4" />} onClick={() => setVideoAttempt((value) => value + 1)}>重试</Button></div> : "正在加载视频预览"}</div>
                 )}
             </div>
             <div className="shrink-0 text-center text-xs opacity-40">点击字幕条目可跳转预览</div>

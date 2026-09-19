@@ -310,6 +310,13 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		if downloadFileName != "" {
 			c.Header("Content-Disposition", attachmentContentDisposition(downloadFileName))
 		}
+		if c.Query("resolve") == "1" {
+			c.Header("Content-Disposition", "")
+			c.Header("Cache-Control", "private, no-store")
+			c.Header("Referrer-Policy", "no-referrer")
+			ok(c, gin.H{"url": delivery.RedirectURL})
+			return
+		}
 		if delivery.RedirectURL != "" {
 			// RedirectURL may contain a short-lived signed CDN URL (for example Qiniu).
 			// Never cache the redirect beyond the signature lifetime, otherwise a reverse proxy can
@@ -387,12 +394,10 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		if resource.MimeType == "" {
 			resource.MimeType = "application/octet-stream"
 		}
-		if resource.Provider == "local" {
-			if seeker, ok := stream.Body.(io.ReadSeeker); ok {
-				c.Header("Content-Type", resource.MimeType)
-				http.ServeContent(c.Writer, c.Request, resource.ID, resource.UpdatedAt, seeker)
-				return
-			}
+		if seeker, ok := stream.Body.(io.ReadSeeker); ok {
+			c.Header("Content-Type", resource.MimeType)
+			http.ServeContent(c.Writer, c.Request, resource.ID, resource.UpdatedAt, seeker)
+			return
 		}
 		if stream.ContentRange != "" {
 			c.Header("Content-Range", stream.ContentRange)

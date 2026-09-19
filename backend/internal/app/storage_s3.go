@@ -161,7 +161,7 @@ func headS3Object(ctx context.Context, setting ossSettingValue, objectKey string
 	return true, nil
 }
 
-func signedS3ObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time) (string, error) {
+func signedS3ObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time, downloadFileName ...string) (string, error) {
 	client, err := newS3Client(setting, 2*time.Minute)
 	if err != nil {
 		return "", err
@@ -170,7 +170,11 @@ func signedS3ObjectURL(setting ossSettingValue, objectKey string, expiresAt time
 	if duration <= 0 {
 		return "", errors.New("S3 签名有效期必须晚于当前时间")
 	}
-	req, _ := client.GetObjectRequest(&awss3.GetObjectInput{Bucket: aws.String(setting.Bucket), Key: aws.String(strings.TrimLeft(objectKey, "/"))})
+	input := &awss3.GetObjectInput{Bucket: aws.String(setting.Bucket), Key: aws.String(strings.TrimLeft(objectKey, "/"))}
+	if disposition := resourceDownloadDisposition(downloadFileName...); disposition != "" {
+		input.ResponseContentDisposition = aws.String(disposition)
+	}
+	req, _ := client.GetObjectRequest(input)
 	value, err := req.Presign(duration)
 	if err != nil {
 		return "", fmt.Errorf("S3 下载地址签名失败：%w", err)

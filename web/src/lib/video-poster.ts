@@ -76,7 +76,9 @@ function captureVideoPosterNow(source: string, options: CaptureVideoPosterOption
         video.preload = "auto";
         video.muted = true;
         video.playsInline = true;
-        if (isCrossOriginHttpUrl(source)) video.crossOrigin = "anonymous";
+        // Same-origin resource URLs can redirect to a CDN. Opt into CORS before
+        // loading every HTTP source so that its decoded frame remains readable.
+        if (isHttpUrl(source)) video.crossOrigin = "anonymous";
         video.onloadedmetadata = readMetadata;
         video.onerror = () => finish(metadata);
         video.onloadeddata = () => {
@@ -111,10 +113,10 @@ function captureVideoPosterNow(source: string, options: CaptureVideoPosterOption
     });
 }
 
-function isCrossOriginHttpUrl(source: string) {
+function isHttpUrl(source: string) {
     try {
         const url = new URL(source, window.location.href);
-        return /^https?:$/.test(url.protocol) && url.origin !== window.location.origin;
+        return /^https?:$/.test(url.protocol);
     } catch {
         return false;
     }

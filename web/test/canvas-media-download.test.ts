@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import { buildImageGenerationNodeTitle } from "@/lib/canvas/canvas-generation-title";
 import { buildCanvasMediaDownloadFileName, canvasMediaFileExtension } from "@/lib/canvas/canvas-media-download";
@@ -19,6 +20,14 @@ function mediaNode(overrides: Partial<CanvasNodeData> = {}): CanvasNodeData {
 }
 
 describe("canvas media download", () => {
+    test("canvas media uses the shared non-navigating download entry for stored and external URLs", () => {
+        const source = readFileSync(new URL("../src/pages/canvas/use-canvas-node-editor.ts", import.meta.url), "utf8");
+        expect(source).toContain('downloadResourceFile(`resource:${resourceId}`, fileName,');
+        expect(source).toContain("downloadMediaFile(node.metadata.content, fileName,");
+        expect(source).not.toContain('document.createElement("a")');
+        expect(source).not.toContain("saveAs(");
+    });
+
     test("资源下载使用对象存储/CDN 直连参数并编码文件名", () => {
         const url = new URL(resourceDownloadUrl("resource/a", "终稿 video.mp4"), "http://localhost");
         expect(url.pathname).toContain("/resources/resource%2Fa/file");

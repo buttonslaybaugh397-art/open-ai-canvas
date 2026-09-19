@@ -149,6 +149,7 @@ func testResourcePreviewRedirectsToSignedCDN(t *testing.T, adminRoute bool) {
 		{query: "?direct=1&download=1&filename=" + url.QueryEscape("final video.mp4"), name: "final video.mp4"},
 		{query: "?direct=1&download=1&filename=" + url.QueryEscape("\u7ec8\u7a3f.mp4"), name: "\u7ec8\u7a3f.mp4"},
 		{query: "?download=1", name: resource.ID},
+		{}, // A preview after downloading must not inherit attachment mode.
 	} {
 		res := request(actor, tc.query)
 		if res.Code != http.StatusTemporaryRedirect {
@@ -163,6 +164,9 @@ func testResourcePreviewRedirectsToSignedCDN(t *testing.T, adminRoute bool) {
 		}
 		if !strings.HasPrefix(location.String(), cdn.URL+"/") || location.Query().Get("attname") != tc.name {
 			t.Fatal("redirect must target CDN with the correct attachment mode")
+		}
+		if tc.name == "" && (res.Header().Get("Content-Disposition") != "" || location.Query().Get("response-content-disposition") != "") {
+			t.Fatal("preview must not carry download attachment headers or overrides")
 		}
 		if gets.Load() != 0 {
 			t.Fatal("preview handler must not download or relay the media")
@@ -202,13 +206,26 @@ func testResourcePreviewRedirectsToSignedCDN(t *testing.T, adminRoute bool) {
 		t.Fatal("direct CDN playback did not return the requested media range")
 	}
 	proxy := request(actor, "?proxy=1&direct=1&download=1&filename=proxy.mp4")
-	if proxy.Code != http.StatusPartialContent || proxy.Header().Get("Location") != "" || proxy.Body.String() != "clip" {
-		t.Fatalf("explicit proxy did not preserve range delivery: status=%d", proxy.Code)
+	if proxy.Code != http.StatusTemporaryRedirect || !strings.HasPrefix(proxy.Header().Get("Location"), cdn.URL) || gets.Load() != 1 {
+		t.Fatalf("legacy proxy flag must not relay cloud bytes: status=%d", proxy.Code)
 	}
-	if proxy.Header().Get("Content-Disposition") != "attachment; filename=proxy.mp4" {
-		t.Fatal("proxy download lost the attachment filename")
+	resolved := request(actor, "?resolve=1")
+	var envelope struct {
+		Data struct {
+			URL string `json:"url"`
+		} `json:"data"`
 	}
+	if err := json.Unmarshal(resolved.Body.Bytes(), &envelope); err != nil || resolved.Code != http.StatusOK || !strings.HasPrefix(envelope.Data.URL, cdn.URL) || gets.Load() != 1 {
+		t.Fatal("resolving the CDN address must return JSON without reading media")
+	}
+	if denied := request("other", "?resolve=1"); denied.Code != deniedStatus {
+		t.Fatal("resolving the CDN address must retain authorization")
+	}
+	routePrefix := "/api/resources/"
 	if adminRoute {
+		routePrefix = "/api/admin/resources/"
+	}
+	{
 		for _, status := range []int{http.StatusNotFound, http.StatusServiceUnavailable} {
 			headStatus.Store(int32(status))
 			fallback := resource
@@ -217,25 +234,31 @@ func testResourcePreviewRedirectsToSignedCDN(t *testing.T, adminRoute bool) {
 			if err := db.Create(&fallback).Error; err != nil {
 				t.Fatal(err)
 			}
-			endpoint = "/api/admin/resources/" + fallback.ID + "/file"
+			endpoint = routePrefix + fallback.ID + "/file"
 			res := request(actor, "")
-			if res.Code != http.StatusPartialContent || res.Header().Get("Location") != "" || res.Body.String() != "clip" {
-				t.Fatalf("failed HEAD must retain recovery delivery: status=%d", res.Code)
+			if res.Code != http.StatusServiceUnavailable || res.Header().Get("Location") != "" || gets.Load() != 1 {
+				t.Fatalf("failed HEAD must not relay media: status=%d", res.Code)
+			}
+			headStatus.Store(http.StatusOK)
+			// Failed probes use the shared cache's one-second cooldown.
+			time.Sleep(1100 * time.Millisecond)
+			if retry := request(actor, ""); retry.Code != http.StatusTemporaryRedirect {
+				t.Fatal("CDN recovery must be retried after the failure cooldown")
 			}
 		}
-		local := model.Resource{ID: "local-file", UserID: "owner", Provider: "local", Kind: "file", Status: model.ResourceStatusReady, ObjectKey: "test.txt", Size: 4, MimeType: "text/plain"}
+		local := model.Resource{ID: "local-file", UserID: "owner", Provider: "local", Kind: "file", Status: model.ResourceStatusReady, ObjectKey: "test.txt", Size: 8, MimeType: "text/plain"}
 		if err := db.Create(&local).Error; err != nil {
 			t.Fatal(err)
 		}
 		if err := os.MkdirAll(filepath.Join(dataDir, "resources"), 0o750); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dataDir, "resources", local.ObjectKey), []byte("text"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dataDir, "resources", local.ObjectKey), []byte("textmore"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		endpoint = "/api/admin/resources/" + local.ID + "/file"
+		endpoint = routePrefix + local.ID + "/file"
 		res := request(actor, "?download=1&filename=test.txt")
-		if res.Code != http.StatusOK || res.Body.String() != "text" || res.Header().Get("Location") != "" || res.Header().Get("Content-Disposition") != "attachment; filename=test.txt" {
+		if res.Code != http.StatusPartialContent || res.Header().Get("Content-Range") != "bytes 0-3/8" || res.Body.String() != "text" || res.Header().Get("Location") != "" || res.Header().Get("Content-Disposition") != "attachment; filename=test.txt" {
 			t.Fatal("local download must retain its body and attachment filename")
 		}
 		if err := db.Model(&local).Update("status", model.ResourceStatusFailed).Error; err != nil {
@@ -244,7 +267,7 @@ func testResourcePreviewRedirectsToSignedCDN(t *testing.T, adminRoute bool) {
 		if res := request(actor, ""); res.Code != http.StatusBadRequest || res.Header().Get("Location") != "" {
 			t.Fatalf("failed resource must not redirect: status=%d", res.Code)
 		}
-		endpoint = "/api/admin/resources/missing/file"
+		endpoint = routePrefix + "missing/file"
 		if res := request(actor, ""); res.Code != http.StatusNotFound || res.Header().Get("Location") != "" {
 			t.Fatalf("missing resource must not redirect: status=%d", res.Code)
 		}

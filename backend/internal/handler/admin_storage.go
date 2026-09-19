@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"io"
 	"net/http"
 	"strings"
 
@@ -88,6 +89,12 @@ func RegisterAdminStorageRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
+		if c.Query("resolve") == "1" {
+			c.Header("Cache-Control", "private, no-store")
+			c.Header("Referrer-Policy", "no-referrer")
+			ok(c, gin.H{"url": delivery.RedirectURL})
+			return
+		}
 		if delivery.RedirectURL != "" {
 			c.Header("Cache-Control", "private, no-store")
 			c.Header("Vary", "Cookie")
@@ -114,6 +121,11 @@ func RegisterAdminStorageRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		if downloadFileName != "" {
 			c.Header("Content-Disposition", attachmentContentDisposition(downloadFileName))
+		}
+		if seeker, ok := stream.Body.(io.ReadSeeker); ok {
+			c.Header("Content-Type", mimeType)
+			http.ServeContent(c.Writer, c.Request, stream.Resource.ID, stream.Resource.UpdatedAt, seeker)
+			return
 		}
 		c.DataFromReader(stream.StatusCode, stream.ContentLength, mimeType, stream.Body, nil)
 	})
