@@ -255,7 +255,8 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                 current.map((node) => {
                     if (node.id !== targetNodeId) return node;
                     const failed = task.status === "failed" || task.status === "cancelled";
-                    const hasCompletedContent = task.status === "succeeded" && Boolean(node.metadata?.content);
+                    const hasCompletedContent = task.status === "succeeded" && node.metadata?.taskId === task.id && node.metadata.status === NODE_STATUS_SUCCESS && Boolean(node.metadata.content);
+                    const cachingVideo = task.status === "succeeded" && task.type === "canvas_video" && !hasCompletedContent;
                     const failure = failed ? generationFailureMetadata(task.error || (task.status === "cancelled" ? "任务已取消" : "任务失败"), node.metadata?.composerContent || node.metadata?.prompt || task.prompt || "") : undefined;
                     return {
                         ...node,
@@ -263,6 +264,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                             ...node.metadata,
                             ...generationTaskMetadata(task),
                             status: failed ? NODE_STATUS_ERROR : hasCompletedContent ? NODE_STATUS_SUCCESS : NODE_STATUS_LOADING,
+                            ...(cachingVideo ? { taskStage: "视频已生成，正在缓存视频", taskProgress: undefined } : {}),
                             ...(failure || { errorDetails: undefined, generationErrorCode: undefined, resourceReloadAvailable: undefined, failedPromptFingerprint: undefined }),
                         },
                     };
@@ -331,6 +333,9 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                 }
             } catch (error) {
                 if (!isCurrent()) return;
+                if (generationTaskCanReloadResource(task)) {
+                    setNodes((current) => current.map((node) => node.id === nodeId ? { ...node, metadata: { ...node.metadata, resourceReloadAvailable: true } } : node));
+                }
                 // 成功任务的副作用确认失败时，直接用已持久化结果回写节点，避免永久停留在生成中。
                 if (task.status === "succeeded") {
                     await applyStoredTaskResult().catch(() => {

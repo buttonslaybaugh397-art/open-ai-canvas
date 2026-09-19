@@ -53,7 +53,9 @@ test("deleted nodes and a newer task binding are not overwritten", () => {
 
 test("task state covers Agent, manual submissions and historical terminal tasks", () => {
     for (const status of ["queued", "running"]) expect(isCanvasNodeGenerating({ ...node, metadata: { status: "idle", taskId: "task", taskStatus: status } })).toBe(true);
-    for (const status of ["succeeded", "failed", "cancelled"]) expect(isCanvasNodeGenerating({ ...node, metadata: { status: "loading", taskId: "old", taskStatus: status } })).toBe(false);
+    for (const status of ["failed", "cancelled"]) expect(isCanvasNodeGenerating({ ...node, metadata: { status: "loading", taskId: "old", taskStatus: status } })).toBe(false);
+    expect(isCanvasNodeGenerating({ ...node, metadata: { status: "loading", taskId: "completed-caching", taskStatus: "succeeded" } })).toBe(true);
+    expect(isCanvasNodeGenerating({ ...node, metadata: { status: "success", taskId: "completed-cached", taskStatus: "succeeded" } })).toBe(false);
     expect(isCanvasNodeGenerating({ ...node, metadata: { status: "loading" } })).toBe(true);
     expect(isCanvasNodeGenerating({ ...node, metadata: { status: "success", taskId: "historical" } })).toBe(false);
     expect(isCanvasNodeGenerating({ ...node, metadata: { status: "idle" } }, node.id)).toBe(true);
@@ -66,4 +68,14 @@ test("task progress ahead of the server checkpoint still accepts terminal state"
     const result = applyAgentCanvasPatch({ ...project, nodes: [running] }, { ...patch, nodes: [{ before: queued, after: failed }] });
     expect(result.nodes[0].metadata?.taskStatus).toBe("failed");
     expect(isCanvasNodeGenerating(result.nodes[0])).toBe(false);
+});
+
+test("full Agent refresh removes unchanged nodes but preserves conflicting local edits", () => {
+    const remaining = { ...node, id: "remaining", metadata: {} };
+    const previous = { ...project, nodes: [node, remaining] };
+    const incoming = { ...previous, nodes: [remaining] };
+    expect(mergeAgentCanvasEditor(previous, incoming, previous.nodes, []).nodes).toEqual([remaining]);
+    const local = { ...node, title: "Unsaved local title" };
+    expect(() => mergeAgentCanvasEditor(previous, incoming, [local, remaining], [])).toThrow("冲突");
+    expect(local.title).toBe("Unsaved local title");
 });

@@ -96,6 +96,9 @@ export class ResourceUploadError extends Error {
 const resourceCache = new Map<string, RemoteResource>();
 const resourceRequests = new Map<string, Promise<RemoteResource>>();
 const missingResourceIds = new Set<string>();
+const ossUrlCache = new Map<string, { url: string; expiresAt: number }>();
+const ossUrlRequests = new Map<string, Promise<string>>();
+const OSS_URL_CACHE_TTL_MS = 4 * 60 * 1000;
 
 export function resourceStorageKey(id: string) {
     return `resource:${id}`;
@@ -309,14 +312,27 @@ export function refreshResource(id: string): Promise<RemoteResource> {
 export async function getResourceOSSUrl(storageKey?: string) {
     const id = resourceIdFromStorageKey(storageKey);
     if (!id) throw new Error("当前媒体尚未上传到后端资源存储");
-    try {
-        const data = await http.get<{ url: string }>(`/resources/${encodeURIComponent(id)}/oss-url`);
-        if (!data.url) throw new Error("后端未返回对象存储地址");
-        return data.url;
-    } catch (error) {
-        if (error instanceof ApiError) throw new Error(error.message || "获取对象存储地址失败");
-        throw error;
-    }
+    const cacheKey = resourceCacheKey(id);
+    const cached = ossUrlCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.url;
+    const pending = ossUrlRequests.get(cacheKey);
+    if (pending) return pending;
+    const request = (async () => {
+        try {
+            const data = await http.get<{ url: string }>(`/resources/${encodeURIComponent(id)}/oss-url`);
+            if (cacheKey !== resourceCacheKey(id)) throw new Error("账号已切换，请重新读取媒体地址");
+            if (!data.url) throw new Error("后端未返回对象存储地址");
+            ossUrlCache.set(cacheKey, { url: data.url, expiresAt: Date.now() + OSS_URL_CACHE_TTL_MS });
+            return data.url;
+        } catch (error) {
+            if (error instanceof ApiError) throw new Error(error.message || "获取对象存储地址失败");
+            throw error;
+        } finally {
+            ossUrlRequests.delete(cacheKey);
+        }
+    })();
+    ossUrlRequests.set(cacheKey, request);
+    return request;
 }
 
 function resourceCacheKey(id: string) {
@@ -346,7 +362,7 @@ export function resolveResourceUrl(storageKey?: string, fallback = "") {
 // 副本就绪前由后端回退原件，调用方再按需降级。
 export function playbackVariantUrl(id: string) {
     const base = String(apiBaseURL).replace(/\/+$/, "");
-    return `${base}/resources/${encodeURIComponent(id)}/file?variant=playback`;
+    return `${base}/resources/${encodeURIComponent(id)}/file?variant=playback&direct=1`;
 }
 
 export type ResourceBlobAccess = "user" | "admin";

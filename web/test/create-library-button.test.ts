@@ -141,3 +141,38 @@ describe("creation library button", () => {
         expect(source).not.toContain("onClick={() => props.fileInputRef.current?.click()}");
     });
 });
+
+describe("creation homepage default mode", () => {
+    test("opens the empty homepage on image generation instead of video", () => {
+        const source = readCreateSource();
+        expect(source).toContain("import { defaultCreationMode, modeLabels,");
+        expect(source).toContain("initialComposerPreferences.mode || defaultCreationMode");
+        expect(source).toContain("saved.mode || defaultCreationMode");
+        expect(source).not.toContain('mode || "video"');
+    });
+});
+
+describe("creation thread chrome", () => {
+    test("docks the conversation toolbar into the workspace top bar and keeps a compact thread composer", () => {
+        const workspace = readCreateWorkspaceSource();
+        const topBar = readFileSync(resolve(import.meta.dir, "../src/components/layout/workspace-top-bar.tsx"), "utf8");
+        const product = readFileSync(resolve(import.meta.dir, "../src/styles/workspace-product.css"), "utf8");
+
+        expect(workspace).toContain("useWorkspaceTopBarMount");
+        expect(workspace).toContain("createPortal(toolbar, mount)");
+        expect(topBar).toContain("WorkspaceTopBarExtensionSlot");
+        expect(product).toContain(".creation-chat-dock .creation-mode-tabs");
+        expect(product).not.toContain("creation-composer-mode-row");
+    });
+
+    test("parameter popovers use the user surface without a hairline stroke", () => {
+        const css = readFileSync(resolve(import.meta.dir, "../src/pages/create/creation-product.css"), "utf8");
+
+        expect(css).toContain(".creation-control-popover .ant-popover-inner");
+        expect(css).toContain("background: var(--user-surface-raised) !important");
+        expect(css).toContain("border: 0 !important");
+        expect(css).toContain("--border: transparent");
+        expect(css).toContain(".creation-choice-grid button.is-selected");
+        expect(css).toContain("background: var(--user-control-pressed) !important");
+    });
+});

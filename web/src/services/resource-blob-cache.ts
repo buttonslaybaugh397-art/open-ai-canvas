@@ -173,20 +173,44 @@ function assertActiveScope(target: ResourceCacheMeta) {
     if (target.userScope !== getActiveUserScope()) throw new DOMException("用户已切换", "AbortError");
 }
 
-function enqueuePersist(target: ResourceCacheMeta, blob: Blob) {
-    const task = persistQueue.then(() => persistBlob(target, blob));
+/** 生成结果必须等到持久缓存可读，不能仅凭会话 Blob 确认成功。 */
+export async function cacheResourceObjectUrlDurably(storageKey: string) {
+    const target = await cacheTarget(storageKey);
+    if (!target) throw new Error("无效的生成资源标识");
+    await cacheResourceObjectUrl(storageKey);
+    // 上传预热可能已创建 objectURL，但 IndexedDB 写入仍在队列中。
+    await persistQueue;
+    assertActiveScope(target);
+    const persisted = await readPersistedBlob(target);
+    assertActiveScope(target);
+    if (persisted) return objectUrl(target.key, persisted);
+    const blob = sessionBlobs.get(target.key);
+    if (!blob?.size) throw new Error("生成资源缓存为空");
+    await enqueuePersist(target, blob, true);
+    assertActiveScope(target);
+    const verified = await readPersistedBlob(target);
+    assertActiveScope(target);
+    if (!verified || verified.size !== blob.size) throw new Error("本地媒体缓存写入后校验失败");
+    return objectUrl(target.key, verified);
+}
+
+function enqueuePersist(target: ResourceCacheMeta, blob: Blob, required = false) {
+    const task = persistQueue.then(() => persistBlob(target, blob, required));
     // IndexedDB 缓存是读性能优化，不得反向判定服务端资源上传失败；但失败必须可观测，
     // 并把队列恢复为 fulfilled，避免一个坏条目永久阻断后续缓存写入。
     const observed = task.catch((error) => {
         console.warn("媒体缓存持久化失败，当前会话仍可继续读取", { resourceId: target.resourceId, version: target.version, error });
     });
     persistQueue = observed;
-    return observed;
+    return required ? task : observed;
 }
 
-async function persistBlob(target: ResourceCacheMeta, blob: Blob) {
+async function persistBlob(target: ResourceCacheMeta, blob: Blob, required = false) {
     // 不尝试写入超过当前缓存预算的单个媒体，避免触发浏览器配额异常和无效的全量淘汰。
-    if (blob.size > (await cacheBudget())) return;
+    if (blob.size > (await cacheBudget())) {
+        if (required) throw new Error("视频大小超过本地缓存容量，请释放浏览器存储空间后重新加载");
+        return;
+    }
     await evictFor(blob.size, target.key);
 
     const write = async () => {

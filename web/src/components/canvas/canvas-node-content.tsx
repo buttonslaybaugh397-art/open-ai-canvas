@@ -13,10 +13,11 @@ import { buildLibTVImagePreviewUrl, buildLibTVVideoSourceUrl } from "@/lib/canva
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import type { CanvasTheme } from "@/lib/canvas-theme";
 import { formatBytes } from "@/lib/image-utils";
+import { getActiveUserScope } from "@/lib/user-scope";
 import { resourceIdFromStorageKey } from "@/services/api/resources";
 import type { GenerationTask } from "@/services/api/task-center";
 import { cacheResourceObjectUrl, peekCachedResourceObjectUrl } from "@/services/resource-blob-cache";
-import { resolveMediaUrl } from "@/services/file-storage";
+import { resolveGeneratedVideoUrl, resolveMediaUrl } from "@/services/file-storage";
 import { hydrateCanvasVideoPreview } from "@/services/canvas-video-preview";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
@@ -61,6 +62,7 @@ export type CanvasNodeContentProps = {
     reduceMediaEffects?: boolean;
     mediaActive?: boolean;
     onMediaPlayRequest?: (nodeId: string) => void;
+    onVideoCacheStatus?: (status: "loading" | "success" | "error") => void;
 };
 
 export function CanvasNodeContent(props: CanvasNodeContentProps) {
@@ -78,6 +80,7 @@ export function CanvasNodeContent(props: CanvasNodeContentProps) {
     if (props.isBatchRoot) return <ImageNodeContent {...props} />;
     if (props.node.metadata?.status === "loading") return <LoadingContent node={props.node} theme={props.theme} onOpenTaskDetails={props.onOpenTaskDetails} />;
     if (props.node.metadata?.status === "error") return <ErrorContent node={props.node} theme={props.theme} onRetry={props.onRetry} onReloadResource={props.onReloadResource} />;
+    if (props.node.type === CanvasNodeType.Video && props.node.metadata?.taskStatus === "succeeded" && props.node.metadata.storageKey) return <GeneratedVideoContent {...props} />;
 
     const pluginDefinition = getNodeDefinition(props.node.type)?.plugin;
     if (pluginDefinition) return <PluginCanvasNodeContent {...props} renderer={pluginDefinition.renderer} schema={pluginDefinition.schema} />;
@@ -187,10 +190,11 @@ function LoadingContent({ node, theme, onOpenTaskDetails }: Pick<CanvasNodeConte
         errorCode: node.metadata?.taskErrorCode,
     };
     const submissionUncertain = Boolean(taskId) && isGenerationTaskSubmissionUncertain(displayTask);
+    const cachingVideo = node.type === CanvasNodeType.Video && displayTask.status === "succeeded";
     const showsProgress = Boolean(taskId) && generationTaskShowsProgress(displayTask);
     const progress = showsProgress && typeof node.metadata?.taskProgress === "number" ? Math.max(0, Math.min(100, Math.round(node.metadata.taskProgress))) : null;
-    const statusLabel = taskId ? generationTaskStatusLabel(displayTask) : "等待任务状态";
-    const stageLabel = taskId ? generationTaskStageLabel(displayTask) : "正在创建任务";
+    const statusLabel = cachingVideo ? "正在缓存视频" : taskId ? generationTaskStatusLabel(displayTask) : "等待任务状态";
+    const stageLabel = cachingVideo ? "正在下载并保存到本地" : taskId ? generationTaskStageLabel(displayTask) : "正在创建任务";
     const elapsed = useTaskElapsed(node.metadata?.taskCreatedAt);
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-2.5 px-5 text-center" style={{ color: theme.node.activeStroke }}>
@@ -423,6 +427,36 @@ function EmptyImageContent({ node, theme, isBatchRoot, batchCount, batchPreviewN
     );
     if (isBatchRoot) return <BatchFrame batchPreviewNodes={batchPreviewNodes} batchCount={batchCount} batchExpanded={batchExpanded} batchOpening={batchOpening} batchRecovering={batchRecovering} theme={theme} onToggleBatch={onToggleBatch}>{content}</BatchFrame>;
     return content;
+}
+
+// Agent snapshots carry server success; verify this browser's cache before revealing the result.
+function GeneratedVideoContent(props: CanvasNodeContentProps) {
+    const storageKey = props.node.metadata!.storageKey!;
+    const scope = getActiveUserScope();
+    const identity = JSON.stringify([scope, props.node.metadata?.taskId, storageKey]);
+    const [attempt, setAttempt] = useState(0);
+    const [state, setState] = useState<{ identity: string; url?: string; error?: string }>();
+    const onStatus = props.onVideoCacheStatus;
+    useEffect(() => {
+        let cancelled = false;
+        setState(undefined);
+        onStatus?.("loading");
+        void resolveGeneratedVideoUrl(storageKey).then((url) => {
+            if (!cancelled && scope === getActiveUserScope()) {
+                setState({ identity, url });
+                onStatus?.("success");
+            }
+        }).catch((error) => {
+            if (!cancelled && scope === getActiveUserScope()) {
+                setState({ identity, error: error instanceof Error ? error.message : "视频本地缓存失败" });
+                onStatus?.("error");
+            }
+        });
+        return () => { cancelled = true; };
+    }, [attempt, identity, onStatus, scope, storageKey]);
+    if (state?.identity === identity && state.error) return <ErrorContent node={{ ...props.node, metadata: { ...props.node.metadata, errorDetails: state.error, resourceReloadAvailable: true } }} theme={props.theme} onRetry={props.onRetry} onReloadResource={() => { setState(undefined); setAttempt((value) => value + 1); }} />;
+    if (state?.identity !== identity || !state.url) return <LoadingContent node={props.node} theme={props.theme} onOpenTaskDetails={props.onOpenTaskDetails} />;
+    return <VideoNodeContent {...props} node={{ ...props.node, metadata: { ...props.node.metadata, content: state.url } }} />;
 }
 
 function VideoNodeContent({ node, theme, mediaActive = false, onMediaPlayRequest }: CanvasNodeContentProps) {

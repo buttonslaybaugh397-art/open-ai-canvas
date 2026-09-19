@@ -5,6 +5,7 @@ import { AlertCircle, BookOpenCheck, CheckCircle2, ChevronRight, Clapperboard, C
 import { useCanvasNodeActions } from "./canvas-node-action-context";
 
 import { canvasThemes } from "@/lib/canvas-theme";
+import { getActiveUserScope } from "@/lib/user-scope";
 import { canvasConnectionTilt } from "@/lib/canvas/canvas-connection-tilt";
 import { storyboardMinNodeHeight } from "@/lib/canvas/canvas-storyboard-layout";
 import { resourceStorageLabel, resourceStorageLocation, resourceStorageTitle } from "@/lib/canvas/resource-storage-status";
@@ -117,6 +118,11 @@ export const CanvasNode = React.memo(function CanvasNode({
     const [isEditingContent, setIsEditingContent] = useState(false);
     const [isEditingTitle, setIsEditingTitle] = useState(false);
     const [titleDraft, setTitleDraft] = useState(data.title);
+    const videoCacheIdentity = JSON.stringify([getActiveUserScope(), data.metadata?.taskId, data.metadata?.storageKey]);
+    const [videoCacheState, setVideoCacheState] = useState<{ identity: string; status: "loading" | "success" | "error" }>();
+    const onVideoCacheStatus = useCallback((status: "loading" | "success" | "error") => setVideoCacheState({ identity: videoCacheIdentity, status }), [videoCacheIdentity]);
+    const checksVideoCache = data.type === CanvasNodeType.Video && data.metadata?.taskStatus === "succeeded" && data.metadata.storageKey && data.metadata.status === "success";
+    const displayStatus = checksVideoCache ? videoCacheState?.identity === videoCacheIdentity ? videoCacheState.status : "loading" : data.metadata?.status;
     const { download: downloadNode, duplicate: duplicateNode, deleteNode } = useCanvasNodeActions();
     const hasImageContent = data.type === CanvasNodeType.Image && Boolean(data.metadata?.content);
     const hasVideoContent = data.type === CanvasNodeType.Video && Boolean(data.metadata?.content);
@@ -308,7 +314,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 className="canvas-node-shell relative h-full w-full overflow-visible rounded-[var(--node-radius)]"
                 data-node-state={nodeState}
                 data-connection-tilt={connectionTilt ? "true" : undefined}
-                data-state={data.metadata?.status || (isActive ? "active" : isRelated ? "related" : "idle")}
+                data-state={displayStatus || (isActive ? "active" : isRelated ? "related" : "idle")}
                 style={{
                     background: hasImageContent || hasVideoContent ? "transparent" : theme.node.fill,
                     // 固定占位但不绘制描边，避免聚焦切换时边框宽度变化造成白边跳动。
@@ -364,8 +370,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                     }
                 >
                     {/* 节点状态徽章（对应 #97 决策2：左上角 loading/success/error，近距离确认信号）*/}
-                    {data.metadata?.status && data.metadata.status !== "idle" && data.type !== CanvasNodeType.Frame ? (
-                        <NodeStatusBadge status={data.metadata.status} />
+                    {displayStatus && displayStatus !== "idle" && data.type !== CanvasNodeType.Frame ? (
+                        <NodeStatusBadge status={displayStatus} videoCache={data.type === CanvasNodeType.Video && data.metadata?.taskStatus === "succeeded"} />
                     ) : null}
                     <CanvasNodeContent
                         node={data}
@@ -390,6 +396,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         reduceMediaEffects={reduceMediaEffects}
                         mediaActive={mediaActive}
                         onMediaPlayRequest={onMediaPlayRequest}
+                        onVideoCacheStatus={onVideoCacheStatus}
                     />
                 </div>
 
@@ -732,16 +739,16 @@ function nodeTypeIcon(type: CanvasNodeTypeId) {
 }
 
 // 节点状态徽章（对应 #97 决策2：左上角状态指示，loading/success/error）
-function NodeStatusBadge({ status }: { status: "loading" | "success" | "error" }) {
+function NodeStatusBadge({ status, videoCache = false }: { status: "loading" | "success" | "error"; videoCache?: boolean }) {
     if (status === "loading") {
         return (
             <div
                 className="pointer-events-none absolute left-2 top-2 z-20 flex items-center gap-1 rounded-full px-2 py-0.5 backdrop-blur-sm"
                 style={{ background: "color-mix(in oklch, var(--status-loading) 20%, transparent)", color: "var(--status-loading)" }}
-                aria-label="生成中"
+                aria-label={videoCache ? "正在缓存视频" : "生成中"}
             >
                 <span className="size-1.5 animate-pulse rounded-full" style={{ background: "var(--status-loading)" }} />
-                <span className="text-[var(--fs-micro)] font-medium leading-none">生成中</span>
+                <span className="text-[var(--fs-micro)] font-medium leading-none">{videoCache ? "缓存中" : "生成中"}</span>
             </div>
         );
     }
@@ -750,10 +757,10 @@ function NodeStatusBadge({ status }: { status: "loading" | "success" | "error" }
             <div
                 className="pointer-events-none absolute left-2 top-2 z-20 flex items-center gap-1 rounded-full px-2 py-0.5 backdrop-blur-sm"
                 style={{ background: "color-mix(in oklch, var(--status-error) 20%, transparent)", color: "var(--status-error)" }}
-                aria-label="生成失败"
+                aria-label={videoCache ? "视频缓存失败" : "生成失败"}
             >
                 <AlertCircle className="size-3" strokeWidth={2} />
-                <span className="text-[var(--fs-micro)] font-medium leading-none">失败</span>
+                <span className="text-[var(--fs-micro)] font-medium leading-none">{videoCache ? "缓存失败" : "失败"}</span>
             </div>
         );
     }

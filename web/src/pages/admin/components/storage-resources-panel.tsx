@@ -4,7 +4,7 @@ import { Download, Eye, LoaderCircle, RotateCw, Search, Trash2 } from "lucide-re
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 
-import { PaginationBar } from "@/components/layout/workspace-page";
+import { PaginationBar } from "@/pages/admin/components/admin-ui";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { deleteAdminResources, getAdminStorageStats, listAdminResources, type AdminStorageResource, type AdminStorageStats } from "@/services/api/admin-storage";
 import { downloadResourceFile } from "@/services/media-download";

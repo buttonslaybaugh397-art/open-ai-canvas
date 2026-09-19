@@ -5,7 +5,7 @@ import { storeGeneratedAudio } from "@/services/api/audio";
 import { storeGeneratedVideo } from "@/services/api/video";
 import { parseBackendGenerationResult } from "@/services/api/generation-task";
 import type { GenerationTask, GenerationTaskOutput } from "@/services/api/task-center";
-import { resolveMediaUrl, type UploadedFile } from "@/services/file-storage";
+import { resolveGeneratedVideoUrl, resolveMediaUrl, type UploadedFile } from "@/services/file-storage";
 import { resolveImageUrl, uploadImage, type UploadedImage } from "@/services/image-storage";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useAssetStore } from "@/stores/use-asset-store";
@@ -164,7 +164,7 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
         if (!result.video?.dataUrl) throw new Error("后端任务没有返回视频");
         const video = result.video.storageKey
             ? {
-                  url: await resolveMediaUrl(result.video.storageKey, result.video.dataUrl),
+                  url: await resolveGeneratedVideoUrl(result.video.storageKey),
                   storageKey: result.video.storageKey,
                   width: result.video.width,
                   height: result.video.height,

@@ -1,5 +1,5 @@
 import { App, Button, DatePicker, Drawer, Form, Input, Modal, Select, Tabs, Tag } from "antd";
-import { Tooltip } from "@/components/ui/base/tooltip";
+import { Tooltip } from "@/pages/admin/ui/controls";
 import { useCountUp } from "@/hooks/use-count-up";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
@@ -9,7 +9,7 @@ import { Activity, AlertTriangle, BarChart3, CalendarDays, CircleDollarSign, Clo
 import { Area, Bar, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
 import { useSearchParams } from "react-router";
 
-import { PaginationBar } from "@/components/layout/workspace-page";
+import { ListToolbar, PaginationBar, AdminDataTable, AdminExportButton, AdminFilterChip, AdminRowActions, AdminStatusBadge, AdminTableEmpty, type AdminStatusTone } from "./admin-ui";
 import {
     createAdminModelPricing,
     deleteAdminModelPricing,
@@ -23,7 +23,6 @@ import {
     type AnalyticsFilters,
     type ModelPricing,
 } from "@/services/api/auth";
-import { AdminDataTable, AdminExportButton, AdminRowActions, AdminStatusBadge, AdminTableEmpty, type AdminStatusTone } from "./admin-ui";
 
 type Props = {
     users: AdminReferenceData["users"];

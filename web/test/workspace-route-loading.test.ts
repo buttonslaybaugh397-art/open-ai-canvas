@@ -21,7 +21,7 @@ describe("workspace route loading", () => {
         const modules = source("../src/lib/workspace-route-modules.ts");
         const navigation = source("../src/components/layout/workspace-sidebar-nav.tsx");
 
-        for (const route of ["projects", "canvas", "assets", "wallet", "create"]) {
+        for (const route of ["projects", "canvas", "assets", "create"]) {
             expect(modules).toContain(`${route}: () => import`);
         }
         expect(modules).toContain('projectDetail: () => import("@/pages/projects/detail")');
@@ -132,15 +132,27 @@ describe("workspace route loading", () => {
     });
 });
 
-describe("wallet balance summary", () => {
-    test("uses the workspace surface instead of an inverted primary button surface", () => {
+describe("workspace wallet entry", () => {
+    test("keeps personal consumption page alongside quick credits modal", () => {
+        const router = source("../src/router.tsx");
+        const modules = source("../src/lib/workspace-route-modules.ts");
+        const host = source("../src/components/layout/workspace-wallet-modal.tsx");
+        const palette = source("../src/components/layout/workspace-command-palette.tsx");
+        const canvasTopBar = source("../src/pages/canvas/canvas-project-top-bar.tsx");
+        const topBar = source("../src/components/layout/workspace-top-bar.tsx");
         const css = source("../src/styles/globals.css");
-        const rule = css.match(/\.credit-balance-card \{[^}]+}/)?.[0] || "";
 
-        expect(rule).toContain("background: var(--library-surface)");
-        expect(rule).toContain("color: var(--foreground)");
-        expect(rule).not.toContain("--btn-solid-bg");
-        expect(css.match(/\.wallet-balance-inner \{/g)).toHaveLength(3);
-        expect(css).not.toContain(".wallet-library-page .wallet-balance-inner { padding-left: 0; }");
+        expect(router).toContain('path: "/wallet"');
+        expect(router).toContain('RequireFeature feature="creditsEnabled">{deferred(<WalletPage />)}');
+        expect(modules).toContain("pages/wallet");
+        expect(host).not.toContain('navigate("/", { replace: true })');
+        expect(host).toContain("window.addEventListener(WORKSPACE_WALLET_OPEN_EVENT, handleOpen)");
+        expect(palette).toContain('run: () => openWorkspaceWallet()');
+        expect(palette).not.toContain('"/wallet"');
+        expect(canvasTopBar).toContain("openWorkspaceWallet()");
+        expect(canvasTopBar).not.toContain('to="/wallet"');
+        expect(topBar).toContain("openWorkspaceWallet()");
+        expect(css).toContain(".wallet-library-page");
+        expect(css).toContain(".wallet-market-page");
     });
 });

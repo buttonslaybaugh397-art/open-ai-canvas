@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import localforage from "localforage";
+import { readCanvasSyncDrafts } from "../src/services/canvas-sync-drafts";
+import { flushCanvasStorePersistence } from "../src/stores/canvas/use-canvas-store";
+import { flushAssetStorePersistence } from "../src/stores/use-asset-store";
 import { apiClient } from "../src/services/api/request";
 import { ensureCanvasNodeAsset } from "../src/services/project-asset-sync";
 import { initializeRemoteUserDataSession, loadCanvasProjectForEditing, resetRemoteUserDataSync, saveRemoteAssetNow, saveRemoteUserDataNow, withRemoteUserDataSyncExclusive } from "../src/services/user-data-sync";
@@ -12,10 +16,14 @@ const previousAdapter = apiClient.defaults.adapter;
 const previousProjects = useCanvasStore.getState().projects;
 const previousAssets = useAssetStore.getState().assets;
 const previousWindow = globalThis.window;
+const previousGet = localforage.getItem;
+const previousSet = localforage.setItem;
+const indexed = new Map<string, unknown>();
 
 function project(id: string): CanvasProject {
     return {
         id,
+        revision: 0,
         title: id,
         createdAt: "2026-09-10T00:00:00.000Z",
         updatedAt: "2026-09-10T00:00:00.000Z",
@@ -44,6 +52,12 @@ function asset(id: string): Asset {
 }
 
 beforeEach(() => {
+    indexed.clear();
+    localforage.getItem = (async (key: string) => indexed.get(key) ?? null) as typeof localforage.getItem;
+    localforage.setItem = (async (key: string, value: unknown) => {
+        indexed.set(key, value);
+        return value;
+    }) as typeof localforage.setItem;
     Object.defineProperty(globalThis, "window", {
         configurable: true,
         value: {
@@ -57,8 +71,11 @@ beforeEach(() => {
     useAssetStore.setState({ assets: [] });
 });
 
-afterEach(() => {
+afterEach(async () => {
     resetRemoteUserDataSync();
+    await Promise.all([flushCanvasStorePersistence(), flushAssetStorePersistence()]);
+    localforage.getItem = previousGet;
+    localforage.setItem = previousSet;
     apiClient.defaults.adapter = previousAdapter;
     withCanvasStorePersistenceSuppressed(() => useCanvasStore.setState({ projects: previousProjects }));
     useAssetStore.setState({ assets: previousAssets });
@@ -104,7 +121,8 @@ test("a failed canvas does not block other canvas writes and is not acknowledged
     apiClient.defaults.adapter = async (config) => {
         writes.push(`${config.method} ${config.url}`);
         if (config.url === "/canvas-projects/broken" && broken) throw new Error("missing resource");
-        return { data: { code: 0, data: {}, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
+        const submitted = JSON.parse(config.data).project as CanvasProject;
+        return { data: { code: 0, data: { project: { ...submitted, revision: submitted.revision! + 1 } }, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
     };
     await expect(saveRemoteUserDataNow()).rejects.toThrow("missing resource");
     expect(writes).toEqual(["put /canvas-projects/broken", "put /canvas-projects/healthy"]);
@@ -113,7 +131,7 @@ test("a failed canvas does not block other canvas writes and is not acknowledged
     broken = false;
     await saveRemoteUserDataNow();
     expect(writes).toEqual(["put /canvas-projects/broken"]);
-    expect(useSyncProgressStore.getState().syncingProjects.broken).toBeUndefined();
+    expect(useSyncProgressStore.getState().syncingProjects.broken?.phase).toBe("done");
 });
 
 test("scoped asset save propagates failures and retries only unacknowledged writes", async () => {
@@ -166,6 +184,7 @@ test("scoped saves reject missing sessions and an account change while queued", 
 test("opening a restored canvas replaces stale cached references before writes start", async () => {
     const cached: CanvasProject = {
         ...project("restored"),
+        revision: undefined,
         title: "stale cache",
         nodes: [
             {
@@ -192,8 +211,10 @@ test("opening a restored canvas replaces stale cached references before writes s
     await saveRemoteUserDataNow();
     expect(requests).toEqual(["get /canvas-projects/restored"]);
     const source = readFileSync(new URL("../src/pages/canvas/use-canvas-project-lifecycle.ts", import.meta.url), "utf8");
-    const loadBody = source.slice(source.indexOf("const load = async () =>"), source.indexOf("void load().catch"));
-    expect(loadBody.indexOf("await loadCanvasProjectForEditing")).toBeLessThan(loadBody.indexOf("applyRestoredProject("));
+    const loadBody = source.slice(source.indexOf("const load = async () =>"), source.indexOf("void load()"));
+    expect(loadBody).toContain("onLoad: applyRestoredProject");
+    expect(loadBody).not.toContain("applyRestoredProject(cachedProject)");
+    expect((await readCanvasSyncDrafts("restored"))[0]?.project.nodes[0]?.id).toBe("old-node");
 });
 
 test("multiple canvas failures remain visible while successful canvases are acknowledged", async () => {
@@ -203,11 +224,13 @@ test("multiple canvas failures remain visible while successful canvases are ackn
     apiClient.defaults.adapter = async (config) => {
         writes.push(String(config.url));
         if (config.url !== "/canvas-projects/good") throw new Error(`save rejected: ${config.url}`);
-        return { data: { code: 0, data: {}, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
+        const submitted = JSON.parse(config.data).project as CanvasProject;
+        return { data: { code: 0, data: { project: { ...submitted, revision: submitted.revision! + 1 } }, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
     };
     await expect(saveRemoteUserDataNow()).rejects.toBeInstanceOf(AggregateError);
     expect(writes).toEqual(["/canvas-projects/bad-one", "/canvas-projects/good", "/canvas-projects/bad-two"]);
-    expect(Object.keys(useSyncProgressStore.getState().syncingProjects).sort()).toEqual(["bad-one", "bad-two"]);
+    expect(Object.entries(useSyncProgressStore.getState().syncingProjects).filter(([, progress]) => progress.phase === "error").map(([id]) => id).sort()).toEqual(["bad-one", "bad-two"]);
+    expect(useSyncProgressStore.getState().syncingProjects.good?.phase).toBe("done");
     writes.length = 0;
     await expect(saveRemoteUserDataNow()).rejects.toThrow("2 个画布云端保存失败");
     expect(writes).toEqual(["/canvas-projects/bad-one", "/canvas-projects/bad-two"]);

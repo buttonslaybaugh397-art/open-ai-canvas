@@ -5,7 +5,7 @@ import { getActiveUserScope } from "@/lib/user-scope";
 import { captureVideoPoster, detectVideoAudioTrackFromBlob } from "@/lib/video-poster";
 import { resourceFileUrl, resourceIdFromStorageKey, resourceStorageKey, ResourceUploadError, uploadResourceFile } from "@/services/api/resources";
 import { uploadImage, type UploadedImage } from "@/services/image-storage";
-import { cacheResourceObjectUrl, getCachedResourceBlob, primeResourceBlobCache } from "@/services/resource-blob-cache";
+import { cacheResourceObjectUrl, cacheResourceObjectUrlDurably, getCachedResourceBlob, primeResourceBlobCache } from "@/services/resource-blob-cache";
 
 export type UploadedFile = {
     url: string;
@@ -130,6 +130,23 @@ export async function resolveMediaUrl(storageKey?: string, fallback = "") {
 export async function getMediaBlob(storageKey: string) {
     if (resourceIdFromStorageKey(storageKey)) return getCachedResourceBlob(storageKey);
     return store.getItem<Blob>(storageKey);
+}
+
+export async function resolveGeneratedVideoUrl(storageKey: string) {
+    const scope = getActiveUserScope();
+    try {
+        if (resourceIdFromStorageKey(storageKey)) return await cacheResourceObjectUrlDurably(storageKey);
+        if (!storageKey) throw new Error("视频结果缺少本地缓存标识");
+        const blob = await store.getItem<Blob>(storageKey);
+        if (scope !== getActiveUserScope()) throw new DOMException("用户已切换", "AbortError");
+        if (!(blob instanceof Blob) || !blob.size) throw new Error("视频文件尚未写入本地缓存");
+        const url = objectUrls.get(storageKey) || URL.createObjectURL(blob);
+        objectUrls.set(storageKey, url);
+        return url;
+    } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") throw error;
+        throw new Error(`视频已生成，本地缓存失败，请重新加载资源：${error instanceof Error ? error.message : "缓存不可用"}`, { cause: error });
+    }
 }
 
 export async function setMediaBlob(storageKey: string, blob: Blob) {

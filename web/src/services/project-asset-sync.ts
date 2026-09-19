@@ -5,7 +5,7 @@ import { parseBackendGenerationResult, type BackendGenerationResult } from "@/se
 import { ApiError } from "@/services/api/request";
 import { linkProjectAsset, moveProjectAsset, updateProjectAssetCategory } from "@/services/api/projects";
 import type { GenerationTask, GenerationTaskOutput } from "@/services/api/task-center";
-import { getMediaBlob, resolveMediaUrl, setMediaBlob } from "@/services/file-storage";
+import { getMediaBlob, resolveGeneratedVideoUrl, resolveMediaUrl, setMediaBlob } from "@/services/file-storage";
 import { createGenerationTaskMaterializer, createIdempotentMaterializeOutput, type MaterializeGenerationTaskOutput } from "@/services/generation-task-materializer";
 import { withGenerationArtifactCommitLock } from "@/services/generation-asset-repository";
 import { uploadGeneratedAssetToConfiguredSources } from "@/services/external-asset-sources";
@@ -245,7 +245,13 @@ async function storedGenerationMedia(dataUrl: string, effectKey: string, mediaTy
     const blob = await loadOrStoreGenerationArtifact({
         effectKey: storageKey,
         read: (key) => getMediaBlob(key),
-        materialize: async () => (await fetch(dataUrl, { signal })).blob(),
+        materialize: async () => {
+            const response = await fetch(dataUrl, { signal, credentials: "omit", redirect: "error" });
+            if (!response.ok) throw new Error(`生成媒体下载失败（HTTP ${response.status}）`);
+            const blob = await response.blob();
+            if (!blob.size || /^(text\/|application\/(json|xml))/i.test(blob.type)) throw new Error("生成媒体返回了空文件或错误文档");
+            return blob;
+        },
         write: async (key, artifact) => {
             await setMediaBlob(key, artifact);
         },
@@ -306,7 +312,7 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
         if (!video) throw new Error("生成任务缺少视频输出");
         const stored = video.storageKey
             ? {
-                  url: await resolveMediaUrl(video.storageKey, video.dataUrl),
+                  url: await resolveGeneratedVideoUrl(video.storageKey),
                   storageKey: video.storageKey,
                   width: video.width || 0,
                   height: video.height || 0,

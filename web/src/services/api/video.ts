@@ -1,5 +1,5 @@
 import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
-import { uploadMediaFile, type UploadedFile } from "@/services/file-storage";
+import { resolveGeneratedVideoUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -63,9 +63,15 @@ export async function pollVideoGenerationTask(config: AiConfig, task: VideoGener
 }
 
 export async function storeGeneratedVideo(result: VideoGenerationResult): Promise<UploadedFile> {
-    if (result.blob) return uploadMediaFile(result.blob, "video");
-    if (result.url) return { url: result.url, storageKey: "", bytes: 0, mimeType: result.mimeType || "video/mp4" };
-    throw new Error("视频接口没有返回可播放的视频");
+    let blob = result.blob;
+    if (!blob && result.url) {
+        const response = await fetch(result.url, { credentials: "omit", redirect: "error", referrerPolicy: "no-referrer" });
+        if (!response.ok) throw new Error(`视频结果下载失败（HTTP ${response.status}）`);
+        blob = await response.blob();
+    }
+    if (!blob?.size || /^(text\/|application\/(json|xml))/i.test(blob.type)) throw new Error("视频接口没有返回有效的视频文件");
+    const stored = await uploadMediaFile(blob.type.startsWith("video/") ? blob : new Blob([blob], { type: result.mimeType || "video/mp4" }), "video");
+    return { ...stored, url: await resolveGeneratedVideoUrl(stored.storageKey) };
 }
 
 export type { VideoProviderDeps } from "./video-provider-deps";
