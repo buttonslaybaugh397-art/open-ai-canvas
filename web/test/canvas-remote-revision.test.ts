@@ -4,7 +4,17 @@ import { apiClient } from "../src/services/api/request";
 import { canvasContentHash } from "../src/lib/canvas/canvas-content";
 import { rebaseCanvasProjects, parseCanvasStorageDocument } from "../src/lib/canvas/canvas-storage-revision";
 import { readCanvasSyncDrafts } from "../src/services/canvas-sync-drafts";
-import { applyAgentCanvasPatches, deleteCanvasProjectsWithRemoteSync, refreshCanvasAfterAgent, initializeRemoteUserDataSession, installRemoteUserDataAutoSync, loadCanvasProjectForEditing, resetRemoteUserDataSync, saveRemoteUserDataNow, syncRemoteUserData } from "../src/services/user-data-sync";
+import {
+    applyAgentCanvasPatches,
+    deleteCanvasProjectsWithRemoteSync,
+    refreshCanvasAfterAgent,
+    initializeRemoteUserDataSession,
+    installRemoteUserDataAutoSync,
+    loadCanvasProjectForEditing,
+    resetRemoteUserDataSync,
+    saveRemoteUserDataNow,
+    syncRemoteUserData,
+} from "../src/services/user-data-sync";
 import { createAgentCanvasSync } from "../src/services/agent-canvas-sync";
 import { flushCanvasStorePersistence, useCanvasStore, type CanvasProject } from "../src/stores/canvas/use-canvas-store";
 import { flushAssetStorePersistence, useAssetStore } from "../src/stores/use-asset-store";
@@ -91,11 +101,20 @@ beforeEach(async () => {
                 data = { id };
             }
         } else if (id === "batch" && method === "post") {
-            data = { assets: [{
-                id: "invalid-mime-asset", kind: "image", title: "历史素材", coverUrl: "", tags: [],
-                createdAt: "2026-09-01", updatedAt: "2026-09-01",
-                data: { dataUrl: "https://example.com/image.png", width: 100, height: 100, bytes: 1, mimeType: "image/*" },
-            }] };
+            data = {
+                assets: [
+                    {
+                        id: "invalid-mime-asset",
+                        kind: "image",
+                        title: "历史素材",
+                        coverUrl: "",
+                        tags: [],
+                        createdAt: "2026-09-01",
+                        updatedAt: "2026-09-01",
+                        data: { dataUrl: "https://example.com/image.png", width: 100, height: 100, bytes: 1, mimeType: "image/*" },
+                    },
+                ],
+            };
         } else if (id === "restore" && method === "post") {
             const current = remote.get("canvas")!;
             if (body.revision !== current.revision) status = 409;
@@ -146,7 +165,8 @@ test("deletion skips editing and invalid MIME assets, including an uncached canv
     await deleteCanvasProjectsWithRemoteSync([" canvas ", "canvas", "other"]);
 
     expect(requests.map(({ method, id }) => ({ method, id }))).toEqual([
-        { method: "delete", id: "canvas" }, { method: "delete", id: "other" },
+        { method: "delete", id: "canvas" },
+        { method: "delete", id: "other" },
     ]);
     expect(remote.size).toBe(0);
     expect(useCanvasStore.getState().projects).toEqual([]);
@@ -197,24 +217,40 @@ test("load latest, save and reload stay synced when Agent history replays an unv
         await loadCanvasProjectForEditing("canvas");
         let resolve!: () => void;
         let reject!: (error: unknown) => void;
-        const reconciled = new Promise<void>((done, fail) => { resolve = done; reject = fail; });
+        const reconciled = new Promise<void>((done, fail) => {
+            resolve = done;
+            reject = fail;
+        });
         const sync = createAgentCanvasSync({
-            canvasId: "canvas", batchMs: 0,
+            canvasId: "canvas",
+            batchMs: 0,
             applyPatches: (patches) => applyAgentCanvasPatches("canvas", patches),
-            refresh: async () => { await refreshCanvasAfterAgent("canvas"); resolve(); },
+            refresh: async () => {
+                await refreshCanvasAfterAgent("canvas");
+                resolve();
+            },
             onError: reject,
         });
         try {
-            sync.receive({ eventId: "historical-event", runId: "completed-run", seq: 1, type: "canvas_updated", createdAt: "2026-09-17", payload: {
-                canvasId: "canvas",
-                canvasPatch: { canvasId: "canvas", updatedAt: "2026-09-17", nodes: [{ before: null, after: { ...canvas().nodes[0], id: "stale-node" } }], connections: [] },
-            } });
+            sync.receive({
+                eventId: "historical-event",
+                runId: "completed-run",
+                seq: 1,
+                type: "canvas_updated",
+                createdAt: "2026-09-17",
+                payload: {
+                    canvasId: "canvas",
+                    canvasPatch: { canvasId: "canvas", updatedAt: "2026-09-17", nodes: [{ before: null, after: { ...canvas().nodes[0], id: "stale-node" } }], connections: [] },
+                },
+            });
             await reconciled;
             expect(useSyncProgressStore.getState().syncingProjects.canvas.phase).toBe("done");
             await saveRemoteUserDataNow("canvas");
             expect(useCanvasStore.getState().openProject("canvas")).toMatchObject({ revision: 10, title: "已保存的标题", nodes: canvas().nodes });
             expect(await readCanvasSyncDrafts("canvas")).toHaveLength(0);
-        } finally { sync.dispose(); }
+        } finally {
+            sync.dispose();
+        }
     }
     expect(requests.filter((request) => request.method === "put")).toHaveLength(1);
 });

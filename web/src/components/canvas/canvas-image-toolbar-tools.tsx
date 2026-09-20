@@ -4,7 +4,27 @@ import { Brush, Camera, Copy, FileText, Globe2, Grid2x2, Layers3, Lock, LockOpen
 import type { CanvasNodeData } from "@/types/canvas";
 import type { NodeToolbarGroup } from "@/lib/canvas/tool-registry";
 
-type ImageNodeActionToolId = "copyPrompt" | "reversePrompt" | "replace" | "resize" | "annotation" | "annotationEdit" | "textEdit" | "maskEdit" | "removeBackground" | "layerDecomposition" | "emotion" | "portraitTexture" | "crop" | "split" | "upscale" | "superResolve" | "angle" | "lighting" | "panorama" | "view";
+type ImageNodeActionToolId =
+    | "copyPrompt"
+    | "reversePrompt"
+    | "replace"
+    | "resize"
+    | "annotation"
+    | "annotationEdit"
+    | "textEdit"
+    | "maskEdit"
+    | "removeBackground"
+    | "layerDecomposition"
+    | "emotion"
+    | "portraitTexture"
+    | "crop"
+    | "split"
+    | "upscale"
+    | "superResolve"
+    | "angle"
+    | "lighting"
+    | "panorama"
+    | "view";
 
 type ImageToolHandlers = {
     onUpload: (node: CanvasNodeData) => void;

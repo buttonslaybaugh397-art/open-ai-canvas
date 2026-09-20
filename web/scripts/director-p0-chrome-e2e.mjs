@@ -11,6 +11,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
+import { fileURLToPath } from "node:url";
 
 const CHROME_CANDIDATES = [
     process.env.CHROME_BIN,
@@ -74,7 +75,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** 启动 Vite DEV，等待 ready 行或 TCP 可连接；超时即抛。 */
 async function launchVite(port) {
-    const child = spawn("bunx", ["vite", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], {
+    const viteEntry = fileURLToPath(new URL("../node_modules/vite/bin/vite.js", import.meta.url));
+    const child = spawn("node", [viteEntry, "--host", "127.0.0.1", "--port", String(port), "--strictPort"], {
         cwd: process.cwd(),
         stdio: ["ignore", "pipe", "pipe"],
     });
@@ -267,6 +269,9 @@ async function connectCdp(cdpPort) {
             evaluate(`(() => {
             const el = ${locatorExpression};
             if (!(el instanceof HTMLElement)) return null;
+            for (let parent = el; parent; parent = parent.parentElement) {
+                if (parent.getAnimations().some((animation) => animation.pending || animation.playState === "running")) return null;
+            }
             el.scrollIntoView({ block: "center", inline: "center" });
             const rect = el.getBoundingClientRect();
             const style = getComputedStyle(el);
@@ -280,12 +285,17 @@ async function connectCdp(cdpPort) {
         })()`);
         const deadline = Date.now() + 5000;
         let previous = null;
+        let stableSince = 0;
         let box = null;
         while (Date.now() < deadline) {
             const next = await readInteractiveBox();
             if (next && previous && next.x === previous.x && next.y === previous.y) {
-                box = next;
-                break;
+                if (Date.now() - stableSince >= 300) {
+                    box = next;
+                    break;
+                }
+            } else {
+                stableSince = Date.now();
             }
             previous = next;
             await sleep(100);

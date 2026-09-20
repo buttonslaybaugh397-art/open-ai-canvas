@@ -524,5 +524,6 @@ func newResourceDeletionTestService(t *testing.T) (*Service, *gorm.DB, string) {
 		t.Fatal(err)
 	}
 	dataDir := t.TempDir()
-	return New(repository.New(db), dataDir), db, dataDir
+	// Resource lifecycle tests do not need payment or protocol plugin bootstrap.
+	return &Service{repo: repository.New(db), dataDir: dataDir, workerID: newID()}, db, dataDir
 }

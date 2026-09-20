@@ -334,7 +334,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
             } catch (error) {
                 if (!isCurrent()) return;
                 if (generationTaskCanReloadResource(task)) {
-                    setNodes((current) => current.map((node) => node.id === nodeId ? { ...node, metadata: { ...node.metadata, resourceReloadAvailable: true } } : node));
+                    setNodes((current) => current.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, resourceReloadAvailable: true } } : node)));
                 }
                 // 成功任务的副作用确认失败时，直接用已持久化结果回写节点，避免永久停留在生成中。
                 if (task.status === "succeeded") {

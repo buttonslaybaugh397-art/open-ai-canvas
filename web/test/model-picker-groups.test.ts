@@ -9,10 +9,17 @@ import { defaultModelCapabilityConfig } from "../src/lib/model-capabilities";
 
 function model(label = "", price = 300000, modelKey = "seedance-2.0", displayName = modelKey === "seedance-2.0" ? "Seedance 2.0" : modelKey): PublicChannelModel {
     return {
-        id: `${modelKey}-${label || "default"}`, modelKey, displayName, channelLabel: label,
+        id: `${modelKey}-${label || "default"}`,
+        modelKey,
+        displayName,
+        channelLabel: label,
         description: label ? `${label}的使用说明` : "",
-        icon: "ByteDance", capability: "video", protocol: "seedance", available: true,
-        pricingMode: "provider", priceLabel: "",
+        icon: "ByteDance",
+        capability: "video",
+        protocol: "seedance",
+        available: true,
+        pricingMode: "provider",
+        priceLabel: "",
         capabilityConfig: defaultModelCapabilityConfig("seedance", "seedance-2.0"),
         priceTiers: [{ id: "tier", selector: {}, resolution: "*", videoSeconds: 0, billingMode: "per_second", unitPriceMicrocredits: price, inputTokenPriceMicrocredits: 0, outputTokenPriceMicrocredits: 0, cachedTokenPriceMicrocredits: 0 }],
     };
@@ -33,7 +40,15 @@ test("same model display name groups all channels and preserves their prices", (
     expect(groups).toHaveLength(1);
     expect(config.channels.map((channel) => channel.modelCosts![0].description)).toEqual(["", "优惠渠道-993的使用说明", "特惠渠道-730的使用说明"]);
     expect(groups.map((group) => [group.label, group.kind, group.models.map((item) => [item.label, item.models])])).toEqual([
-        ["Seedance 2.0", "product", [["正常渠道", ["a::seedance-2.0"]], ["优惠渠道-993", ["b::seedance-2.0"]], ["特惠渠道-730", ["c::seedance-2.0"]]]],
+        [
+            "Seedance 2.0",
+            "product",
+            [
+                ["正常渠道", ["a::seedance-2.0"]],
+                ["优惠渠道-993", ["b::seedance-2.0"]],
+                ["特惠渠道-730", ["c::seedance-2.0"]],
+            ],
+        ],
     ]);
     expect(config.channels.map((channel) => priceTierSummaryLabel(priceTiersForCurrentSelection(channel.modelCosts![0].logicalPriceTiers!, "video", config)))).toEqual(["0.3 积分/秒", "0.3 积分/秒", "0.2 积分/秒"]);
 });
@@ -64,11 +79,14 @@ test("selection and quote keep the chosen channel even when another channel is c
 
 test("different display names in one channel create distinct first-level groups", () => {
     const config = fixture();
-    const extra = systemChannelModelChannels([{ id: "volc", name: "火山引擎", displayName: "火山引擎", models: [
-        model("Seedance 2 Mini", 300000, "seedance-2-mini", "Seedance 2 Mini"),
-        model("Seedance 2.0 Fast", 300000, "seedance-2-fast", "Seedance 2.0 Fast"),
-        model("Seedance 2.0", 300000, "seedance-2", "Seedance 2.0"),
-    ] }]);
+    const extra = systemChannelModelChannels([
+        {
+            id: "volc",
+            name: "火山引擎",
+            displayName: "火山引擎",
+            models: [model("Seedance 2 Mini", 300000, "seedance-2-mini", "Seedance 2 Mini"), model("Seedance 2.0 Fast", 300000, "seedance-2-fast", "Seedance 2.0 Fast"), model("Seedance 2.0", 300000, "seedance-2", "Seedance 2.0")],
+        },
+    ]);
     const groups = groupModelsForPicker({ ...config, channels: extra }, selectableModelsByCapability({ ...config, channels: extra }, "video"));
     expect(groups).toHaveLength(3);
     expect(groups.map((group) => group.label)).toEqual(["Seedance 2 Mini", "Seedance 2.0 Fast", "Seedance 2.0"]);

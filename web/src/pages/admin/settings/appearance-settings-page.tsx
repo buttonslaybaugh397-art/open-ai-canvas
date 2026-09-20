@@ -643,12 +643,7 @@ export default function AppearanceSettingsPage() {
                                 key: "welcome",
                                 label: "欢迎页",
                                 children: (
-                                    <SettingsSectionCard
-                                        className="admin-appearance-section"
-                                        icon={<Globe2 className="size-4" aria-hidden="true" />}
-                                        title="欢迎页"
-                                        description="控制访客是否可以访问欢迎页，开关修改后立即保存。"
-                                    >
+                                    <SettingsSectionCard className="admin-appearance-section" icon={<Globe2 className="size-4" aria-hidden="true" />} title="欢迎页" description="控制访客是否可以访问欢迎页，开关修改后立即保存。">
                                         <div className="admin-appearance-section-form">
                                             <WelcomeSetting />
                                         </div>

@@ -229,7 +229,12 @@ test("multiple canvas failures remain visible while successful canvases are ackn
     };
     await expect(saveRemoteUserDataNow()).rejects.toBeInstanceOf(AggregateError);
     expect(writes).toEqual(["/canvas-projects/bad-one", "/canvas-projects/good", "/canvas-projects/bad-two"]);
-    expect(Object.entries(useSyncProgressStore.getState().syncingProjects).filter(([, progress]) => progress.phase === "error").map(([id]) => id).sort()).toEqual(["bad-one", "bad-two"]);
+    expect(
+        Object.entries(useSyncProgressStore.getState().syncingProjects)
+            .filter(([, progress]) => progress.phase === "error")
+            .map(([id]) => id)
+            .sort(),
+    ).toEqual(["bad-one", "bad-two"]);
     expect(useSyncProgressStore.getState().syncingProjects.good?.phase).toBe("done");
     writes.length = 0;
     await expect(saveRemoteUserDataNow()).rejects.toThrow("2 个画布云端保存失败");

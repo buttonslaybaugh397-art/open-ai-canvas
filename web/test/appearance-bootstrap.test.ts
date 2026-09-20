@@ -7,6 +7,7 @@ test("initial HTML stays brand neutral until the public appearance is resolved",
 
     expect(html).not.toContain("影策");
     expect(html).toContain("<title>正在加载</title>");
+    expect(html).toContain('<link rel="icon" href="data:," />');
     expect(mainSource).toContain("bootstrapAppearance()");
     expect(mainSource).toContain('import("./application")');
     expect(mainSource.indexOf("bootstrapAppearance()")).toBeLessThan(mainSource.indexOf('import("./application")'));
