@@ -6,6 +6,7 @@ import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerat
 import { generationTaskShowsProgress, generationTaskStageLabel, generationTaskStatusLabel, isGenerationTaskSubmissionUncertain } from "@/lib/generation-task-display";
 import { canvasRichTextHTML } from "@/lib/canvas/canvas-rich-text";
 import { fitNodeSize } from "@/lib/canvas/canvas-node-size";
+import { canvasTextFontSize } from "@/lib/canvas/canvas-text-scale";
 import { loadCanvasDrawingPreview } from "@/lib/canvas/canvas-drawing-storage";
 import { canvasNodeVideoPreviewUrl } from "@/lib/canvas/canvas-media-preview";
 import { bindCanvasVideoHoverPreview } from "@/lib/canvas/canvas-video-hover-preview";
@@ -310,7 +311,7 @@ function UnknownNodeContent({ theme }: Pick<CanvasNodeContentProps, "theme">) {
 }
 
 function TextContent({ node, theme, isEditingContent, textareaRef, mentionReferences, onContentChange, onStopEditing }: CanvasNodeContentProps) {
-    const fontSize = node.metadata?.fontSize || 14;
+    const fontSize = canvasTextFontSize(node.width, node.height, node.metadata?.fontSize);
     const textStyle = { fontSize: `${fontSize}px`, lineHeight: `${Math.round(fontSize * 1.65)}px`, color: theme.node.text, boxSizing: "border-box" } as CSSProperties;
     const richTextHTML = useMemo(() => canvasRichTextHTML(node.metadata?.richText), [node.metadata?.richText]);
 

@@ -4,6 +4,8 @@ dist
 build
 coverage
 bun.lock
+# Generated from the Go contract; preserve reproducible generator output.
+src/lib/canvas/generation-contract.generated.ts
 *.log
 *.ico
 *.png

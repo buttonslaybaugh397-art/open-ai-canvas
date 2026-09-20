@@ -163,7 +163,16 @@ export type AnalyticsFilters = {
 
 export type AdminReferenceData = {
     users: Array<{ id: string; username: string; displayName: string }>;
-    channels: Array<{ id: string; name: string; enabled: boolean; models: string[] }>;
+    channels: Array<{ id: string; name: string; enabled: boolean; models: string[]; modelDisplayNames?: string[] }>;
+};
+
+export type AnalyticsFinance = {
+    settledOrders: number;
+    costedOrders: number;
+    revenueMicrocredits: number;
+    costMicrocredits: number;
+    profitMicrocredits: number | null;
+    profitMargin: number | null;
 };
 
 export type AdminAnalytics = {
@@ -205,6 +214,7 @@ export type AdminAnalytics = {
         estimatedCostMicros: number;
         costAvailable: boolean;
         currency?: string;
+        finance?: AnalyticsFinance | null;
     };
     trend: Array<{
         day: string;
@@ -223,6 +233,7 @@ export type AdminAnalytics = {
         requestSuccessRate: number;
     }>;
     models: Array<{
+        finance?: AnalyticsFinance | null;
         model: string;
         capability: string;
         tasks: number;

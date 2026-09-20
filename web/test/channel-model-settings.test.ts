@@ -194,6 +194,17 @@ describe("channel model settings use confirmed protocols", () => {
         expect(modelCosts[1]!.protocol).toBeUndefined();
     });
 
+    test("text capability editing preserves pricing and other saved profiles across switches", () => {
+        const channel = configuredChannel("gemini-image");
+        const original = channel.modelCosts![1]!;
+        const switched = { ...channel, modelCosts: updateChannelModelSettings(channel, "test-model", { capability: "text", protocol: "chat-completion" }, protocols) };
+        const settings = resolveChannelModelSettings(switched, "test-model", protocols);
+        const text = { ...settings.capabilityConfig!.text!, contextWindowTokens: 1_000_000 };
+        const edited = { ...switched, modelCosts: updateChannelModelSettings(switched, "test-model", { capabilityConfig: { version: 1, text } }, protocols) };
+        const restored = updateChannelModelSettings(edited, "test-model", { capability: "image", protocol: "gemini-image" }, protocols);
+        expect(restored[1]).toEqual({ ...original, capabilityConfig: { ...original.capabilityConfig, text } });
+    });
+
     test("rejects missing, disabled or incompatible protocol selections without changing settings", () => {
         const channel = configuredChannel("gemini-image");
         const before = structuredClone(channel);

@@ -132,12 +132,18 @@ export async function getMediaBlob(storageKey: string) {
     return store.getItem<Blob>(storageKey);
 }
 
-export async function resolveGeneratedVideoUrl(storageKey: string) {
+export async function resolveGeneratedVideoUrl(storageKey: string, signal?: AbortSignal) {
     const scope = getActiveUserScope();
     try {
-        if (resourceIdFromStorageKey(storageKey)) return await cacheResourceObjectUrlDurably(storageKey);
+        signal?.throwIfAborted();
+        if (resourceIdFromStorageKey(storageKey)) {
+            const url = await cacheResourceObjectUrlDurably(storageKey);
+            signal?.throwIfAborted();
+            return url;
+        }
         if (!storageKey) throw new Error("视频结果缺少本地缓存标识");
         const blob = await store.getItem<Blob>(storageKey);
+        signal?.throwIfAborted();
         if (scope !== getActiveUserScope()) throw new DOMException("用户已切换", "AbortError");
         if (!(blob instanceof Blob) || !blob.size) throw new Error("视频文件尚未写入本地缓存");
         const url = objectUrls.get(storageKey) || URL.createObjectURL(blob);
@@ -145,8 +151,19 @@ export async function resolveGeneratedVideoUrl(storageKey: string) {
         return url;
     } catch (error) {
         if (error instanceof Error && error.name === "AbortError") throw error;
+        signal?.throwIfAborted();
         throw new Error(`视频已生成，本地缓存失败，请重新加载资源：${error instanceof Error ? error.message : "缓存不可用"}`, { cause: error });
     }
+}
+
+export async function resolveGeneratedVideo(video: { storageKey: string; bytes?: number; mimeType?: string; width?: number; height?: number; durationMs?: number }, signal?: AbortSignal): Promise<UploadedFile> {
+    const scope = getActiveUserScope();
+    const url = await resolveGeneratedVideoUrl(video.storageKey, signal);
+    const blob = await getMediaBlob(video.storageKey);
+    signal?.throwIfAborted();
+    if (scope !== getActiveUserScope()) throw new DOMException("用户已切换", "AbortError");
+    if (!blob?.size) throw new Error("生成视频本地缓存为空，未标记为成功");
+    return { ...video, url, bytes: video.bytes || blob.size, mimeType: video.mimeType || blob.type || "video/mp4" };
 }
 
 export async function setMediaBlob(storageKey: string, blob: Blob) {

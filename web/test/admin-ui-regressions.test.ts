@@ -159,26 +159,16 @@ test("analytics keeps fixed range presets distinct and presents a real consumpti
     expect(source).toContain('dataKey="credits"');
     expect(source).toContain('name="已结算积分"');
     expect(source).toContain('const [analysisTab, setAnalysisTab] = useState<AnalysisTab>("users")');
-    expect(source).toContain('placeholder={pricingModelOptions.length ? "选择已启用模型" : "暂无已启用模型"}');
-    expect(source).toContain("onValuesChange={handlePricingValuesChange}");
-    expect(source).toContain("onChange={handlePricingModelChange}");
-    expect(source).toContain('hasOwnProperty.call(changedValues, "model")');
-    expect(source).toContain('if (matchingChannels.length) form.setFieldValue("channelId", matchingChannels[0].id)');
-    expect(source).toContain("const sourceChannels = channels.filter(");
-    expect(source).toContain('Form.useWatch("channelId", form)');
-    expect(source).toContain("pricingChannelId");
-    expect(source).toContain("channel.id === pricingChannelId");
-    expect(source).toContain('inputMode="decimal"');
-    expect(source).toContain('className="admin-analytics-price-input"');
-    expect(source).toContain('className="admin-analytics-price-field"');
-    expect(source).toContain('rootClassName="admin-modal-root admin-analytics-pricing-modal"');
-    expect(source).toContain("zIndex={1200}");
-    expect(source).toContain("setPricingWorkspaceOpen(false)");
-    expect(source).toContain("validator: validatePriceInput");
-    expect(source).toContain("请输入非负价格，最多 6 位小数");
-    expect(source).toContain("function formatPriceInput(micros: number)");
-    expect(source).toContain("function toMicros(value?: string | number)");
-    expect(source).not.toContain("<InputNumber");
+    expect(source).toContain("...analyticsFinanceColumns");
+    expect(source).toContain("finance.revenueMicrocredits");
+    expect(source).toContain("formatFinanceCost(finance)");
+    expect(source).toContain("finance.profitMicrocredits");
+    expect(source).toContain("finance.costedOrders}/${finance.settledOrders}");
+    expect(source).toContain("financeUnavailable && <Alert");
+    expect(source).toContain("exportAdminAnalytics(filters)");
+    for (const removed of ["模型价格配置", "pricingModelOptions", "getAdminModelPricings", "saveAdminModelPricing", "deleteAdminModelPricing", "PricingWorkspace"]) {
+        expect(source).not.toContain(removed);
+    }
 });
 
 test("storage settings keep generic S3 controls and connection validation", async () => {
@@ -320,7 +310,7 @@ test("request logs display user credit billing independently from upstream cost"
     expect(billingSummary).toContain("billingAmountMicrocredits");
     expect(billingSummary).toContain("billingAvailable");
     expect(billingSummary).toContain("!log.billable");
-    expect(billingSummary).toContain("不计费");
+    expect(billingSummary).toContain("未扣积分");
     expect(billingSummary).not.toContain("costAvailable");
     expect(detailSource).toContain('["请求阶段", requestKindText(log.requestKind)]');
     expect(detailSource).toContain('["计费属性", log.billable ? "计费调用" : "不计费"]');
@@ -395,7 +385,7 @@ test("banner announcement editor keeps title styles through edit, save and statu
 
     // emoji 面板：默认收起（Popover 点击触发），插入后不自动关闭，方便连续插入。
     expect(emojiPickerSource).toContain('trigger="click"');
-    expect(emojiPickerSource).toContain('onPick(item.char)');
+    expect(emojiPickerSource).toContain("onPick(item.char)");
     expect(noticeSource).toContain("BANNER_NOTICE_EMOJI_GROUPS");
     expect(noticeSource).not.toContain("DEFAULT_ICON");
 

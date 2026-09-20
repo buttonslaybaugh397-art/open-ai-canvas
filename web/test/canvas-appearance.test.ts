@@ -14,9 +14,10 @@ import {
 } from "../src/lib/canvas/canvas-appearance";
 
 const values = new Map<string, string>();
-const previousWindow = globalThis.window;
+let originalWindow: PropertyDescriptor | undefined;
 
 beforeEach(() => {
+    originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
     values.clear();
     Object.defineProperty(globalThis, "window", {
         configurable: true,
@@ -30,10 +31,9 @@ beforeEach(() => {
     });
 });
 
-// 桩 window 只在本文件生效，否则后续用例会拿到缺少 location 的假 window。
 afterEach(() => {
-    if (previousWindow === undefined) delete (globalThis as { window?: unknown }).window;
-    else Object.defineProperty(globalThis, "window", { configurable: true, value: previousWindow });
+    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+    else Reflect.deleteProperty(globalThis, "window");
 });
 
 describe("canvas custom appearance", () => {

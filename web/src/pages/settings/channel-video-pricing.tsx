@@ -154,7 +154,7 @@ export function ChannelModelSettings({ channel, onChange }: { channel: ModelChan
                         key: "capabilities",
                         label: "能力与参数",
                         children: <div inert={Boolean(testingModel)}>
-                            {activeCapability === "image" || activeCapability === "video" ? (
+                            {activeCapability === "text" || activeCapability === "image" || activeCapability === "video" ? (
                                 <ModelCapabilityEditor
                                     capability={activeCapability}
                                     model={activeModel}

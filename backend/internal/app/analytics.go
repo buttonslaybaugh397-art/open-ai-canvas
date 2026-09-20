@@ -39,41 +39,42 @@ type AnalyticsOverview struct {
 }
 
 type AnalyticsKPI struct {
-	ActiveUsers                 int     `json:"activeUsers"`
-	DAU                         int     `json:"dau"`
-	WAU                         int     `json:"wau"`
-	MAU                         int     `json:"mau"`
-	GenerationTasks             int     `json:"generationTasks"`
-	TextTasks                   int     `json:"textTasks"`
-	ImageTasks                  int     `json:"imageTasks"`
-	VideoTasks                  int     `json:"videoTasks"`
-	AudioTasks                  int     `json:"audioTasks"`
-	SucceededTasks              int     `json:"succeededTasks"`
-	FailedTasks                 int     `json:"failedTasks"`
-	CancelledTasks              int     `json:"cancelledTasks"`
-	QueuedTasks                 int     `json:"queuedTasks"`
-	RunningTasks                int     `json:"runningTasks"`
-	TaskSuccessRate             float64 `json:"taskSuccessRate"`
-	MediaCount                  int     `json:"mediaCount"`
-	GeneratedImages             int     `json:"generatedImages"`
-	GeneratedVideos             int     `json:"generatedVideos"`
-	GeneratedAudio              int     `json:"generatedAudio"`
-	VideoSeconds                int     `json:"videoSeconds"`
-	AverageTaskDurationMs       int64   `json:"averageTaskDurationMs"`
-	UpstreamRequests            int     `json:"upstreamRequests"`
-	SucceededRequests           int     `json:"succeededRequests"`
-	FailedRequests              int     `json:"failedRequests"`
-	SuccessRate                 float64 `json:"successRate"`
-	P95DurationMs               int64   `json:"p95DurationMs"`
-	InputTokens                 int64   `json:"inputTokens"`
-	OutputTokens                int64   `json:"outputTokens"`
-	CachedTokens                int64   `json:"cachedTokens"`
-	UsageAvailable              bool    `json:"usageAvailable"`
-	CreditsConsumedMicrocredits int64   `json:"creditsConsumedMicrocredits"`
-	CurrentQueuedTasks          int64   `json:"currentQueuedTasks"`
-	EstimatedCostMicros         int64   `json:"estimatedCostMicros"`
-	CostAvailable               bool    `json:"costAvailable"`
-	Currency                    string  `json:"currency"`
+	Finance                     AnalyticsFinance `json:"finance"`
+	ActiveUsers                 int              `json:"activeUsers"`
+	DAU                         int              `json:"dau"`
+	WAU                         int              `json:"wau"`
+	MAU                         int              `json:"mau"`
+	GenerationTasks             int              `json:"generationTasks"`
+	TextTasks                   int              `json:"textTasks"`
+	ImageTasks                  int              `json:"imageTasks"`
+	VideoTasks                  int              `json:"videoTasks"`
+	AudioTasks                  int              `json:"audioTasks"`
+	SucceededTasks              int              `json:"succeededTasks"`
+	FailedTasks                 int              `json:"failedTasks"`
+	CancelledTasks              int              `json:"cancelledTasks"`
+	QueuedTasks                 int              `json:"queuedTasks"`
+	RunningTasks                int              `json:"runningTasks"`
+	TaskSuccessRate             float64          `json:"taskSuccessRate"`
+	MediaCount                  int              `json:"mediaCount"`
+	GeneratedImages             int              `json:"generatedImages"`
+	GeneratedVideos             int              `json:"generatedVideos"`
+	GeneratedAudio              int              `json:"generatedAudio"`
+	VideoSeconds                int              `json:"videoSeconds"`
+	AverageTaskDurationMs       int64            `json:"averageTaskDurationMs"`
+	UpstreamRequests            int              `json:"upstreamRequests"`
+	SucceededRequests           int              `json:"succeededRequests"`
+	FailedRequests              int              `json:"failedRequests"`
+	SuccessRate                 float64          `json:"successRate"`
+	P95DurationMs               int64            `json:"p95DurationMs"`
+	InputTokens                 int64            `json:"inputTokens"`
+	OutputTokens                int64            `json:"outputTokens"`
+	CachedTokens                int64            `json:"cachedTokens"`
+	UsageAvailable              bool             `json:"usageAvailable"`
+	CreditsConsumedMicrocredits int64            `json:"creditsConsumedMicrocredits"`
+	CurrentQueuedTasks          int64            `json:"currentQueuedTasks"`
+	EstimatedCostMicros         int64            `json:"estimatedCostMicros"`
+	CostAvailable               bool             `json:"costAvailable"`
+	Currency                    string           `json:"currency"`
 }
 
 type AnalyticsTrendPoint struct {
@@ -94,35 +95,36 @@ type AnalyticsTrendPoint struct {
 }
 
 type AnalyticsModelRow struct {
-	Model                       string  `json:"model"`
-	Capability                  string  `json:"capability"`
-	Tasks                       int     `json:"tasks"`
-	SucceededTasks              int     `json:"succeededTasks"`
-	FailedTasks                 int     `json:"failedTasks"`
-	CancelledTasks              int     `json:"cancelledTasks"`
-	QueuedTasks                 int     `json:"queuedTasks"`
-	RunningTasks                int     `json:"runningTasks"`
-	Requests                    int     `json:"requests"`
-	SucceededRequests           int     `json:"succeededRequests"`
-	FailedRequests              int     `json:"failedRequests"`
-	UniqueUsers                 int     `json:"uniqueUsers"`
-	TaskSuccessRate             float64 `json:"taskSuccessRate"`
-	RequestSuccessRate          float64 `json:"requestSuccessRate"`
-	P50DurationMs               int64   `json:"p50DurationMs"`
-	P95DurationMs               int64   `json:"p95DurationMs"`
-	InputTokens                 int64   `json:"inputTokens"`
-	OutputTokens                int64   `json:"outputTokens"`
-	CachedTokens                int64   `json:"cachedTokens"`
-	UsageAvailable              bool    `json:"usageAvailable"`
-	MediaCount                  int     `json:"mediaCount"`
-	GeneratedImages             int     `json:"generatedImages"`
-	GeneratedVideos             int     `json:"generatedVideos"`
-	GeneratedAudio              int     `json:"generatedAudio"`
-	VideoSeconds                int     `json:"videoSeconds"`
-	CreditsConsumedMicrocredits int64   `json:"creditsConsumedMicrocredits"`
-	EstimatedCostMicros         int64   `json:"estimatedCostMicros"`
-	CostAvailable               bool    `json:"costAvailable"`
-	Currency                    string  `json:"currency"`
+	Finance                     AnalyticsFinance `json:"finance"`
+	Model                       string           `json:"model"`
+	Capability                  string           `json:"capability"`
+	Tasks                       int              `json:"tasks"`
+	SucceededTasks              int              `json:"succeededTasks"`
+	FailedTasks                 int              `json:"failedTasks"`
+	CancelledTasks              int              `json:"cancelledTasks"`
+	QueuedTasks                 int              `json:"queuedTasks"`
+	RunningTasks                int              `json:"runningTasks"`
+	Requests                    int              `json:"requests"`
+	SucceededRequests           int              `json:"succeededRequests"`
+	FailedRequests              int              `json:"failedRequests"`
+	UniqueUsers                 int              `json:"uniqueUsers"`
+	TaskSuccessRate             float64          `json:"taskSuccessRate"`
+	RequestSuccessRate          float64          `json:"requestSuccessRate"`
+	P50DurationMs               int64            `json:"p50DurationMs"`
+	P95DurationMs               int64            `json:"p95DurationMs"`
+	InputTokens                 int64            `json:"inputTokens"`
+	OutputTokens                int64            `json:"outputTokens"`
+	CachedTokens                int64            `json:"cachedTokens"`
+	UsageAvailable              bool             `json:"usageAvailable"`
+	MediaCount                  int              `json:"mediaCount"`
+	GeneratedImages             int              `json:"generatedImages"`
+	GeneratedVideos             int              `json:"generatedVideos"`
+	GeneratedAudio              int              `json:"generatedAudio"`
+	VideoSeconds                int              `json:"videoSeconds"`
+	CreditsConsumedMicrocredits int64            `json:"creditsConsumedMicrocredits"`
+	EstimatedCostMicros         int64            `json:"estimatedCostMicros"`
+	CostAvailable               bool             `json:"costAvailable"`
+	Currency                    string           `json:"currency"`
 }
 
 type AnalyticsUserRow struct {
@@ -354,6 +356,11 @@ func (s *Service) AdminAnalytics(actor *model.User, query AnalyticsQuery) (*Anal
 		return nil, err
 	}
 	result := buildAnalyticsOverview(filter, tasks, rollingTasks, rollingLogs, logs, billingOrders, activities, users)
+	records, err := s.analyticsFinancialRecords(logs)
+	if err != nil {
+		return nil, err
+	}
+	applyAnalyticsFinance(result, records)
 	channels, err := s.repo.HistoricalSystemChannelReferences()
 	if err != nil {
 		return nil, err
