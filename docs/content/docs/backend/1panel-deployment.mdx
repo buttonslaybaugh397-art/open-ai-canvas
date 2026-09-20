@@ -11,7 +11,7 @@ description: 本地增强版的镜像、持久数据和启动顺序
 
 默认镜像仓库是本地分支对应的 `ghcr.io/buttonslaybaugh397-art`，不会切换到上游仓库。`CANVAS_IMAGE_TAG` 默认 `latest`，前端、后端和迁移统一使用这一标签；未设置或留空也采用该默认值。需要固定版本时可设置实际发布成功的共同 `sha-xxxxxxx` 标签。`latest` 指我们仓库已发布的镜像，不代表本机未发布源码；编排本身不构建或发布镜像。
 
-之前的 `sha-f88d6d9` 不代表当前已合并的新代码，不能用它验证新统计、账号设置等新增功能；本模板依赖当前后端的 `migrate-schema up` 和 `/api/health/ready`，不是旧镜像回退模板。发布流程会在默认分支更新 `latest`，前后端为独立任务，推送后应确认二者均成功且对应同一提交，再更新编排。使用私有镜像时，在 1Panel 配置 GHCR 拉取凭据，不把凭据写进编排。
+本模板依赖当前后端的 `migrate-schema up/verify` 和 `/api/health/ready`，不是旧镜像回退模板。发布工作流只在推送 `main`、`v*` 标签或手动触发时运行；只推送 `codex/*` 分支不会生成镜像。手动在开发分支运行可发布共同 SHA 标签，但不会更新 `latest`。`main` 的发布才更新 `latest`，前后端清单仍分别发布，必须确认两者均成功且对应同一提交后再更新编排。使用私有镜像时，在 1Panel 配置 GHCR 拉取凭据，不把凭据写进编排。
 
 ## 1Panel 配置
 
@@ -45,6 +45,30 @@ description: 本地增强版的镜像、持久数据和启动顺序
 应直接更新原编排，不要让两套 PostgreSQL 容器同时使用同一个数据卷。换编排名称或迁移到新项目之前，确认原服务已停用并核对实际卷名。
 
 ## 更新与排障
+
+### 本次 schema 27 → 29 升级
+
+不需要新增服务、端口或数据卷，也不需要更换 PostgreSQL 17 / Redis 7.4。版本 28 增加 Agent 执行日志、消息和任务/计费授权字段，版本 29 增加审批资源租约。两份 1Panel YAML 保持一致，迁移命令现在执行 `up` 后再执行 `verify`；缺失或空连接文件立即失败，不继续启动。
+
+1. 等待我们仓库目标提交的前后端镜像都发布成功。建议本次把 `CANVAS_IMAGE_TAG` 固定为两者共同的 `sha-<完整提交SHA>`，不要用仅在 Git 存在、尚未发布镜像的 SHA，也不要用带 `-amd64`、`-arm64` 或 `-multi` 的内部构建标签。
+2. 核对并保留现有四个卷及私有环境变量，备份 PostgreSQL、上传资源和 `.settings-key`。确认当前没有需要继续等待的生成任务，按维护窗口停止旧 `web`、`backend`；依赖关系只控制启动，不能替你停止仍在运行的旧后端。
+3. 拉取目标镜像并重新运行 `migrate`，确认 `up` 与 `verify` 均成功且期望版本为 29。不能只查看上一次已退出容器的旧日志，也不要只点击普通重启。
+4. 迁移成功后再重建后端和网页。任何一步失败都停在该阶段并保留日志，不跳过迁移或改成后端自动迁移。
+
+目录部署可在**现有部署的实际目录**执行下列顺序；前提是已完成备份、固定已发布标签且现有 PostgreSQL/Redis 正常。1Panel 编辑器模式应按同一顺序操作实际编排，不能在别的目录创建第二套服务。以下会停止应用和执行数据库迁移，不是只读检查：
+
+```bash
+set -e
+docker compose --env-file .env -f docker-compose.yml config --quiet
+docker compose --env-file .env -f docker-compose.yml pull migrate backend web
+docker compose --env-file .env -f docker-compose.yml stop web backend
+docker compose --env-file .env -f docker-compose.yml up --no-deps --force-recreate --exit-code-from migrate migrate
+docker compose --env-file .env -f docker-compose.yml up -d backend web
+```
+
+根模板文件名为 `docker-compose.1panel.yml`，使用它时替换上述 `-f` 参数。不要执行 `down -v` 或替换 secrets 卷。迁移成功后旧后端会因 schema 不匹配拒绝启动，回退必须使用匹配的数据库备份和应用版本，不能仅改回旧标签。通用 `docker-compose.deploy.yml` 和上游一键脚本默认指向 `ddcat-ai`，不应拿它们覆盖这套本地增强版 1Panel 编排。
+
+### 配置与健康检查
 
 若就绪检查 200，但带实际 `Origin` 的请求返回 403「不允许的跨域来源」，先核对后端容器实际 `CANVAS_CORS_ORIGINS`，须包含协议、主机和非默认端口。修改配置后需更新编排重建容器；普通重启不会应用新的容器环境变量。
 

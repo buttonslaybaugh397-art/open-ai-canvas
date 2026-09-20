@@ -77,7 +77,12 @@ services:
     command:
       - /bin/sh
       - -ec
-      - 'export DATABASE_URL="$$(cat /run/canvas-secrets/database-url)"; exec migrate-schema up'
+      - |
+        DATABASE_URL="$$(cat /run/canvas-secrets/database-url)"
+        [ -n "$$DATABASE_URL" ] || { echo "Database connection file is empty" >&2; exit 1; }
+        export DATABASE_URL
+        migrate-schema up
+        exec migrate-schema verify
     volumes:
       - deployment-secrets:/run/canvas-secrets:ro
     depends_on:
@@ -107,7 +112,11 @@ services:
     command:
       - /bin/sh
       - -ec
-      - 'export DATABASE_URL="$$(cat /run/canvas-secrets/database-url)"; exec infinite-canvas-backend'
+      - |
+        DATABASE_URL="$$(cat /run/canvas-secrets/database-url)"
+        [ -n "$$DATABASE_URL" ] || { echo "Database connection file is empty" >&2; exit 1; }
+        export DATABASE_URL
+        exec infinite-canvas-backend
     volumes:
       - backend-data:/data
       - deployment-secrets:/run/canvas-secrets:ro
