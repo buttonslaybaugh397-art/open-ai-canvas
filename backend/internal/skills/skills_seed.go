@@ -56,6 +56,7 @@ func (s *Service) EnsureBuiltinSkills() error {
 		return fmt.Errorf("内置技能不能为空")
 	}
 	definitions = append(definitions, builtinImageEditingSkillDefinitions()...)
+	definitions = append(definitions, builtinDirectorSkillDefinitions()...)
 
 	seen := make(map[string]struct{}, len(definitions))
 	skills := make([]model.Skill, 0, len(definitions))
