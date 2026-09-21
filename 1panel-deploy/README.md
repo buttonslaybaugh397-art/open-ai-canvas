@@ -10,11 +10,28 @@
 | `.env.example` | 可公开的环境配置模板，不含真实密码，默认 `latest` |
 | `.env`（不随仓库分发） | 部署环境的私有配置，保留已有凭据、卷名及地址，不提交仓库 |
 | `README.md` | 部署与数据保护说明 |
+| `render-editor.mjs` | 在本机从已核对的私有配置生成已有部署专用的编辑器 YAML；需要 Bun 与 Docker Compose，仅解析配置 |
+
+## 已有部署的编辑器模式
+
+`docker-compose.yml` 是需要环境变量的目录版模板，不是脱离配置后仍可直接启动的单文件。1Panel 编辑 YAML 和编辑环境变量是两个输入；只替换 YAML 不会自动读取本机 `.env`。部分版本更新时会用环境变量栏重写服务器 `.env`，因此不能将该栏留空后假定原文件会保留。
+
+已有这套五服务部署时，可在仓库根目录生成不依赖 1Panel 环境变量栏的私有编辑器版：
+
+```bash
+bun 1panel-deploy/render-editor.mjs --env-file 1panel-deploy/.env
+```
+
+输出为 Git 忽略的 `.local/1panel-deploy/docker-compose.editor.yml`；用 `--image-tag sha-<已发布完整提交SHA>` 固定已发布的共同版本，用 `--output` 指定新输出路径。脚本拒绝覆盖已有输出，不打印原始配置或密码，不启动 Docker 服务，也不修改输入 `.env`。
+
+生成文件明确写入访问 Origin、端口、镜像、数据库名称和原卷名，保留容器内 shell 的 `$$` 转义。它不嵌入数据库密码；四个卷设为 `external: true`，且要求 secrets 卷中已有有效密码文件。卷缺失或密码文件缺失时失败，不创建空卷或生成新密码。此模式不适用于全新安装、宿主机目录挂载或需要补回密码文件的恢复操作。
+
+本机配置不是服务器事实源。使用前核对公开访问地址、代理网络、端口、数据库名称和四个实际卷名；生成文件包含部署地址等私有信息，不提交仓库。升级仍需备份并先停旧应用，再迁移、验收，不能把 `depends_on` 当作自动停旧应用。
 
 ## 启动前配置
 
 - `CANVAS_IMAGE_TAG`：默认 `latest`，前端、后端和迁移使用我们自己仓库的最新版镜像，无需手填版本号；需要锁定版本时可改成已发布的共同 `sha-xxxxxxx` 标签。`latest` 指仓库已发布版本，不是本机未发布源码；推送后应等待镜像工作流成功，再更新编排。本编排不会自动构建或发布镜像，也不是 `sha-f88d6d9` 回退模板，镜像需包含 `migrate-schema` 与就绪检查接口。
-- `CANVAS_CORS_ORIGINS`：实际浏览器访问地址，例如 `https://canvas.example.com`，不要填写路径、末尾斜杠、Markdown 链接或 `*`。
+- `CANVAS_CORS_ORIGINS`：同源访问可留空；跨域访问时填写实际浏览器 Origin，例如 `https://canvas.example.com`，不要填写路径、末尾斜杠、Markdown 链接或 `*`。
 - 默认仓库 `CANVAS_IMAGE_OWNER=buttonslaybaugh397-art`，没有切换到上游镜像。使用私有仓库时，在 1Panel 配置拉取凭据，不把凭据写入编排。
 
 默认通过宿主机 `127.0.0.1:6868` 接入反向代理并使用 HTTPS。直接 IP 测试时设置 `CANVAS_BIND_ADDRESS=0.0.0.0`，并将 CORS 设置为实际 `http://服务器IP:6868`。不要对公网开放 PostgreSQL、Redis 或后端端口。
@@ -33,7 +50,7 @@
 docker compose --env-file .env -f docker-compose.yml config --quiet
 ```
 
-若 1Panel 提示 `CANVAS_CORS_ORIGINS is missing a value`，说明编排解析时没有读取到该变量，尚未进入容器启动阶段。在该编排的环境变量中添加实际浏览器 Origin（包含协议和非默认端口），或确认已填写的 `.env` 位于 1Panel 实际使用的编排目录；仅在本机填写或推送 `.env.example` 不会同步服务器配置。编辑器模式请在环境变量栏配置，不要将 `KEY=value` 文本追加到 YAML。直接 IP 访问还需 `CANVAS_BIND_ADDRESS=0.0.0.0`，反向代理部署按实际网络保留回环绑定。不要改为 `*` 或移除 CORS 校验。
+若仍提示 `CANVAS_CORS_ORIGINS is missing a value`，说明 1Panel 仍在使用旧的 `:?` CORS 模板，错误发生在 Compose 解析阶段，尚未进入容器启动。在 1Panel 整份替换为当前 `docker-compose.yml`，同源访问可让变量留空；跨域访问再填写实际浏览器 Origin（包含协议和非默认端口）。仅在本机修改 `.env` 或推送 `.env.example` 不会同步服务器配置，编辑器模式不要将 `KEY=value` 文本追加到 YAML。直接 IP 访问还需 `CANVAS_BIND_ADDRESS=0.0.0.0`，反向代理部署按实际网络保留回环绑定。不要改为 `*` 或移除后端 CORS 校验。
 
 外层反向代理需保留 `Host`、`X-Forwarded-Proto`、`X-Forwarded-For`，并为实际使用的 SSE 路径配置流式转发。反向代理若运行在独立容器中，其 `127.0.0.1` 不是宿主机，应使用可到达宿主机的网络与地址。
 
@@ -62,7 +79,7 @@ docker compose --env-file .env -f docker-compose.yml config --quiet
 
 ## 更新与验收
 
-应用镜像默认使用我们仓库的 `latest`，迁移、后端和前端均设置 `pull_policy: always`。在 1Panel 执行编排启动或更新时，会检查并拉取该标签当前指向的镜像，不只复用本地存量镜像；普通容器重启不会拉取，也不会在运行期间自动检查更新。由 1Panel 管理升级，不接入 Host Updater 或 Docker socket。
+应用镜像默认使用我们仓库的 `latest`，迁移、后端和前端均设置 `pull_policy: always`。1Panel 自己的预拉取阶段仍可能提示“使用存量镜像”；后续 Compose 才执行模板中的拉取策略，解析失败时尚未执行这一步。更新时启用面板的强制拉取选项，并检查实际拉取、迁移和容器版本结果，不能仅凭该提示判断已更新。固定共同 SHA 更容易核对；普通容器重启不拉取，也不会在运行期间自动更新。由 1Panel 管理升级，不接入 Host Updater 或 Docker socket。
 
 只推送 `codex/*` 分支不会自动发布镜像。发布工作流在 `main`、`v*` 标签推送或手动触发时运行；手动运行开发分支可发布 SHA 标签但不更新 `latest`，`main` 发布才更新 `latest`。升级前确认前后端镜像都已成功且对应同一提交。
 

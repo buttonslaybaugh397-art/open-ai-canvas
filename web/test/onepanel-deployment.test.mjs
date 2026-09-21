@@ -41,7 +41,8 @@ test("1Panel keeps fork images, explicit migration, readiness gates and existing
     expect(backend.depends_on.redis.condition).toBe("service_healthy");
     expect(web.depends_on.backend.condition).toBe("service_healthy");
     expect(backend.healthcheck.test.join(" ")).toContain("/api/health/ready");
-    expect(backend.environment.CANVAS_CORS_ORIGINS).toContain(":?");
+    expect(backend.environment.CANVAS_CORS_ORIGINS).toBe("${CANVAS_CORS_ORIGINS:-}");
+    expect(read("docker-compose.1panel.yml")).not.toMatch(/CANVAS_CORS_ORIGINS:\s*\$\{CANVAS_CORS_ORIGINS:\?/);
     expect(web.ports).toEqual(["${CANVAS_BIND_ADDRESS:-127.0.0.1}:${CANVAS_HTTP_PORT:-6868}:3000"]);
     for (const service of [postgres, redis, migrate, backend]) expect(service.ports).toBeUndefined();
     expect(backend.environment.CANVAS_UPDATER_SOCKET).toBeUndefined();

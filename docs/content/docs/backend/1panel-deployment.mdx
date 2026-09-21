@@ -15,8 +15,12 @@ description: 本地增强版的镜像、持久数据和启动顺序
 
 ## 1Panel 配置
 
+先区分部署入口：下面的原模板需要环境变量。已有五服务部署若使用 1Panel YAML 编辑器，可在本机运行 `bun 1panel-deploy/render-editor.mjs --env-file 1panel-deploy/.env --image-tag sha-<已发布完整提交SHA>`，生成私有 `.local/1panel-deploy/docker-compose.editor.yml`。它不依赖面板环境变量栏，沿用已解析的地址、端口、数据库名称和卷名，不包含数据库密码；原四个卷必须已存在，密码文件必须在原 secrets 卷中，否则拒绝启动。新安装继续使用原模板，不能使用编辑器升级文件。
+
+生成器只执行 `docker compose config`，不调用 Docker daemon、不部署、不迁移、不覆盖输入或已有输出。运行前后均须核对本机配置是否确实对应目标服务器，尤其是四个卷及反向代理网络；不能把生成成功当作服务器配置已确认。私有输出不要提交仓库。
+
 1. 在“容器 → 编排”创建或编辑编排，整份替换为 `docker-compose.1panel.yml`。
-2. 在编排环境变量中填写 `CANVAS_CORS_ORIGINS`；`CANVAS_IMAGE_TAG` 保持默认 `latest` 即可，其余按 `1panel.env.example` 设置。缺少 CORS 时配置检查会直接失败，不使用通配 CORS。
+2. `CANVAS_CORS_ORIGINS` 在同源访问时可留空；如果网页与 API 是不同浏览器 Origin，再填写实际 Origin。`CANVAS_IMAGE_TAG` 保持默认 `latest` 即可，其余按 `1panel.env.example` 设置。不要使用通配 CORS。
 3. 默认只绑定宿主机 `127.0.0.1:6868`，通过 1Panel 网站反向代理配 HTTPS，目标为 `http://127.0.0.1:6868`。反向代理若运行在独立容器网络，容器内的 `127.0.0.1` 不是宿主机；应配置能访问宿主机的网络与目标地址。不要直接暴露后端、PostgreSQL 或 Redis 端口。
 4. 仅作直接 IP 测试时，可设置 `CANVAS_BIND_ADDRESS=0.0.0.0`、`CANVAS_HTTP_PORT=6868`，并将 CORS 设为实际 `http://服务器IP:6868`。生产使用 HTTPS，CORS 填浏览器访问域名的 Origin，不带路径或末尾斜杠。不要填写 Markdown 链接或 `*`。
 5. 保存启动。`postgres` 健康后运行迁移；迁移成功且 Redis 健康后启动后端；后端就绪后启动网页。`migrate` 退出码 0 是正常完成，不需要一直运行。
@@ -74,9 +78,11 @@ docker compose --env-file .env -f docker-compose.yml up -d backend web
 
 网页 Nginx 使用完整 `$http_host`（缺失时回退 `$host`）设置 `Host` 与 `X-Forwarded-Host`，修复旧 `$host` 丢端口导致的同源误判。普通 API、SSE、分享与 OAuth 回调统一处理，不信任客户端传入的转发主机头，也不采用通配 CORS。外层代理仍需保留公开端口；更新前可先配置准确白名单并重建后端。
 
-出现 `CANVAS_CORS_ORIGINS is missing a value` 表示 Compose 解析阶段未读取到访问地址变量，不是容器、镜像或数据库故障。在 1Panel 当前编排的环境变量中填写真实浏览器 Origin（协议、主机及非默认端口），或核对已填写的 `.env` 是否位于 1Panel 实际运行的编排目录。仅在本机修改 `.env` 或推送 `.env.example` 不会自动同步服务器；编辑器模式不要将 `KEY=value` 追加到 YAML。直接 IP 访问需同时使用 `CANVAS_BIND_ADDRESS=0.0.0.0` 与匹配的 HTTP 端口，生产仍应使用 HTTPS 和正确的反向代理网络。
+若仍出现 `CANVAS_CORS_ORIGINS is missing a value`，说明 1Panel 仍使用旧的 `:?` CORS 模板，错误发生在 Compose 解析阶段，不是容器、镜像或数据库故障。整份替换为当前 `docker-compose.1panel.yml`；同源访问可以留空，跨域访问填写真实浏览器 Origin（协议、主机及非默认端口）。仅在本机修改 `.env` 或推送 `.env.example` 不会自动同步服务器，编辑器模式不要将 `KEY=value` 追加到 YAML。直接 IP 访问需同时使用 `CANVAS_BIND_ADDRESS=0.0.0.0` 与匹配的 HTTP 端口，生产仍应使用 HTTPS 和正确的反向代理网络。
 
-编排不挂载 Host Updater socket、Token 或 Docker socket，使用 1Panel 管理升级，避免在线更新器覆盖本地增强版。迁移、后端和前端均使用 `pull_policy: always`：每次执行编排启动或更新时检查并拉取我们仓库 `latest` 当前指向的镜像，不只使用存量镜像。普通容器重启不会拉取，运行期间也不会自动检查或替换版本。仍可将 `CANVAS_IMAGE_TAG` 设为共同 SHA 标签以固定部署版本。
+1Panel 的环境变量栏和 YAML 是两个输入；仅替换 YAML 不会携带本机 `.env`。部分版本更新时会重写服务器 `.env`，留空可能丢失原配置；使用原模板时应保留完整环境配置，不能以 `.env.example` 覆盖原文件。编辑器升级文件已经固化所需配置，不依赖这一注入行为。
+
+编排不挂载 Host Updater socket、Token 或 Docker socket，使用 1Panel 管理升级。迁移、后端和前端保留 `pull_policy: always`，但 1Panel 自己的预拉取阶段仍可能打印“使用存量镜像”；后续 Compose 才执行拉取策略，解析失败时尚未到这一步。更新时启用面板强制拉取并核对实际镜像版本，不凭提示认定已更新。普通重启不拉取，运行期间不自动更新。建议固定已发布的共同 SHA，避免前后端 `latest` 切换时间不一致。
 
 Redis 保留 AOF 持久化、真实 PONG 检查，启动宽限为 120 秒，之后每 10 秒检查一次，最多 18 次连续失败。宽限只能容纳恢复耗时，不能修复权限、磁盘已满或 AOF 损坏。仍提示 unhealthy 时，先查看 Redis 容器日志和健康检查输出，保留原数据再按具体错误处理，不要把依赖降为 `service_started`。
 

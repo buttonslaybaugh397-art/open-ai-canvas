@@ -1,5 +1,6 @@
-# 1Panel: replace the whole compose content, do not append to an existing file.
-# Defaults to this fork's latest published images; set CANVAS_CORS_ORIGINS first.
+# Directory/env template: requires the matching private .env or 1Panel env fields.
+# Existing editor deployments: use 1panel-deploy/render-editor.mjs first.
+# Replace the whole compose content; preserve existing volumes and credentials.
 name: open-ai-canvas
 
 services:
@@ -107,7 +108,8 @@ services:
       CANVAS_REGISTRATION_ENABLED: ${CANVAS_REGISTRATION_ENABLED:-false}
       CANVAS_ALLOW_PRIVATE_UPSTREAMS: "false"
       CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS: ${CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS:-}
-      CANVAS_CORS_ORIGINS: ${CANVAS_CORS_ORIGINS:?Set CANVAS_CORS_ORIGINS to the exact browser origin}
+      # Same-origin deployments work without an extra variable. Set this for a separate browser origin.
+      CANVAS_CORS_ORIGINS: ${CANVAS_CORS_ORIGINS:-}
       GIN_MODE: release
     command:
       - /bin/sh
