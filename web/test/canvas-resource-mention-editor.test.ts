@@ -73,6 +73,9 @@ describe("canvas resource mention editor", () => {
         expect(panel).toContain("animate-spin motion-reduce:animate-none");
         expect(panel).not.toContain("isRunning ? theme.accent.danger");
         expect(configComposer).toContain("wrapper.dataset.referenceToken");
+        expect(configComposer).toContain("input.displayLabel?.trim()");
+        expect(configComposer).toContain("const displayLabel = resourceLabel(input, inputs)");
+        expect(configComposer).toContain("generationInputMentionLabel(input, inputs)");
         expect(configComposer).not.toContain("result += `@[node:");
         expect(project).not.toContain("removeCanvasResourceMention");
     });

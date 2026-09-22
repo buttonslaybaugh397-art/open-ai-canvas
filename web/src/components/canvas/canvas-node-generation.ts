@@ -55,6 +55,8 @@ export type NodeGenerationInput = {
     type: "text" | "image" | "video" | "audio" | "character";
     sourceKind?: "drawing";
     title: string;
+    /** User-facing source name; generationInputMentionLabel remains the protocol slot. */
+    displayLabel?: string;
     previewUrl?: string;
     alwaysIncludeText?: boolean;
     text?: string;
@@ -76,7 +78,7 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
     const portraitTextureInput = sourceNode?.type === CanvasNodeType.Image && sourceNode.metadata?.content && sourceNode.metadata?.portraitTexture
         ? (() => {
               const image = readReferenceImage(sourceNode, nodes, connections);
-              return image ? [{ nodeId: sourceNode.id, type: "image" as const, title: sourceNode.title, image }] : [];
+              return image ? [{ nodeId: sourceNode.id, type: "image" as const, title: sourceNode.title, displayLabel: sourceNode.metadata?.fileName?.trim() || sourceNode.title, image }] : [];
           })()
         : [];
     // 显式 @ 引用必须与提示词面板展示的资源集合一致；默认自动输入仍只取入边，
@@ -377,18 +379,19 @@ function buildNodeMentionGenerationInputs(nodeId: string, nodes: CanvasNodeData[
 
 function buildGenerationInputs(resourceNodes: CanvasNodeData[], nodes: CanvasNodeData[], connections: CanvasConnection[]): NodeGenerationInput[] {
     return resourceNodes.flatMap((node): NodeGenerationInput[] => {
+        const displayLabel = node.metadata?.fileName?.trim() || node.title?.trim() || undefined;
         const character = readCharacterReference(node);
-        if (character) return [{ nodeId: node.id, type: "character" as const, title: node.title, character }];
+        if (character) return [{ nodeId: node.id, type: "character" as const, title: node.title, displayLabel, character }];
         const image = readReferenceImage(node, nodes, connections);
         // sourceKind 只是「标签用绘图N而不是参考图N」的覆盖开关，不是来源全集。
         // 调色节点在下游就是一张普通参考图，按 image 标签即正确。
-        if (image) return [{ nodeId: node.id, type: "image" as const, sourceKind: image.source?.kind === "drawing" ? "drawing" : undefined, title: node.title, image }];
+        if (image) return [{ nodeId: node.id, type: "image" as const, sourceKind: image.source?.kind === "drawing" ? "drawing" : undefined, title: node.title, displayLabel, image }];
         const video = readReferenceVideo(node);
-        if (video) return [{ nodeId: node.id, type: "video" as const, title: node.title, previewUrl: canvasNodeVideoPreviewUrl(node), video }];
+        if (video) return [{ nodeId: node.id, type: "video" as const, title: node.title, displayLabel, previewUrl: canvasNodeVideoPreviewUrl(node), video }];
         const audio = readReferenceAudio(node);
-        if (audio) return [{ nodeId: node.id, type: "audio" as const, title: node.title, audio }];
+        if (audio) return [{ nodeId: node.id, type: "audio" as const, title: node.title, displayLabel, audio }];
         const text = readNodeTextInput(node);
-        if (text) return [{ nodeId: node.id, type: "text" as const, title: node.title, text }];
+        if (text) return [{ nodeId: node.id, type: "text" as const, title: node.title, displayLabel, text }];
         return [];
     });
 }
@@ -407,11 +410,12 @@ function mergeGenerationInputs(...groups: NodeGenerationInput[][]) {
 function buildAssetGenerationInputs(assets: Asset[]): NodeGenerationInput[] {
     return assets.flatMap((asset): NodeGenerationInput[] => {
         const nodeId = `asset:${asset.id}`;
-        if (asset.kind === "text") return [{ nodeId, type: "text", title: asset.title, text: asset.data.content }];
-        if (asset.kind === "image") return [{ nodeId, type: "image", title: asset.title, image: { id: asset.id, name: asset.title, type: asset.data.mimeType, dataUrl: asset.data.dataUrl, storageKey: asset.data.storageKey, bytes: asset.data.bytes, width: asset.data.width, height: asset.data.height, ...(asset.arkAssetId ? { arkAssetId: asset.arkAssetId } : {}) } }];
-        if (asset.kind === "video") return [{ nodeId, type: "video", title: asset.title, previewUrl: canvasVideoAssetPreviewUrl(asset.data.url, asset.coverUrl), video: { id: asset.id, name: asset.title, type: asset.data.mimeType, url: asset.data.url, storageKey: asset.data.storageKey, bytes: asset.data.bytes, width: asset.data.width, height: asset.data.height, durationMs: asset.data.durationMs } }];
-        if (asset.kind === "audio") return [{ nodeId, type: "audio", title: asset.title, audio: { id: asset.id, name: asset.title, type: asset.data.mimeType, url: asset.data.url, storageKey: asset.data.storageKey, bytes: asset.data.bytes, durationMs: asset.data.durationMs } }];
-        if (asset.kind === "entity" && asset.category === "character") return [{ nodeId, type: "character", title: asset.title, character: { nodeId, assetId: asset.id, requestedVersionId: asset.primaryVersionId } }];
+        const displayLabel = typeof asset.metadata?.fileName === "string" && asset.metadata.fileName.trim() ? asset.metadata.fileName.trim() : asset.title;
+        if (asset.kind === "text") return [{ nodeId, type: "text", title: asset.title, displayLabel, text: asset.data.content }];
+        if (asset.kind === "image") return [{ nodeId, type: "image", title: asset.title, displayLabel, image: { id: asset.id, name: displayLabel, type: asset.data.mimeType, dataUrl: asset.data.dataUrl, storageKey: asset.data.storageKey, bytes: asset.data.bytes, width: asset.data.width, height: asset.data.height, ...(asset.arkAssetId ? { arkAssetId: asset.arkAssetId } : {}) } }];
+        if (asset.kind === "video") return [{ nodeId, type: "video", title: asset.title, displayLabel, previewUrl: canvasVideoAssetPreviewUrl(asset.data.url, asset.coverUrl), video: { id: asset.id, name: displayLabel, type: asset.data.mimeType, url: asset.data.url, storageKey: asset.data.storageKey, bytes: asset.data.bytes, width: asset.data.width, height: asset.data.height, durationMs: asset.data.durationMs } }];
+        if (asset.kind === "audio") return [{ nodeId, type: "audio", title: asset.title, displayLabel, audio: { id: asset.id, name: displayLabel, type: asset.data.mimeType, url: asset.data.url, storageKey: asset.data.storageKey, bytes: asset.data.bytes, durationMs: asset.data.durationMs } }];
+        if (asset.kind === "entity" && asset.category === "character") return [{ nodeId, type: "character", title: asset.title, displayLabel, character: { nodeId, assetId: asset.id, requestedVersionId: asset.primaryVersionId } }];
         return [];
     });
 }
@@ -673,7 +677,7 @@ function readReferenceVideo(node: CanvasNodeData): ReferenceVideo | null {
     if (node.type !== CanvasNodeType.Video || (!node.metadata?.content && !node.metadata?.storageKey)) return null;
     return {
         id: node.id,
-        name: `${node.title || node.id}.mp4`,
+        name: node.metadata?.fileName?.trim() || node.title || `${node.id}.mp4`,
         type: node.metadata.mimeType || "video/mp4",
         url: node.metadata.content || "",
         storageKey: node.metadata.storageKey,
@@ -688,7 +692,7 @@ function readReferenceAudio(node: CanvasNodeData): ReferenceAudio | null {
     if (node.type !== CanvasNodeType.Audio || (!node.metadata?.content && !node.metadata?.storageKey)) return null;
     return {
         id: node.id,
-        name: `${node.title || node.id}.mp3`,
+        name: node.metadata?.fileName?.trim() || node.title || `${node.id}.mp3`,
         type: node.metadata.mimeType || "audio/mpeg",
         url: node.metadata.content || "",
         storageKey: node.metadata.storageKey,

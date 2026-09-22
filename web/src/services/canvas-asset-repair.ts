@@ -116,6 +116,7 @@ function timelineMediaNode(media: TimelineDirectMedia): CanvasNodeData {
         height: media.height || (type === CanvasNodeType.Audio ? 120 : 240),
         metadata: {
             content: mediaContent(media),
+            fileName: media.title,
             storageKey: media.storageKey,
             naturalWidth: media.width,
             naturalHeight: media.height,

@@ -46,13 +46,13 @@ export function AssetPickerModal({ open, multiple = true, onInsert, onClose }: P
         () => [
             ...insertableAssets.map((asset) => ({
                 id: asset.id,
-                title: asset.title,
+                title: insertableAssetDisplayName(asset),
                 category: normalizeAssetCategory(asset.category),
                 archived: asset.status === "archived",
                 kindLabel: asset.kind === "image" ? "图片" : asset.kind === "video" ? "视频" : asset.kind === "audio" ? "音频" : "文本",
                 mediaKind: asset.kind,
                 asset,
-                searchText: (asset.tags || []).join(" "),
+                searchText: [insertableAssetDisplayName(asset), asset.title, ...(asset.tags || [])].join(" "),
             })),
             ...externalAssetSources.items,
         ],
@@ -95,14 +95,15 @@ export function assetPickerItemsToInsertPayloads(ids: string[], items: AssetLibr
 }
 
 function localAssetToInsertPayload(asset: InsertableAsset): InsertAssetPayload {
-    if (asset.kind === "text") return { kind: "text", content: asset.data.content, title: asset.title, assetId: asset.id };
-    if (asset.kind === "audio") return { kind: "audio", url: asset.data.url, storageKey: asset.data.storageKey, title: asset.title, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
+    const title = insertableAssetDisplayName(asset);
+    if (asset.kind === "text") return { kind: "text", content: asset.data.content, title, assetId: asset.id };
+    if (asset.kind === "audio") return { kind: "audio", url: asset.data.url, storageKey: asset.data.storageKey, title, durationMs: asset.data.durationMs, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
     if (asset.kind === "video")
         return {
             kind: "video",
             url: asset.data.url,
             storageKey: asset.data.storageKey,
-            title: asset.title,
+            title,
             width: asset.data.width,
             height: asset.data.height,
             durationMs: asset.data.durationMs,
@@ -111,7 +112,12 @@ function localAssetToInsertPayload(asset: InsertableAsset): InsertAssetPayload {
             mimeType: asset.data.mimeType,
             assetId: asset.id,
         };
-    return { kind: "image", dataUrl: asset.data.dataUrl, storageKey: asset.data.storageKey, title: asset.title, width: asset.data.width, height: asset.data.height, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
+    return { kind: "image", dataUrl: asset.data.dataUrl, storageKey: asset.data.storageKey, title, width: asset.data.width, height: asset.data.height, bytes: asset.data.bytes, mimeType: asset.data.mimeType, assetId: asset.id };
+}
+
+function insertableAssetDisplayName(asset: InsertableAsset) {
+    const fileName = asset.metadata?.fileName;
+    return typeof fileName === "string" && fileName.trim() ? fileName.trim() : asset.title;
 }
 
 export function externalAssetToInsertPayload(reference: ExternalAssetPickerReference): InsertAssetPayload {

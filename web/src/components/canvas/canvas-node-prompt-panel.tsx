@@ -27,6 +27,7 @@ import { CanvasPortraitTexturePopover } from "./canvas-portrait-texture-popover"
 import { CanvasPromptOptimizerDrawer } from "./canvas-prompt-optimizer-drawer";
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData, type CanvasNodeMetadata, type CanvasWorkspaceMode } from "@/types/canvas";
 import { autoMentionCanvasResourceReferences, canvasResourceMentionToken, normalizeCanvasNodeMentionTokens, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
+import { canvasResourceDisplayLabel } from "@/lib/canvas/canvas-resource-references";
 import { promptOptimizerPlugin, PROMPT_OPTIMIZER_PLUGIN_ID } from "@/lib/plugins/builtin/prompt-optimizer";
 import { createPluginHostContext } from "@/services/plugin-host";
 import { usePluginStore } from "@/stores/use-plugin-store";
@@ -72,7 +73,24 @@ const PROMPT_EDITOR_MODAL_WIDTH = "min(1200px, 92vw)";
 const PROMPT_EDITOR_MODAL_DEFAULT_WIDTH = 1200;
 const PROMPT_EDITOR_MODAL_DEFAULT_HEIGHT = 420;
 
-export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChange, onConfigChange, onGenerate, mentionReferences = [], onAddReference, onRemoveReference, onReorderReferences, onReplaceReference, onReplaceReferenceFiles, onClose, onNodeMouseDown, onImageSettingsOpenChange, workspaceMode = "professional" }: CanvasNodePromptPanelProps) {
+export function CanvasNodePromptPanel({
+    projectId,
+    node,
+    isRunning,
+    onPromptChange,
+    onConfigChange,
+    onGenerate,
+    mentionReferences = [],
+    onAddReference,
+    onRemoveReference,
+    onReorderReferences,
+    onReplaceReference,
+    onReplaceReferenceFiles,
+    onClose,
+    onNodeMouseDown,
+    onImageSettingsOpenChange,
+    workspaceMode = "professional",
+}: CanvasNodePromptPanelProps) {
     const globalConfig = useEffectiveConfig();
     const themeName = useActiveTheme();
     const theme = canvasThemes[themeName];
@@ -113,21 +131,24 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
             characterCount: activeReferences.filter((item) => item.kind === "character").length,
         },
         videoOperation: node.metadata?.videoEditOperation,
-        videoSeconds: mode === "video" ? node.metadata?.seconds ?? globalConfig.videoSeconds : undefined,
-        options: modelRequestOptions({
-            ...globalConfig,
-            size: node.metadata?.size || globalConfig.size,
-            quality: node.metadata?.quality || globalConfig.quality,
-            count: String(node.metadata?.count || globalConfig.count),
-            transparentBackground: node.metadata?.transparentBackground || globalConfig.transparentBackground,
-            videoSeconds: node.metadata?.seconds ?? globalConfig.videoSeconds,
-            vquality: node.metadata?.vquality || globalConfig.vquality,
-            videoGenerateAudio: node.metadata?.generateAudio ?? globalConfig.videoGenerateAudio,
-            videoWatermark: node.metadata?.watermark ?? globalConfig.videoWatermark,
-            audioVoice: node.metadata?.audioVoice || globalConfig.audioVoice,
-            audioFormat: node.metadata?.audioFormat || globalConfig.audioFormat,
-            audioSpeed: node.metadata?.audioSpeed || globalConfig.audioSpeed,
-        }, mode),
+        videoSeconds: mode === "video" ? (node.metadata?.seconds ?? globalConfig.videoSeconds) : undefined,
+        options: modelRequestOptions(
+            {
+                ...globalConfig,
+                size: node.metadata?.size || globalConfig.size,
+                quality: node.metadata?.quality || globalConfig.quality,
+                count: String(node.metadata?.count || globalConfig.count),
+                transparentBackground: node.metadata?.transparentBackground || globalConfig.transparentBackground,
+                videoSeconds: node.metadata?.seconds ?? globalConfig.videoSeconds,
+                vquality: node.metadata?.vquality || globalConfig.vquality,
+                videoGenerateAudio: node.metadata?.generateAudio ?? globalConfig.videoGenerateAudio,
+                videoWatermark: node.metadata?.watermark ?? globalConfig.videoWatermark,
+                audioVoice: node.metadata?.audioVoice || globalConfig.audioVoice,
+                audioFormat: node.metadata?.audioFormat || globalConfig.audioFormat,
+                audioSpeed: node.metadata?.audioSpeed || globalConfig.audioSpeed,
+            },
+            mode,
+        ),
     };
     const config = buildNodeConfig(globalConfig, node, mode, requirements);
     const resolvedRequirements: ModelRequirements = {
@@ -220,11 +241,12 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
 
     useEffect(() => {
         if (!expandedPromptOpen) return;
-        const constrainSize = () => setExpandedModalSize((size) => {
-            if (!size) return size;
-            const next = clampExpandedModalSize(size);
-            return next.width === size.width && next.height === size.height ? size : next;
-        });
+        const constrainSize = () =>
+            setExpandedModalSize((size) => {
+                if (!size) return size;
+                const next = clampExpandedModalSize(size);
+                return next.width === size.width && next.height === size.height ? size : next;
+            });
         constrainSize();
         window.addEventListener("resize", constrainSize);
         return () => window.removeEventListener("resize", constrainSize);
@@ -304,7 +326,7 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
             title="拖动节点"
             onPointerDown={(event) => {
                 const target = event.target instanceof Element ? event.target : null;
-                if (!target?.closest("button, input, textarea, select, a, [contenteditable=\"true\"], [data-canvas-no-drag]")) onNodeMouseDown?.(event, node.id);
+                if (!target?.closest('button, input, textarea, select, a, [contenteditable="true"], [data-canvas-no-drag]')) onNodeMouseDown?.(event, node.id);
             }}
         >
             {isPortraitTexture ? (
@@ -322,40 +344,27 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
                 </div>
             )}
             <div className="ml-auto flex shrink-0 items-center justify-end gap-1">
-            {!simpleMode ? <CanvasPresetPicker mode={mode} skillReferences={skillReferences} open={expanded ? expandedPresetOpen : presetOpen} onOpenChange={expanded ? setExpandedPresetOpen : setPresetOpen} onSelect={applyPreset} dense appearance="quiet" /> : null}
-            {canOptimizePrompt ? (
-                <Tooltip title="用 AI 润色提示词">
-                    <button
-                        type="button"
-                        className="canvas-node-composer-header-action inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5"
-                        onClick={() => setPromptOptimizerOpen(true)}
-                        aria-label="润色提示词"
-                    >
-                        <WandSparkles className="size-3" />
-                        <span className="text-[var(--fs-tiny)] font-medium">润色</span>
-                    </button>
-                </Tooltip>
-            ) : null}
+                {!simpleMode ? (
+                    <CanvasPresetPicker mode={mode} skillReferences={skillReferences} open={expanded ? expandedPresetOpen : presetOpen} onOpenChange={expanded ? setExpandedPresetOpen : setPresetOpen} onSelect={applyPreset} dense appearance="quiet" />
+                ) : null}
+                {canOptimizePrompt ? (
+                    <Tooltip title="用 AI 润色提示词">
+                        <button type="button" className="canvas-node-composer-header-action inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5" onClick={() => setPromptOptimizerOpen(true)} aria-label="润色提示词">
+                            <WandSparkles className="size-3" />
+                            <span className="text-[var(--fs-tiny)] font-medium">润色</span>
+                        </button>
+                    </Tooltip>
+                ) : null}
                 {!expanded && canExpandPrompt ? (
                     <Tooltip title="放大编辑">
-                        <button
-                            type="button"
-                            className="canvas-node-composer-header-action grid size-6 shrink-0 place-items-center rounded-md"
-                            onClick={() => setExpandedPromptOpen(true)}
-                            aria-label="放大编辑提示词"
-                        >
+                        <button type="button" className="canvas-node-composer-header-action grid size-6 shrink-0 place-items-center rounded-md" onClick={() => setExpandedPromptOpen(true)} aria-label="放大编辑提示词">
                             <Maximize2 className="size-3" />
                         </button>
                     </Tooltip>
                 ) : null}
                 {!expanded && onClose ? (
                     <Tooltip title="关闭">
-                        <button
-                            type="button"
-                            className="canvas-node-composer-header-action grid size-6 shrink-0 place-items-center rounded-md"
-                            onClick={onClose}
-                            aria-label="关闭创作面板"
-                        >
+                        <button type="button" className="canvas-node-composer-header-action grid size-6 shrink-0 place-items-center rounded-md" onClick={onClose} aria-label="关闭创作面板">
                             <X className="size-3" />
                         </button>
                     </Tooltip>
@@ -403,14 +412,7 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
                 <span className="min-w-0 truncate px-2 text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>
                     {activeReferenceCount ? `已连接 ${activeReferenceCount} 个素材` : "将使用默认模型与参数"}
                 </span>
-                <ReferenceToolsPopover
-                    canAutoMention={canAutoMention}
-                    autoLinkEnabled={autoLinkEnabled}
-                    onAutoMention={() => updatePrompt(autoMentionedPrompt)}
-                    onAutoLinkEnabledChange={setAutoLinkEnabled}
-                    accent={monochromeAccent}
-                    compact
-                />
+                <ReferenceToolsPopover canAutoMention={canAutoMention} autoLinkEnabled={autoLinkEnabled} onAutoMention={() => updatePrompt(autoMentionedPrompt)} onAutoLinkEnabledChange={setAutoLinkEnabled} accent={monochromeAccent} compact />
                 {renderSubmitButton(expanded)}
             </div>
         ) : (
@@ -455,12 +457,7 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
                     ) : mode === "image" ? (
                         // 图片模式下，显示相机配置与镜头配置
                         <>
-                            <CanvasCameraControlPopover
-                                cameraControl={node.metadata?.cameraControl}
-                                onCameraControlChange={(options) => onConfigChange(node.id, { cameraControl: options })}
-                                theme={theme}
-                                compact={!expanded}
-                            />
+                            <CanvasCameraControlPopover cameraControl={node.metadata?.cameraControl} onCameraControlChange={(options) => onConfigChange(node.id, { cameraControl: options })} theme={theme} compact={!expanded} />
                             <CanvasImageSettingsPopover
                                 config={config}
                                 placement={expanded ? "topRight" : "topLeft"}
@@ -471,17 +468,9 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
                             />
                         </>
                     ) : mode === "video" ? (
-                        <CanvasVideoSettingsPopover
-                            config={config}
-                            buttonClassName="canvas-node-composer-settings-trigger [&>span]:min-w-0 [&_.lucide]:!size-3"
-                            onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))}
-                        />
+                        <CanvasVideoSettingsPopover config={config} buttonClassName="canvas-node-composer-settings-trigger [&>span]:min-w-0 [&_.lucide]:!size-3" onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))} />
                     ) : mode === "audio" ? (
-                        <CanvasAudioSettingsPopover
-                            config={config}
-                            buttonClassName="canvas-node-composer-settings-trigger [&>span]:min-w-0 [&_.lucide]:!size-3"
-                            onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))}
-                        />
+                        <CanvasAudioSettingsPopover config={config} buttonClassName="canvas-node-composer-settings-trigger [&>span]:min-w-0 [&_.lucide]:!size-3" onConfigChange={(key, value) => onConfigChange(node.id, audioConfigPatch(key, value))} />
                     ) : null}
                     {renderSubmitButton(expanded)}
                 </div>
@@ -514,19 +503,17 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
                         onReferenceFilesDrop={onReplaceReferenceFiles ? (reference, files) => onReplaceReferenceFiles(node.id, reference, files) : undefined}
                         onContentSizeChange={expanded ? setExpandedPromptContentHeight : setPromptContentHeight}
                         containerClassName="min-h-0 flex-1"
-                        className={expanded
-                            ? "thin-scrollbar h-full w-full resize-none overflow-y-auto border-none bg-transparent px-3 py-2.5 text-[var(--fs-body-lg)] leading-6 !outline-none !ring-0 !shadow-none focus:!outline-none focus:!ring-0 focus:!shadow-none placeholder:text-current placeholder:opacity-35"
-                            : "thin-scrollbar h-full w-full resize-none overflow-y-auto border-none bg-transparent px-2.5 py-1.5 text-[var(--fs-body)] leading-5 !outline-none !ring-0 !shadow-none focus:!outline-none focus:!ring-0 focus:!shadow-none placeholder:text-current placeholder:opacity-35"}
+                        className={
+                            expanded
+                                ? "thin-scrollbar h-full w-full resize-none overflow-y-auto border-none bg-transparent px-3 py-2.5 text-[var(--fs-body-lg)] leading-6 !outline-none !ring-0 !shadow-none focus:!outline-none focus:!ring-0 focus:!shadow-none placeholder:text-current placeholder:opacity-35"
+                                : "thin-scrollbar h-full w-full resize-none overflow-y-auto border-none bg-transparent px-2.5 py-1.5 text-[var(--fs-body)] leading-5 !outline-none !ring-0 !shadow-none focus:!outline-none focus:!ring-0 focus:!shadow-none placeholder:text-current placeholder:opacity-35"
+                        }
                         style={{ color: theme.node.text, outline: "none", boxShadow: "none" }}
                         placeholder={promptPlaceholder(mode, hasImageContent, hasTextContent)}
                         aria-label={`${modeDisplayName(mode)}提示词`}
                     />
                 </div>
-                {!expanded && <PromptResizeHandle
-                    height={height}
-                    bounds={bounds}
-                    onResize={setManualPromptHeight}
-                />}
+                {!expanded && <PromptResizeHandle height={height} bounds={bounds} onResize={setManualPromptHeight} />}
             </>
         );
     };
@@ -545,81 +532,92 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
             onClose={() => setPromptOptimizerOpen(false)}
             onApply={(nextPrompt) => updatePrompt(nextPrompt)}
         >
-            <div
-                className="canvas-node-composer"
-                style={composerSurfaceStyle}
-                onMouseDown={(event) => event.stopPropagation()}
-                onPointerDown={(event) => event.stopPropagation()}
-                onWheel={(event) => event.stopPropagation()}
-            >
-            {renderComposerHeader(false)}
+            <div className="canvas-node-composer" style={composerSurfaceStyle} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
+                {renderComposerHeader(false)}
 
-            {renderPromptEditor(false)}
+                {renderPromptEditor(false)}
 
-            {/* B区 参数区（对应 #98 决策2：默认折叠，手风琴展开）*/}
-            {hasVideoPromptTools ? (
-                <div className="canvas-node-composer-parameters overflow-hidden">
-                    <button
-                        type="button"
-                        className="canvas-node-composer-parameters-toggle flex w-full items-center gap-1.5 rounded-[var(--r-md)] px-2 py-1 text-[var(--fs-micro)] font-medium transition-colors"
-                        style={{ color: theme.node.muted }}
-                        onClick={() => setParamsExpanded(!paramsExpanded)}
-                        aria-expanded={paramsExpanded}
-                        aria-label={paramsExpanded ? "收起参数" : "展开参数"}
-                    >
-                        <SlidersHorizontal className="size-3" strokeWidth={1.8} />
-                        <span className="flex-1 text-left">参数</span>
-                        <ChevronDown className={`size-3 transition-transform duration-200 ${paramsExpanded ? "rotate-180" : ""}`} strokeWidth={1.8} />
-                    </button>
-                    {paramsExpanded ? (
-                        <div className="pt-1">
-                            <CanvasVideoPromptTools metadata={node.metadata} frameOptions={videoFrameOptions} onMetadataChange={(patch) => onConfigChange(node.id, patch)} />
-                        </div>
-                    ) : null}
-                </div>
-            ) : null}
-
-            {renderComposerControls(false)}
-
-            <Modal
-                className="canvas-prompt-editor-modal"
-                open={expandedPromptOpen}
-                title={null}
-                footer={null}
-                centered
-                width={expandedModalSize ? expandedModalSize.width : PROMPT_EDITOR_MODAL_WIDTH}
-                style={{ maxWidth: `calc(100vw - ${PROMPT_EDITOR_VIEWPORT_MARGIN}px)` }}
-                destroyOnHidden
-                onCancel={() => {
-                    setExpandedPresetOpen(false);
-                    setExpandedPromptOpen(false);
-                }}
-                styles={{
-                    container: { border: 0, borderRadius: "var(--canvas-composer-radius)", padding: 0, overflow: "hidden", background: theme.node.panel, boxShadow: theme.node.shadow },
-                    body: { minHeight: 0, padding: 0 },
-                }}
-            >
-                <div ref={expandedModalRef} className="relative flex min-h-0 flex-col" style={{ ...composerTokens, color: theme.node.text, maxHeight: `calc(100dvh - ${PROMPT_EDITOR_VIEWPORT_MARGIN}px)`, ...(expandedModalSize ? { height: expandedModalSize.height } : null) }}>
-                    <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto p-3">
-                        <div className="shrink-0 pr-8">{renderComposerHeader(true)}</div>
-                        {renderPromptEditor(true, Boolean(expandedModalSize))}
-                        {hasVideoPromptTools ? (
-                            <div className="canvas-node-composer-parameters shrink-0">
+                {/* B区 参数区（对应 #98 决策2：默认折叠，手风琴展开）*/}
+                {hasVideoPromptTools ? (
+                    <div className="canvas-node-composer-parameters overflow-hidden">
+                        <button
+                            type="button"
+                            className="canvas-node-composer-parameters-toggle flex w-full items-center gap-1.5 rounded-[var(--r-md)] px-2 py-1 text-[var(--fs-micro)] font-medium transition-colors"
+                            style={{ color: theme.node.muted }}
+                            onClick={() => setParamsExpanded(!paramsExpanded)}
+                            aria-expanded={paramsExpanded}
+                            aria-label={paramsExpanded ? "收起参数" : "展开参数"}
+                        >
+                            <SlidersHorizontal className="size-3" strokeWidth={1.8} />
+                            <span className="flex-1 text-left">参数</span>
+                            <ChevronDown className={`size-3 transition-transform duration-200 ${paramsExpanded ? "rotate-180" : ""}`} strokeWidth={1.8} />
+                        </button>
+                        {paramsExpanded ? (
+                            <div className="pt-1">
                                 <CanvasVideoPromptTools metadata={node.metadata} frameOptions={videoFrameOptions} onMetadataChange={(patch) => onConfigChange(node.id, patch)} />
                             </div>
                         ) : null}
-                        <div className="shrink-0">{renderComposerControls(true)}</div>
                     </div>
-                    <PromptModalResizeHandle size={expandedModalSize} measure={measureExpandedModalSize} onResize={setExpandedModalSize} accent={theme.node.muted} />
-                </div>
-            </Modal>
+                ) : null}
 
+                {renderComposerControls(false)}
+
+                <Modal
+                    className="canvas-prompt-editor-modal"
+                    open={expandedPromptOpen}
+                    title={null}
+                    footer={null}
+                    centered
+                    width={expandedModalSize ? expandedModalSize.width : PROMPT_EDITOR_MODAL_WIDTH}
+                    style={{ maxWidth: `calc(100vw - ${PROMPT_EDITOR_VIEWPORT_MARGIN}px)` }}
+                    destroyOnHidden
+                    onCancel={() => {
+                        setExpandedPresetOpen(false);
+                        setExpandedPromptOpen(false);
+                    }}
+                    styles={{
+                        container: { border: 0, borderRadius: "var(--canvas-composer-radius)", padding: 0, overflow: "hidden", background: theme.node.panel, boxShadow: theme.node.shadow },
+                        body: { minHeight: 0, padding: 0 },
+                    }}
+                >
+                    <div
+                        ref={expandedModalRef}
+                        className="relative flex min-h-0 flex-col"
+                        style={{ ...composerTokens, color: theme.node.text, maxHeight: `calc(100dvh - ${PROMPT_EDITOR_VIEWPORT_MARGIN}px)`, ...(expandedModalSize ? { height: expandedModalSize.height } : null) }}
+                    >
+                        <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto p-3">
+                            <div className="shrink-0 pr-8">{renderComposerHeader(true)}</div>
+                            {renderPromptEditor(true, Boolean(expandedModalSize))}
+                            {hasVideoPromptTools ? (
+                                <div className="canvas-node-composer-parameters shrink-0">
+                                    <CanvasVideoPromptTools metadata={node.metadata} frameOptions={videoFrameOptions} onMetadataChange={(patch) => onConfigChange(node.id, patch)} />
+                                </div>
+                            ) : null}
+                            <div className="shrink-0">{renderComposerControls(true)}</div>
+                        </div>
+                        <PromptModalResizeHandle size={expandedModalSize} measure={measureExpandedModalSize} onResize={setExpandedModalSize} accent={theme.node.muted} />
+                    </div>
+                </Modal>
             </div>
         </CanvasPromptOptimizerDrawer>
     );
 }
 
-function ReferenceToolsPopover({ canAutoMention, autoLinkEnabled, onAutoMention, onAutoLinkEnabledChange, accent, compact }: { canAutoMention: boolean; autoLinkEnabled: boolean; onAutoMention: () => void; onAutoLinkEnabledChange: (enabled: boolean) => void; accent: string; compact: boolean }) {
+function ReferenceToolsPopover({
+    canAutoMention,
+    autoLinkEnabled,
+    onAutoMention,
+    onAutoLinkEnabledChange,
+    accent,
+    compact,
+}: {
+    canAutoMention: boolean;
+    autoLinkEnabled: boolean;
+    onAutoMention: () => void;
+    onAutoLinkEnabledChange: (enabled: boolean) => void;
+    accent: string;
+    compact: boolean;
+}) {
     return (
         <Popover
             trigger="click"
@@ -635,7 +633,10 @@ function ReferenceToolsPopover({ canAutoMention, autoLinkEnabled, onAutoMention,
                         <div className="mt-0.5 text-xs leading-4 text-black/50 dark:text-white/50">输入素材序号或名称后按 Tab，可快速引用</div>
                     </div>
                     <div className="flex min-h-6 items-center justify-between gap-3">
-                        <div className="flex items-center gap-2 text-sm"><Link2 className="size-3.5" />AutoLink</div>
+                        <div className="flex items-center gap-2 text-sm">
+                            <Link2 className="size-3.5" />
+                            AutoLink
+                        </div>
                         <button
                             type="button"
                             role="switch"
@@ -655,17 +656,13 @@ function ReferenceToolsPopover({ canAutoMention, autoLinkEnabled, onAutoMention,
                         disabled={!canAutoMention}
                         onClick={onAutoMention}
                     >
-                        <AtSign className="size-3.5" />一键引用全文
+                        <AtSign className="size-3.5" />
+                        一键引用全文
                     </button>
                 </div>
             }
         >
-            <button
-                type="button"
-                className={`canvas-node-composer-settings-trigger canvas-node-composer-reference-tools-trigger inline-flex shrink-0 items-center gap-1 ${compact ? "is-compact" : ""}`}
-                aria-label="打开智能引用"
-                title="智能引用"
-            >
+            <button type="button" className={`canvas-node-composer-settings-trigger canvas-node-composer-reference-tools-trigger inline-flex shrink-0 items-center gap-1 ${compact ? "is-compact" : ""}`} aria-label="打开智能引用" title="智能引用">
                 <SlidersHorizontal className="size-3.5" />
                 {!compact ? <span>引用</span> : null}
             </button>
@@ -750,7 +747,7 @@ function ConnectedReferenceShelf({
                                 data-reference-id={reference.id}
                                 data-reference-node-id={reference.nodeId}
                                 data-reference-label={reference.label}
-                                data-reference-title={reference.title || reference.label}
+                                data-reference-title={canvasResourceDisplayLabel(reference)}
                                 data-target-node-id={targetNodeId}
                                 data-dragging={draggedReferenceId === reference.nodeId || undefined}
                                 data-drop-target={isDropTarget ? "true" : undefined}
@@ -814,8 +811,8 @@ function ConnectedReferenceShelf({
                                         type="button"
                                         className="canvas-node-reference-drag-handle"
                                         draggable
-                                        title={`拖动调整 ${reference.label} 的顺序`}
-                                        aria-label={`调整 ${reference.label} 的顺序；使用左右方向键也可移动`}
+                                        title={`拖动调整 ${canvasResourceDisplayLabel(reference)} 的顺序`}
+                                        aria-label={`调整 ${canvasResourceDisplayLabel(reference)} 的顺序；使用左右方向键也可移动`}
                                         onDragStart={(event) => {
                                             setDraggedReferenceId(reference.nodeId);
                                             event.dataTransfer.effectAllowed = "move";
@@ -832,13 +829,15 @@ function ConnectedReferenceShelf({
                                         <GripVertical className="size-3" />
                                     </button>
                                 ) : null}
-                                <span className="canvas-node-reference-order" aria-hidden>{index + 1}</span>
+                                <span className="canvas-node-reference-order" aria-hidden>
+                                    {index + 1}
+                                </span>
                                 <button
                                     type="button"
                                     className="canvas-node-reference-preview"
                                     style={{ background: theme.toolbar.itemHover, color: theme.node.text, outlineColor: theme.node.activeStroke }}
-                                    title={canPreview ? `预览 ${reference.title}` : `插入 @${reference.label}`}
-                                    aria-label={canPreview ? `预览 ${reference.title}` : `插入 @${reference.label}`}
+                                    title={canPreview ? `预览 ${canvasResourceDisplayLabel(reference)}` : `插入 @${reference.label}`}
+                                    aria-label={canPreview ? `预览 ${canvasResourceDisplayLabel(reference)}` : `插入 @${reference.label}`}
                                     onClick={() => (canPreview ? setImagePreview(reference) : onInsert(reference))}
                                 >
                                     <ReferenceThumbnail reference={reference} />
@@ -850,7 +849,7 @@ function ConnectedReferenceShelf({
                                 </button>
                                 <button type="button" className="canvas-node-reference-label" title={`插入 @${reference.label}`} onClick={() => onInsert(reference)}>
                                     <span className="opacity-55">@</span>
-                                    <span className="truncate">{reference.label}</span>
+                                    <span className="truncate">{canvasResourceDisplayLabel(reference)}</span>
                                 </button>
                                 {onRemove ? (
                                     <button
@@ -858,7 +857,7 @@ function ConnectedReferenceShelf({
                                         className="canvas-node-reference-remove"
                                         style={{ background: theme.toolbar.panel, borderColor: theme.node.stroke, color: theme.node.text }}
                                         title="移除参考并删除连接"
-                                        aria-label={`移除参考 ${reference.label}`}
+                                        aria-label={`移除参考 ${canvasResourceDisplayLabel(reference)}`}
                                         onClick={(event) => {
                                             event.stopPropagation();
                                             onRemove(reference);

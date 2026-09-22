@@ -28,6 +28,7 @@ export function canvasNodeToAsset(node: CanvasNodeData, options: CanvasNodeAsset
         nodeId: node.id,
         taskId: options.taskId || node.metadata?.taskId,
         prompt: node.metadata?.prompt,
+        fileName: node.metadata?.fileName?.trim() || undefined,
         resourceKey: storageKey,
     };
     const base = {

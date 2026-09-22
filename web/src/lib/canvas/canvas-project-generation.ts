@@ -240,7 +240,7 @@ export function nodeReferenceImage(node: CanvasNodeData): ReferenceImage | null 
         if (conversion?.status !== "completed" || !storageKey) return null;
         return {
             id: node.id,
-            name: node.title || `conversion-${node.id}.png`,
+            name: node.metadata?.fileName?.trim() || node.title || `conversion-${node.id}.png`,
             type: node.metadata?.mimeType || "image/png",
             dataUrl: node.metadata?.content || "",
             storageKey,
@@ -249,7 +249,7 @@ export function nodeReferenceImage(node: CanvasNodeData): ReferenceImage | null 
     if (node.type !== CanvasNodeType.Image || (!node.metadata?.content && !node.metadata?.storageKey)) return null;
     return {
         id: node.id,
-        name: `reference-${node.id}.png`,
+        name: node.metadata?.fileName?.trim() || node.title || `reference-${node.id}.png`,
         type: node.metadata.mimeType || "image/png",
         dataUrl: node.metadata.content || "",
         storageKey: node.metadata.storageKey,

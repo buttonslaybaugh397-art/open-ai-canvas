@@ -226,6 +226,8 @@ export type CanvasNodeMetadata = {
               sourceType?: string;
           };
     content?: string;
+    /** Original uploaded filename used for reference display. */
+    fileName?: string;
     previewContent?: string;
     videoPreview?: {
         content: string;

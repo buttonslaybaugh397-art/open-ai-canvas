@@ -59,7 +59,7 @@ export function CanvasProjectAssetModal({
                 const mediaKind = character ? undefined : pickerMediaKind(media?.kind || project?.mediaType);
                 return {
                     id: item.id,
-                    title: character?.title || project?.title || media?.title || "未命名资产",
+                    title: character?.title || mediaDisplayName(media) || project?.title || "未命名资产",
                     category: item.category,
                     folderId: item.folderId,
                     kindLabel: character ? "角色卡" : mediaKind === "video" ? "视频" : mediaKind === "audio" ? "音频" : mediaKind === "text" ? "文本" : "图片",
@@ -69,7 +69,7 @@ export function CanvasProjectAssetModal({
                     imageStorageKey: coverRepresentation ? `resource:${coverRepresentation.resourceId}` : remoteResourceId ? `resource:${remoteResourceId}` : undefined,
                     imageFit: character ? "contain" : "cover",
                     description: character ? `${character.character?.visualStatus === "ready" ? "形象就绪" : "形象待完善"} · ${character.character?.voiceStatus === "ready" ? "声音已绑定" : "声音未绑定"}` : project?.previewText,
-                    searchText: [media?.tags?.join(" ") || "", project?.previewText || ""].join(" "),
+                    searchText: [mediaDisplayName(media), project?.title || "", media?.tags?.join(" ") || "", project?.previewText || ""].join(" "),
                 };
             }),
         [items],
@@ -141,13 +141,14 @@ function toInsertPayload(item: ProjectPickerItem): InsertAssetPayload {
         throw new Error(`“${project.title}”缺少可读取的内容`);
     }
     if (!asset) throw new Error("项目资产不可用");
-    if (asset.kind === "text") return { kind: "text", content: asset.data.content, title: asset.title, assetId: asset.id };
+    const title = mediaDisplayName(asset) || asset.title;
+    if (asset.kind === "text") return { kind: "text", content: asset.data.content, title, assetId: asset.id };
     if (asset.kind === "video")
         return {
             kind: "video",
             url: projectAssetMediaUrl(asset.data.storageKey, asset.data.url),
             storageKey: asset.data.storageKey,
-            title: asset.title,
+            title,
             width: asset.data.width,
             height: asset.data.height,
             durationMs: asset.data.durationMs,
@@ -160,19 +161,24 @@ function toInsertPayload(item: ProjectPickerItem): InsertAssetPayload {
             kind: "audio",
             url: projectAssetMediaUrl(asset.data.storageKey, asset.data.url),
             storageKey: asset.data.storageKey,
-            title: asset.title,
+            title,
             durationMs: asset.data.durationMs,
             bytes: asset.data.bytes,
             mimeType: asset.data.mimeType,
             assetId: asset.id,
         };
-    if (asset.kind === "image") return { kind: "image", dataUrl: projectAssetMediaUrl(asset.data.storageKey, asset.data.dataUrl), storageKey: asset.data.storageKey, title: asset.title, assetId: asset.id };
+    if (asset.kind === "image") return { kind: "image", dataUrl: projectAssetMediaUrl(asset.data.storageKey, asset.data.dataUrl), storageKey: asset.data.storageKey, title, assetId: asset.id };
     throw new Error("当前项目资产不能直接插入画布");
 }
 
 function projectAssetMediaUrl(storageKey?: string, fallback = "") {
     const resourceId = resourceIdFromStorageKey(storageKey);
     return resourceId ? resourceFileUrl(resourceId) : fallback;
+}
+
+function mediaDisplayName(asset?: Asset) {
+    const fileName = asset?.metadata?.fileName;
+    return typeof fileName === "string" && fileName.trim() ? fileName.trim() : asset?.title || "";
 }
 
 export function projectCharacterToInsertPayload(asset: ProjectAsset): InsertAssetPayload {

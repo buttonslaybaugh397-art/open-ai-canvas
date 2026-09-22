@@ -350,28 +350,27 @@ function createReferenceChip(input: NodeGenerationInput, inputs: NodeGenerationI
     wrapper.contentEditable = "false";
     wrapper.dataset.referenceNodeId = input.nodeId;
     wrapper.dataset.referenceToken = `@${generationInputMentionLabel(input, inputs)}`;
-    wrapper.className = "mx-px inline-flex h-7 max-w-40 items-center justify-center overflow-hidden rounded-md border px-1 text-xs leading-none align-middle";
+    const displayLabel = resourceLabel(input, inputs);
+    wrapper.className = "mx-px inline-flex h-7 max-w-52 items-center gap-1 overflow-hidden rounded-md border px-1.5 text-xs leading-none align-middle";
     Object.assign(wrapper.style, chipStyle(theme));
     const previewUrl = input.type === "image" && input.image && input.sourceKind !== "drawing" ? input.image.dataUrl : input.type === "video" ? input.previewUrl : "";
     if (previewUrl) {
         const image = document.createElement("img");
         image.src = previewUrl;
-        image.alt = input.title;
+        image.alt = displayLabel;
         image.className = "size-6 rounded object-cover";
-        wrapper.className = "mx-px inline-flex size-6 items-center justify-center overflow-hidden rounded align-middle";
         wrapper.appendChild(image);
         wrapper.addEventListener("click", (event) => {
             event.preventDefault();
             event.stopPropagation();
             onImagePreview(previewUrl);
         });
-    } else {
-        wrapper.title = input.sourceKind === "drawing" ? resourceLabel(input, inputs) : input.text || input.title;
-        const text = document.createElement("span");
-        text.className = "block truncate";
-        text.textContent = input.sourceKind === "drawing" ? resourceLabel(input, inputs) : input.type === "text" ? input.text || input.title : input.title;
-        wrapper.appendChild(text);
     }
+    wrapper.title = displayLabel;
+    const text = document.createElement("span");
+    text.className = "block min-w-0 truncate";
+    text.textContent = input.type === "text" ? input.text || displayLabel : displayLabel;
+    wrapper.appendChild(text);
     return wrapper;
 }
 
@@ -480,7 +479,7 @@ function parseComposerTokens(value: string, inputs: NodeGenerationInput[]): Toke
 }
 
 function resourceLabel(input: NodeGenerationInput, inputs: NodeGenerationInput[]) {
-    return generationInputMentionLabel(input, inputs);
+    return input.displayLabel?.trim() || input.title?.trim() || generationInputMentionLabel(input, inputs);
 }
 
 function hasMentionBoundary(value: string, index: number) {
