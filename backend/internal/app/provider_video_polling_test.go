@@ -57,6 +57,29 @@ func TestVideoPollWaitsBeforeFirstQueryAndUsesRetryAfter(t *testing.T) {
 	}
 }
 
+func TestVideoPollQueriesImmediatelyBeforeUsingInterval(t *testing.T) {
+	policy := defaultVideoPollPolicy()
+	var waits []time.Duration
+	policy.Sleep = func(_ context.Context, delay time.Duration) error {
+		waits = append(waits, delay)
+		return nil
+	}
+	queries := 0
+	_, err := runVideoPollLoop(context.Background(), "provider-task-immediate", policy, func(context.Context) (videoPollOutcome, error) {
+		queries++
+		return videoPollOutcome{Done: true, Result: map[string]interface{}{"mode": "video"}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queries != 1 {
+		t.Fatalf("queries = %d, want one immediate query", queries)
+	}
+	if len(waits) != 0 {
+		t.Fatalf("waits = %v, want no wait before the first query", waits)
+	}
+}
+
 func TestVideoPollStopsImmediatelyOnAuthenticationError(t *testing.T) {
 	attempts := 0
 	_, err := runVideoPollLoop(context.Background(), "provider-task-1", fastVideoPollPolicy(), func(context.Context) (videoPollOutcome, error) {

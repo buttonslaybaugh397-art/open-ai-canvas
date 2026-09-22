@@ -48,10 +48,10 @@ func runProtocolAdapterTask(ctx context.Context, input canvasGenerationInput, ad
 func protocolPollPolicyFor(interfaceType string, policy videoPollPolicy) videoPollPolicy {
 	switch interfaceType {
 	case string(model.ChannelInterfaceWeijinVideo):
-		policy.InitialDelay = 10 * time.Second
+		policy.InitialDelay = 0
 		policy.Interval = 10 * time.Second
 	case string(model.ChannelInterfaceTianYueVideo):
-		policy.InitialDelay = 5 * time.Second
+		policy.InitialDelay = 0
 		policy.Interval = 5 * time.Second
 	}
 	return policy

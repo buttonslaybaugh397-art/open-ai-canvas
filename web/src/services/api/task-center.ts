@@ -15,6 +15,8 @@ export type GenerationTaskOutput = {
     providerArtifactRef?: string;
     materializedAssetId?: string;
     materializationErrorCode?: string;
+    bytes?: number;
+    mimeType?: string;
 };
 
 export type GenerationTask = {
