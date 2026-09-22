@@ -93,6 +93,28 @@ describe("canvas resource mention editor", () => {
         expect(generationExecutor).toContain("canvasGenerationPromptMetadata(prompt, statusPrompt)");
     });
 
+    test("normalizes connected mention labels through the generation prompt writer", () => {
+        const project = source("../src/pages/canvas/project.tsx");
+
+        expect(project).toContain("return writeCanvasNodePrompt(node, normalizedPrompt);");
+        expect(project).not.toContain("metadata: node.metadata?.composerContent !== undefined ? { ...node.metadata, composerContent: normalizedPrompt }");
+    });
+
+    test("does not let an old parent prompt overwrite a pending local edit", () => {
+        const panel = source("../src/components/canvas/canvas-node-prompt-panel.tsx");
+
+        expect(panel).toContain("const pendingLocalPromptRef = useRef(false);");
+        expect(panel).toContain("localPromptRef.current !== normalizedSavedPrompt");
+        expect(panel).toContain("不能用旧节点值覆盖编辑器里的最新草稿");
+    });
+
+    test("keeps the prompt resize limits large enough for the parameter area", () => {
+        const panel = source("../src/components/canvas/canvas-node-prompt-panel.tsx");
+
+        expect(panel).toContain("const PROMPT_EDITOR_MAX_LINES = 14;");
+        expect(panel).toContain("const PROMPT_EDITOR_EXPANDED_MAX_LINES = 24;");
+    });
+
     test("anchors the mention menu to the caret instead of the textarea edge", () => {
         const component = source("../src/components/canvas/canvas-resource-mention-textarea.tsx");
 

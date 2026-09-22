@@ -122,7 +122,12 @@ export function readNodeGenerationSpec(node: Pick<CanvasNodeData, "type" | "meta
                   return model ? ({ kind: "channel", channelId: model.channelId, modelKey: model.model } as const) : undefined;
               })()
             : undefined);
-    const prompt = stored?.prompt ?? (typeof metadata.composerContent === "string" ? metadata.composerContent : typeof metadata.prompt === "string" ? metadata.prompt : "");
+    // composerContent 是用户当前正在编辑的草稿。generationSpec.prompt 是提交合同的
+    // 兼容镜像，历史节点可能只更新了 composerContent；若优先读取旧合同，组件每次
+    // 重渲染都会把第一次输入重新投影回来。
+    const prompt = typeof metadata.composerContent === "string"
+        ? metadata.composerContent
+        : stored?.prompt ?? (typeof metadata.prompt === "string" ? metadata.prompt : "");
     return validateGenerationSpec({
         version: GENERATION_CONTRACT_VERSION,
         mode,

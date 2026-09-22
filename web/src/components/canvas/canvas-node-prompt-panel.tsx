@@ -65,8 +65,9 @@ const PROMPT_EDITOR_LINE_HEIGHT = 20;
 const PROMPT_EDITOR_EXPANDED_LINE_HEIGHT = 24;
 const PROMPT_EDITOR_VERTICAL_PADDING = 12;
 const PROMPT_EDITOR_EXPANDED_VERTICAL_PADDING = 20;
-const PROMPT_EDITOR_MAX_LINES = 8;
-const PROMPT_EDITOR_EXPANDED_MAX_LINES = 14;
+// 保留足够的可拖拽空间，避免参数区刚展开就把提示词编辑器压回旧上限。
+const PROMPT_EDITOR_MAX_LINES = 14;
+const PROMPT_EDITOR_EXPANDED_MAX_LINES = 24;
 const PROMPT_EDITOR_MODAL_WIDTH = "min(1200px, 92vw)";
 const PROMPT_EDITOR_MODAL_DEFAULT_WIDTH = 1200;
 const PROMPT_EDITOR_MODAL_DEFAULT_HEIGHT = 420;
@@ -85,6 +86,9 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
     const hasImageContent = node.type === CanvasNodeType.Image && Boolean(node.metadata?.content);
     const savedPrompt = node.metadata?.composerContent ?? node.metadata?.prompt ?? "";
     const [prompt, setPrompt] = useState(savedPrompt);
+    const localPromptRef = useRef(savedPrompt);
+    const pendingLocalPromptRef = useRef(false);
+    const promptNodeIdRef = useRef(node.id);
     const [presetOpen, setPresetOpen] = useState(false);
     const [expandedPresetOpen, setExpandedPresetOpen] = useState(false);
     const [expandedPromptOpen, setExpandedPromptOpen] = useState(false);
@@ -188,7 +192,20 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
     const canAutoMention = autoMentionedPrompt !== prompt;
 
     useEffect(() => {
-        setPrompt(normalizedSavedPrompt);
+        if (promptNodeIdRef.current !== node.id) {
+            promptNodeIdRef.current = node.id;
+            localPromptRef.current = normalizedSavedPrompt;
+            pendingLocalPromptRef.current = false;
+            setPrompt(normalizedSavedPrompt);
+        } else if (pendingLocalPromptRef.current && localPromptRef.current !== normalizedSavedPrompt) {
+            // 输入回调和父层重渲染可能跨两个 React 提交周期；父层暂时带回旧值时，
+            // 不能用旧节点值覆盖编辑器里的最新草稿。
+            return;
+        } else {
+            localPromptRef.current = normalizedSavedPrompt;
+            pendingLocalPromptRef.current = false;
+            setPrompt(normalizedSavedPrompt);
+        }
         if (normalizedSavedPrompt !== savedPrompt) onPromptChange(node.id, normalizedSavedPrompt);
     }, [node.id, normalizedSavedPrompt, onPromptChange, savedPrompt]);
 
@@ -239,6 +256,8 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
     const skillReferences = useMemo(() => resolvedMentionReferences.filter((item) => item.kind === "skill"), [resolvedMentionReferences]);
 
     const updatePrompt = (value: string) => {
+        localPromptRef.current = value;
+        pendingLocalPromptRef.current = true;
         setPrompt(value);
         onPromptChange(node.id, value);
         if (/(^|\s)\/[\p{L}\p{N}_-]*$/u.test(value)) {
