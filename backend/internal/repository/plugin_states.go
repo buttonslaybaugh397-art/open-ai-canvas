@@ -7,11 +7,14 @@ import (
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/logger"
 )
 
 func (r *Repository) PluginPlatformState(pluginID string) (*model.PluginPlatformState, error) {
 	var state model.PluginPlatformState
-	if err := r.db.First(&state, "plugin_id = ?", pluginID).Error; err != nil {
+	// Missing platform state is the normal default for bundled plugins. Keep
+	// that lookup quiet while still returning real database errors to callers.
+	if err := r.db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)}).First(&state, "plugin_id = ?", pluginID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
@@ -39,7 +42,8 @@ func (r *Repository) DeletePluginPlatformState(pluginID string) error {
 
 func (r *Repository) UserPluginState(userID string, pluginID string) (*model.UserPluginState, error) {
 	var state model.UserPluginState
-	if err := r.db.First(&state, "user_id = ? AND plugin_id = ?", userID, pluginID).Error; err != nil {
+	// A user row is created only after the user changes the default setting.
+	if err := r.db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)}).First(&state, "user_id = ? AND plugin_id = ?", userID, pluginID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
