@@ -339,7 +339,22 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                 // 成功任务的副作用确认失败时，直接用已持久化结果回写节点，避免永久停留在生成中。
                 if (task.status === "succeeded") {
                     await applyStoredTaskResult().catch(() => {
-                        throw error;
+                        const failure = generationFailureMetadata(error, task.prompt || "");
+                        setNodes((current) =>
+                            current.map((node) =>
+                                node.id === nodeId
+                                    ? {
+                                          ...node,
+                                          metadata: {
+                                              ...node.metadata,
+                                              ...failure,
+                                              status: NODE_STATUS_ERROR,
+                                              resourceReloadAvailable: generationTaskCanReloadResource(task),
+                                          },
+                                      }
+                                    : node,
+                            ),
+                        );
                     });
                 } else {
                     if (generationTaskCanReloadResource(task)) {
