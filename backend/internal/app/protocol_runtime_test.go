@@ -352,8 +352,8 @@ func TestDeclarativeProtocolRuntimeExecutesCreatePollAndDownload(t *testing.T) {
 
 func TestDeclarativeProtocolPollingPolicyOnlyChangesVideoBehavior(t *testing.T) {
 	video := declarativeProtocolPollPolicy("video")
-	if video.InitialDelay != defaultVideoPollInterval || !video.RetryTransient {
-		t.Fatalf("video polling policy = %#v, want delayed resilient polling", video)
+	if video.InitialDelay != 0 || video.Interval != defaultVideoPollInterval || !video.RetryTransient {
+		t.Fatalf("video polling policy = %#v, want immediate resilient polling", video)
 	}
 
 	image := declarativeProtocolPollPolicy("image")

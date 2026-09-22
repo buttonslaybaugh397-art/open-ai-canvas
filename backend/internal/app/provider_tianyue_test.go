@@ -149,10 +149,10 @@ func TestTianYueResumeOnlyQueriesExistingTask(t *testing.T) {
 }
 
 func TestTianYuePollTimingAndBaseURL(t *testing.T) {
-	if policy := protocolPollPolicyFor("tianyue-video", defaultVideoPollPolicy()); policy.InitialDelay != 5*time.Second || policy.Interval != 5*time.Second {
+	if policy := protocolPollPolicyFor("tianyue-video", defaultVideoPollPolicy()); policy.InitialDelay != 0 || policy.Interval != 5*time.Second {
 		t.Fatalf("TianYue poll policy=%+v", policy)
 	}
-	if policy := protocolPollPolicyFor("weijin-video", defaultVideoPollPolicy()); policy.InitialDelay != 10*time.Second || policy.Interval != 10*time.Second {
+	if policy := protocolPollPolicyFor("weijin-video", defaultVideoPollPolicy()); policy.InitialDelay != 0 || policy.Interval != 10*time.Second {
 		t.Fatalf("Weijin poll policy changed: %+v", policy)
 	}
 	for _, baseURL := range []string{"https://api.tianyue.xyz", "https://api.tianyue.xyz/", "https://api.tianyue.xyz/v1", "https://api.tianyue.xyz/v1/"} {

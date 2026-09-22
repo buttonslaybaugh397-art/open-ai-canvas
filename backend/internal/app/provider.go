@@ -102,6 +102,19 @@ const providerHTTPTimeout = 5 * time.Minute
 const videoPollTimeout = time.Hour
 const maxProviderResponseBytes int64 = 64 << 20
 
+// 轮询或下载等待渠道槽位时，应回到视频轮询节奏，而不是占住整个任务超时窗口。
+const providerChannelSlotWaitTimeout = defaultVideoPollInterval
+
+func providerRequestTimeout(ctx context.Context) time.Duration {
+	timeout := providerHTTPTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining > 0 {
+			timeout = min(timeout, remaining)
+		}
+	}
+	return timeout
+}
+
 type providerMedia struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`

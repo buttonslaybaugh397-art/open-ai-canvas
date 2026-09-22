@@ -57,7 +57,9 @@ func (videoDownloadEmptyError) Error() string { return "视频结果下载返回
 
 func defaultVideoPollPolicy() videoPollPolicy {
 	return videoPollPolicy{
-		InitialDelay:          defaultVideoPollInterval,
+		// Query immediately after the provider task is created. Providers that
+		// briefly return 404/pending are already handled by the retry policy.
+		InitialDelay:          0,
 		Interval:              defaultVideoPollInterval,
 		MaxNotFoundMisses:     3,
 		MaxMalformedResponses: 3,
@@ -79,6 +81,9 @@ func runVideoPollLoop(ctx context.Context, taskID string, policy videoPollPolicy
 	malformedResponses := 0
 	retrying := false
 	for time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if nextDelay > 0 {
 			if err := policy.Sleep(ctx, nextDelay); err != nil {
 				return nil, err

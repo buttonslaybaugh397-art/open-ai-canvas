@@ -159,9 +159,39 @@ async function syncAssetToProject(assetId: string, domainProjectId: string, cate
 }
 
 function generationTaskResult(task: GenerationTask): BackendGenerationResult {
-    if (task.resultJson) return parseBackendGenerationResult(task);
+    if (task.resultJson) {
+        try {
+            return parseBackendGenerationResult(task);
+        } catch (error) {
+            // A recovered task may retain only durable output records. Once every
+            // output is materialized, replay must not depend on the original JSON.
+            if (!task.outputs?.length || !task.outputs.every((output) => Boolean(output.materializedAssetId))) throw error;
+            return {};
+        }
+    }
     if (!task.previewUrl) return {};
     return task.previewKind === "video" ? { mode: "video", video: { dataUrl: task.previewUrl } } : { mode: "image", images: [{ dataUrl: task.previewUrl }] };
+}
+
+function generationTaskResultForOutput(task: GenerationTask, output: GenerationTaskOutput): BackendGenerationResult {
+    const result = generationTaskResult(task);
+    const providerArtifactRef = output.providerArtifactRef;
+    const mergeOutputMetadata = <T extends { dataUrl: string; storageKey?: string; bytes?: number; mimeType?: string }>(media: T | undefined): T => ({
+        ...(media || ({ dataUrl: "" } as T)),
+        ...(providerArtifactRef && !media?.storageKey ? { storageKey: providerArtifactRef } : {}),
+        ...(output.bytes !== undefined && media?.bytes === undefined ? { bytes: output.bytes } : {}),
+        ...(output.mimeType && !media?.mimeType ? { mimeType: output.mimeType } : {}),
+    });
+
+    if (output.mediaType === "video") {
+        return { ...result, mode: "video", video: mergeOutputMetadata(result.video) };
+    }
+    if (output.mediaType === "audio") {
+        return { ...result, mode: "audio", audio: mergeOutputMetadata(result.audio) };
+    }
+    const images = [...(result.images || [])];
+    images[output.outputIndex] = mergeOutputMetadata(images[output.outputIndex]);
+    return { ...result, mode: "image", images };
 }
 
 export function projectGenerationTaskResult(task: GenerationTask, result?: BackendGenerationResult): GenerationTask {
@@ -171,6 +201,8 @@ export function projectGenerationTaskResult(task: GenerationTask, result?: Backe
               outputIndex,
               mediaType: "image" as const,
               ...(image.storageKey ? { providerArtifactRef: image.storageKey } : {}),
+              ...(image.bytes !== undefined ? { bytes: image.bytes } : {}),
+              ...(image.mimeType ? { mimeType: image.mimeType } : {}),
           }))
         : projectedResult.video
           ? [
@@ -178,6 +210,8 @@ export function projectGenerationTaskResult(task: GenerationTask, result?: Backe
                     outputIndex: 0,
                     mediaType: "video" as const,
                     ...(projectedResult.video.storageKey ? { providerArtifactRef: projectedResult.video.storageKey } : {}),
+                    ...(projectedResult.video.bytes !== undefined ? { bytes: projectedResult.video.bytes } : {}),
+                    ...(projectedResult.video.mimeType ? { mimeType: projectedResult.video.mimeType } : {}),
                 },
             ]
           : projectedResult.audio
@@ -186,6 +220,8 @@ export function projectGenerationTaskResult(task: GenerationTask, result?: Backe
                       outputIndex: 0,
                       mediaType: "audio" as const,
                       ...(projectedResult.audio.storageKey ? { providerArtifactRef: projectedResult.audio.storageKey } : {}),
+                      ...(projectedResult.audio.bytes !== undefined ? { bytes: projectedResult.audio.bytes } : {}),
+                      ...(projectedResult.audio.mimeType ? { mimeType: projectedResult.audio.mimeType } : {}),
                   },
               ]
             : (task.outputs?.map((output) => ({ ...output })) ?? []);
@@ -273,7 +309,7 @@ async function storedGenerationMedia(dataUrl: string, effectKey: string, mediaTy
 
 async function generationOutputAsset(input: Parameters<MaterializeGenerationTaskOutput>[0], scope: string): Promise<NewAsset> {
     throwIfAborted(input.signal);
-    const result = generationTaskResult(input.task);
+    const result = generationTaskResultForOutput(input.task, input.output);
     const metadata = {
         source: "generation-task",
         generationEffectKey: input.effectKey,

@@ -122,12 +122,20 @@ export function applyGeneratedMediaResultMetadata(node: CanvasNodeData, media: C
 export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: GenerationTask, nodes: CanvasNodeData[] = [node]): Promise<CanvasNodeData> {
     const mode = generationTaskMode(task, node.type === CanvasNodeType.Text ? "text" : node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image");
     const prompt = node.metadata?.prompt || task.prompt;
-    const result = parseBackendGenerationResult(task);
+    let result: ReturnType<typeof parseBackendGenerationResult> = {};
+    if (task.resultJson) {
+        try {
+            result = parseBackendGenerationResult(task);
+        } catch {
+            // A materialized asset is the durable source of truth during replay.
+            // The original provider payload may be unavailable after recovery.
+        }
+    }
 
     if (mode === "image") {
         const image = result.images?.[0];
-        if (!image?.dataUrl) throw new Error("后端任务没有返回图片");
-        let resultDataUrl = image.dataUrl;
+        if (!image?.dataUrl && !image?.storageKey) throw new Error("后端任务没有返回图片");
+        let resultDataUrl = image.dataUrl || "";
         const emotionEdit = node.metadata?.emotionEdit;
         if (emotionEdit) {
             if (!emotionEdit.editRegion) throw new Error("情绪编辑任务缺少局部合成区域，已拒绝使用整图重绘结果");
@@ -217,7 +225,14 @@ export async function applyMaterializedGenerationTaskResultToNodes(nodes: Canvas
     }
     const asset = useAssetStore.getState().assets.find((candidate) => candidate.id === output.materializedAssetId);
     if (!asset) throw new Error("生成任务输出素材不存在");
-    const result = parseBackendGenerationResult(task);
+    let result: ReturnType<typeof parseBackendGenerationResult> = {};
+    if (task.resultJson) {
+        try {
+            result = parseBackendGenerationResult(task);
+        } catch {
+            // The durable materialized asset below is sufficient to replay the node.
+        }
+    }
     if (asset.kind === "image") {
         const images = [...(result.images || [])];
         images[output.outputIndex] = {

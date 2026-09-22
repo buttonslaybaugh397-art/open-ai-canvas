@@ -222,12 +222,7 @@ func doBinary(req *http.Request) ([]byte, string, error) {
 // 不会绕过完整响应的大小上限或错误判定。
 func doBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]byte, string, error) {
 	startedAt := time.Now()
-	requestTimeout := providerHTTPTimeout
-	if deadline, ok := req.Context().Deadline(); ok {
-		if remaining := time.Until(deadline); remaining > 0 {
-			requestTimeout = remaining
-		}
-	}
+	requestTimeout := providerRequestTimeout(req.Context())
 	var release func()
 	var coordinator *platform.Coordinator
 	var runtimeService *Service
@@ -249,12 +244,23 @@ func doBinaryWithConsumer(req *http.Request, onChunk func(string, []byte)) ([]by
 		if open {
 			return nil, "", providerCircuitOpenError{}
 		}
+		requestKind := providerRequestKind(req.Method, req.URL.Path)
+		if metadata.RequestKind != "" {
+			requestKind = metadata.RequestKind
+		}
 		slotID := channelID
 		if slotID == "" {
 			slotID = "custom:" + strings.ToLower(req.URL.Host)
 		}
 		var concurrencyLimit int
-		release, concurrencyLimit, err = metadata.Service.AcquireChannelSlot(req.Context(), channelID, slotID, requestTimeout+time.Minute)
+		acquireCtx := req.Context()
+		cancelAcquire := func() {}
+		if requestKind == "poll" || requestKind == "download" {
+			waitTimeout := min(providerChannelSlotWaitTimeout, requestTimeout)
+			acquireCtx, cancelAcquire = context.WithTimeout(req.Context(), waitTimeout)
+		}
+		release, concurrencyLimit, err = metadata.Service.AcquireChannelSlot(acquireCtx, channelID, slotID, requestTimeout+time.Minute)
+		cancelAcquire()
 		metadata.ConcurrencyLimit = concurrencyLimit
 		req = req.WithContext(context.WithValue(req.Context(), providerAnalyticsKey{}, metadata))
 		if err != nil {
