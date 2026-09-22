@@ -102,6 +102,11 @@ func runDeclarativeAgentTask(ctx context.Context, input canvasGenerationInput, a
 	if input.AgentRequests == nil {
 		return nil, errors.New("画布 Agent 工具请求缺少协议参数")
 	}
+	if isGeminiAgentConfig(input.Config) && input.AgentRequests.Gemini != nil {
+		if err := validateAgentGeminiPayload(input.AgentRequests.Gemini); err != nil {
+			return nil, err
+		}
+	}
 	request := map[string]any{
 		"chatCompletion": input.AgentRequests.ChatCompletion,
 		"responses":      input.AgentRequests.Responses,
@@ -112,6 +117,11 @@ func runDeclarativeAgentTask(ctx context.Context, input canvasGenerationInput, a
 	if err != nil {
 		return nil, err
 	}
+	if isGeminiAgentConfig(input.Config) {
+		if err := validateAgentGeminiPayload(spec.Body); err != nil {
+			return nil, err
+		}
+	}
 	if knownWire {
 		body := protocolBodyObject(spec.Body)
 		if body == nil {
@@ -119,6 +129,11 @@ func runDeclarativeAgentTask(ctx context.Context, input canvasGenerationInput, a
 		}
 		applyTextThinking(body, input, wire)
 		normalizeAgentToolChoice(body, input, wire)
+		if isGeminiAgentConfig(input.Config) {
+			if err := validateAgentGeminiPayload(body); err != nil {
+				return nil, err
+			}
+		}
 		spec.Body = body
 		if input.StreamText {
 			body["stream"] = true
