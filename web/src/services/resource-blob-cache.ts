@@ -34,6 +34,7 @@ const BUDGET_REFRESH_MS = 5 * 60 * 1000;
 const MAX_CONCURRENT_DOWNLOADS = 4;
 const DOWNLOAD_ATTEMPTS = 3;
 const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+const PERSIST_TIMEOUT_MS = 60 * 1000;
 
 export async function getCachedResourceObjectUrl(storageKey: string) {
     const target = await cacheTarget(storageKey);
@@ -93,10 +94,12 @@ function withDownloadSlot<T>(task: () => Promise<T>) {
     return new Promise<T>((resolve, reject) => {
         downloadQueue.push(() => {
             activeDownloads += 1;
-            task().then(resolve, reject).finally(() => {
-                activeDownloads -= 1;
-                runDownloadQueue();
-            });
+            task()
+                .then(resolve, reject)
+                .finally(() => {
+                    activeDownloads -= 1;
+                    runDownloadQueue();
+                });
         });
         runDownloadQueue();
     });
@@ -133,7 +136,7 @@ export async function getCachedResourceBlob(storageKey: string) {
         await cacheResourceObjectUrl(storageKey);
     }
     assertActiveScope(target);
-    const blob = sessionBlobs.get(target.key) || await readPersistedBlob(target);
+    const blob = sessionBlobs.get(target.key) || (await readPersistedBlob(target));
     assertActiveScope(target);
     return blob;
 }
@@ -195,7 +198,7 @@ export async function cacheResourceObjectUrlDurably(storageKey: string) {
 }
 
 function enqueuePersist(target: ResourceCacheMeta, blob: Blob, required = false) {
-    const task = persistQueue.then(() => persistBlob(target, blob, required));
+    const task = persistQueue.then(() => withTimeout(persistBlob(target, blob, required), PERSIST_TIMEOUT_MS, "本地媒体缓存写入超时"));
     // IndexedDB 缓存是读性能优化，不得反向判定服务端资源上传失败；但失败必须可观测，
     // 并把队列恢复为 fulfilled，避免一个坏条目永久阻断后续缓存写入。
     const observed = task.catch((error) => {
@@ -203,6 +206,20 @@ function enqueuePersist(target: ResourceCacheMeta, blob: Blob, required = false)
     });
     persistQueue = observed;
     return required ? task : observed;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
+    let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+    try {
+        return await Promise.race([
+            promise,
+            new Promise<T>((_, reject) => {
+                timer = globalThis.setTimeout(() => reject(new Error(message)), timeoutMs);
+            }),
+        ]);
+    } finally {
+        if (timer) globalThis.clearTimeout(timer);
+    }
 }
 
 async function persistBlob(target: ResourceCacheMeta, blob: Blob, required = false) {
@@ -259,7 +276,7 @@ async function readCachedObjectUrl(target: ResourceCacheMeta) {
         touchCacheMetaSafely(target);
         return existing;
     }
-    const blob = sessionBlobs.get(target.key) || await readPersistedBlob(target);
+    const blob = sessionBlobs.get(target.key) || (await readPersistedBlob(target));
     assertActiveScope(target);
     if (!blob) return "";
     touchCacheMetaSafely(target);
@@ -306,7 +323,6 @@ async function touchCacheMeta(target: ResourceCacheMeta) {
     if (!current || now - current.lastAccessedAt < TOUCH_INTERVAL_MS) return;
     await metaStore.setItem(target.key, { ...current, lastAccessedAt: now });
 }
-
 
 function touchCacheMetaSafely(target: ResourceCacheMeta) {
     void touchCacheMeta(target).catch((error) => {

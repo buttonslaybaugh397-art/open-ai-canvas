@@ -18,10 +18,10 @@ export type RemoteResource = {
     height?: number;
     durationMs?: number;
     etag?: string;
-	playbackStatus?: string;
-	playbackObjectKey?: string;
-	playbackError?: string;
-	error?: string;
+    playbackStatus?: string;
+    playbackObjectKey?: string;
+    playbackError?: string;
+    error?: string;
     createdAt: string;
     updatedAt: string;
 };
@@ -141,12 +141,7 @@ const CHUNK_UPLOAD_THRESHOLD = 50 << 20;
 const CHUNK_UPLOAD_CONCURRENCY = 3;
 const CHUNK_UPLOAD_ATTEMPTS = 3;
 
-export async function uploadResourceFile(
-    file: Blob,
-    kind: "image" | "video" | "audio" | "file",
-    meta?: ResourceUploadMeta,
-    onProgress?: (uploadedBytes: number, totalBytes: number) => void,
-): Promise<RemoteResource> {
+export async function uploadResourceFile(file: Blob, kind: "image" | "video" | "audio" | "file", meta?: ResourceUploadMeta, onProgress?: (uploadedBytes: number, totalBytes: number) => void): Promise<RemoteResource> {
     const name = meta?.fileName || (file instanceof File ? file.name : `${kind}.${extensionFromMime(file.type, kind)}`);
     // 分片与 multipart 两条路径的失败都要归一成 ResourceUploadError，
     // 否则调用方只能靠文案猜测该重试还是该报错。
@@ -164,9 +159,11 @@ export async function uploadResourceFile(
         if (meta?.durationMs) formData.append("durationMs", String(Math.round(meta.durationMs)));
         const data = await http.post<{ resource: RemoteResource }>("/resources", formData, {
             ...uploadRequestConfig(meta?.idempotencyKey),
-            onUploadProgress: onProgress ? ({ loaded, total }) => {
-                if (total && total > 0) onProgress(Math.min(file.size, file.size * loaded / total), file.size);
-            } : undefined,
+            onUploadProgress: onProgress
+                ? ({ loaded, total }) => {
+                      if (total && total > 0) onProgress(Math.min(file.size, (file.size * loaded) / total), file.size);
+                  }
+                : undefined,
         });
         resourceCache.set(resourceCacheKey(data.resource.id), data.resource);
         return data.resource;
@@ -177,8 +174,20 @@ export async function uploadResourceFile(
 
 // 分片上传限制并发，只重试未确认分片；合并失败不得自动重开会话整传。
 async function uploadFileInChunks(file: Blob, name: string, kind: "image" | "video" | "audio" | "file", meta: ResourceUploadMeta | undefined, onProgress?: (uploadedBytes: number, totalBytes: number) => void) {
-    const session = await http.post<{ uploadId: string; chunkSize: number; chunkCount: number }>("/resources/uploads", { fileName: name, kind, size: file.size, width: meta?.width, height: meta?.height, durationMs: meta?.durationMs }, uploadRequestConfig(meta?.idempotencyKey));
-    if (!session || typeof session.uploadId !== "string" || !session.uploadId.trim() || !Number.isSafeInteger(session.chunkSize) || session.chunkSize <= 0 || !Number.isSafeInteger(session.chunkCount) || session.chunkCount !== Math.ceil(file.size / session.chunkSize)) {
+    const session = await http.post<{ uploadId: string; chunkSize: number; chunkCount: number }>(
+        "/resources/uploads",
+        { fileName: name, kind, size: file.size, width: meta?.width, height: meta?.height, durationMs: meta?.durationMs },
+        uploadRequestConfig(meta?.idempotencyKey),
+    );
+    if (
+        !session ||
+        typeof session.uploadId !== "string" ||
+        !session.uploadId.trim() ||
+        !Number.isSafeInteger(session.chunkSize) ||
+        session.chunkSize <= 0 ||
+        !Number.isSafeInteger(session.chunkCount) ||
+        session.chunkCount !== Math.ceil(file.size / session.chunkSize)
+    ) {
         throw new ResourceUploadError("服务端返回的分片信息无效", { permanent: true });
     }
     const uploaded = new Map<number, number>();
@@ -236,10 +245,13 @@ function waitForChunkRetry(delay: number, signal: AbortSignal) {
             signal.removeEventListener("abort", abort);
             reject(new DOMException("请求已取消", "AbortError"));
         };
-        const timer = setTimeout(() => {
-            signal.removeEventListener("abort", abort);
-            resolve();
-        }, Math.max(0, delay));
+        const timer = setTimeout(
+            () => {
+                signal.removeEventListener("abort", abort);
+                resolve();
+            },
+            Math.max(0, delay),
+        );
         signal.addEventListener("abort", abort, { once: true });
         if (signal.aborted) abort();
     });
@@ -284,7 +296,8 @@ export function getResource(id: string): Promise<RemoteResource> {
     if (missingResourceIds.has(cacheKey)) return Promise.reject(new Error("资源不存在或已被删除"));
     const pending = resourceRequests.get(cacheKey);
     if (pending) return pending;
-    const task = http.get<{ resource: RemoteResource }>(`/resources/${encodeURIComponent(id)}`)
+    const task = http
+        .get<{ resource: RemoteResource }>(`/resources/${encodeURIComponent(id)}`)
         .then((data) => {
             resourceCache.set(cacheKey, data.resource);
             return data.resource;
@@ -301,12 +314,11 @@ export function getResource(id: string): Promise<RemoteResource> {
 // refreshResource 绕过缓存强制拉取资源最新状态（转码副本就绪轮询用），并回写缓存。
 export function refreshResource(id: string): Promise<RemoteResource> {
     const cacheKey = resourceCacheKey(id);
-    return http.get<{ resource: RemoteResource }>(`/resources/${encodeURIComponent(id)}`)
-        .then((data) => {
-            resourceCache.set(cacheKey, data.resource);
-            missingResourceIds.delete(cacheKey);
-            return data.resource;
-        });
+    return http.get<{ resource: RemoteResource }>(`/resources/${encodeURIComponent(id)}`).then((data) => {
+        resourceCache.set(cacheKey, data.resource);
+        missingResourceIds.delete(cacheKey);
+        return data.resource;
+    });
 }
 
 export async function getResourceOSSUrl(storageKey?: string) {
@@ -374,7 +386,8 @@ export async function getResourceBlob(storageKey: string, signal?: AbortSignal, 
     // An empty URL is reserved for resources actually stored on the local server.
     const endpoint = `${access === "admin" ? "/admin" : ""}/resources/${encodeURIComponent(id)}/file`;
     const delivery = await http.get<{ url: string }>(endpoint, {
-        params: { resolve: "1" }, signal,
+        params: { resolve: "1" },
+        signal,
     });
     if (!delivery || typeof delivery.url !== "string") throw new Error("后端未返回有效的媒体读取地址");
     let response: Response;
@@ -391,11 +404,21 @@ export async function getResourceBlob(storageKey: string, signal?: AbortSignal, 
         if (signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) throw error;
         throw new Error("媒体读取失败，请检查网络及对象存储/CDN 的 CORS 配置", { cause: error });
     }
-    if (!response.ok) throw new ApiError(`媒体读取失败（HTTP ${response.status}）`, {
-        status: response.status,
-        retryable: [403, 404, 410, 408, 429].includes(response.status) || response.status >= 500,
-    });
-    return response.blob();
+    if (!response.ok)
+        throw new ApiError(`媒体读取失败（HTTP ${response.status}）`, {
+            status: response.status,
+            retryable: [403, 404, 410, 408, 429].includes(response.status) || response.status >= 500,
+        });
+    const contentLength = response.headers.get("Content-Length")?.trim();
+    const expectedBytes = contentLength ? Number(contentLength) : undefined;
+    const blob = await response.blob();
+    if (expectedBytes !== undefined && Number.isSafeInteger(expectedBytes) && expectedBytes >= 0 && blob.size !== expectedBytes) {
+        throw new ApiError("媒体响应不完整（收到 " + blob.size + " / " + expectedBytes + " 字节）", {
+            status: 502,
+            retryable: true,
+        });
+    }
+    return blob;
 }
 
 function extensionFromMime(mimeType: string, kind: string) {
