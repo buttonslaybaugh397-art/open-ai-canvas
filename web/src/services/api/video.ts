@@ -1,5 +1,5 @@
 import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
-import { resolveGeneratedVideoUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
+import { uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -71,7 +71,7 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
     }
     if (!blob?.size || /^(text\/|application\/(json|xml))/i.test(blob.type)) throw new Error("视频接口没有返回有效的视频文件");
     const stored = await uploadMediaFile(blob.type.startsWith("video/") ? blob : new Blob([blob], { type: result.mimeType || "video/mp4" }), "video");
-    return { ...stored, url: await resolveGeneratedVideoUrl(stored.storageKey) };
+    return stored;
 }
 
 export type { VideoProviderDeps } from "./video-provider-deps";

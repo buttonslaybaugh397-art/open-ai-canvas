@@ -6,7 +6,7 @@ import { Image as ImageIcon, Music2, Play, UserRound } from "lucide-react";
 
 import { canvasNodeVideoPreviewUrl } from "@/lib/canvas/canvas-media-preview";
 import { isStoryboardPreviewAsset } from "@/lib/canvas/canvas-storyboard-materializer";
-import { resolveMediaUrl } from "@/services/file-storage";
+import { resolveMediaUrl, resolveVideoPlaybackUrl } from "@/services/file-storage";
 import { CanvasNodeType, type CanvasNodeData, type StoryboardAssetBinding } from "@/types/canvas";
 
 const ROLE_LABELS: Record<StoryboardAssetBinding["role"], string> = {
@@ -100,7 +100,7 @@ function useNodeMediaSource(node: CanvasNodeData | null) {
     useEffect(() => {
         let cancelled = false;
         setSource(fallback);
-        if (storageKey) void resolveMediaUrl(storageKey, fallback).then((url) => {
+        if (storageKey) void (node?.type === CanvasNodeType.Video ? resolveVideoPlaybackUrl(storageKey, fallback) : resolveMediaUrl(storageKey, fallback)).then((url) => {
             if (!cancelled) setSource(url || fallback);
         }).catch(() => {
             if (!cancelled) setSource(fallback);

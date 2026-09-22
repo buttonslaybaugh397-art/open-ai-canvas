@@ -78,23 +78,24 @@ describe("large canvas media rendering", () => {
         expect(canvasNodeContentSource).toContain("useVideoPlaybackUrl(node, mediaActive)");
         expect(canvasNodeContentSource).toContain("onMediaPlayRequest?.(node.id)");
         expect(canvasNodeContentSource).toContain('autoPlay preload="metadata"');
-        expect(canvasNodeContentSource).not.toContain("scheduleResourceBlobCache");
+        expect(canvasNodeContentSource).toContain("scheduleResourceBlobCache(storageKey)");
     });
 
-    test("previews populate a shared CDN cache before displaying remote resources", () => {
+    test("images keep the shared CDN cache while videos use direct playback URLs", () => {
         const imageSource = readFileSync(resolve(import.meta.dir, "../src/components/cached-resource-image.tsx"), "utf8");
         for (const source of [canvasNodeContentSource, imageSource]) {
             expect(source).toContain("cacheResourceObjectUrl(storageKey)");
             expect(source).toContain("peekCachedResourceObjectUrl(storageKey)");
             expect(source).not.toContain("resourceFileUrl(");
         }
+        expect(canvasNodeContentSource).toContain("resolveVideoPlaybackUrl(storageKey, fallback)");
         const hydrationSource = readFileSync(resolve(import.meta.dir, "../src/lib/canvas/canvas-project-generation.ts"), "utf8");
         const referencesSource = readFileSync(resolve(import.meta.dir, "../src/components/canvas/use-resolved-canvas-resource-references.ts"), "utf8");
         expect(hydrationSource).not.toContain("cacheMiss: true");
         expect(referencesSource).not.toContain("cacheMiss: true");
         for (const file of ["components/canvas/canvas-timeline-preview.tsx", "components/canvas/canvas-subtitle-dialog.tsx"]) {
             const source = readFileSync(resolve(import.meta.dir, "../src", file), "utf8");
-            expect(source).toContain("resolveMediaUrl(storageKey, fallback)");
+            expect(source).toContain("resolveVideoPlaybackUrl(storageKey, fallback)");
             expect(source).not.toContain("getCachedResourceObjectUrl");
             expect(source).toContain(".catch(");
         }

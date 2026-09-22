@@ -5,7 +5,7 @@ import { parseBackendGenerationResult, type BackendGenerationResult } from "@/se
 import { ApiError } from "@/services/api/request";
 import { linkProjectAsset, moveProjectAsset, updateProjectAssetCategory } from "@/services/api/projects";
 import type { GenerationTask, GenerationTaskOutput } from "@/services/api/task-center";
-import { getMediaBlob, resolveGeneratedVideo, resolveMediaUrl, setMediaBlob } from "@/services/file-storage";
+import { getMediaBlob, resolveMediaUrl, resolveVideoPlaybackUrl, setMediaBlob } from "@/services/file-storage";
 import { createGenerationTaskMaterializer, createIdempotentMaterializeOutput, type MaterializeGenerationTaskOutput } from "@/services/generation-task-materializer";
 import { withGenerationArtifactCommitLock } from "@/services/generation-asset-repository";
 import { uploadGeneratedAssetToConfiguredSources } from "@/services/external-asset-sources";
@@ -347,7 +347,15 @@ async function generationOutputAsset(input: Parameters<MaterializeGenerationTask
         const video = result.video;
         if (!video) throw new Error("生成任务缺少视频输出");
         const stored = video.storageKey
-            ? await resolveGeneratedVideo({ ...video, storageKey: video.storageKey }, input.signal)
+            ? {
+                  url: await resolveVideoPlaybackUrl(video.storageKey, video.dataUrl),
+                  storageKey: video.storageKey,
+                  width: video.width,
+                  height: video.height,
+                  durationMs: video.durationMs,
+                  bytes: video.bytes || 0,
+                  mimeType: video.mimeType || "video/mp4",
+              }
             : await storedGenerationMedia(
                   video.dataUrl,
                   input.effectKey,

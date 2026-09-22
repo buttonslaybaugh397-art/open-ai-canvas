@@ -148,27 +148,22 @@ const { buildGenerationTaskNodeResult } = await import("../../src/lib/canvas/can
 const { CanvasNodeType } = await import("../../src/types/canvas");
 const node = { id: "video-node", type: CanvasNodeType.Video, title: "video", position: { x: 0, y: 0 }, width: 320, height: 180, metadata: { status: "loading" as const, taskId: "video-task", taskStatus: "succeeded" as const } };
 const task = { id: "video-task", type: "canvas_video", status: "succeeded", prompt: "video", attempts: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), resultJson: JSON.stringify({ video: { storageKey: "resource:node-result" } }) } as const;
-writeGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
-const nodeStarted = new Promise<void>((resolve) => { writeStarted = resolve; });
-let nodeReady = false;
-const nodePending = buildGenerationTaskNodeResult(node, task).then((result) => { nodeReady = true; return result; });
-await nodeStarted;
-assert.equal(nodeReady, false);
-assert.equal(node.metadata.status, "loading");
-releaseWrite();
-const completed = await nodePending;
+const readsBeforeNode = reads;
+const completed = await buildGenerationTaskNodeResult(node, task);
 assert.equal(completed.metadata?.status, "success");
-assert.ok(completed.metadata?.content?.startsWith("blob:"));
-assert.equal(completed.metadata?.bytes, 5);
+assert.match(completed.metadata?.content || "", /\/resources\/node-result\/file$/);
+assert.equal(completed.metadata?.bytes, 0);
 assert.equal(completed.metadata?.mimeType, "video/mp4");
-assert.equal(stores.get("resource_blobs")!.has("user-b:node-result:file"), true);
+assert.equal(reads, readsBeforeNode, "remote video materialization must not download the full Blob");
+assert.equal(stores.get("resource_blobs")!.has("user-b:node-result:file"), false);
 writeGate = undefined;
 writeStarted = undefined;
 
 console.warn = (...args) => { warnings.push(args); };
 failWrites = true;
-await assert.rejects(buildGenerationTaskNodeResult(node, { ...task, resultJson: JSON.stringify({ video: { storageKey: "resource:node-failure", dataUrl: "/api/resources/node-failure/file" } }) }), /本地缓存失败/);
-assert.equal(node.metadata.status, "loading");
+const cacheFailureResult = await buildGenerationTaskNodeResult(node, { ...task, resultJson: JSON.stringify({ video: { storageKey: "resource:node-failure", dataUrl: "/api/resources/node-failure/file" } }) });
+assert.equal(cacheFailureResult.metadata?.status, "success");
+assert.match(cacheFailureResult.metadata?.content || "", /\/resources\/node-failure\/file$/);
 failWrites = false;
 console.warn = originalWarn;
 

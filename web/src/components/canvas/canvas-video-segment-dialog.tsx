@@ -11,7 +11,7 @@ import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
 import { modelRequestOptions, resolveCompatibleModel, type ModelRequirements } from "@/lib/model-selection";
 import { navigateToSettings } from "@/lib/settings-navigation";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
-import { resolveMediaUrl } from "@/services/file-storage";
+import { resolveVideoPlaybackUrl } from "@/services/file-storage";
 import { modelDisplayName, type AiConfig } from "@/stores/use-config-store";
 import { type CanvasConnection, type CanvasNodeData, type CanvasVideoEditOperation } from "@/types/canvas";
 import type { TimelineProject } from "@/types/timeline";
@@ -83,7 +83,7 @@ export function CanvasVideoSegmentDialog({ node, nodes, connections, open, mode,
         const applyUrl = (url: string) => {
             if (!cancelled) setVideoUrl(url);
         };
-        void resolveMediaUrl(storageKey, fallback).then(applyUrl).catch(() => {
+        void resolveVideoPlaybackUrl(storageKey, fallback).then(applyUrl).catch(() => {
             if (!cancelled) setVideoError(true);
         });
         return () => {

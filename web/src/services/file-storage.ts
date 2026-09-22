@@ -127,6 +127,18 @@ export async function resolveMediaUrl(storageKey?: string, fallback = "") {
     return url;
 }
 
+/**
+ * Resolve a video source without buffering a remote resource into a Blob first.
+ * The resource endpoint redirects to the signed CDN URL, so the browser can
+ * request metadata and byte ranges incrementally.
+ */
+export async function resolveVideoPlaybackUrl(storageKey?: string, fallback = "") {
+    if (!storageKey) return fallback;
+    const resourceId = resourceIdFromStorageKey(storageKey);
+    if (resourceId) return resourceFileUrl(resourceId);
+    return resolveMediaUrl(storageKey, fallback);
+}
+
 export async function getMediaBlob(storageKey: string) {
     if (resourceIdFromStorageKey(storageKey)) return getCachedResourceBlob(storageKey);
     return store.getItem<Blob>(storageKey);

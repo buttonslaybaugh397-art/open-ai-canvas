@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { LoaderCircle, Pause, Play, RotateCw } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
-import { resolveMediaUrl } from "@/services/file-storage";
+import { resolveVideoPlaybackUrl } from "@/services/file-storage";
 import { formatTimelineTime } from "@/lib/timeline/timeline-view";
 import { createDefaultSubtitleStyle } from "@/types/timeline";
 import type { TimelineClip } from "@/types/timeline";
@@ -63,7 +63,7 @@ export function CanvasTimelinePreview({ clips, nodes, playheadMs, playing, theme
         setLoading(true);
         const storageKey = node?.metadata?.storageKey || media?.storageKey || "";
         const fallback = node?.metadata?.content || media?.url || "";
-        void resolveMediaUrl(storageKey, fallback)
+        void resolveVideoPlaybackUrl(storageKey, fallback)
             .then((url) => { if (!cancelled) setVideoUrl(url); })
             .catch((error: unknown) => { if (!cancelled) setLoadError(error instanceof Error ? error.message : "视频加载失败"); })
             .finally(() => { if (!cancelled) setLoading(false); });

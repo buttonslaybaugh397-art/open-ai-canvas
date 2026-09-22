@@ -1,5 +1,5 @@
 import { captureVideoPoster } from "@/lib/video-poster";
-import { resolveMediaUrl } from "@/services/file-storage";
+import { resolveVideoPlaybackUrl } from "@/services/file-storage";
 import { uploadImage } from "@/services/image-storage";
 import type { CanvasNodeData, CanvasNodeMetadata } from "@/types/canvas";
 
@@ -31,7 +31,7 @@ export function hydrateCanvasVideoPreview(node: CanvasNodeData, signal?: AbortSi
 async function generateCanvasVideoPreview(node: CanvasNodeData, signal?: AbortSignal): Promise<VideoPreview | null> {
     await waitForBrowserIdle(signal);
     throwIfAborted(signal);
-    const source = await resolveMediaUrl(node.metadata?.storageKey, node.metadata?.content || "");
+    const source = await resolveVideoPlaybackUrl(node.metadata?.storageKey, node.metadata?.content || "");
     if (!source) return null;
     const captured = await captureVideoPoster(source, { signal, maxWidth: 400 });
     throwIfAborted(signal);

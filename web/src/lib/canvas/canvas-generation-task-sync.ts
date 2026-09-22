@@ -5,7 +5,7 @@ import { storeGeneratedAudio } from "@/services/api/audio";
 import { storeGeneratedVideo } from "@/services/api/video";
 import { parseBackendGenerationResult } from "@/services/api/generation-task";
 import type { GenerationTask, GenerationTaskOutput } from "@/services/api/task-center";
-import { resolveGeneratedVideo, resolveMediaUrl, type UploadedFile } from "@/services/file-storage";
+import { resolveMediaUrl, resolveVideoPlaybackUrl, type UploadedFile } from "@/services/file-storage";
 import { resolveImageUrl, uploadImage, type UploadedImage } from "@/services/image-storage";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useAssetStore } from "@/stores/use-asset-store";
@@ -171,7 +171,13 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
     if (mode === "video") {
         if (!result.video?.storageKey && !result.video?.dataUrl) throw new Error("后端任务没有返回视频");
         const video = result.video.storageKey
-            ? await resolveGeneratedVideo({ ...result.video, storageKey: result.video.storageKey })
+            ? {
+                  ...result.video,
+                  url: await resolveVideoPlaybackUrl(result.video.storageKey, result.video.dataUrl),
+                  storageKey: result.video.storageKey,
+                  bytes: result.video.bytes || 0,
+                  mimeType: result.video.mimeType || "video/mp4",
+              }
             : await storeGeneratedVideo({ url: result.video.dataUrl, mimeType: result.video.mimeType || "video/mp4" });
         const videoSize = fitNodeSize(video.width || node.width || VIDEO_NODE_MAX_SIZE.width, video.height || node.height || VIDEO_NODE_MAX_SIZE.height, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
         const geometry = node.metadata?.locked

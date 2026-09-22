@@ -17,8 +17,8 @@ import { formatBytes } from "@/lib/image-utils";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { resourceIdFromStorageKey } from "@/services/api/resources";
 import type { GenerationTask } from "@/services/api/task-center";
-import { cacheResourceObjectUrl, peekCachedResourceObjectUrl } from "@/services/resource-blob-cache";
-import { resolveGeneratedVideoUrl, resolveMediaUrl } from "@/services/file-storage";
+import { cacheResourceObjectUrl, peekCachedResourceObjectUrl, scheduleResourceBlobCache } from "@/services/resource-blob-cache";
+import { resolveGeneratedVideoUrl, resolveMediaUrl, resolveVideoPlaybackUrl } from "@/services/file-storage";
 import { hydrateCanvasVideoPreview } from "@/services/canvas-video-preview";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
@@ -435,6 +435,7 @@ function GeneratedVideoContent(props: CanvasNodeContentProps) {
     const storageKey = props.node.metadata!.storageKey!;
     const scope = getActiveUserScope();
     const identity = JSON.stringify([scope, props.node.metadata?.taskId, storageKey]);
+    const remoteResource = Boolean(resourceIdFromStorageKey(storageKey));
     const [attempt, setAttempt] = useState(0);
     const [state, setState] = useState<{ identity: string; url?: string; error?: string }>();
     const onStatus = props.onVideoCacheStatus;
@@ -442,6 +443,21 @@ function GeneratedVideoContent(props: CanvasNodeContentProps) {
         let cancelled = false;
         setState(undefined);
         onStatus?.("loading");
+        if (remoteResource) {
+            void resolveVideoPlaybackUrl(storageKey).then((url) => {
+                if (!cancelled && scope === getActiveUserScope() && url) {
+                    setState({ identity, url });
+                    onStatus?.("success");
+                    scheduleResourceBlobCache(storageKey);
+                }
+            }).catch((error) => {
+                if (!cancelled && scope === getActiveUserScope()) {
+                    setState({ identity, error: error instanceof Error ? error.message : "视频资源不可用" });
+                    onStatus?.("error");
+                }
+            });
+            return () => { cancelled = true; };
+        }
         void resolveGeneratedVideoUrl(storageKey).then((url) => {
             if (!cancelled && scope === getActiveUserScope()) {
                 setState({ identity, url });
@@ -454,7 +470,7 @@ function GeneratedVideoContent(props: CanvasNodeContentProps) {
             }
         });
         return () => { cancelled = true; };
-    }, [attempt, identity, onStatus, scope, storageKey]);
+    }, [attempt, identity, onStatus, remoteResource, scope, storageKey]);
     if (state?.identity === identity && state.error) return <ErrorContent node={{ ...props.node, metadata: { ...props.node.metadata, errorDetails: state.error, resourceReloadAvailable: true } }} theme={props.theme} onRetry={props.onRetry} onReloadResource={() => { setState(undefined); setAttempt((value) => value + 1); }} />;
     if (state?.identity !== identity || !state.url) return <LoadingContent node={props.node} theme={props.theme} onOpenTaskDetails={props.onOpenTaskDetails} />;
     return <VideoNodeContent {...props} node={{ ...props.node, metadata: { ...props.node.metadata, content: state.url } }} />;
@@ -540,7 +556,7 @@ function InactiveVideoPreview({ node, theme, onPlay }: Pick<CanvasNodeContentPro
         if (!element) return;
         const content = node.metadata?.content || "";
         const fallback = node.metadata?.importSource?.provider === "libtv" ? buildLibTVVideoSourceUrl(content) : content;
-        return bindCanvasVideoHoverPreview(element, () => resolveMediaUrl(node.metadata?.storageKey, fallback));
+        return bindCanvasVideoHoverPreview(element, () => resolveVideoPlaybackUrl(node.metadata?.storageKey, fallback));
     }, [node.metadata?.content, node.metadata?.storageKey, node.metadata?.importSource?.provider]);
 
     useEffect(() => {
@@ -597,7 +613,7 @@ function useVideoPlaybackUrl(node: CanvasNodeData, active: boolean) {
         }
         setLoading(true);
         setUrl("");
-        void resolveMediaUrl(storageKey, fallback)
+        void resolveVideoPlaybackUrl(storageKey, fallback)
             .then((resolved) => { if (!cancelled) setUrl(resolved); })
             .catch(() => { if (!cancelled) setUrl(""); })
             .finally(() => { if (!cancelled) setLoading(false); });

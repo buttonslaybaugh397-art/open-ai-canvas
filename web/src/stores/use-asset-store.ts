@@ -10,7 +10,7 @@ import { localForageStorageForScope } from "@/lib/localforage-storage";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 import { cleanupUnusedImages, collectImageStorageKeys, resolveImageUrl, uploadImage } from "@/services/image-storage";
-import { cleanupUnusedMedia, collectMediaStorageKeys, resolveMediaUrl } from "@/services/file-storage";
+import { cleanupUnusedMedia, collectMediaStorageKeys, resolveMediaUrl, resolveVideoPlaybackUrl } from "@/services/file-storage";
 import { flushGenerationAssetStorageLocks, insertOrReturnGenerationAsset, withGenerationArtifactCommitLock, withGenerationAssetStorageLock } from "@/services/generation-asset-repository";
 import { CANVAS_STORE_KEY, commitPendingCanvasStorePersistenceLocked, pendingCanvasStorePersistence, withCanvasStorePersistenceLock } from "@/stores/canvas/use-canvas-store";
 import { readAllCanvasSyncDrafts } from "@/services/canvas-sync-drafts";
@@ -278,7 +278,7 @@ async function normalizePersistedAsset(asset: Asset): Promise<Asset> {
 
     // 非 resource: key 是早期本地存储格式，必须继续从 localForage 恢复，
     // 但只在确有本地 key 时读取，不让远程资源重新走逐条网络查询。
-    if (asset.kind === "video" && storageKey) return { ...asset, data: { ...asset.data, url: await resolveMediaUrl(storageKey, asset.data.url) } };
+    if (asset.kind === "video" && storageKey) return { ...asset, data: { ...asset.data, url: await resolveVideoPlaybackUrl(storageKey, asset.data.url) } };
     if (asset.kind === "audio" && storageKey) return { ...asset, data: { ...asset.data, url: await resolveMediaUrl(storageKey, asset.data.url) } };
     if (asset.kind === "model" && storageKey) return { ...asset, data: { ...asset.data, url: await resolveMediaUrl(storageKey, asset.data.url) } };
     if (asset.kind !== "image") return asset;

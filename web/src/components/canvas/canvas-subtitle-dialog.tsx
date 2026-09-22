@@ -8,7 +8,7 @@ import { saveAs } from "file-saver";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { useConfigStore, type AiConfig } from "@/stores/use-config-store";
-import { resolveMediaUrl } from "@/services/file-storage";
+import { resolveVideoPlaybackUrl } from "@/services/file-storage";
 import { parseSrt, serializeSrtEntries } from "@/lib/timeline/srt-parser";
 import { DEFAULT_MAX_CHARS_PER_ENTRY, MAX_CHARS_PER_ENTRY_LIMIT, MIN_CHARS_PER_ENTRY, resegmentSrtEntries, splitLongEntry } from "@/lib/timeline/srt-resegment";
 import { buildFallbackHighlights, remapHighlightsAfterResegment } from "@/lib/timeline/subtitle-highlights";
@@ -72,7 +72,7 @@ export function CanvasSubtitleDialog({ node, open, projectId, config, onClose, o
         setVideoUrl("");
         const storageKey = node.metadata?.storageKey || "";
         const fallback = node.metadata?.content || "";
-        void resolveMediaUrl(storageKey, fallback)
+        void resolveVideoPlaybackUrl(storageKey, fallback)
             .then((url) => { if (!cancelled) setVideoUrl(url); })
             .catch(() => { if (!cancelled) setVideoError(true); });
         return () => {
