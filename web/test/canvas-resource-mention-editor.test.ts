@@ -52,6 +52,16 @@ describe("canvas resource mention editor", () => {
         expect(css).toContain('content: "替换"');
     });
 
+    test("deletes adjacent inline mentions from the prompt editor", () => {
+        const component = source("../src/components/canvas/canvas-resource-mention-textarea.tsx");
+
+        expect(component).toContain('event.key === "Backspace" || event.key === "Delete"');
+        expect(component).toContain("deleteAdjacentMention(event.key)");
+        expect(component).toContain("requestAnimationFrame(syncEditableValue)");
+        expect(component).toContain("target.replaceWith(caret)");
+        expect(component).toContain("dataset.mentionToken");
+    });
+
     test("resolves storage-backed previews and renders a visible loading spinner", () => {
         const editor = source("../src/components/canvas/canvas-resource-mention-textarea.tsx");
         const panel = source("../src/components/canvas/canvas-node-prompt-panel.tsx");

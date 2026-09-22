@@ -440,6 +440,11 @@ if (event.key === "Enter" && (event.nativeEvent.isComposing || composingRef.curr
                                 return;
                             }
                         }
+                        if ((event.key === "Backspace" || event.key === "Delete") && deleteAdjacentMention(event.key)) {
+                            event.preventDefault();
+                            requestAnimationFrame(syncEditableValue);
+                            return;
+                        }
                         if (event.key === "Enter") {
                             event.preventDefault();
                             const shouldSubmit = shouldSubmitOnEnter(event, sendOnEnter);
@@ -1034,6 +1039,45 @@ function plainTextLength(node: Node): number {
 
 function isMentionElement(node: Node): node is HTMLElement {
     return node instanceof HTMLElement && Boolean(node.dataset.mentionToken);
+}
+
+function deleteAdjacentMention(key: string) {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount || !selection.isCollapsed) return false;
+    const range = selection.getRangeAt(0);
+    const target = adjacentMentionNode(range, key);
+    if (!target) return false;
+
+    const caret = document.createTextNode("");
+    target.replaceWith(caret);
+    range.setStart(caret, 0);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return true;
+}
+
+function adjacentMentionNode(range: Range, key: string) {
+    const container = range.startContainer;
+    const offset = range.startOffset;
+    const previous = key === "Backspace";
+
+    if (container.nodeType === Node.TEXT_NODE) {
+        const text = container.textContent || "";
+        if ((previous && offset > 0) || (!previous && offset < text.length)) return null;
+        return findMentionSibling(container, previous);
+    }
+
+    const children = Array.from(container.childNodes);
+    return findMentionSibling(children[previous ? offset - 1 : offset] || container, previous, true);
+}
+
+function findMentionSibling(node: Node, previous: boolean, includeSelf = false): HTMLElement | null {
+    let current: Node | null = includeSelf ? node : previous ? node.previousSibling : node.nextSibling;
+    while (current && current.nodeType === Node.TEXT_NODE && !(current.textContent || "").trim()) {
+        current = previous ? current.previousSibling : current.nextSibling;
+    }
+    return current instanceof HTMLElement && isMentionElement(current) ? current : null;
 }
 
 type MentionAnchorRect = Pick<DOMRect, "left" | "right" | "top" | "bottom" | "width" | "height">;
