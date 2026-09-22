@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"infinite-canvas/backend/internal/model"
@@ -16,6 +17,10 @@ type canonicalAgentRequest struct {
 	ToolChoice     interface{}              `json:"toolChoice"`
 	SystemPrompt   string                   `json:"systemPrompt"`
 	PromptCacheKey string                   `json:"promptCacheKey,omitempty"`
+}
+
+func isGeminiAgentConfig(config providerConfig) bool {
+	return strings.EqualFold(strings.TrimSpace(config.APIFormat), "gemini") || strings.Contains(strings.ToLower(strings.TrimSpace(config.InterfaceType)), "gemini")
 }
 
 func expandCanonicalAgentRequest(source *canonicalAgentRequest, config providerConfig, declarative bool) (*agentToolRequests, error) {
@@ -91,6 +96,11 @@ func expandCanonicalAgentRequest(source *canonicalAgentRequest, config providerC
 		result.Claude = claudeAgentBody(canonicalAgentChatBody(&request, true))
 		result.Claude["model"] = config.Model
 		result.Gemini = canonicalAgentGeminiBody(&request)
+		if isGeminiAgentConfig(config) {
+			if err := validateCanonicalAgentGeminiBody(result.Gemini); err != nil {
+				return nil, err
+			}
+		}
 		return result, nil
 	}
 	switch config.InterfaceType {
@@ -102,6 +112,90 @@ func expandCanonicalAgentRequest(source *canonicalAgentRequest, config providerC
 		result.ChatCompletion = canonicalAgentChatBody(&request, false)
 	}
 	return result, nil
+}
+
+// validateAgentGeminiPayload protects both canonical and legacy Agent request
+// paths. A persisted Gemini body can bypass canonicalAgentContent, so checking
+// only the protocol-neutral messages is not sufficient.
+func validateAgentGeminiPayload(value interface{}) error {
+	return walkAgentGeminiPayload(value, "")
+}
+
+func walkAgentGeminiPayload(value interface{}, path string) error {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		if rawContents, ok := typed["contents"]; ok {
+			contents, ok := rawContents.([]interface{})
+			if !ok {
+				return fmt.Errorf("画布 Agent Gemini 请求 %s.contents 格式无效", path)
+			}
+			for contentIndex, rawContent := range contents {
+				content, ok := rawContent.(map[string]interface{})
+				if !ok {
+					return fmt.Errorf("画布 Agent Gemini 请求 %s.contents[%d] 格式无效", path, contentIndex)
+				}
+				parts, ok := content["parts"].([]interface{})
+				if !ok || len(parts) == 0 {
+					return fmt.Errorf("画布 Agent Gemini 请求 %s.contents[%d].parts 为空", path, contentIndex)
+				}
+				for partIndex, rawPart := range parts {
+					part, ok := rawPart.(map[string]interface{})
+					if !ok {
+						return fmt.Errorf("画布 Agent Gemini 请求 %s.contents[%d].parts[%d] 格式无效", path, contentIndex, partIndex)
+					}
+					if text, exists := part["text"]; exists {
+						if _, ok := text.(string); !ok {
+							return fmt.Errorf("画布 Agent Gemini 请求 %s.contents[%d].parts[%d].text 无效", path, contentIndex, partIndex)
+						}
+						continue
+					}
+					if functionCall, exists := part["functionCall"]; exists {
+						if call, ok := functionCall.(map[string]interface{}); ok && strings.TrimSpace(stringField(call, "name")) != "" {
+							continue
+						}
+						return fmt.Errorf("画布 Agent Gemini 请求 %s.contents[%d].parts[%d] 工具调用无效", path, contentIndex, partIndex)
+					}
+					if functionResponse, exists := part["functionResponse"]; exists {
+						if response, ok := functionResponse.(map[string]interface{}); ok && strings.TrimSpace(stringField(response, "name")) != "" {
+							continue
+						}
+						return fmt.Errorf("画布 Agent Gemini 请求 %s.contents[%d].parts[%d] 工具结果无效", path, contentIndex, partIndex)
+					}
+					if inline, exists := part["inlineData"]; exists {
+						data, ok := inline.(map[string]interface{})
+						if ok && strings.TrimSpace(stringField(data, "mimeType")) != "" && strings.TrimSpace(stringField(data, "data")) != "" {
+							continue
+						}
+						return fmt.Errorf("画布 Agent Gemini 请求 %s.contents[%d].parts[%d] 图片数据为空，请重新加载引用素材", path, contentIndex, partIndex)
+					}
+					if file, exists := part["fileData"]; exists {
+						data, ok := file.(map[string]interface{})
+						if ok && strings.TrimSpace(stringField(data, "fileUri")) != "" && strings.TrimSpace(stringField(data, "mimeType")) != "" {
+							continue
+						}
+						return fmt.Errorf("画布 Agent Gemini 请求 %s.contents[%d].parts[%d] 图片资源地址为空，请重新加载引用素材", path, contentIndex, partIndex)
+					}
+					return fmt.Errorf("画布 Agent Gemini 请求 %s.contents[%d].parts[%d] 缺少有效数据", path, contentIndex, partIndex)
+				}
+			}
+		}
+		for key, child := range typed {
+			childPath := path + "." + key
+			if path == "" {
+				childPath = key
+			}
+			if err := walkAgentGeminiPayload(child, childPath); err != nil {
+				return err
+			}
+		}
+	case []interface{}:
+		for index, child := range typed {
+			if err := walkAgentGeminiPayload(child, fmt.Sprintf("%s[%d]", path, index)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func canonicalAgentChatBody(source *canonicalAgentRequest, claude bool) map[string]interface{} {
@@ -161,6 +255,55 @@ func canonicalAgentChatBody(source *canonicalAgentRequest, claude bool) map[stri
 		body["prompt_cache_key"] = source.PromptCacheKey
 	}
 	return body
+}
+
+// Gemini parts use a protobuf oneof. An empty fileData/inlineData object is
+// rejected as "data must have one initialized field" only after the request
+// reaches the provider, which hides the real broken resource reference.
+func validateCanonicalAgentGeminiBody(body map[string]interface{}) error {
+	contents, ok := body["contents"].([]interface{})
+	if !ok {
+		return errors.New("画布 Agent Gemini 请求缺少 contents")
+	}
+	for contentIndex, rawContent := range contents {
+		content, ok := rawContent.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("画布 Agent Gemini 内容 [%d] 无效", contentIndex)
+		}
+		parts, ok := content["parts"].([]interface{})
+		if !ok || len(parts) == 0 {
+			return fmt.Errorf("画布 Agent Gemini 内容 [%d] 缺少 parts", contentIndex)
+		}
+		for partIndex, rawPart := range parts {
+			part, ok := rawPart.(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("画布 Agent Gemini 内容 [%d].parts[%d] 无效", contentIndex, partIndex)
+			}
+			if _, ok := part["text"].(string); ok {
+				continue
+			}
+			if functionCall, ok := part["functionCall"].(map[string]interface{}); ok && strings.TrimSpace(stringField(functionCall, "name")) != "" {
+				continue
+			}
+			if functionResponse, ok := part["functionResponse"].(map[string]interface{}); ok && strings.TrimSpace(stringField(functionResponse, "name")) != "" {
+				continue
+			}
+			if inline, ok := part["inlineData"].(map[string]interface{}); ok {
+				if strings.TrimSpace(stringField(inline, "mimeType")) != "" && strings.TrimSpace(stringField(inline, "data")) != "" {
+					continue
+				}
+				return fmt.Errorf("画布 Agent Gemini 内容 [%d].parts[%d] 图片数据为空，请重新加载引用素材", contentIndex, partIndex)
+			}
+			if file, ok := part["fileData"].(map[string]interface{}); ok {
+				if strings.TrimSpace(stringField(file, "fileUri")) != "" && strings.TrimSpace(stringField(file, "mimeType")) != "" {
+					continue
+				}
+				return fmt.Errorf("画布 Agent Gemini 内容 [%d].parts[%d] 图片资源地址为空，请重新加载引用素材", contentIndex, partIndex)
+			}
+			return fmt.Errorf("画布 Agent Gemini 内容 [%d].parts[%d] 缺少有效数据", contentIndex, partIndex)
+		}
+	}
+	return nil
 }
 
 func canonicalAgentResponsesBody(source *canonicalAgentRequest) map[string]interface{} {
