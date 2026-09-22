@@ -32,9 +32,10 @@ func TestYU25SeedanceInstalledPackageRunsCreatePollAndContentDownload(t *testing
 	}
 	adapter := adapters[0]
 
-	createCalls, pollCalls, contentCalls := 0, 0, 0
+	createCalls, pollCalls, contentCalls, urlCalls := 0, 0, 0, 0
 	var receivedBody map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-yu25-key" {
 			t.Errorf("%s %s authorization = %q", r.Method, r.URL.Path, got)
 		}
@@ -59,7 +60,7 @@ func TestYU25SeedanceInstalledPackageRunsCreatePollAndContentDownload(t *testing
 				_, _ = w.Write([]byte(`{"id":"task-1","status":"processing"}`))
 				return
 			}
-			_, _ = w.Write([]byte(`{"id":"task-1","status":"completed"}`))
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "task-1", "status": "completed", "video_url": server.URL + "/returned-url.mp4"})
 		case "/v1/videos/task-1/content":
 			contentCalls++
 			if r.Method != http.MethodGet || r.Header.Get("Accept") != "video/mp4" {
@@ -67,6 +68,10 @@ func TestYU25SeedanceInstalledPackageRunsCreatePollAndContentDownload(t *testing
 			}
 			w.Header().Set("Content-Type", "video/mp4")
 			_, _ = w.Write([]byte("test-yu25-video"))
+		case "/returned-url.mp4":
+			urlCalls++
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("unexpected-url-video"))
 		default:
 			http.NotFound(w, r)
 		}
@@ -86,6 +91,9 @@ func TestYU25SeedanceInstalledPackageRunsCreatePollAndContentDownload(t *testing
 	}
 	if createCalls != 1 || pollCalls != 2 || contentCalls != 1 {
 		t.Fatalf("request counts = create:%d poll:%d content:%d, want 1, 2, 1", createCalls, pollCalls, contentCalls)
+	}
+	if urlCalls != 0 {
+		t.Fatalf("returned URL requested %d times; content must take precedence", urlCalls)
 	}
 	if receivedBody["model"] != "seedance-2.5-pro" || receivedBody["prompt"] != "保持人物身份一致，镜头缓慢推进" || receivedBody["seconds"] != float64(8) || receivedBody["resolution"] != "720p" || receivedBody["aspect_ratio"] != "16:9" {
 		t.Fatalf("canonical create body = %#v", receivedBody)

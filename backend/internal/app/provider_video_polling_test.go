@@ -264,3 +264,32 @@ func fastVideoPollPolicy() videoPollPolicy {
 func runVideoTaskForTest(ctx context.Context, input canvasGenerationInput) (map[string]interface{}, error) {
 	return runVideoTaskWithPolicy(ctx, input, fastVideoPollPolicy())
 }
+func TestVideoDownloadRetriesEmptyResponseAndRejectsExhaustedEmptyResponse(t *testing.T) {
+	attempts := 0
+	waits := 0
+	policy := fastVideoPollPolicy()
+	policy.Sleep = func(context.Context, time.Duration) error {
+		waits++
+		return nil
+	}
+	data, mimeType, err := runVideoDownload(context.Background(), "provider-task-1", policy, func(context.Context) ([]byte, string, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, "video/mp4", nil
+		}
+		return []byte("video"), "video/mp4", nil
+	})
+	if err != nil || string(data) != "video" || mimeType != "video/mp4" || attempts != 3 || waits != 2 {
+		t.Fatalf("data = %q, mime = %q, error = %v, attempts = %d, waits = %d", data, mimeType, err, attempts, waits)
+	}
+
+	attempts = 0
+	_, _, err = runVideoDownload(context.Background(), "provider-task-1", policy, func(context.Context) ([]byte, string, error) {
+		attempts++
+		return nil, "video/mp4", nil
+	})
+	var emptyErr videoDownloadEmptyError
+	if !errors.As(err, &emptyErr) || attempts != policy.MaxDownloadTries {
+		t.Fatalf("error = %v, attempts = %d, want exhausted empty response", err, attempts)
+	}
+}

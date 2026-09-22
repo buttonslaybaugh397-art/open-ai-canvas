@@ -51,6 +51,10 @@ func (e videoDownloadError) Error() string {
 
 func (e videoDownloadError) Unwrap() error { return e.Cause }
 
+type videoDownloadEmptyError struct{}
+
+func (videoDownloadEmptyError) Error() string { return "视频结果下载返回空内容" }
+
 func defaultVideoPollPolicy() videoPollPolicy {
 	return videoPollPolicy{
 		InitialDelay:          defaultVideoPollInterval,
@@ -156,12 +160,25 @@ func runVideoDownload(ctx context.Context, taskID string, policy videoPollPolicy
 	policy = normalizeVideoPollPolicy(policy)
 	var lastErr error
 	for attempt := 1; attempt <= policy.MaxDownloadTries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, "", err
+		}
 		data, mimeType, err := download(ctx)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, "", ctxErr
+		}
+		if err == nil && len(data) == 0 {
+			err = videoDownloadEmptyError{}
+		}
 		if err == nil {
-			return data, mimeType, nil
+			return data, normalizedMediaMimeType(mimeType, data), nil
 		}
 		lastErr = err
 		retry, _ := retryableVideoPollError(ctx, err)
+		var emptyResponse videoDownloadEmptyError
+		if errors.As(err, &emptyResponse) {
+			retry = true
+		}
 		if !retry || attempt == policy.MaxDownloadTries {
 			return nil, "", videoDownloadError{TaskID: taskID, Cause: err}
 		}

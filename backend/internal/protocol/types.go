@@ -181,6 +181,7 @@ type Metadata struct {
 	Installable             bool         `json:"installable"`
 	Execution               string       `json:"-"`
 	RequiresPublicMediaURLs bool         `json:"-"`
+	PreferResultDownload    bool         `json:"-"`
 	UnavailableReason       string       `json:"-"`
 }
 
@@ -330,6 +331,7 @@ type ManifestProvider struct {
 	Scopes                  []Surface              `json:"scopes"`
 	BaseURL                 string                 `json:"baseUrl,omitempty"`
 	RequiresPublicMediaURLs bool                   `json:"requiresPublicMediaUrls,omitempty"`
+	PreferResultDownload    bool                   `json:"preferResultDownload,omitempty"`
 	Auth                    ManifestAuth           `json:"auth,omitempty"`
 	Parameters              []Parameter            `json:"parameters,omitempty"`
 	Validations             []ManifestValidation   `json:"validations,omitempty"`

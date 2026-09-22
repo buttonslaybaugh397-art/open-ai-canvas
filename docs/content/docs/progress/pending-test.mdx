@@ -2605,4 +2605,6 @@ SSE 现在按 revision 变化发送紧凑快照，无变化只 heartbeat；客�
 - 新增可安装包 `plugin-packages/yu25-seedance-video.yingce-plugin`，基于 YU25 Seedance 桌面插件 1.5.26 及配套 API 文档，使用影策声明式 `yingce.plugin/v2` 协议。
 - [x] 协议层专项通过：规范化创建请求、参考素材排序、状态/嵌套响应解析、结构化错误、任务 ID 转义、Bearer 鉴权和安装包自包含性。
 - [x] 宿主 HTTP 冒烟通过：从实际 `.yingce-plugin` 加载后完成一次创建、两次轮询及无直链成功响应下的 `/content` 视频下载；确认不会重复创建任务，API Key 不进入请求 body。
+- [x] 视频结果收口通过：YU25 声明 `preferResultDownload: true` 后，即使轮询响应带视频 URL 也先请求同任务 ID 的鉴权 `/content`；结果端点失败时才回退该响应 URL，不重新创建任务。下载空内容最多按视频下载策略重试，耗尽后保持失败语义；下载返回后若上下文已取消也不会把任务标记为成功。
+- [x] 文档与安装包已重新嵌入并打包，`go test ./internal/protocol -count=1`、视频协议/下载专项和 `git diff --check` 通过。
 - [ ] 使用真实 YU25 API Key 和真实公网媒体 URL 生成视频；本轮未调用真实 YU25，不代表上游当前模型目录、额度、时长/分辨率限制或公网存储配置已验收。

@@ -8,7 +8,7 @@
 - 鉴权：`Authorization: Bearer <API Key>`
 - 创建：`POST /v1/videos`
 - 查询：`GET /v1/videos/{task_id}`
-- 结果回退下载：`GET /v1/videos/{task_id}/content`
+- 结果优先下载：`GET /v1/videos/{task_id}/content`（鉴权结果端点失败时才回退成功响应中的视频 URL）
 
 ## 安装和配置
 

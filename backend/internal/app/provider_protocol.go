@@ -944,11 +944,12 @@ func finishProtocolResult(ctx context.Context, config providerConfig, mode strin
 	}
 }
 
-// finishProtocolAdapterResult 优先消费 create/poll 已返回的内联或 URL 结果，只有插件明确声明独立结果端点时才下载。
+// finishProtocolAdapterResult 默认消费 create/poll 结果；视频 Provider 可声明优先下载独立结果端点，失败后再回退。
 // 空响应或下载失败必须向上失败，不能生成伪素材；application/octet-stream 仅表示传输层未知类型，
 // 不会把未知内容伪装成具体图片、视频或音频 MIME。
 func finishProtocolAdapterResult(ctx context.Context, input canvasGenerationInput, adapter protocol.Adapter, request protocol.GenerationRequest, taskID string, result *protocol.Result, pollPolicy videoPollPolicy) (map[string]interface{}, error) {
-	if protocolResultHasOutput(input.Mode, result) {
+	preferResultDownload := input.Mode == "video" && adapter.Metadata().PreferResultDownload
+	if protocolResultHasOutput(input.Mode, result) && !preferResultDownload {
 		return finishProtocolResult(ctx, input.Config, input.Mode, taskID, result, pollPolicy)
 	}
 	resultAdapter, ok := adapter.(protocol.ResultAdapter)
@@ -971,6 +972,13 @@ func finishProtocolAdapterResult(ctx context.Context, input canvasGenerationInpu
 		data, mimeType, err = download(ctx)
 	}
 	if err != nil {
+		if preferResultDownload && protocolResultHasOutput(input.Mode, result) && ctx.Err() == nil && !errors.Is(err, context.Canceled) {
+			fallback, fallbackErr := finishProtocolResult(ctx, input.Config, input.Mode, taskID, result, pollPolicy)
+			if fallbackErr == nil {
+				return fallback, nil
+			}
+			return nil, fmt.Errorf("声明式协议结果端点下载失败：%w；视频 URL 回退失败：%w", err, fallbackErr)
+		}
 		return nil, fmt.Errorf("声明式协议结果下载失败：%w", err)
 	}
 	if len(data) == 0 {

@@ -9,6 +9,7 @@
 - 默认 Base URL：`https://api.yu25.xyz`
 - 鉴权：Bearer API Key
 - 公网素材：`requiresPublicMediaUrls: true`
+- 结果策略：`preferResultDownload: true`，成功后优先读取鉴权的 `/content` 结果端点
 
 ## 配置字段
 
@@ -106,17 +107,17 @@
 
 `video_url`、`output_url`、`download_url`、`result_url`、`url`、`data.video_url`、`data.output_url`、`data.download_url`、`data.result_url`、`data.url`、`data.data.video_url`、`data.data.output_url`、`data.data.download_url`、`data.data.url`、`result.video_url`、`result.output_url`、`result.download_url`、`result.url`、`video.video_url`、`video.download_url`、`video.url`、`output.video_url`、`output.url`、`outputs[0].video_url`、`outputs[0].url`、`videos[0].video_url`、`videos[0].url`、`data.outputs[0].video_url`、`data.outputs[0].url`、`choices[0].message.content`。
 
-视频 URL 标记为临时结果，由影策下载后持久化。若成功响应没有上述 URL，宿主使用同一任务 ID调用 `/v1/videos/{task_id}/content`，不会再次创建任务。
+视频 URL 标记为临时结果，由影策下载后持久化。成功后宿主优先使用同一任务 ID调用鉴权的 `/v1/videos/{task_id}/content`，即使轮询响应已带 URL 也不会优先走外链；若该结果端点下载失败且轮询响应带有可下载 URL，才回退到该 URL。整个过程不会再次创建任务。
 
 ## 兼容边界
 
-原桌面插件还负责本地参考素材压缩、图片格式转换、临时上传、轮询进度 UI、下载校验和自动更新。本影策包只实现协议运行时所需的 HTTP 创建、查询、结果回退下载和统一媒体映射；本地素材准备由影策公网媒体流程负责。
+原桌面插件还负责本地参考素材压缩、图片格式转换、临时上传、轮询进度 UI、下载校验和自动更新。本影策包只实现协议运行时所需的 HTTP 创建、查询、结果优先下载/URL 回退和统一媒体映射；本地素材准备由影策公网媒体流程负责。
 
 创建请求没有任务 ID时，宿主不会基于 502/503/504 自动重复 POST；轮询和视频下载可在已有任务 ID上重试。API Key 不进入日志、请求 body 或结果 URL。
 
 ## 响应与错误
 
-HTTP 错误由宿主保持失败语义。业务错误字段按结构化路径读取：`error.code`、`error.type`、`error.message`、`error.detail`，以及对应的 `data.error.*`、`data.data.error.*` 路径；错误消息由上节路径映射。成功但没有视频 URL 时允许使用声明的二进制 `/content` 结果操作。
+HTTP 错误由宿主保持失败语义。业务错误字段按结构化路径读取：`error.code`、`error.type`、`error.message`、`error.detail`，以及对应的 `data.error.*`、`data.data.error.*` 路径；错误消息由上节路径映射。成功后优先使用声明的鉴权二进制 `/content` 结果操作；该操作失败时，若轮询响应有 URL，再按 URL 回退下载。空内容不会被当作成功素材。
 
 <!-- YINGCE_MANIFEST_CONTRACT_START -->
 ## Manifest 完整接口定义
@@ -162,6 +163,7 @@ HTTP 错误由宿主保持失败语义。业务错误字段按结构化路径读
         ],
         "baseUrl": "https://api.yu25.xyz",
         "requiresPublicMediaUrls": true,
+        "preferResultDownload": true,
         "auth": {
           "type": "bearer",
           "field": "apiKey"
