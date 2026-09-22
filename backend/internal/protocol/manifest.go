@@ -595,13 +595,21 @@ func (a manifestAdapter) parse(payload map[string]any, c PollContext) CreateResu
 	if statusText == "" {
 		statusText = firstPathValue(payload, response.StatusPaths...)
 	}
-	status := normalizeStatus(statusText)
+	rawStatus := strings.TrimSpace(statusText)
+	status := normalizeStatus(rawStatus)
+	statusUnknown := rawStatus != "" && status == ""
+	if statusUnknown {
+		status = StatusFailed
+	}
 	if status == "" {
 		status = StatusPending
 	}
 	message := manifestResponseString(response.Message, env)
 	if message == "" {
 		message = firstPathValue(payload, response.MessagePaths...)
+	}
+	if statusUnknown && message == "" {
+		message = "未知任务状态: " + rawStatus
 	}
 	if manifestError(payload, response.ErrorPaths...) {
 		status = StatusFailed
@@ -639,11 +647,21 @@ func (a manifestAdapter) parse(payload map[string]any, c PollContext) CreateResu
 			}
 		}
 	}
-	if status == StatusPending && (result.Text != "" || len(result.Images) > 0 || len(result.Videos) > 0 || len(result.Audios) > 0) {
+	resultHasOutput := result.Text != "" || result.Reasoning != "" || len(result.Images) > 0 || len(result.Videos) > 0 || len(result.Audios) > 0
+	if !resultHasOutput {
+		result = nil
+	}
+	if status == StatusPending && resultHasOutput {
 		status = StatusSucceeded
 	}
-	if result.Text == "" && result.Reasoning == "" && len(result.Images) == 0 && len(result.Videos) == 0 && len(result.Audios) == 0 {
-		result = nil
+	if status == StatusSucceeded && !resultHasOutput && a.manifest.ResultOperation == nil {
+		status = StatusFailed
+		if message == "" {
+			message = "上游已完成但没有返回结果"
+		}
+	}
+	if status == StatusFailed && message == "" && rawStatus != "" {
+		message = "上游返回失败状态: " + rawStatus
 	}
 	return CreateResult{TaskID: id, Status: status, Result: result, Message: message}
 }
@@ -1099,6 +1117,7 @@ func manifestRequestValues(request GenerationRequest) map[string]any {
 	output.GenerateAudio = output.GenerateAudio || request.GenerateAudio
 	output.Watermark = output.Watermark || request.Watermark
 	outputValue, _ := requestAsManifestValue(output)
+	providerOptions, _ := requestAsManifestValue(request.ProviderOptions)
 
 	return map[string]any{
 		"capability":      request.Capability,
@@ -1119,7 +1138,7 @@ func manifestRequestValues(request GenerationRequest) map[string]any {
 		"watermark":       request.Watermark,
 		"operation":       request.Operation,
 		"output":          outputValue,
-		"providerOptions": request.ProviderOptions,
+		"providerOptions": providerOptions,
 		"extra":           request.Extra,
 	}
 }

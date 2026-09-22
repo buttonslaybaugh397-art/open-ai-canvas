@@ -20,6 +20,7 @@ export async function testChannelModelConnection(channel: ModelChannel, model: s
                 billingMode: modelCost?.billingMode || "fixed_request",
                 unitPriceMicrocredits: modelCost?.unitPriceMicrocredits || 0,
                 capabilityConfig: modelCost?.capabilityConfig,
+                defaultOptions: modelCost?.defaultOptions,
             },
             ...(channel.modelCosts || []).filter((item) => item.model !== model),
         ],

@@ -2,10 +2,10 @@
   "apiVersion": "yingce.plugin/v2",
   "id": "paipu-net",
   "name": "牌谱 API",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "author": "影策社区",
   "description": "接入 api.paipu.net 的 New API 兼容文本、图片与视频模型接口。",
-  "documentation": "# 牌谱 API 渠道插件\n\n基地址：`https://api.paipu.net`\n\n插件使用牌谱 New API 公开接口：\n\n- 文本：`POST /v1/chat/completions`\n- 图片：`POST /v1/images/generations`\n- 视频创建：`POST /v1/videos`\n- 视频查询：`GET /v1/videos/{task_id}`\n\n安装后在渠道设置中填写 API Key，并按牌谱 `/v1/models` 返回的公开模型 ID 配置模型。\n\n视频查询只有 `status=completed` 且返回 `url`、`result_url` 或 `metadata.url` 时才会交付结果；`queued`、`in_progress`、`RESULT_STORAGE_WAIT` 等状态继续轮询。\n\n---\n\n# 牌谱 API 接口字段\n\n此包保留本地已有的 New API 映射，仅适配影策 v2 声明式插件格式。不同模型的可用参数仍以服务商返回的能力为准；本次没有发送真实计费请求。\n\n## 配置\n\n`apiKey` 为牌谱 API Key，由宿主写入 Bearer Authorization。基地址为 `https://api.paipu.net`，密钥不得出现在 URL 或日志中。\n\n## 参数\n\n| 字段 | 上游映射 | 说明 |\n| --- | --- | --- |\n| `prompt` | 文本 `messages`，图片/视频 `prompt` | 文本消息由宿主合成。 |\n| `size` | 图片 `size` | 取宿主 `aspectRatio`，不擅自改写模型尺寸。 |\n| `quality` | 图片 `quality` | 空、auto、default 不发送。 |\n| `n` | 图片 `n` | 取宿主 `imageCount`，零值省略。 |\n| `duration` | 视频 `duration` | 整数秒数，零值省略。 |\n| `aspect_ratio` | 视频 `aspect_ratio` | 取宿主 `aspectRatio`，空值省略。 |\n| `resolution` | 视频 `resolution` | 空、auto、default 不发送。 |\n| `images` | 图片/视频 `images` | 媒体引用地址数组。 |\n| `videos` | 视频 `videos` | 参考视频地址数组。 |\n| `audios` | 视频 `audios` | 参考音频地址数组。 |\n\n文本保留 `temperature`、`top_p`、`max_completion_tokens` 的既有额外参数映射。Agent 请求映射宿主生成的 messages、tools 和 tool_choice。\n\n## 响应\n\n- 文本创建 `POST /v1/chat/completions`，提取 `choices.0.message.content` 或 `choices.0.text`；工具调用按 Chat Completions 字段解析。\n- 图片创建 `POST /v1/images/generations`，提取 `data.0.url` 或 `url`。这里保留原有首张结果映射，不代表已验证所有批量图片输出。\n- 视频创建 `POST /v1/videos`，提取 `id` 或 `task_id`；查询 `GET /v1/videos/{taskId}`，读取 `status`。\n- 视频结果地址依次读取 `url`、`result_url`、`metadata.url`；错误读取 `message`、`error.message`、`error.code`。\n- 临时结果由宿主持久化。状态归一化、缺失结果和重试处理使用影策统一协议运行时。\n\n## 打包\n\n运行 `bun plugin-packages/paipu-net/build.ts` 会将 README 与本文写入安装包文档，并从当前 manifest 自动生成完整接口合同。不要手工修改下方生成区域。\n\n<!-- YINGCE_MANIFEST_CONTRACT_START -->\n## Manifest 完整接口定义\n\n```json\n{\n  \"apiVersion\": \"yingce.plugin/v2\",\n  \"id\": \"paipu-net\",\n  \"name\": \"牌谱 API\",\n  \"version\": \"1.0.1\",\n  \"author\": \"影策社区\",\n  \"description\": \"接入 api.paipu.net 的 New API 兼容文本、图片与视频模型接口。\",\n  \"documentation\": \"<当前插件的完整 documentation，由 README.md 与 docs/interface.md 拼接而成；为避免 JSON 递归，此处不重复展开正文。>\",\n  \"permissions\": [\n    \"generation.run\",\n    \"media.read\"\n  ],\n  \"configuration\": {\n    \"fields\": [\n      {\n        \"name\": \"apiKey\",\n        \"type\": \"secret\",\n        \"label\": \"牌谱 API Key\",\n        \"required\": true,\n        \"description\": \"填写 api.paipu.net 控制台生成的 API Key。\"\n      }\n    ]\n  },\n  \"contributes\": {\n    \"providers\": [\n      {\n        \"id\": \"paipu-net-text\",\n        \"label\": \"牌谱 API 文本\",\n        \"capabilities\": [\n          \"text\"\n        ],\n        \"scopes\": [\n          \"admin.system-channel\",\n          \"user.custom-channel\",\n          \"canvas\",\n          \"creation\",\n          \"agent\"\n        ],\n        \"baseUrl\": \"https://api.paipu.net\",\n        \"auth\": {\n          \"type\": \"bearer\",\n          \"field\": \"apiKey\",\n          \"header\": \"Authorization\"\n        },\n        \"parameters\": [\n          {\n            \"name\": \"prompt\",\n            \"type\": \"string\",\n            \"required\": true,\n            \"mapping\": \"prompt\",\n            \"description\": \"文本提示词，由宿主合成 messages。\"\n          }\n        ],\n        \"create\": {\n          \"method\": \"POST\",\n          \"path\": \"/v1/chat/completions\",\n          \"contentType\": \"application/json\",\n          \"body\": {\n            \"model\": {\n              \"$ref\": \"request.model\"\n            },\n            \"messages\": {\n              \"$ref\": \"request.messages\"\n            },\n            \"temperature\": {\n              \"$if\": {\n                \"condition\": {\n                  \"$ref\": \"request.extra.temperature\"\n                },\n                \"then\": {\n                  \"$ref\": \"request.extra.temperature\"\n                }\n              }\n            },\n            \"top_p\": {\n              \"$if\": {\n                \"condition\": {\n                  \"$ref\": \"request.extra.top_p\"\n                },\n                \"then\": {\n                  \"$ref\": \"request.extra.top_p\"\n                }\n              }\n            },\n            \"max_completion_tokens\": {\n              \"$if\": {\n                \"condition\": {\n                  \"$ref\": \"request.extra.max_completion_tokens\"\n                },\n                \"then\": {\n                  \"$ref\": \"request.extra.max_completion_tokens\"\n                }\n              }\n            }\n          }\n        },\n        \"agent\": {\n          \"method\": \"POST\",\n          \"path\": \"/v1/chat/completions\",\n          \"contentType\": \"application/json\",\n          \"body\": {\n            \"model\": {\n              \"$ref\": \"request.model\"\n            },\n            \"messages\": {\n              \"$ref\": \"request.extra.agent.chatCompletion.messages\"\n            },\n            \"tools\": {\n              \"$ref\": \"request.extra.agent.chatCompletion.tools\"\n            },\n            \"tool_choice\": {\n              \"$ref\": \"request.extra.agent.chatCompletion.tool_choice\"\n            }\n          }\n        },\n        \"agentResponse\": {\n          \"textPaths\": [\n            \"choices.0.message.content\"\n          ],\n          \"reasoningPaths\": [\n            \"choices.0.message.reasoning_content\"\n          ],\n          \"toolCallsPath\": \"choices.0.message.tool_calls\",\n          \"toolCallIdPaths\": [\n            \"id\"\n          ],\n          \"toolCallNamePaths\": [\n            \"function.name\"\n          ],\n          \"toolCallArgumentsPaths\": [\n            \"function.arguments\"\n          ]\n        },\n        \"response\": {\n          \"textPaths\": [\n            \"choices.0.message.content\",\n            \"choices.0.text\"\n          ],\n          \"reasoningPaths\": [\n            \"choices.0.message.reasoning_content\"\n          ]\n        }\n      },\n      {\n        \"id\": \"paipu-net-image\",\n        \"label\": \"牌谱 API 图片\",\n        \"capabilities\": [\n          \"image\"\n        ],\n        \"scopes\": [\n          \"admin.system-channel\",\n          \"user.custom-channel\",\n          \"canvas\",\n          \"creation\"\n        ],\n        \"baseUrl\": \"https://api.paipu.net\",\n        \"auth\": {\n          \"type\": \"bearer\",\n          \"field\": \"apiKey\",\n          \"header\": \"Authorization\"\n        },\n        \"parameters\": [\n          {\n            \"name\": \"prompt\",\n            \"type\": \"string\",\n            \"required\": true,\n            \"mapping\": \"prompt\",\n            \"description\": \"图片提示词。\"\n          },\n          {\n            \"name\": \"size\",\n            \"type\": \"string\",\n            \"mapping\": \"aspectRatio\",\n            \"description\": \"原样传递宿主图片尺寸。\"\n          },\n          {\n            \"name\": \"quality\",\n            \"type\": \"string\",\n            \"mapping\": \"quality\",\n            \"description\": \"画质，自动档不传。\"\n          },\n          {\n            \"name\": \"n\",\n            \"type\": \"integer\",\n            \"mapping\": \"imageCount\",\n            \"description\": \"图片数量。\"\n          },\n          {\n            \"name\": \"images\",\n            \"type\": \"media[]\",\n            \"mapping\": \"images\",\n            \"description\": \"参考图片地址列表。\"\n          }\n        ],\n        \"create\": {\n          \"method\": \"POST\",\n          \"path\": \"/v1/images/generations\",\n          \"contentType\": \"application/json\",\n          \"body\": {\n            \"model\": {\n              \"$ref\": \"request.model\"\n            },\n            \"prompt\": {\n              \"$ref\": \"request.prompt\"\n            },\n            \"images\": {\n              \"$map\": {\n                \"from\": {\n                  \"$ref\": \"request.images\"\n                },\n                \"as\": \"media\",\n                \"in\": {\n                  \"$ref\": \"media.value\"\n                }\n              }\n            },\n            \"size\": {\n              \"$omitEmpty\": {\n                \"$ref\": \"request.aspectRatio\"\n              }\n            },\n            \"quality\": {\n              \"$if\": {\n                \"condition\": {\n                  \"$in\": [\n                    {\n                      \"$lower\": {\n                        \"$trim\": {\n                          \"$ref\": \"request.quality\"\n                        }\n                      }\n                    },\n                    [\n                      \"\",\n                      \"auto\",\n                      \"default\"\n                    ]\n                  ]\n                },\n                \"else\": {\n                  \"$ref\": \"request.quality\"\n                }\n              }\n            },\n            \"n\": {\n              \"$if\": {\n                \"condition\": {\n                  \"$ref\": \"request.imageCount\"\n                },\n                \"then\": {\n                  \"$ref\": \"request.imageCount\"\n                }\n              }\n            },\n            \"response_format\": \"url\"\n          }\n        },\n        \"response\": {\n          \"resultPaths\": [\n            \"data.0.url\",\n            \"url\"\n          ],\n          \"resultKind\": \"image\",\n          \"resultEphemeral\": true\n        }\n      },\n      {\n        \"id\": \"paipu-net-video\",\n        \"label\": \"牌谱 API 视频\",\n        \"capabilities\": [\n          \"video\"\n        ],\n        \"scopes\": [\n          \"admin.system-channel\",\n          \"user.custom-channel\",\n          \"canvas\",\n          \"creation\"\n        ],\n        \"baseUrl\": \"https://api.paipu.net\",\n        \"auth\": {\n          \"type\": \"bearer\",\n          \"field\": \"apiKey\",\n          \"header\": \"Authorization\"\n        },\n        \"parameters\": [\n          {\n            \"name\": \"prompt\",\n            \"type\": \"string\",\n            \"required\": true,\n            \"mapping\": \"prompt\",\n            \"description\": \"视频提示词。\"\n          },\n          {\n            \"name\": \"duration\",\n            \"type\": \"integer\",\n            \"required\": true,\n            \"mapping\": \"duration\",\n            \"description\": \"生成时长，单位为秒。\"\n          },\n          {\n            \"name\": \"aspect_ratio\",\n            \"type\": \"string\",\n            \"mapping\": \"aspectRatio\",\n            \"description\": \"画面比例。\"\n          },\n          {\n            \"name\": \"resolution\",\n            \"type\": \"string\",\n            \"mapping\": \"resolution\",\n            \"description\": \"分辨率，自动档不传。\"\n          },\n          {\n            \"name\": \"images\",\n            \"type\": \"media[]\",\n            \"mapping\": \"images\",\n            \"description\": \"参考图片地址列表。\"\n          },\n          {\n            \"name\": \"videos\",\n            \"type\": \"media[]\",\n            \"mapping\": \"videos\",\n            \"description\": \"参考视频地址列表。\"\n          },\n          {\n            \"name\": \"audios\",\n            \"type\": \"media[]\",\n            \"mapping\": \"audios\",\n            \"description\": \"参考音频地址列表。\"\n          }\n        ],\n        \"create\": {\n          \"method\": \"POST\",\n          \"path\": \"/v1/videos\",\n          \"contentType\": \"application/json\",\n          \"body\": {\n            \"model\": {\n              \"$ref\": \"request.model\"\n            },\n            \"prompt\": {\n              \"$ref\": \"request.prompt\"\n            },\n            \"duration\": {\n              \"$if\": {\n                \"condition\": {\n                  \"$ref\": \"request.duration\"\n                },\n                \"then\": {\n                  \"$ref\": \"request.duration\"\n                }\n              }\n            },\n            \"aspect_ratio\": {\n              \"$omitEmpty\": {\n                \"$ref\": \"request.aspectRatio\"\n              }\n            },\n            \"resolution\": {\n              \"$if\": {\n                \"condition\": {\n                  \"$in\": [\n                    {\n                      \"$lower\": {\n                        \"$trim\": {\n                          \"$ref\": \"request.resolution\"\n                        }\n                      }\n                    },\n                    [\n                      \"\",\n                      \"auto\",\n                      \"default\"\n                    ]\n                  ]\n                },\n                \"else\": {\n                  \"$ref\": \"request.resolution\"\n                }\n              }\n            },\n            \"images\": {\n              \"$map\": {\n                \"from\": {\n                  \"$ref\": \"request.images\"\n                },\n                \"as\": \"media\",\n                \"in\": {\n                  \"$ref\": \"media.value\"\n                }\n              }\n            },\n            \"videos\": {\n              \"$map\": {\n                \"from\": {\n                  \"$ref\": \"request.videos\"\n                },\n                \"as\": \"media\",\n                \"in\": {\n                  \"$ref\": \"media.value\"\n                }\n              }\n            },\n            \"audios\": {\n              \"$map\": {\n                \"from\": {\n                  \"$ref\": \"request.audios\"\n                },\n                \"as\": \"media\",\n                \"in\": {\n                  \"$ref\": \"media.value\"\n                }\n              }\n            }\n          }\n        },\n        \"poll\": {\n          \"method\": \"GET\",\n          \"path\": \"/v1/videos/{{taskId}}\"\n        },\n        \"response\": {\n          \"taskIdPaths\": [\n            \"id\",\n            \"task_id\"\n          ],\n          \"statusPaths\": [\n            \"status\"\n          ],\n          \"errorPaths\": [\n            \"error.code\"\n          ],\n          \"messagePaths\": [\n            \"message\",\n            \"error.message\",\n            \"error.code\"\n          ],\n          \"resultPaths\": [\n            \"url\",\n            \"result_url\",\n            \"metadata.url\"\n          ],\n          \"resultKind\": \"video\",\n          \"resultEphemeral\": true\n        }\n      }\n    ]\n  }\n}\n```\n<!-- YINGCE_MANIFEST_CONTRACT_END -->",
+  "documentation": "# 牌谱 API 渠道插件\n\n基地址：`https://api.paipu.net`\n\n插件使用牌谱 New API 公开接口：\n\n- 文本：`POST /v1/chat/completions`\n- 图片：`POST /v1/images/generations`\n- 视频创建：`POST /v1/videos`\n- 视频查询：`GET /v1/videos/{task_id}`\n\n安装后在渠道设置中填写 API Key，并按牌谱 `/v1/models` 返回的公开模型 ID 配置模型。图片和视频请求会根据具体模型能力组装字段，模型专属参数和默认值通过 `providerOptions.paipu-net-image` / `providerOptions.paipu-net-video` 覆盖。\n\n空的 `images`、`videos`、`audios` 会从请求中省略。未知状态、失败状态，以及已完成但没有结果的响应都会直接失败，不会无限轮询。连接测试会真实创建后端任务并使用对应模型的默认参数。\n\n图片结果支持 URL 和 Base64；视频查询会读取 `url`、`result_url`、`data.0.url` 或 `metadata.url` 等结果路径。\n\n---\n\n# 牌谱 API 接口字段\n\n此包保留本地已有的 New API 映射，仅适配影策 v2 声明式插件格式。请求字段按模型能力组装，避免把某个模型的专属参数发送给其他模型。以下说明描述协议行为，不代表每个模型都支持所有字段。\n\n`providerOptions.paipu-net-image` 和 `providerOptions.paipu-net-video` 可按模型覆盖请求字段。覆盖值会先经过模型能力过滤；空字符串、零值和空媒体数组不会被发送。\n\n## 配置\n\n`apiKey` 为牌谱 API Key，由宿主写入 Bearer Authorization。基地址为 `https://api.paipu.net`，密钥不得出现在 URL 或日志中。\n\n## 参数\n\n| 模型 | 请求参数 |\n| --- | --- |\n| Image 2.5 Flare / Sunburst | `model`、`prompt`、`aspect_ratio`、`resolution`、`output_format`、`response_format`、`images`。 |\n| Banana Flash / Pro | `model`、`prompt`、`aspect_ratio`、`resolution`、`images`。 |\n| TinySnow Image 2 | `lec-tinysnow-image-2`，支持 `n`、`quality`、`aspect_ratio`、`resolution`、`images`，固定 `response_format: b64_json`。 |\n| Image 2 | 支持 `output_format`，不传 `n`、`quality`、`response_format`。 |\n| Seedream 5 Pro | `model`、`prompt`、`resolution`、`aspect_ratio`、`images`。 |\n| H3 Video 2K | `model`、`prompt`、`aspect_ratio`、`images`，不传时长、清晰度、参考视频或音频。 |\n| Seedance / Wan / Grok 等视频 | 按公开模型 ID 选择字段；具体字段见下方生成合同。 |\n| 天悦人脸处理 | 必须恰好一张参考图；发送 `mode`（默认 `黑白素描1`）、`aspect_ratio`、`images`，不发送 `prompt`。 |\n\n未知视频模型只发送 `model` 和 `prompt`；增加模型专属字段需要更新协议映射。空 `images`、`videos`、`audios` 数组会省略。\n\n文本保留 `temperature`、`top_p`、`max_completion_tokens` 的既有额外参数映射。Agent 请求映射宿主生成的 messages、tools 和 tool_choice。\n\n连接测试会真实创建后端任务，并使用当前模型的默认参数；测试失败会反映后端实际错误。\n\n## 响应\n\n- 文本创建 `POST /v1/chat/completions`，提取 `choices.0.message.content` 或 `choices.0.text`；工具调用按 Chat Completions 字段解析。\n- 图片创建 `POST /v1/images/generations`，支持 `data` 数组或顶层的 URL / `b64_json` 结果。\n- 视频创建 `POST /v1/videos`，提取 `id` 或 `task_id`；查询 `GET /v1/videos/{taskId}`，读取 `status`。\n- 视频结果支持 `url`、`video_url`、`result_url`、`data.url`、`data.0.url`、`data.video_url`、`data.0.video_url`、`metadata.url`；错误读取 `message`、`error.message`、`error.code`。\n- `queued` / `pending` 为排队；`REFERENCE_MATERIALIZING`、`SUBMITTING`、`UPSTREAM_PROCESSING`、`RESULT_STORAGE_WAIT` 等为处理中。未知非空状态、明确失败及完成却无结果会报错。\n- 临时结果由宿主持久化；连接测试复用后端任务链路，并携带模型默认参数。\n\n## 打包\n\n运行 `bun plugin-packages/paipu-net/build.ts` 会将 README 与本文写入安装包文档，并从当前 manifest 自动生成完整接口合同。不要手工修改下方生成区域。\n\n<!-- YINGCE_MANIFEST_CONTRACT_START -->\n## Manifest 完整接口定义\n\n```json\n{\n  \"apiVersion\": \"yingce.plugin/v2\",\n  \"id\": \"paipu-net\",\n  \"name\": \"牌谱 API\",\n  \"version\": \"1.0.3\",\n  \"author\": \"影策社区\",\n  \"description\": \"接入 api.paipu.net 的 New API 兼容文本、图片与视频模型接口。\",\n  \"documentation\": \"<当前插件的完整 documentation，由 README.md 与 docs/interface.md 拼接而成；为避免 JSON 递归，此处不重复展开正文。>\",\n  \"permissions\": [\n    \"generation.run\",\n    \"media.read\"\n  ],\n  \"configuration\": {\n    \"fields\": [\n      {\n        \"name\": \"apiKey\",\n        \"type\": \"secret\",\n        \"label\": \"牌谱 API Key\",\n        \"required\": true,\n        \"description\": \"填写 api.paipu.net 控制台生成的 API Key。\"\n      }\n    ]\n  },\n  \"contributes\": {\n    \"providers\": [\n      {\n        \"id\": \"paipu-net-text\",\n        \"label\": \"牌谱 API 文本\",\n        \"capabilities\": [\n          \"text\"\n        ],\n        \"scopes\": [\n          \"admin.system-channel\",\n          \"user.custom-channel\",\n          \"canvas\",\n          \"creation\",\n          \"agent\"\n        ],\n        \"baseUrl\": \"https://api.paipu.net\",\n        \"auth\": {\n          \"type\": \"bearer\",\n          \"field\": \"apiKey\",\n          \"header\": \"Authorization\"\n        },\n        \"parameters\": [\n          {\n            \"name\": \"prompt\",\n            \"type\": \"string\",\n            \"required\": true,\n            \"mapping\": \"prompt\",\n            \"description\": \"文本提示词，由宿主合成 messages。\"\n          }\n        ],\n        \"create\": {\n          \"method\": \"POST\",\n          \"path\": \"/v1/chat/completions\",\n          \"contentType\": \"application/json\",\n          \"body\": {\n            \"model\": {\n              \"$ref\": \"request.model\"\n            },\n            \"messages\": {\n              \"$ref\": \"request.messages\"\n            },\n            \"temperature\": {\n              \"$if\": {\n                \"condition\": {\n                  \"$ref\": \"request.extra.temperature\"\n                },\n                \"then\": {\n                  \"$ref\": \"request.extra.temperature\"\n                }\n              }\n            },\n            \"top_p\": {\n              \"$if\": {\n                \"condition\": {\n                  \"$ref\": \"request.extra.top_p\"\n                },\n                \"then\": {\n                  \"$ref\": \"request.extra.top_p\"\n                }\n              }\n            },\n            \"max_completion_tokens\": {\n              \"$if\": {\n                \"condition\": {\n                  \"$ref\": \"request.extra.max_completion_tokens\"\n                },\n                \"then\": {\n                  \"$ref\": \"request.extra.max_completion_tokens\"\n                }\n              }\n            }\n          }\n        },\n        \"agent\": {\n          \"method\": \"POST\",\n          \"path\": \"/v1/chat/completions\",\n          \"contentType\": \"application/json\",\n          \"body\": {\n            \"model\": {\n              \"$ref\": \"request.model\"\n            },\n            \"messages\": {\n              \"$ref\": \"request.extra.agent.chatCompletion.messages\"\n            },\n            \"tools\": {\n              \"$ref\": \"request.extra.agent.chatCompletion.tools\"\n            },\n            \"tool_choice\": {\n              \"$ref\": \"request.extra.agent.chatCompletion.tool_choice\"\n            }\n          }\n        },\n        \"agentResponse\": {\n          \"textPaths\": [\n            \"choices.0.message.content\"\n          ],\n          \"reasoningPaths\": [\n            \"choices.0.message.reasoning_content\"\n          ],\n          \"toolCallsPath\": \"choices.0.message.tool_calls\",\n          \"toolCallIdPaths\": [\n            \"id\"\n          ],\n          \"toolCallNamePaths\": [\n            \"function.name\"\n          ],\n          \"toolCallArgumentsPaths\": [\n            \"function.arguments\"\n          ]\n        },\n        \"response\": {\n          \"textPaths\": [\n            \"choices.0.message.content\",\n            \"choices.0.text\"\n          ],\n          \"reasoningPaths\": [\n            \"choices.0.message.reasoning_content\"\n          ]\n        }\n      },\n      {\n        \"id\": \"paipu-net-image\",\n        \"label\": \"牌谱 API 图片\",\n        \"capabilities\": [\n          \"image\"\n        ],\n        \"scopes\": [\n          \"admin.system-channel\",\n          \"user.custom-channel\",\n          \"canvas\",\n          \"creation\"\n        ],\n        \"baseUrl\": \"https://api.paipu.net\",\n        \"auth\": {\n          \"type\": \"bearer\",\n          \"field\": \"apiKey\",\n          \"header\": \"Authorization\"\n        },\n        \"parameters\": [\n          {\n            \"name\": \"prompt\",\n            \"type\": \"string\",\n            \"required\": true,\n            \"mapping\": \"prompt\",\n            \"description\": \"图片提示词。\"\n          },\n          {\n            \"name\": \"aspect_ratio\",\n            \"type\": \"string\",\n            \"mapping\": \"aspectRatio\",\n            \"description\": \"模型支持时传递画面比例。\"\n          },\n          {\n            \"name\": \"resolution\",\n            \"type\": \"string\",\n            \"mapping\": \"resolution\",\n            \"description\": \"模型支持时传递输出清晰度。\"\n          },\n          {\n            \"name\": \"quality\",\n            \"type\": \"string\",\n            \"mapping\": \"quality\",\n            \"description\": \"仅 TinySnow 支持；auto 不发送。\"\n          },\n          {\n            \"name\": \"n\",\n            \"type\": \"integer\",\n            \"mapping\": \"imageCount\",\n            \"description\": \"仅 TinySnow 支持输出数量。\"\n          },\n          {\n            \"name\": \"output_format\",\n            \"type\": \"string\",\n            \"mapping\": \"outputFormat\",\n            \"description\": \"仅 Image 2 / Image 2.5 支持。\"\n          },\n          {\n            \"name\": \"response_format\",\n            \"type\": \"string\",\n            \"mapping\": \"responseFormat\",\n            \"description\": \"仅 Image 2.5 Flare/Sunburst 支持。\"\n          },\n          {\n            \"name\": \"images\",\n            \"type\": \"media[]\",\n            \"mapping\": \"images\",\n            \"description\": \"参考图片地址列表。\"\n          }\n        ],\n        \"create\": {\n          \"method\": \"POST\",\n          \"path\": \"/v1/images/generations\",\n          \"contentType\": \"application/json\",\n          \"body\": {\n            \"$switch\": {\n              \"cases\": [\n                {\n                  \"when\": {\n                    \"$in\": [\n                      {\n                        \"$lower\": {\n                          \"$trim\": {\n                            \"$ref\": \"request.model\"\n                          }\n                        }\n                      },\n                      [\n                        \"lec-ac-image-2-5-flare\",\n                        \"lec-ac-image-2-5-sunburst\"\n                      ]\n                    ]\n                  },\n                  \"then\": {\n                    \"model\": {\n                      \"$ref\": \"request.model\"\n                    },\n                    \"prompt\": {\n                      \"$ref\": \"request.prompt\"\n                    },\n                    \"aspect_ratio\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-image.aspect_ratio\"\n                          },\n                          {\n                            \"$ref\": \"request.aspectRatio\"\n                          },\n                          \"16:9\"\n                        ]\n                      }\n                    },\n                    \"resolution\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-image.resolution\"\n                          },\n                          {\n                            \"$ref\": \"request.resolution\"\n                          },\n                          \"1K\"\n                        ]\n                      }\n                    },\n                    \"output_format\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-image.output_format\"\n                          },\n                          \"jpeg\"\n                        ]\n                      }\n                    },\n                    \"response_format\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-image.response_format\"\n                          },\n                          \"url\"\n                        ]\n                      }\n                    },\n                    \"images\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.images\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    }\n                  }\n                },\n                {\n                  \"when\": {\n                    \"$in\": [\n                      {\n                        \"$lower\": {\n                          \"$trim\": {\n                            \"$ref\": \"request.model\"\n                          }\n                        }\n                      },\n                      [\n                        \"lec-ac-banana-flash\",\n                        \"lec-ac-banana-pro\"\n                      ]\n                    ]\n                  },\n                  \"then\": {\n                    \"model\": {\n                      \"$ref\": \"request.model\"\n                    },\n                    \"prompt\": {\n                      \"$ref\": \"request.prompt\"\n                    },\n                    \"aspect_ratio\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-image.aspect_ratio\"\n                          },\n                          {\n                            \"$ref\": \"request.aspectRatio\"\n                          },\n                          \"16:9\"\n                        ]\n                      }\n                    },\n                    \"resolution\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-image.resolution\"\n                          },\n                          {\n                            \"$ref\": \"request.resolution\"\n                          },\n                          \"1K\"\n                        ]\n                      }\n                    },\n                    \"images\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.images\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    }\n                  }\n                },\n                {\n                  \"when\": {\n                    \"$eq\": [\n                      {\n                        \"$lower\": {\n                          \"$trim\": {\n                            \"$ref\": \"request.model\"\n                          }\n                        }\n                      },\n                      \"lec-tinysnow-image-2\"\n                    ]\n                  },\n                  \"then\": {\n                    \"model\": {\n                      \"$ref\": \"request.model\"\n                    },\n                    \"prompt\": {\n                      \"$ref\": \"request.prompt\"\n                    },\n                    \"images\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.images\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    },\n                    \"n\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-image.n\"\n                          },\n                          {\n                            \"$ref\": \"request.imageCount\"\n                          },\n                          1\n                        ]\n                      }\n                    },\n                    \"aspect_ratio\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-image.aspect_ratio\"\n                          },\n                          {\n                            \"$ref\": \"request.aspectRatio\"\n                          },\n                          \"1:1\"\n                        ]\n                      }\n                    },\n                    \"resolution\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-image.resolution\"\n                          },\n                          {\n                            \"$ref\": \"request.resolution\"\n                          },\n                          \"1K\"\n                        ]\n                      }\n                    },\n                    \"quality\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-image.quality\"\n                          },\n                          {\n                            \"$ref\": \"request.quality\"\n                          }\n                        ]\n                      }\n                    },\n                    \"response_format\": \"b64_json\"\n                  }\n                },\n                {\n                  \"when\": {\n                    \"$eq\": [\n                      {\n                        \"$lower\": {\n                          \"$trim\": {\n                            \"$ref\": \"request.model\"\n                          }\n                        }\n                      },\n                      \"lec-ac-image-2\"\n                    ]\n                  },\n                  \"then\": {\n                    \"model\": {\n                      \"$ref\": \"request.model\"\n                    },\n                    \"prompt\": {\n                      \"$ref\": \"request.prompt\"\n                    },\n                    \"aspect_ratio\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-image.aspect_ratio\"\n                          },\n                          {\n                            \"$ref\": \"request.aspectRatio\"\n                          },\n                          \"16:9\"\n                        ]\n                      }\n                    },\n                    \"resolution\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-image.resolution\"\n                          },\n                          {\n                            \"$ref\": \"request.resolution\"\n                          },\n                          \"1K\"\n                        ]\n                      }\n                    },\n                    \"output_format\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-image.output_format\"\n                          },\n                          \"jpeg\"\n                        ]\n                      }\n                    },\n                    \"images\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.images\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    }\n                  }\n                },\n                {\n                  \"when\": {\n                    \"$eq\": [\n                      {\n                        \"$lower\": {\n                          \"$trim\": {\n                            \"$ref\": \"request.model\"\n                          }\n                        }\n                      },\n                      \"lec-ty-seedream-5-pro\"\n                    ]\n                  },\n                  \"then\": {\n                    \"model\": {\n                      \"$ref\": \"request.model\"\n                    },\n                    \"prompt\": {\n                      \"$ref\": \"request.prompt\"\n                    },\n                    \"resolution\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-image.resolution\"\n                          },\n                          {\n                            \"$ref\": \"request.resolution\"\n                          },\n                          \"1K\"\n                        ]\n                      }\n                    },\n                    \"aspect_ratio\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-image.aspect_ratio\"\n                          },\n                          {\n                            \"$ref\": \"request.aspectRatio\"\n                          },\n                          \"1:1\"\n                        ]\n                      }\n                    },\n                    \"images\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.images\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    }\n                  }\n                }\n              ],\n              \"default\": {\n                \"model\": {\n                  \"$ref\": \"request.model\"\n                },\n                \"prompt\": {\n                  \"$ref\": \"request.prompt\"\n                },\n                \"images\": {\n                  \"$omitEmpty\": {\n                    \"$map\": {\n                      \"from\": {\n                        \"$ref\": \"request.images\"\n                      },\n                      \"as\": \"media\",\n                      \"in\": {\n                        \"$ref\": \"media.value\"\n                      }\n                    }\n                  }\n                }\n              }\n            }\n          }\n        },\n        \"response\": {\n          \"images\": {\n            \"$coalesce\": [\n              {\n                \"$ref\": \"response.data\"\n              },\n              {\n                \"$ref\": \"response\"\n              }\n            ]\n          },\n          \"resultKind\": \"image\",\n          \"resultEphemeral\": true\n        }\n      },\n      {\n        \"id\": \"paipu-net-video\",\n        \"label\": \"牌谱 API 视频\",\n        \"capabilities\": [\n          \"video\"\n        ],\n        \"scopes\": [\n          \"admin.system-channel\",\n          \"user.custom-channel\",\n          \"canvas\",\n          \"creation\"\n        ],\n        \"baseUrl\": \"https://api.paipu.net\",\n        \"auth\": {\n          \"type\": \"bearer\",\n          \"field\": \"apiKey\",\n          \"header\": \"Authorization\"\n        },\n        \"parameters\": [\n          {\n            \"name\": \"prompt\",\n            \"type\": \"string\",\n            \"required\": true,\n            \"mapping\": \"prompt\",\n            \"description\": \"视频提示词。\"\n          },\n          {\n            \"name\": \"duration\",\n            \"type\": \"integer\",\n            \"mapping\": \"duration\",\n            \"description\": \"模型支持时传递视频时长。\"\n          },\n          {\n            \"name\": \"aspect_ratio\",\n            \"type\": \"string\",\n            \"mapping\": \"aspectRatio\",\n            \"description\": \"模型支持时传递画面比例。\"\n          },\n          {\n            \"name\": \"resolution\",\n            \"type\": \"string\",\n            \"mapping\": \"resolution\",\n            \"description\": \"模型支持时传递分辨率。\"\n          },\n          {\n            \"name\": \"images\",\n            \"type\": \"media[]\",\n            \"mapping\": \"images\",\n            \"description\": \"参考图片地址列表。\"\n          },\n          {\n            \"name\": \"videos\",\n            \"type\": \"media[]\",\n            \"mapping\": \"videos\",\n            \"description\": \"参考视频地址列表。\"\n          },\n          {\n            \"name\": \"audios\",\n            \"type\": \"media[]\",\n            \"mapping\": \"audios\",\n            \"description\": \"参考音频地址列表。\"\n          },\n          {\n            \"name\": \"mode\",\n            \"type\": \"string\",\n            \"mapping\": \"mode\",\n            \"description\": \"仅天悦人脸处理模型支持。\"\n          },\n          {\n            \"name\": \"process_face\",\n            \"type\": \"boolean\",\n            \"mapping\": \"processFace\",\n            \"description\": \"仅 MD Seedance 模型支持。\"\n          }\n        ],\n        \"create\": {\n          \"method\": \"POST\",\n          \"path\": \"/v1/videos\",\n          \"contentType\": \"application/json\",\n          \"body\": {\n            \"$switch\": {\n              \"cases\": [\n                {\n                  \"when\": {\n                    \"$eq\": [\n                      {\n                        \"$lower\": {\n                          \"$trim\": {\n                            \"$ref\": \"request.model\"\n                          }\n                        }\n                      },\n                      \"lec-ac-seedance-2-0-fast-2-720p\"\n                    ]\n                  },\n                  \"then\": {\n                    \"model\": {\n                      \"$ref\": \"request.model\"\n                    },\n                    \"prompt\": {\n                      \"$ref\": \"request.prompt\"\n                    },\n                    \"aspect_ratio\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-video.aspect_ratio\"\n                          },\n                          {\n                            \"$ref\": \"request.aspectRatio\"\n                          },\n                          \"16:9\"\n                        ]\n                      }\n                    },\n                    \"images\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.images\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    },\n                    \"videos\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.videos\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    },\n                    \"audios\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.audios\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    }\n                  }\n                },\n                {\n                  \"when\": {\n                    \"$in\": [\n                      {\n                        \"$lower\": {\n                          \"$trim\": {\n                            \"$ref\": \"request.model\"\n                          }\n                        }\n                      },\n                      [\n                        \"lec-ac-seedance-2-5-10-image\",\n                        \"lec-h3video-2k\",\n                        \"lec-seedance-2-5-30s\",\n                        \"lec-bk-video-30s\",\n                        \"lec-seed-2-0-900\",\n                        \"lec-seed-2-5-900\"\n                      ]\n                    ]\n                  },\n                  \"then\": {\n                    \"model\": {\n                      \"$ref\": \"request.model\"\n                    },\n                    \"prompt\": {\n                      \"$ref\": \"request.prompt\"\n                    },\n                    \"aspect_ratio\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-video.aspect_ratio\"\n                          },\n                          {\n                            \"$ref\": \"request.aspectRatio\"\n                          },\n                          \"16:9\"\n                        ]\n                      }\n                    },\n                    \"images\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.images\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    }\n                  }\n                },\n                {\n                  \"when\": {\n                    \"$in\": [\n                      {\n                        \"$lower\": {\n                          \"$trim\": {\n                            \"$ref\": \"request.model\"\n                          }\n                        }\n                      },\n                      [\n                        \"lec-minimax-h3-768p\",\n                        \"lec-seedance-2-0-mini-c4-480p\"\n                      ]\n                    ]\n                  },\n                  \"then\": {\n                    \"model\": {\n                      \"$ref\": \"request.model\"\n                    },\n                    \"prompt\": {\n                      \"$ref\": \"request.prompt\"\n                    },\n                    \"duration\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-video.duration\"\n                          },\n                          {\n                            \"$ref\": \"request.duration\"\n                          },\n                          5\n                        ]\n                      }\n                    },\n                    \"aspect_ratio\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-video.aspect_ratio\"\n                          },\n                          {\n                            \"$ref\": \"request.aspectRatio\"\n                          },\n                          \"16:9\"\n                        ]\n                      }\n                    },\n                    \"images\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.images\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    },\n                    \"audios\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.audios\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    }\n                  }\n                },\n                {\n                  \"when\": {\n                    \"$in\": [\n                      {\n                        \"$lower\": {\n                          \"$trim\": {\n                            \"$ref\": \"request.model\"\n                          }\n                        }\n                      },\n                      [\n                        \"lec-ac-seedance-2-5-vid\",\n                        \"lec-haya-seedance-2-5-480p\",\n                        \"lec-vp-seedance-2-0-933-s1\",\n                        \"lec-vp-seedance-2-0-933-s2\",\n                        \"lec-minimax-h3\",\n                        \"lec-seedance-2-0-full-933-720p\",\n                        \"lec-seedance-2-0-fast-933-720p\",\n                        \"lec-ty-seedance-2-0-full-933-me-720p\",\n                        \"lec-ty-seedance-2-0-mini-933-j-480p\",\n                        \"lec-ty-seedance-2-0-mini-933-j-720p\",\n                        \"lec-seedance-2-5-301010-wd-480p\",\n                        \"lec-vg-seedance-2-5-wd\",\n                        \"lec-mj-seedance-2-0-full-933-jd\",\n                        \"lec-mj-seedance-2-0-full-933-md\",\n                        \"lec-mj-seedance-2-5-md-480p\",\n                        \"lec-sz-sd2-full-480p\"\n                      ]\n                    ]\n                  },\n                  \"then\": {\n                    \"model\": {\n                      \"$ref\": \"request.model\"\n                    },\n                    \"prompt\": {\n                      \"$ref\": \"request.prompt\"\n                    },\n                    \"duration\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-video.duration\"\n                          },\n                          {\n                            \"$ref\": \"request.duration\"\n                          },\n                          5\n                        ]\n                      }\n                    },\n                    \"aspect_ratio\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-video.aspect_ratio\"\n                          },\n                          {\n                            \"$ref\": \"request.aspectRatio\"\n                          },\n                          \"16:9\"\n                        ]\n                      }\n                    },\n                    \"images\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.images\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    },\n                    \"videos\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.videos\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    },\n                    \"audios\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.audios\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    }\n                  }\n                },\n                {\n                  \"when\": {\n                    \"$in\": [\n                      {\n                        \"$lower\": {\n                          \"$trim\": {\n                            \"$ref\": \"request.model\"\n                          }\n                        }\n                      },\n                      [\n                        \"lec-haya-seedance-2-5-sm-pro\",\n                        \"lec-vp-seedance-2-5-m2\",\n                        \"lec-vp-wan-3-0\",\n                        \"lec-vp-wan-3-0-prime\",\n                        \"lec-seedance-2-0-933-stable\",\n                        \"lec-vg-seedance-2-5-kk\",\n                        \"lec-mj-seedance-2-5-md\",\n                        \"lec-gt-seedance-2-0-mini\",\n                        \"lec-gt-seedance-2-0-full\",\n                        \"lec-gt-seedance-2-5-720p\",\n                        \"lec-wan3-720p\"\n                      ]\n                    ]\n                  },\n                  \"then\": {\n                    \"model\": {\n                      \"$ref\": \"request.model\"\n                    },\n                    \"prompt\": {\n                      \"$ref\": \"request.prompt\"\n                    },\n                    \"duration\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-video.duration\"\n                          },\n                          {\n                            \"$ref\": \"request.duration\"\n                          },\n                          5\n                        ]\n                      }\n                    },\n                    \"aspect_ratio\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-video.aspect_ratio\"\n                          },\n                          {\n                            \"$ref\": \"request.aspectRatio\"\n                          },\n                          \"16:9\"\n                        ]\n                      }\n                    },\n                    \"resolution\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-video.resolution\"\n                          },\n                          {\n                            \"$ref\": \"request.resolution\"\n                          }\n                        ]\n                      }\n                    },\n                    \"images\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.images\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    },\n                    \"videos\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.videos\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    },\n                    \"audios\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.audios\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    }\n                  }\n                },\n                {\n                  \"when\": {\n                    \"$eq\": [\n                      {\n                        \"$lower\": {\n                          \"$trim\": {\n                            \"$ref\": \"request.model\"\n                          }\n                        }\n                      },\n                      \"lec-yu25-grok-video-1-5-preview\"\n                    ]\n                  },\n                  \"then\": {\n                    \"model\": {\n                      \"$ref\": \"request.model\"\n                    },\n                    \"prompt\": {\n                      \"$ref\": \"request.prompt\"\n                    },\n                    \"duration\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-video.duration\"\n                          },\n                          {\n                            \"$ref\": \"request.duration\"\n                          },\n                          5\n                        ]\n                      }\n                    },\n                    \"aspect_ratio\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-video.aspect_ratio\"\n                          },\n                          {\n                            \"$ref\": \"request.aspectRatio\"\n                          },\n                          \"16:9\"\n                        ]\n                      }\n                    },\n                    \"resolution\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-video.resolution\"\n                          },\n                          {\n                            \"$ref\": \"request.resolution\"\n                          }\n                        ]\n                      }\n                    },\n                    \"images\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.images\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    },\n                    \"image\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-video.image\"\n                          }\n                        ]\n                      }\n                    }\n                  }\n                },\n                {\n                  \"when\": {\n                    \"$eq\": [\n                      {\n                        \"$lower\": {\n                          \"$trim\": {\n                            \"$ref\": \"request.model\"\n                          }\n                        }\n                      },\n                      \"lec-md-seedance-2-0-900-720p\"\n                    ]\n                  },\n                  \"then\": {\n                    \"model\": {\n                      \"$ref\": \"request.model\"\n                    },\n                    \"prompt\": {\n                      \"$ref\": \"request.prompt\"\n                    },\n                    \"duration\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-video.duration\"\n                          },\n                          {\n                            \"$ref\": \"request.duration\"\n                          },\n                          5\n                        ]\n                      }\n                    },\n                    \"aspect_ratio\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-video.aspect_ratio\"\n                          },\n                          {\n                            \"$ref\": \"request.aspectRatio\"\n                          },\n                          \"16:9\"\n                        ]\n                      }\n                    },\n                    \"images\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.images\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    },\n                    \"process_face\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-video.process_face\"\n                          }\n                        ]\n                      }\n                    }\n                  }\n                },\n                {\n                  \"when\": {\n                    \"$eq\": [\n                      {\n                        \"$lower\": {\n                          \"$trim\": {\n                            \"$ref\": \"request.model\"\n                          }\n                        }\n                      },\n                      \"lec-ty-face-processing-1-0\"\n                    ]\n                  },\n                  \"then\": {\n                    \"model\": {\n                      \"$ref\": \"request.model\"\n                    },\n                    \"aspect_ratio\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-video.aspect_ratio\"\n                          },\n                          {\n                            \"$ref\": \"request.aspectRatio\"\n                          },\n                          \"16:9\"\n                        ]\n                      }\n                    },\n                    \"images\": {\n                      \"$omitEmpty\": {\n                        \"$map\": {\n                          \"from\": {\n                            \"$ref\": \"request.images\"\n                          },\n                          \"as\": \"media\",\n                          \"in\": {\n                            \"$ref\": \"media.value\"\n                          }\n                        }\n                      }\n                    },\n                    \"mode\": {\n                      \"$omitEmpty\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"request.providerOptions.paipu-net-video.mode\"\n                          },\n                          \"黑白素描1\"\n                        ]\n                      }\n                    }\n                  }\n                }\n              ],\n              \"default\": {\n                \"model\": {\n                  \"$ref\": \"request.model\"\n                },\n                \"prompt\": {\n                  \"$ref\": \"request.prompt\"\n                }\n              }\n            }\n          }\n        },\n        \"poll\": {\n          \"method\": \"GET\",\n          \"path\": \"/v1/videos/{{taskId}}\"\n        },\n        \"response\": {\n          \"taskIdPaths\": [\n            \"id\",\n            \"task_id\",\n            \"request_id\"\n          ],\n          \"statusPaths\": [\n            \"status\",\n            \"state\"\n          ],\n          \"errorPaths\": [\n            \"error\",\n            \"error.code\",\n            \"error.type\"\n          ],\n          \"messagePaths\": [\n            \"message\",\n            \"error.message\",\n            \"error.detail\",\n            \"error.code\"\n          ],\n          \"resultPaths\": [\n            \"url\",\n            \"video_url\",\n            \"result_url\",\n            \"data.url\",\n            \"data.0.url\",\n            \"data.video_url\",\n            \"data.0.video_url\",\n            \"metadata.url\"\n          ],\n          \"resultKind\": \"video\",\n          \"resultEphemeral\": true\n        },\n        \"validations\": [\n          {\n            \"assert\": {\n              \"$or\": [\n                {\n                  \"$not\": {\n                    \"$in\": [\n                      {\n                        \"$lower\": {\n                          \"$trim\": {\n                            \"$ref\": \"request.model\"\n                          }\n                        }\n                      },\n                      [\n                        \"lec-ac-seedance-2-5-10-image\",\n                        \"lec-minimax-h3\",\n                        \"lec-ty-seedance-2-0-full-933-me-720p\",\n                        \"lec-ty-seedance-2-0-mini-933-j-480p\",\n                        \"lec-ty-seedance-2-0-mini-933-j-720p\",\n                        \"lec-ty-seedance-2-5-301010-wd-480p\",\n                        \"lec-sz-sd2-full-480p\",\n                        \"lec-ty-face-processing-1-0\"\n                      ]\n                    ]\n                  }\n                },\n                {\n                  \"$gt\": [\n                    {\n                      \"$len\": {\n                        \"$ref\": \"request.images\"\n                      }\n                    },\n                    0\n                  ]\n                }\n              ]\n            },\n            \"message\": \"该牌谱视频模型必须至少提供 1 张参考图片。\"\n          },\n          {\n            \"assert\": {\n              \"$or\": [\n                {\n                  \"$ne\": [\n                    {\n                      \"$lower\": {\n                        \"$trim\": {\n                          \"$ref\": \"request.model\"\n                        }\n                      }\n                    },\n                    \"lec-ty-face-processing-1-0\"\n                  ]\n                },\n                {\n                  \"$eq\": [\n                    {\n                      \"$len\": {\n                        \"$ref\": \"request.images\"\n                      }\n                    },\n                    1\n                  ]\n                }\n              ]\n            },\n            \"message\": \"lec-ty-face-processing-1-0 必须恰好提供 1 张参考图片。\"\n          }\n        ]\n      }\n    ]\n  }\n}\n```\n<!-- YINGCE_MANIFEST_CONTRACT_END -->",
   "permissions": [
     "generation.run",
     "media.read"
@@ -168,22 +168,40 @@
             "description": "图片提示词。"
           },
           {
-            "name": "size",
+            "name": "aspect_ratio",
             "type": "string",
             "mapping": "aspectRatio",
-            "description": "原样传递宿主图片尺寸。"
+            "description": "模型支持时传递画面比例。"
+          },
+          {
+            "name": "resolution",
+            "type": "string",
+            "mapping": "resolution",
+            "description": "模型支持时传递输出清晰度。"
           },
           {
             "name": "quality",
             "type": "string",
             "mapping": "quality",
-            "description": "画质，自动档不传。"
+            "description": "仅 TinySnow 支持；auto 不发送。"
           },
           {
             "name": "n",
             "type": "integer",
             "mapping": "imageCount",
-            "description": "图片数量。"
+            "description": "仅 TinySnow 支持输出数量。"
+          },
+          {
+            "name": "output_format",
+            "type": "string",
+            "mapping": "outputFormat",
+            "description": "仅 Image 2 / Image 2.5 支持。"
+          },
+          {
+            "name": "response_format",
+            "type": "string",
+            "mapping": "responseFormat",
+            "description": "仅 Image 2.5 Flare/Sunburst 支持。"
           },
           {
             "name": "images",
@@ -197,69 +215,411 @@
           "path": "/v1/images/generations",
           "contentType": "application/json",
           "body": {
-            "model": {
-              "$ref": "request.model"
-            },
-            "prompt": {
-              "$ref": "request.prompt"
-            },
-            "images": {
-              "$map": {
-                "from": {
-                  "$ref": "request.images"
+            "$switch": {
+              "cases": [
+                {
+                  "when": {
+                    "$in": [
+                      {
+                        "$lower": {
+                          "$trim": {
+                            "$ref": "request.model"
+                          }
+                        }
+                      },
+                      [
+                        "lec-ac-image-2-5-flare",
+                        "lec-ac-image-2-5-sunburst"
+                      ]
+                    ]
+                  },
+                  "then": {
+                    "model": {
+                      "$ref": "request.model"
+                    },
+                    "prompt": {
+                      "$ref": "request.prompt"
+                    },
+                    "aspect_ratio": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-image.aspect_ratio"
+                          },
+                          {
+                            "$ref": "request.aspectRatio"
+                          },
+                          "16:9"
+                        ]
+                      }
+                    },
+                    "resolution": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-image.resolution"
+                          },
+                          {
+                            "$ref": "request.resolution"
+                          },
+                          "1K"
+                        ]
+                      }
+                    },
+                    "output_format": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-image.output_format"
+                          },
+                          "jpeg"
+                        ]
+                      }
+                    },
+                    "response_format": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-image.response_format"
+                          },
+                          "url"
+                        ]
+                      }
+                    },
+                    "images": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.images"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    }
+                  }
                 },
-                "as": "media",
-                "in": {
-                  "$ref": "media.value"
-                }
-              }
-            },
-            "size": {
-              "$omitEmpty": {
-                "$ref": "request.aspectRatio"
-              }
-            },
-            "quality": {
-              "$if": {
-                "condition": {
-                  "$in": [
-                    {
-                      "$lower": {
-                        "$trim": {
-                          "$ref": "request.quality"
+                {
+                  "when": {
+                    "$in": [
+                      {
+                        "$lower": {
+                          "$trim": {
+                            "$ref": "request.model"
+                          }
+                        }
+                      },
+                      [
+                        "lec-ac-banana-flash",
+                        "lec-ac-banana-pro"
+                      ]
+                    ]
+                  },
+                  "then": {
+                    "model": {
+                      "$ref": "request.model"
+                    },
+                    "prompt": {
+                      "$ref": "request.prompt"
+                    },
+                    "aspect_ratio": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-image.aspect_ratio"
+                          },
+                          {
+                            "$ref": "request.aspectRatio"
+                          },
+                          "16:9"
+                        ]
+                      }
+                    },
+                    "resolution": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-image.resolution"
+                          },
+                          {
+                            "$ref": "request.resolution"
+                          },
+                          "1K"
+                        ]
+                      }
+                    },
+                    "images": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.images"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "when": {
+                    "$eq": [
+                      {
+                        "$lower": {
+                          "$trim": {
+                            "$ref": "request.model"
+                          }
+                        }
+                      },
+                      "lec-tinysnow-image-2"
+                    ]
+                  },
+                  "then": {
+                    "model": {
+                      "$ref": "request.model"
+                    },
+                    "prompt": {
+                      "$ref": "request.prompt"
+                    },
+                    "images": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.images"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
                         }
                       }
                     },
-                    [
-                      "",
-                      "auto",
-                      "default"
+                    "n": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-image.n"
+                          },
+                          {
+                            "$ref": "request.imageCount"
+                          },
+                          1
+                        ]
+                      }
+                    },
+                    "aspect_ratio": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-image.aspect_ratio"
+                          },
+                          {
+                            "$ref": "request.aspectRatio"
+                          },
+                          "1:1"
+                        ]
+                      }
+                    },
+                    "resolution": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-image.resolution"
+                          },
+                          {
+                            "$ref": "request.resolution"
+                          },
+                          "1K"
+                        ]
+                      }
+                    },
+                    "quality": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-image.quality"
+                          },
+                          {
+                            "$ref": "request.quality"
+                          }
+                        ]
+                      }
+                    },
+                    "response_format": "b64_json"
+                  }
+                },
+                {
+                  "when": {
+                    "$eq": [
+                      {
+                        "$lower": {
+                          "$trim": {
+                            "$ref": "request.model"
+                          }
+                        }
+                      },
+                      "lec-ac-image-2"
                     ]
-                  ]
+                  },
+                  "then": {
+                    "model": {
+                      "$ref": "request.model"
+                    },
+                    "prompt": {
+                      "$ref": "request.prompt"
+                    },
+                    "aspect_ratio": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-image.aspect_ratio"
+                          },
+                          {
+                            "$ref": "request.aspectRatio"
+                          },
+                          "16:9"
+                        ]
+                      }
+                    },
+                    "resolution": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-image.resolution"
+                          },
+                          {
+                            "$ref": "request.resolution"
+                          },
+                          "1K"
+                        ]
+                      }
+                    },
+                    "output_format": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-image.output_format"
+                          },
+                          "jpeg"
+                        ]
+                      }
+                    },
+                    "images": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.images"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    }
+                  }
                 },
-                "else": {
-                  "$ref": "request.quality"
+                {
+                  "when": {
+                    "$eq": [
+                      {
+                        "$lower": {
+                          "$trim": {
+                            "$ref": "request.model"
+                          }
+                        }
+                      },
+                      "lec-ty-seedream-5-pro"
+                    ]
+                  },
+                  "then": {
+                    "model": {
+                      "$ref": "request.model"
+                    },
+                    "prompt": {
+                      "$ref": "request.prompt"
+                    },
+                    "resolution": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-image.resolution"
+                          },
+                          {
+                            "$ref": "request.resolution"
+                          },
+                          "1K"
+                        ]
+                      }
+                    },
+                    "aspect_ratio": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-image.aspect_ratio"
+                          },
+                          {
+                            "$ref": "request.aspectRatio"
+                          },
+                          "1:1"
+                        ]
+                      }
+                    },
+                    "images": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.images"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ],
+              "default": {
+                "model": {
+                  "$ref": "request.model"
+                },
+                "prompt": {
+                  "$ref": "request.prompt"
+                },
+                "images": {
+                  "$omitEmpty": {
+                    "$map": {
+                      "from": {
+                        "$ref": "request.images"
+                      },
+                      "as": "media",
+                      "in": {
+                        "$ref": "media.value"
+                      }
+                    }
+                  }
                 }
               }
-            },
-            "n": {
-              "$if": {
-                "condition": {
-                  "$ref": "request.imageCount"
-                },
-                "then": {
-                  "$ref": "request.imageCount"
-                }
-              }
-            },
-            "response_format": "url"
+            }
           }
         },
         "response": {
-          "resultPaths": [
-            "data.0.url",
-            "url"
-          ],
+          "images": {
+            "$coalesce": [
+              {
+                "$ref": "response.data"
+              },
+              {
+                "$ref": "response"
+              }
+            ]
+          },
           "resultKind": "image",
           "resultEphemeral": true
         }
@@ -293,21 +653,20 @@
           {
             "name": "duration",
             "type": "integer",
-            "required": true,
             "mapping": "duration",
-            "description": "生成时长，单位为秒。"
+            "description": "模型支持时传递视频时长。"
           },
           {
             "name": "aspect_ratio",
             "type": "string",
             "mapping": "aspectRatio",
-            "description": "画面比例。"
+            "description": "模型支持时传递画面比例。"
           },
           {
             "name": "resolution",
             "type": "string",
             "mapping": "resolution",
-            "description": "分辨率，自动档不传。"
+            "description": "模型支持时传递分辨率。"
           },
           {
             "name": "images",
@@ -326,6 +685,18 @@
             "type": "media[]",
             "mapping": "audios",
             "description": "参考音频地址列表。"
+          },
+          {
+            "name": "mode",
+            "type": "string",
+            "mapping": "mode",
+            "description": "仅天悦人脸处理模型支持。"
+          },
+          {
+            "name": "process_face",
+            "type": "boolean",
+            "mapping": "processFace",
+            "description": "仅 MD Seedance 模型支持。"
           }
         ],
         "create": {
@@ -333,80 +704,643 @@
           "path": "/v1/videos",
           "contentType": "application/json",
           "body": {
-            "model": {
-              "$ref": "request.model"
-            },
-            "prompt": {
-              "$ref": "request.prompt"
-            },
-            "duration": {
-              "$if": {
-                "condition": {
-                  "$ref": "request.duration"
-                },
-                "then": {
-                  "$ref": "request.duration"
-                }
-              }
-            },
-            "aspect_ratio": {
-              "$omitEmpty": {
-                "$ref": "request.aspectRatio"
-              }
-            },
-            "resolution": {
-              "$if": {
-                "condition": {
-                  "$in": [
-                    {
-                      "$lower": {
-                        "$trim": {
-                          "$ref": "request.resolution"
+            "$switch": {
+              "cases": [
+                {
+                  "when": {
+                    "$eq": [
+                      {
+                        "$lower": {
+                          "$trim": {
+                            "$ref": "request.model"
+                          }
+                        }
+                      },
+                      "lec-ac-seedance-2-0-fast-2-720p"
+                    ]
+                  },
+                  "then": {
+                    "model": {
+                      "$ref": "request.model"
+                    },
+                    "prompt": {
+                      "$ref": "request.prompt"
+                    },
+                    "aspect_ratio": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-video.aspect_ratio"
+                          },
+                          {
+                            "$ref": "request.aspectRatio"
+                          },
+                          "16:9"
+                        ]
+                      }
+                    },
+                    "images": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.images"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
                         }
                       }
                     },
-                    [
-                      "",
-                      "auto",
-                      "default"
+                    "videos": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.videos"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    },
+                    "audios": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.audios"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "when": {
+                    "$in": [
+                      {
+                        "$lower": {
+                          "$trim": {
+                            "$ref": "request.model"
+                          }
+                        }
+                      },
+                      [
+                        "lec-ac-seedance-2-5-10-image",
+                        "lec-h3video-2k",
+                        "lec-seedance-2-5-30s",
+                        "lec-bk-video-30s",
+                        "lec-seed-2-0-900",
+                        "lec-seed-2-5-900"
+                      ]
                     ]
-                  ]
+                  },
+                  "then": {
+                    "model": {
+                      "$ref": "request.model"
+                    },
+                    "prompt": {
+                      "$ref": "request.prompt"
+                    },
+                    "aspect_ratio": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-video.aspect_ratio"
+                          },
+                          {
+                            "$ref": "request.aspectRatio"
+                          },
+                          "16:9"
+                        ]
+                      }
+                    },
+                    "images": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.images"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    }
+                  }
                 },
-                "else": {
-                  "$ref": "request.resolution"
+                {
+                  "when": {
+                    "$in": [
+                      {
+                        "$lower": {
+                          "$trim": {
+                            "$ref": "request.model"
+                          }
+                        }
+                      },
+                      [
+                        "lec-minimax-h3-768p",
+                        "lec-seedance-2-0-mini-c4-480p"
+                      ]
+                    ]
+                  },
+                  "then": {
+                    "model": {
+                      "$ref": "request.model"
+                    },
+                    "prompt": {
+                      "$ref": "request.prompt"
+                    },
+                    "duration": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-video.duration"
+                          },
+                          {
+                            "$ref": "request.duration"
+                          },
+                          5
+                        ]
+                      }
+                    },
+                    "aspect_ratio": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-video.aspect_ratio"
+                          },
+                          {
+                            "$ref": "request.aspectRatio"
+                          },
+                          "16:9"
+                        ]
+                      }
+                    },
+                    "images": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.images"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    },
+                    "audios": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.audios"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "when": {
+                    "$in": [
+                      {
+                        "$lower": {
+                          "$trim": {
+                            "$ref": "request.model"
+                          }
+                        }
+                      },
+                      [
+                        "lec-ac-seedance-2-5-vid",
+                        "lec-haya-seedance-2-5-480p",
+                        "lec-vp-seedance-2-0-933-s1",
+                        "lec-vp-seedance-2-0-933-s2",
+                        "lec-minimax-h3",
+                        "lec-seedance-2-0-full-933-720p",
+                        "lec-seedance-2-0-fast-933-720p",
+                        "lec-ty-seedance-2-0-full-933-me-720p",
+                        "lec-ty-seedance-2-0-mini-933-j-480p",
+                        "lec-ty-seedance-2-0-mini-933-j-720p",
+                        "lec-seedance-2-5-301010-wd-480p",
+                        "lec-vg-seedance-2-5-wd",
+                        "lec-mj-seedance-2-0-full-933-jd",
+                        "lec-mj-seedance-2-0-full-933-md",
+                        "lec-mj-seedance-2-5-md-480p",
+                        "lec-sz-sd2-full-480p"
+                      ]
+                    ]
+                  },
+                  "then": {
+                    "model": {
+                      "$ref": "request.model"
+                    },
+                    "prompt": {
+                      "$ref": "request.prompt"
+                    },
+                    "duration": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-video.duration"
+                          },
+                          {
+                            "$ref": "request.duration"
+                          },
+                          5
+                        ]
+                      }
+                    },
+                    "aspect_ratio": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-video.aspect_ratio"
+                          },
+                          {
+                            "$ref": "request.aspectRatio"
+                          },
+                          "16:9"
+                        ]
+                      }
+                    },
+                    "images": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.images"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    },
+                    "videos": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.videos"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    },
+                    "audios": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.audios"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "when": {
+                    "$in": [
+                      {
+                        "$lower": {
+                          "$trim": {
+                            "$ref": "request.model"
+                          }
+                        }
+                      },
+                      [
+                        "lec-haya-seedance-2-5-sm-pro",
+                        "lec-vp-seedance-2-5-m2",
+                        "lec-vp-wan-3-0",
+                        "lec-vp-wan-3-0-prime",
+                        "lec-seedance-2-0-933-stable",
+                        "lec-vg-seedance-2-5-kk",
+                        "lec-mj-seedance-2-5-md",
+                        "lec-gt-seedance-2-0-mini",
+                        "lec-gt-seedance-2-0-full",
+                        "lec-gt-seedance-2-5-720p",
+                        "lec-wan3-720p"
+                      ]
+                    ]
+                  },
+                  "then": {
+                    "model": {
+                      "$ref": "request.model"
+                    },
+                    "prompt": {
+                      "$ref": "request.prompt"
+                    },
+                    "duration": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-video.duration"
+                          },
+                          {
+                            "$ref": "request.duration"
+                          },
+                          5
+                        ]
+                      }
+                    },
+                    "aspect_ratio": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-video.aspect_ratio"
+                          },
+                          {
+                            "$ref": "request.aspectRatio"
+                          },
+                          "16:9"
+                        ]
+                      }
+                    },
+                    "resolution": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-video.resolution"
+                          },
+                          {
+                            "$ref": "request.resolution"
+                          }
+                        ]
+                      }
+                    },
+                    "images": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.images"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    },
+                    "videos": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.videos"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    },
+                    "audios": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.audios"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "when": {
+                    "$eq": [
+                      {
+                        "$lower": {
+                          "$trim": {
+                            "$ref": "request.model"
+                          }
+                        }
+                      },
+                      "lec-yu25-grok-video-1-5-preview"
+                    ]
+                  },
+                  "then": {
+                    "model": {
+                      "$ref": "request.model"
+                    },
+                    "prompt": {
+                      "$ref": "request.prompt"
+                    },
+                    "duration": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-video.duration"
+                          },
+                          {
+                            "$ref": "request.duration"
+                          },
+                          5
+                        ]
+                      }
+                    },
+                    "aspect_ratio": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-video.aspect_ratio"
+                          },
+                          {
+                            "$ref": "request.aspectRatio"
+                          },
+                          "16:9"
+                        ]
+                      }
+                    },
+                    "resolution": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-video.resolution"
+                          },
+                          {
+                            "$ref": "request.resolution"
+                          }
+                        ]
+                      }
+                    },
+                    "images": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.images"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    },
+                    "image": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-video.image"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                },
+                {
+                  "when": {
+                    "$eq": [
+                      {
+                        "$lower": {
+                          "$trim": {
+                            "$ref": "request.model"
+                          }
+                        }
+                      },
+                      "lec-md-seedance-2-0-900-720p"
+                    ]
+                  },
+                  "then": {
+                    "model": {
+                      "$ref": "request.model"
+                    },
+                    "prompt": {
+                      "$ref": "request.prompt"
+                    },
+                    "duration": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-video.duration"
+                          },
+                          {
+                            "$ref": "request.duration"
+                          },
+                          5
+                        ]
+                      }
+                    },
+                    "aspect_ratio": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-video.aspect_ratio"
+                          },
+                          {
+                            "$ref": "request.aspectRatio"
+                          },
+                          "16:9"
+                        ]
+                      }
+                    },
+                    "images": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.images"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    },
+                    "process_face": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-video.process_face"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                },
+                {
+                  "when": {
+                    "$eq": [
+                      {
+                        "$lower": {
+                          "$trim": {
+                            "$ref": "request.model"
+                          }
+                        }
+                      },
+                      "lec-ty-face-processing-1-0"
+                    ]
+                  },
+                  "then": {
+                    "model": {
+                      "$ref": "request.model"
+                    },
+                    "aspect_ratio": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-video.aspect_ratio"
+                          },
+                          {
+                            "$ref": "request.aspectRatio"
+                          },
+                          "16:9"
+                        ]
+                      }
+                    },
+                    "images": {
+                      "$omitEmpty": {
+                        "$map": {
+                          "from": {
+                            "$ref": "request.images"
+                          },
+                          "as": "media",
+                          "in": {
+                            "$ref": "media.value"
+                          }
+                        }
+                      }
+                    },
+                    "mode": {
+                      "$omitEmpty": {
+                        "$coalesce": [
+                          {
+                            "$ref": "request.providerOptions.paipu-net-video.mode"
+                          },
+                          "黑白素描1"
+                        ]
+                      }
+                    }
+                  }
                 }
-              }
-            },
-            "images": {
-              "$map": {
-                "from": {
-                  "$ref": "request.images"
+              ],
+              "default": {
+                "model": {
+                  "$ref": "request.model"
                 },
-                "as": "media",
-                "in": {
-                  "$ref": "media.value"
-                }
-              }
-            },
-            "videos": {
-              "$map": {
-                "from": {
-                  "$ref": "request.videos"
-                },
-                "as": "media",
-                "in": {
-                  "$ref": "media.value"
-                }
-              }
-            },
-            "audios": {
-              "$map": {
-                "from": {
-                  "$ref": "request.audios"
-                },
-                "as": "media",
-                "in": {
-                  "$ref": "media.value"
+                "prompt": {
+                  "$ref": "request.prompt"
                 }
               }
             }
@@ -419,27 +1353,108 @@
         "response": {
           "taskIdPaths": [
             "id",
-            "task_id"
+            "task_id",
+            "request_id"
           ],
           "statusPaths": [
-            "status"
+            "status",
+            "state"
           ],
           "errorPaths": [
-            "error.code"
+            "error",
+            "error.code",
+            "error.type"
           ],
           "messagePaths": [
             "message",
             "error.message",
+            "error.detail",
             "error.code"
           ],
           "resultPaths": [
             "url",
+            "video_url",
             "result_url",
+            "data.url",
+            "data.0.url",
+            "data.video_url",
+            "data.0.video_url",
             "metadata.url"
           ],
           "resultKind": "video",
           "resultEphemeral": true
-        }
+        },
+        "validations": [
+          {
+            "assert": {
+              "$or": [
+                {
+                  "$not": {
+                    "$in": [
+                      {
+                        "$lower": {
+                          "$trim": {
+                            "$ref": "request.model"
+                          }
+                        }
+                      },
+                      [
+                        "lec-ac-seedance-2-5-10-image",
+                        "lec-minimax-h3",
+                        "lec-ty-seedance-2-0-full-933-me-720p",
+                        "lec-ty-seedance-2-0-mini-933-j-480p",
+                        "lec-ty-seedance-2-0-mini-933-j-720p",
+                        "lec-ty-seedance-2-5-301010-wd-480p",
+                        "lec-sz-sd2-full-480p",
+                        "lec-ty-face-processing-1-0"
+                      ]
+                    ]
+                  }
+                },
+                {
+                  "$gt": [
+                    {
+                      "$len": {
+                        "$ref": "request.images"
+                      }
+                    },
+                    0
+                  ]
+                }
+              ]
+            },
+            "message": "该牌谱视频模型必须至少提供 1 张参考图片。"
+          },
+          {
+            "assert": {
+              "$or": [
+                {
+                  "$ne": [
+                    {
+                      "$lower": {
+                        "$trim": {
+                          "$ref": "request.model"
+                        }
+                      }
+                    },
+                    "lec-ty-face-processing-1-0"
+                  ]
+                },
+                {
+                  "$eq": [
+                    {
+                      "$len": {
+                        "$ref": "request.images"
+                      }
+                    },
+                    1
+                  ]
+                }
+              ]
+            },
+            "message": "lec-ty-face-processing-1-0 必须恰好提供 1 张参考图片。"
+          }
+        ]
       }
     ]
   }

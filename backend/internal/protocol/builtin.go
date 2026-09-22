@@ -957,6 +957,8 @@ func normalizeStatus(raw string) Status {
 		return StatusPending
 	case "running", "processing", "in_progress", "executing", "task_status_running":
 		return StatusProcessing
+	case "reference_materializing", "reference-materializing", "reference materializing", "submitting", "upstream_processing", "upstream-processing", "upstream processing", "result_storage_wait", "result-storage-wait", "result storage wait":
+		return StatusProcessing
 	case "succeeded", "success", "completed", "complete", "done", "task_status_succeed":
 		return StatusSucceeded
 	case "cancelled", "canceled", "aborted":

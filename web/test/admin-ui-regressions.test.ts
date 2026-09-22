@@ -409,6 +409,9 @@ test("admin console tokens and shell stay isolated from the user workspace", asy
     expect(tokens).not.toContain("--admin-layer-0: var(--skin-admin-");
     expect(shell).toContain("data-admin-root");
     expect(shell).toContain("getIsolatedAdminAntTheme");
+    expect(shell).toContain("getPopupContainer={adminPopupContainer}");
+    expect(tokens).toContain("--admin-focus-ring: var(--admin-focus);");
+    expect(tokens).toContain("--destructive: var(--admin-status-error);");
     expect(shell).not.toContain("WorkspacePage");
     expect(shell).not.toContain("getAdminAntThemeConfig");
     expect(shell).not.toContain("app-workspace-nav-link");

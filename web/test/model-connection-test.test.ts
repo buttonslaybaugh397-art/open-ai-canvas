@@ -38,7 +38,6 @@ const channel = createModelChannel({
     apiKey: "test-key",
     models: ["test-model"],
 });
-
 describe("channel connection tests use the installed backend protocol", () => {
     const cases: Array<[string, ModelCapability, BackendGenerationResult]> = [
         ["deepseek-chat", "text", { mode: "text", text: "OK" }],
