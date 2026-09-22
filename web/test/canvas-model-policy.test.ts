@@ -114,6 +114,25 @@ describe("逻辑模型选择", () => {
         expect(edited.metadata?.generateAudio).toBe("true");
     });
 
+    test("重新渲染时以 composerContent 保留最新提示词草稿", () => {
+        const current: CanvasNodeData = {
+            ...node("video-draft", CanvasNodeType.Video),
+            metadata: {
+                composerContent: "第二次输入",
+                generationSpec: {
+                    version: 1,
+                    mode: "video",
+                    prompt: "第一次输入",
+                    options: {},
+                    referenceBindings: [],
+                    textInputMode: "prompt-only",
+                },
+            },
+        };
+
+        expect(readNodeGenerationSpec(current)?.prompt).toBe("第二次输入");
+    });
+
     test("逻辑模型合同不会被旧 metadata.model 覆盖", () => {
         const config = policyConfig();
         config.channels[0]!.modelCosts![0]!.logicalModelId = "cinema-logical";

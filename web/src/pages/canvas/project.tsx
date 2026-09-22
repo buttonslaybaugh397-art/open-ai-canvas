@@ -1463,10 +1463,9 @@ function InfiniteCanvasPage() {
                 const normalizedPrompt = normalizeCanvasNodeMentionTokens(savedPrompt, references);
                 if (normalizedPrompt === savedPrompt) return node;
                 changed = true;
-                return {
-                    ...node,
-                    metadata: node.metadata?.composerContent !== undefined ? { ...node.metadata, composerContent: normalizedPrompt } : { ...node.metadata, prompt: normalizedPrompt },
-                };
+                // 引用编号规范化也必须更新生成合同；只改 composerContent 会让
+                // canonicalGenerationMetadata 下一次渲染时把旧 prompt 投影回来。
+                return writeCanvasNodePrompt(node, normalizedPrompt);
             });
             return changed ? next : current;
         });
