@@ -39,6 +39,13 @@ describe("canvas generation copy metadata", () => {
             height: 240,
             metadata: {
                 content: "video-url",
+                storageKey: "resource:source-video",
+                assetId: "asset-source-video",
+                mimeType: "video/mp4",
+                bytes: 1024,
+                durationMs: 5000,
+                videoPreview: { content: "poster-url", storageKey: "resource:poster" },
+                status: "success",
                 prompt: "相同提示词",
                 videoStartFrameNodeId: "reference-start",
                 videoEndFrameNodeId: "reference-end",
@@ -53,6 +60,11 @@ describe("canvas generation copy metadata", () => {
         expect(metadata.videoEndFrameNodeId).toBe("reference-end");
         expect(metadata.copiedFromNodeId).toBe("source");
         expect(metadata.generationResultPlacement).toBe("replace-node");
+        expect(metadata.content).toBeUndefined();
+        expect(metadata.storageKey).toBeUndefined();
+        expect(metadata.assetId).toBeUndefined();
+        expect(metadata.videoPreview).toBeUndefined();
+        expect(metadata.status).toBe("idle");
     });
 
     test("复制到副本的入边继续解析为同一张参考图", () => {
