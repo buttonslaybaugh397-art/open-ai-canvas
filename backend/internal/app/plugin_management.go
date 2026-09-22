@@ -169,8 +169,30 @@ func runtimePluginByID(items []PluginView, pluginID string) (PluginView, bool) {
 func (s *Service) PluginStatesForUser(actor *model.User) (map[string]PluginStateView, error) {
 	items := s.Plugins()
 	result := make(map[string]PluginStateView, len(items)+len(officialApplicationPolicies))
+	platformStates := map[string]*model.PluginPlatformState{}
+	userStates := map[string]*model.UserPluginState{}
+	if s.repo != nil {
+		storedPlatformStates, err := s.repo.PluginPlatformStates()
+		if err != nil {
+			return nil, fmt.Errorf("读取插件平台状态：%w", err)
+		}
+		for index := range storedPlatformStates {
+			state := storedPlatformStates[index]
+			platformStates[state.PluginID] = &state
+		}
+		if actor != nil {
+			storedUserStates, err := s.repo.UserPluginStates(actor.ID)
+			if err != nil {
+				return nil, fmt.Errorf("读取用户插件状态：%w", err)
+			}
+			for index := range storedUserStates {
+				state := storedUserStates[index]
+				userStates[state.PluginID] = &state
+			}
+		}
+	}
 	for _, pluginID := range knownPluginIDs(items) {
-		state, err := s.pluginStateForUser(actor, pluginID, items)
+		state, err := s.pluginStateForUserWithStoredStates(actor, pluginID, items, platformStates[pluginID], userStates[pluginID])
 		if err != nil {
 			return nil, err
 		}
@@ -180,6 +202,25 @@ func (s *Service) PluginStatesForUser(actor *model.User) (map[string]PluginState
 }
 
 func (s *Service) pluginStateForUser(actor *model.User, pluginID string, items []PluginView) (PluginStateView, error) {
+	var platformState *model.PluginPlatformState
+	var userState *model.UserPluginState
+	if s.repo != nil {
+		var err error
+		platformState, err = s.repo.PluginPlatformState(pluginID)
+		if err != nil {
+			return PluginStateView{}, fmt.Errorf("读取插件平台状态：%w", err)
+		}
+		if actor != nil {
+			userState, err = s.repo.UserPluginState(actor.ID, pluginID)
+			if err != nil {
+				return PluginStateView{}, fmt.Errorf("读取用户插件状态：%w", err)
+			}
+		}
+	}
+	return s.pluginStateForUserWithStoredStates(actor, pluginID, items, platformState, userState)
+}
+
+func (s *Service) pluginStateForUserWithStoredStates(actor *model.User, pluginID string, items []PluginView, platformState *model.PluginPlatformState, userState *model.UserPluginState) (PluginStateView, error) {
 	runtimePlugin, hasRuntime := runtimePluginByID(items, pluginID)
 	source := "bundled"
 	if hasRuntime {
@@ -192,27 +233,15 @@ func (s *Service) pluginStateForUser(actor *model.User, pluginID string, items [
 	if hasRuntime && (policy.ActivationScope == PluginScopeSystem || s.repo == nil) {
 		platformAvailable = runtimePlugin.Status == "enabled"
 	}
-	if s.repo != nil {
-		platformState, err := s.repo.PluginPlatformState(pluginID)
-		if err != nil {
-			return PluginStateView{}, fmt.Errorf("读取插件平台状态：%w", err)
-		}
-		if platformState != nil {
-			platformAvailable = platformState.Available
-		}
+	if platformState != nil {
+		platformAvailable = platformState.Available
 	}
 
 	userEnabled := false
 	userConfigured := false
 	if policy.ActivationScope == PluginScopeUser && actor != nil {
-		if s.repo != nil {
-			userState, err := s.repo.UserPluginState(actor.ID, pluginID)
-			if err != nil {
-				return PluginStateView{}, fmt.Errorf("读取用户插件状态：%w", err)
-			}
-			if userState != nil {
-				userEnabled, userConfigured = userState.Enabled, true
-			}
+		if userState != nil {
+			userEnabled, userConfigured = userState.Enabled, true
 		}
 		// Preserve the old globally-enabled workflow behavior until each user
 		// explicitly saves a personal choice. Other official applications were
