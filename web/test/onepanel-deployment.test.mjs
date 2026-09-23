@@ -9,7 +9,7 @@ const read = (file) => readFileSync(new URL(`../../${file}`, import.meta.url), "
 const compose = Bun.YAML.parse(read("docker-compose.1panel.yml"));
 const temporaryDirectories = [];
 const gitExecutable = Bun.which("git");
-const bash = process.platform === "win32" ? (Bun.which("bash") || (gitExecutable ? path.resolve(path.dirname(gitExecutable), "../../bin/bash.exe") : "bash")) : "bash";
+const bash = process.platform === "win32" ? Bun.which("bash") || (gitExecutable ? path.resolve(path.dirname(gitExecutable), "../../bin/bash.exe") : "bash") : "bash";
 const shellPath = (value) => value.replaceAll("\\", "/").replace(/^([A-Za-z]):\//, (_, drive) => `/${drive.toLowerCase()}/`);
 
 afterEach(() => {
