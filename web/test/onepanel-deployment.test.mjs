@@ -8,7 +8,8 @@ import { fileURLToPath } from "node:url";
 const read = (file) => readFileSync(new URL(`../../${file}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const compose = Bun.YAML.parse(read("docker-compose.1panel.yml"));
 const temporaryDirectories = [];
-const bash = process.platform === "win32" ? path.resolve(path.dirname(Bun.which("git") || ""), "../bin/bash.exe") : "bash";
+const gitExecutable = Bun.which("git");
+const bash = process.platform === "win32" ? (Bun.which("bash") || (gitExecutable ? path.resolve(path.dirname(gitExecutable), "../../bin/bash.exe") : "bash")) : "bash";
 const shellPath = (value) => value.replaceAll("\\", "/").replace(/^([A-Za-z]):\//, (_, drive) => `/${drive.toLowerCase()}/`);
 
 afterEach(() => {
@@ -84,6 +85,34 @@ test("one-click Caddy migration is guarded and reuses the existing project", () 
 
 test("one-click Caddy migration passes Bash syntax validation", () => {
     const scriptPath = fileURLToPath(new URL("../../1panel-deploy/migrate-to-caddy.sh", import.meta.url));
+    const result = spawnSync(bash, ["--noprofile", "--norc", "-n", shellPath(scriptPath)], {
+        encoding: "utf8",
+        timeout: 30000,
+    });
+    if (result.error) throw result.error;
+    expect(result.status).toBe(0);
+});
+
+test("one-click 1Panel upgrade is guarded and preserves the existing deployment", () => {
+    const script = read("1panel-deploy/upgrade-1panel.sh");
+
+    expect(script).toContain("--backup-confirmed");
+    expect(script).toContain("--image-tag");
+    expect(script).toContain("--expected-revision");
+    expect(script).toContain("--web-port");
+    expect(script).toContain("--exit-code-from migrate migrate");
+    expect(script).toContain("--no-deps --force-recreate --wait");
+    expect(script).toContain("open-ai-canvas_backend-data");
+    expect(script).toContain("open-ai-canvas_deployment-secrets");
+    expect(script).toContain("open-ai-canvas_postgres-data");
+    expect(script).toContain("open-ai-canvas_redis-data");
+    expect(script).not.toMatch(/^\s*docker compose .*down -v/m);
+    expect(script).not.toContain("docker volume rm");
+    expect(script).not.toContain("CANVAS_HTTP_PORT=3000");
+});
+
+test("one-click 1Panel upgrade passes Bash syntax validation", () => {
+    const scriptPath = fileURLToPath(new URL("../../1panel-deploy/upgrade-1panel.sh", import.meta.url));
     const result = spawnSync(bash, ["--noprofile", "--norc", "-n", shellPath(scriptPath)], {
         encoding: "utf8",
         timeout: 30000,

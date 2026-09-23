@@ -10,6 +10,7 @@
 | `.env.example` | 可公开的环境配置模板，不含真实密码，默认 `latest` |
 | `Caddyfile.example` | 宿主机 Caddy 配置，默认反代到 `127.0.0.1:3000` |
 | `migrate-to-caddy.sh` | Linux 服务器上一键将已有 1Panel 入口从旧端口迁移到 Caddy；复用原编排和数据卷 |
+| `upgrade-1panel.sh` | Linux 服务器上一键升级已有 1Panel 编排；先迁移数据库，再重建后端和网页 |
 | `.env`（不随仓库分发） | 部署环境的私有配置，保留已有凭据、卷名及地址，不提交仓库 |
 | `README.md` | 部署与数据保护说明 |
 | `render-editor.mjs` | 在本机从已核对的私有配置生成已有部署专用的编辑器 YAML；需要 Bun 与 Docker Compose，仅解析配置 |
@@ -38,6 +39,24 @@ bun 1panel-deploy/render-editor.mjs --env-file 1panel-deploy/.env
 - 默认仓库 `CANVAS_IMAGE_OWNER=buttonslaybaugh397-art`，没有切换到上游镜像。使用私有仓库时，在 1Panel 配置拉取凭据，不把凭据写入编排。
 
 新部署默认通过宿主机 `127.0.0.1:3000` 接入 Caddy，并由 Caddy 负责 HTTPS。直接 IP 测试时设置 `CANVAS_BIND_ADDRESS=0.0.0.0`，并将 `CANVAS_HTTP_PORT` 与 CORS 设置为实际测试地址。不要对公网开放 PostgreSQL、Redis 或后端端口。
+
+## 已有编排一键升级
+
+`upgrade-1panel.sh` 用于更新现有五服务编排中的应用镜像，不负责网关迁移，也不改变现有 `CANVAS_HTTP_PORT`。它只拉取 `migrate`、`backend`、`web`，先执行目标版本的 `migrate-schema up` 与 `verify`，成功后再重建后端和网页；PostgreSQL、Redis 和四个已有卷保持运行和复用。
+
+脚本要求先有一份**可恢复的数据备份**。`--backup-confirmed` 只是操作者确认，不会伪造或生成卷备份；1Panel 备份失败时不要使用该参数绕过保护。建议使用已发布的共同版本标签，并用 `--expected-revision` 锁定提交：
+
+```bash
+sudo bash 1panel-deploy/upgrade-1panel.sh \
+  --project-dir /1233/open-ai-canvas-main \
+  --compose-file docker-compose.1panel.yml \
+  --image-tag 1.5.7.1 \
+  --expected-revision eba014162c8c4b80bf1370da9e7c79ebffa8fbf0 \
+  --backup-confirmed \
+  --yes
+```
+
+运行前先用 `--dry-run` 检查路径、Compose 配置、运行中的四个卷和 Web 端口。脚本默认要求现有 Web 仍绑定 `6868`；如果部署实际使用其他端口，必须显式传入 `--web-port`。脚本不会执行删除卷的 Compose 操作，不会创建第二个项目，不会修改 PostgreSQL 密码或 secrets 卷。迁移失败时保留现场，不自动回滚数据库 schema；应先查看迁移日志，再使用与数据库版本匹配的镜像处理。
 
 ## 旧 6868 入口迁移到 Caddy
 
