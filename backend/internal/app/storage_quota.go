@@ -66,13 +66,6 @@ func validateTaskDataGrowthQuotaWithPolicy(usage repository.UserStorageUsage, in
 	return nil
 }
 
-func validateAPICallLogQuotaWithPolicy(usage repository.UserStorageUsage, incomingBytes int64, policy RuntimeResourcePolicy) error {
-	if usage.APICallCount >= policy.APICallLogCount {
-		return QuotaExceeded(fmt.Sprintf("账号上游请求日志已达到 %d 条上限，请联系管理员归档", policy.APICallLogCount))
-	}
-	return validateTaskDataGrowthQuotaWithPolicy(usage, incomingBytes, policy)
-}
-
 func validateStructuredReplacementQuotaWithPolicy(usage repository.UserStorageUsage, kind string, count int, bytes int64, policy RuntimeResourcePolicy) error {
 	deltaBytes := bytes
 	switch kind {

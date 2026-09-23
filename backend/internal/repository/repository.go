@@ -38,6 +38,8 @@ var ErrProjectUnitShotsChanged = errors.New("project unit shots changed")
 
 var ErrCanvasRevisionConflict = errors.New("canvas revision changed")
 
+var ErrTaskDataQuotaExceeded = errors.New("task data quota exceeded")
+
 type Repository struct {
 	db *gorm.DB
 }
@@ -102,6 +104,10 @@ func (r *Repository) nextPrefixedID(db *gorm.DB, prefix string) (string, error) 
 }
 
 func (r *Repository) UserStorageUsage(userID string) (UserStorageUsage, error) {
+	return userStorageUsage(r.db, r.Dialect(), userID)
+}
+
+func userStorageUsage(db *gorm.DB, dialect string, userID string) (UserStorageUsage, error) {
 	var usage UserStorageUsage
 	query := `
 		SELECT
@@ -117,11 +123,11 @@ func (r *Repository) UserStorageUsage(userID string) (UserStorageUsage, error) {
 			+ (SELECT COALESCE(SUM(length(CAST(COALESCE(path, '') AS BLOB)) + length(CAST(COALESCE(model, '') AS BLOB)) + length(CAST(COALESCE(provider_request_id, '') AS BLOB)) + length(CAST(COALESCE(error_code, '') AS BLOB)) + length(CAST(COALESCE(error, '') AS BLOB)) + length(CAST(COALESCE(upstream_url, '') AS BLOB)) + length(CAST(COALESCE(request_body, '') AS BLOB)) + length(CAST(COALESCE(response_body, '') AS BLOB))), 0) FROM api_call_logs WHERE user_id = ?) AS task_bytes,
 			(SELECT COUNT(*) FROM api_call_logs WHERE user_id = ?) AS api_call_count
 	`
-	if r.Dialect() == "postgres" {
+	if dialect == "postgres" {
 		query = strings.ReplaceAll(query, "length(CAST(COALESCE(", "octet_length(COALESCE(")
 		query = strings.ReplaceAll(query, ", '') AS BLOB))", ", ''))")
 	}
-	err := r.db.Raw(query, userID, userID, userID, userID, userID, userID, userID, userID, userID, userID, userID).Scan(&usage).Error
+	err := db.Raw(query, userID, userID, userID, userID, userID, userID, userID, userID, userID, userID, userID).Scan(&usage).Error
 	return usage, err
 }
 
@@ -827,6 +833,106 @@ func (r *Repository) ApiCallLogs(userID string, admin bool, limit int) ([]model.
 	}
 	err := query.Omit("RequestBody", "ResponseBody").Find(&logs).Error
 	return logs, err
+}
+
+const apiCallLogPruneBatchSize int64 = 512
+
+// CreateAPICallLogWithRetention writes an upstream request log without turning
+// the per-user log count into a hard stop. Cleanup and insertion share one
+// transaction, so a quota or database error never leaves the user with fewer
+// historical logs than before the attempted write.
+func (r *Repository) CreateAPICallLogWithRetention(log *model.ApiCallLog, logLimit int64, taskDataLimitBytes int64, incomingBytes int64) error {
+	if log == nil {
+		return errors.New("api call log is nil")
+	}
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if strings.TrimSpace(log.UserID) != "" && logLimit > 0 {
+			if err := pruneAPICallLogsWithinLimit(tx, log.UserID, logLimit, log.ID); err != nil {
+				return err
+			}
+		}
+		if strings.TrimSpace(log.UserID) != "" && taskDataLimitBytes > 0 {
+			usage, err := userStorageUsage(tx, tx.Dialector.Name(), log.UserID)
+			if err != nil {
+				return err
+			}
+			if usage.TaskBytes+incomingBytes > taskDataLimitBytes {
+				return ErrTaskDataQuotaExceeded
+			}
+		}
+		return tx.Create(log).Error
+	})
+}
+
+func pruneAPICallLogsWithinLimit(tx *gorm.DB, userID string, limit int64, incomingID string) error {
+	var count int64
+	if err := tx.Model(&model.ApiCallLog{}).Where("user_id = ?", userID).Count(&count).Error; err != nil {
+		return err
+	}
+	remaining := count - limit + 1
+	if remaining <= 0 {
+		return nil
+	}
+
+	terminalStatuses := []model.TaskStatus{
+		model.TaskStatusSucceeded,
+		model.TaskStatusFailed,
+		model.TaskStatusCancelled,
+	}
+	pendingCancellationStatuses := []model.ProviderCancelStatus{
+		model.ProviderCancelStatusRequested,
+		model.ProviderCancelStatusUncertain,
+	}
+	pendingBillingStatuses := []model.BillingStatus{
+		model.BillingStatusReserved,
+		model.BillingStatusRunning,
+		model.BillingStatusUncertain,
+	}
+
+	for remaining > 0 {
+		batchSize := remaining
+		if batchSize > apiCallLogPruneBatchSize {
+			batchSize = apiCallLogPruneBatchSize
+		}
+		query := tx.Table("api_call_logs AS logs").
+			Select("logs.id").
+			Joins("LEFT JOIN tasks AS tasks ON tasks.id = logs.task_id").
+			Joins("LEFT JOIN billing_orders AS log_orders ON log_orders.id = logs.billing_order_id").
+			Joins("LEFT JOIN billing_orders AS task_orders ON task_orders.id = tasks.billing_order_id").
+			Where("logs.user_id = ?", userID).
+			Where(
+				"(tasks.id IS NULL OR (tasks.status IN ? AND COALESCE(tasks.provider_cancel_status, '') NOT IN ?))",
+				terminalStatuses,
+				pendingCancellationStatuses,
+			).
+			Where(
+				"(log_orders.id IS NULL OR log_orders.status NOT IN ?) AND (task_orders.id IS NULL OR task_orders.status NOT IN ?)",
+				pendingBillingStatuses,
+				pendingBillingStatuses,
+			).
+			Order("logs.created_at asc, logs.id asc").
+			Limit(int(batchSize))
+		if strings.TrimSpace(incomingID) != "" {
+			query = query.Where("logs.id <> ?", incomingID)
+		}
+
+		var ids []string
+		if err := query.Pluck("logs.id", &ids).Error; err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		deleted := tx.Where("id IN ? AND user_id = ?", ids, userID).Delete(&model.ApiCallLog{})
+		if deleted.Error != nil {
+			return deleted.Error
+		}
+		if deleted.RowsAffected == 0 {
+			return nil
+		}
+		remaining -= deleted.RowsAffected
+	}
+	return nil
 }
 
 func (r *Repository) SystemSetting(key string) (*model.SystemSetting, error) {

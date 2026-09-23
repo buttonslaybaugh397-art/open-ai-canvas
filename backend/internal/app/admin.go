@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"infinite-canvas/backend/internal/kernel"
 	stdlog "log"
 	"net/http"
@@ -819,15 +820,12 @@ func (s *Service) LogAPICall(log model.ApiCallLog) error {
 	}
 	s.storageMu.Lock()
 	defer s.storageMu.Unlock()
-	usage, err := s.repo.UserStorageUsage(log.UserID)
-	if err != nil {
-		return err
-	}
 	incomingBytes := int64(len(log.Path) + len(log.Model) + len(log.ProviderRequestID) + len(log.ErrorCode) + len(log.Error) + len(log.UpstreamURL) + len(log.RequestContentType) + len(log.RequestBody) + len(log.ResponseBody))
-	if err := validateAPICallLogQuotaWithPolicy(usage, incomingBytes, policy.Resource); err != nil {
-		return err
+	err = s.repo.CreateAPICallLogWithRetention(&log, policy.Resource.APICallLogCount, gigabytes(policy.Resource.TaskDataGB), incomingBytes)
+	if errors.Is(err, repository.ErrTaskDataQuotaExceeded) {
+		return QuotaExceeded(fmt.Sprintf("账号任务历史数据已达到 %dGB 上限，请联系管理员归档", policy.Resource.TaskDataGB))
 	}
-	return s.repo.Create(&log)
+	return err
 }
 
 func (s *Service) mergeVideoAPICallLog(log model.ApiCallLog) (bool, error) {
