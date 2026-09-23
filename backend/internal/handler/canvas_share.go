@@ -78,7 +78,8 @@ func RegisterCanvasShareRoutes(r *gin.RouterGroup, svc *service.Service) {
 		if !enforceRateLimit(c, "public-canvas-resource:"+c.ClientIP(), 300, time.Minute) {
 			return
 		}
-		delivery, err := svc.PrepareSharedCanvasResourceDelivery(c.Param("token"), c.Param("resourceId"), c.GetHeader("Range"))
+		opts := resourceAccessOptions(c)
+		delivery, err := svc.PrepareSharedCanvasResourceDelivery(c.Param("token"), c.Param("resourceId"), opts, c.GetHeader("Range"))
 		if err != nil {
 			var appErr *service.AppError
 			if errors.As(err, &appErr) && appErr.Status == http.StatusServiceUnavailable {

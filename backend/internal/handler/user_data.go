@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"infinite-canvas/backend/internal/assets"
 	"infinite-canvas/backend/internal/model"
 	"infinite-canvas/backend/internal/service"
 
@@ -19,6 +20,43 @@ import (
 )
 
 func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
+	r.POST("/resources/access", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<10)
+		var req []service.ResourceAccessRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		result, err := svc.ResourceAccessBatch(user.ID, req)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"items": result})
+	})
+	r.POST("/assets/batch-delete", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 256<<10)
+		var ids []string
+		if err := c.ShouldBindJSON(&ids); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		if err := svc.PurgeUserAssets(user.ID, ids); err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"ids": ids})
+	})
 	r.POST("/assets/batch", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {
@@ -264,27 +302,6 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"resource": resource})
 	})
-	r.GET("/resources/:id/oss-url", func(c *gin.Context) {
-		user, err := currentUser(c, svc)
-		if err != nil {
-			failService(c, err)
-			return
-		}
-		resource, err := svc.Resource(user.ID, c.Param("id"))
-		if err != nil {
-			fail(c, http.StatusNotFound, err)
-			return
-		}
-		ossURL, err := svc.DirectResourceURL(user.ID, resource.ID)
-		if err != nil {
-			failService(c, err)
-			return
-		}
-		// 签名地址只用于当前复制动作，禁止浏览器或中间代理缓存。
-		c.Header("Cache-Control", "private, no-store")
-		c.Header("Referrer-Policy", "no-referrer")
-		ok(c, gin.H{"url": ossURL})
-	})
 	r.GET("/resources/:id/file", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {
@@ -298,12 +315,12 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 				downloadFileName = c.Param("id")
 			}
 		}
-		delivery, err := svc.PrepareResourceDelivery(user.ID, c.Param("id"), service.ResourceDeliveryOptions{
-			Context:          c.Request.Context(),
-			ForceDirect:      c.Query("direct") == "1",
-			ForceProxy:       c.Query("proxy") == "1",
-			DownloadFileName: downloadFileName,
-		})
+		options := resourceAccessOptions(c)
+		options.Context = c.Request.Context()
+		options.ForceDirect = c.Query("direct") == "1"
+		options.ForceProxy = c.Query("proxy") == "1"
+		options.DownloadFileName = downloadFileName
+		delivery, err := svc.PrepareResourceDelivery(user.ID, c.Param("id"), options, c.GetHeader("Range"))
 		if err != nil {
 			failService(c, err)
 			return
@@ -312,10 +329,17 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			c.Header("Content-Disposition", attachmentContentDisposition(downloadFileName))
 		}
 		if c.Query("resolve") == "1" {
+			if delivery.Stream != nil && delivery.Stream.Body != nil {
+				_ = delivery.Stream.Body.Close()
+			}
 			c.Header("Content-Disposition", "")
 			c.Header("Cache-Control", "private, no-store")
 			c.Header("Referrer-Policy", "no-referrer")
-			ok(c, gin.H{"url": delivery.RedirectURL})
+			resolveURL := delivery.RedirectURL
+			if resolveURL == "" && delivery.Access != nil {
+				resolveURL = delivery.Access.URL
+			}
+			ok(c, gin.H{"url": resolveURL})
 			return
 		}
 		if delivery.RedirectURL != "" {
@@ -329,12 +353,27 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			c.Redirect(http.StatusTemporaryRedirect, delivery.RedirectURL)
 			return
 		}
+		if c.Query("access") == "1" {
+			if delivery.Stream != nil && delivery.Stream.Body != nil {
+				_ = delivery.Stream.Body.Close()
+			}
+			c.Header("Cache-Control", "private, no-store")
+			c.Header("Referrer-Policy", "no-referrer")
+			ok(c, gin.H{"access": delivery.Access})
+			return
+		}
 		resource := delivery.Resource
+		stream := delivery.Stream
+		if resource == nil || stream == nil || stream.Body == nil {
+			fail(c, http.StatusServiceUnavailable, errors.New("资源分发结果无效"))
+			return
+		}
+		defer stream.Body.Close()
 		etag := resourceResponseETag(resource)
 		// variant=playback：serve 浏览器兼容播放副本（H.265→H.264 转码）。
 		// 副本就绪时用独立 ETag 后缀，避免浏览器拿原件缓存命中 304 而继续黑屏。
-		usePlayback := c.Query("variant") == "playback" && resource.Provider == "local" &&
-			resource.PlaybackStatus == model.PlaybackStatusReady && resource.PlaybackObjectKey != ""
+		usePlayback := c.Query("variant") == "playback" && delivery.Access != nil &&
+			delivery.Access.ActualVariant == assets.VariantPlayback
 		serveETag := etag
 		if usePlayback {
 			serveETag = etag + ":pb"
@@ -358,40 +397,9 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			c.Status(http.StatusNotModified)
 			return
 		}
-		rangeHeader := c.GetHeader("Range")
-		if ifRange := strings.TrimSpace(c.GetHeader("If-Range")); ifRange != "" && ifRange != serveETag {
-			rangeHeader = ""
-		}
-		var stream *service.ResourceStream
 		if usePlayback {
-			stream, err = svc.OpenResourcePlaybackRange(user.ID, resource.ID)
-			if err == nil {
-				resource = stream.Resource // MimeType 已置 video/mp4
-			} else if errors.Is(err, service.ErrPlaybackNotReady) {
-				// 副本尚未就绪：回退原件，并撤销 :pb 后缀，保证副本就绪后
-				// 浏览器不会拿原件缓存命中 304 而继续黑屏。
-				c.Header("ETag", etag)
-				stream, err = svc.OpenResourceRange(user.ID, resource.ID, rangeHeader)
-				if err != nil {
-					failService(c, err)
-					return
-				}
-			} else {
-				failService(c, err)
-				return
-			}
-		} else {
-			stream, err = svc.OpenResourceRange(user.ID, resource.ID, rangeHeader)
-			if err != nil {
-				failService(c, err)
-				return
-			}
+			resource = stream.Resource // MimeType 已置 video/mp4
 		}
-		if err != nil {
-			failService(c, err)
-			return
-		}
-		defer stream.Body.Close()
 		if resource.MimeType == "" {
 			resource.MimeType = "application/octet-stream"
 		}
@@ -409,29 +417,13 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 		c.DataFromReader(stream.StatusCode, stream.ContentLength, resource.MimeType, stream.Body, nil)
 	})
 	publicResourceHandler := func(c *gin.Context) {
-		stream, err := svc.OpenPublicResourceRange(c.Param("id"), c.Query("expires"), c.Query("signature"), c.GetHeader("Range"))
+		options := resourceAccessOptions(c)
+		delivery, err := svc.PreparePublicResourceDelivery(c.Param("id"), c.Query("expires"), c.Query("signature"), options, c.GetHeader("Range"))
 		if err != nil {
 			failService(c, err)
 			return
 		}
-		defer stream.Body.Close()
-		resource := stream.Resource
-		if resource.MimeType == "" {
-			resource.MimeType = "application/octet-stream"
-		}
-		c.Header("Cache-Control", "public, max-age=0, must-revalidate")
-		c.Header("Accept-Ranges", "bytes")
-		c.Header("Referrer-Policy", "no-referrer")
-		c.Header("X-Content-Type-Options", "nosniff")
-		if stream.ContentRange != "" {
-			c.Header("Content-Range", stream.ContentRange)
-		}
-		if seeker, ok := stream.Body.(io.ReadSeeker); ok {
-			c.Header("Content-Type", resource.MimeType)
-			http.ServeContent(c.Writer, c.Request, resource.ID, resource.UpdatedAt, seeker)
-			return
-		}
-		c.DataFromReader(stream.StatusCode, stream.ContentLength, resource.MimeType, stream.Body, nil)
+		serveResourceDelivery(c, delivery, "public, max-age=0, must-revalidate", "")
 	}
 	r.GET("/public/resources/:id/file", publicResourceHandler)
 	r.GET("/public/resources/:id/file/:filename", publicResourceHandler)
@@ -611,7 +603,7 @@ func RegisterUserDataRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
-		if err := svc.DeleteUserAsset(user.ID, c.Param("id")); err != nil {
+		if err := svc.PurgeUserAsset(user.ID, c.Param("id")); err != nil {
 			failService(c, err)
 			return
 		}

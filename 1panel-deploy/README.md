@@ -8,6 +8,8 @@
 | --- | --- |
 | `docker-compose.yml` | 完整编排，包含 PostgreSQL、Redis、数据库迁移、后端和网页 |
 | `.env.example` | 可公开的环境配置模板，不含真实密码，默认 `latest` |
+| `Caddyfile.example` | 宿主机 Caddy 配置，默认反代到 `127.0.0.1:3000` |
+| `migrate-to-caddy.sh` | Linux 服务器上一键将已有 1Panel 入口从旧端口迁移到 Caddy；复用原编排和数据卷 |
 | `.env`（不随仓库分发） | 部署环境的私有配置，保留已有凭据、卷名及地址，不提交仓库 |
 | `README.md` | 部署与数据保护说明 |
 | `render-editor.mjs` | 在本机从已核对的私有配置生成已有部署专用的编辑器 YAML；需要 Bun 与 Docker Compose，仅解析配置 |
@@ -32,9 +34,53 @@ bun 1panel-deploy/render-editor.mjs --env-file 1panel-deploy/.env
 
 - `CANVAS_IMAGE_TAG`：默认 `latest`，前端、后端和迁移使用我们自己仓库的最新版镜像，无需手填版本号；需要锁定版本时可改成已发布的共同 `sha-xxxxxxx` 标签。`latest` 指仓库已发布版本，不是本机未发布源码；推送后应等待镜像工作流成功，再更新编排。本编排不会自动构建或发布镜像，也不是 `sha-f88d6d9` 回退模板，镜像需包含 `migrate-schema` 与就绪检查接口。
 - `CANVAS_CORS_ORIGINS`：同源访问可留空；跨域访问时填写实际浏览器 Origin，例如 `https://canvas.example.com`，不要填写路径、末尾斜杠、Markdown 链接或 `*`。
+- `CANVAS_PUBLIC_BASE_URL`：填写真实 HTTPS 根地址，例如 `https://canvas.example.com`；本地存储给模型上游的短时资源链接依赖此值，不要填写 `/api` 或容器地址。
 - 默认仓库 `CANVAS_IMAGE_OWNER=buttonslaybaugh397-art`，没有切换到上游镜像。使用私有仓库时，在 1Panel 配置拉取凭据，不把凭据写入编排。
 
-默认通过宿主机 `127.0.0.1:6868` 接入反向代理并使用 HTTPS。直接 IP 测试时设置 `CANVAS_BIND_ADDRESS=0.0.0.0`，并将 CORS 设置为实际 `http://服务器IP:6868`。不要对公网开放 PostgreSQL、Redis 或后端端口。
+新部署默认通过宿主机 `127.0.0.1:3000` 接入 Caddy，并由 Caddy 负责 HTTPS。直接 IP 测试时设置 `CANVAS_BIND_ADDRESS=0.0.0.0`，并将 `CANVAS_HTTP_PORT` 与 CORS 设置为实际测试地址。不要对公网开放 PostgreSQL、Redis 或后端端口。
+
+## 旧 6868 入口迁移到 Caddy
+
+此迁移只切换 Web 的宿主机入口，不搬迁 PostgreSQL、Redis、上传文件、`.settings-key` 或 secrets 卷。迁移期间用旧 `6868` 和新 `3000` 双入口并存，先验收 Caddy，再移除旧入口。
+
+“无缝”在这里表示数据卷、账号、登录态配置和应用内网链路不变；如果当前 1Panel 的 OpenResty 已占用宿主机 `80/443`，把网关所有权交给 Caddy 仍需要一个很短的交接窗口。只有前面还有负载均衡器、第二公网 IP 或备用节点时，才能做到网关层绝对零中断。
+
+### 一键迁移
+
+服务器已经安装 Caddy、Docker Compose v2，并且 Caddy 由 systemd 管理时，可以直接执行：
+
+```bash
+sudo bash 1panel-deploy/migrate-to-caddy.sh \
+  --project-dir /opt/1panel/compose/open-ai-canvas \
+  --domain canvas.example.com \
+  --takeover-service openresty \
+  --yes
+```
+
+`--project-dir` 必须是当前 1Panel 编排实际使用的目录，里面应有原 `.env` 和 Compose 文件；如果当前网关是 Docker 容器，改用 `--takeover-container <容器名或ID>`。脚本会检查现有 `web`、`backend`、PostgreSQL 和 Redis 容器，备份配置到 `/var/backups/open-ai-canvas-caddy/<UTC时间>/`，临时增加回环 `3000`，校验并启用 Caddy，完成 HTTPS 健康检查后将 `CANVAS_HTTP_PORT` 收口为 `3000`。它不会安装第二套数据库、执行 `down -v`、删除卷或停止 Backend/PostgreSQL/Redis。
+
+如果 `/etc/caddy/Caddyfile` 已有其他站点内容，脚本默认拒绝覆盖；确认它是本应用专用配置后再追加 `--replace-caddyfile`。
+
+如果 DNS 或证书尚未就绪，可加 `--skip-public-check` 只完成本机切换，但必须随后手工验证真实 HTTPS 域名。脚本失败会尝试恢复原 `.env`、Web 旧端口、Caddy 配置和旧网关；失败后仍应检查备份目录与服务状态。
+
+1. 备份 PostgreSQL、后端数据目录、`.settings-key` 和 Redis AOF；从旧容器挂载信息核对四个真实卷名。保留旧私有 `.env`，不要执行 `down -v`。
+2. 保持旧 `.env` 的 `CANVAS_HTTP_PORT=6868`，补齐真实的 `CANVAS_CORS_ORIGINS` 和 `CANVAS_PUBLIC_BASE_URL`。固定已经发布且前后端一致的镜像标签。
+3. 在本机生成桥接编排：
+
+   ```bash
+   bun 1panel-deploy/render-editor.mjs \
+     --env-file 1panel-deploy/.env \
+     --image-tag sha-<已发布完整提交SHA> \
+     --add-http-port 3000 \
+     --output .local/1panel-deploy/docker-compose.caddy-bridge.yml
+   ```
+
+   生成文件会把四个卷标记为 `external: true`，并让 Web 同时监听旧的 `127.0.0.1:6868` 与新的 `127.0.0.1:3000`。把整份文件替换到 1Panel 编排中，不要追加到旧 YAML 末尾，也不要修改卷名或密码。
+4. 在宿主机准备 `Caddyfile.example`，把域名替换为真实域名，先运行 `caddy validate`。确认 `http://127.0.0.1:3000/` 可访问后，安排网关交接：停止或移除 1Panel 站点对 `80/443` 的占用，启动并 reload Caddy。不要先停止 PostgreSQL、Redis 或 Backend。
+5. 用真实 HTTPS 域名验证登录、Cookie、`/api/health/ready`、文本 SSE、资源 Range 和生成任务恢复。旧 1Panel 入口 `6868` 在这一步仍可作为回退入口。
+6. 验收通过后，将私有环境中的 `CANVAS_HTTP_PORT` 改为 `3000`，重新生成**不带** `--add-http-port` 的最终编辑器编排，再整份替换 1Panel 配置并只重建 Web。确认 `6868` 不再被使用后，删除旧 1Panel 反向代理站点。
+
+如果迁移中止，先把 Caddy 停止并恢复旧 1Panel 站点，再继续使用 `6868`；不要回滚数据库迁移，也不要删除任何卷。
 
 ## 1Panel 使用
 

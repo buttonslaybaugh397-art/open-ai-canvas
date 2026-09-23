@@ -29,6 +29,7 @@
 - **任务与素材管理**：异步队列、进度与日志、取消/重试、素材库、资源引用校验和登录后的跨设备同步。
 - **时间线剪辑**：片段编排、拆分、修剪、字幕转写和服务端成片导出，并支持插件化编辑面板。
 - **云端 Agent**：支持持久化对话、画布摘要和流式事件回放；当前为只读阶段，真实环境能力以文档和验收清单为准。
+- **Agent 技能生态**：内置技能覆盖生产流程；社区技能库 [judian-skills](https://github.com/itsWyatt-K/judian-skills) 提供 34 个场景域包索引，完整卡片通过 GitHub 安装后按需读取。安装：技能页 → 安装技能 → GitHub 标签 → 仓库地址填 `https://github.com/itsWyatt-K/judian-skills`，子目录填 `skills/drama/story-structure-engine` 这类域包路径。
 - **管理与渠道**：系统渠道、逻辑模型、用量/积分、功能开关、对象存储、响应拦截和管理后台。
 
 完整功能以[功能清单](docs/content/docs/overview/features.mdx)为准。
@@ -109,7 +110,47 @@ docker compose -f docker-compose.local.yml up -d --build
 
 前端业务 API 统一经 `web/src/services/api/request.ts` 调用。生产环境由 Nginx 托管前端并代理后端，公网只需暴露 web 入口；SSE 仅在明确的流式路径关闭代理缓冲。
 
+标准生产部署与宿主机 Caddy 的链路如下。Caddy 不直接访问 Backend；所有浏览器请求先进入 Web 容器，由 Web 内置 Nginx 统一处理静态文件、`/api`、SSE、分享和 OAuth 回调：
+
+```text
+浏览器
+  │ HTTPS 443 / HTTP 80
+  ▼
+宿主机 Caddy
+  │ reverse_proxy http://127.0.0.1:3000
+  ▼
+Web 容器（Nginx :3000）
+  ├─ /api/* ───────────────► Backend 容器 :8080
+  └─ 静态前端
+                              Backend
+                              ├─ PostgreSQL 容器
+                              └─ Redis 容器
+```
+
 ## 服务器部署
+
+### 接入宿主机 Caddy
+
+标准 `docker-compose.deploy.yml` 默认只绑定宿主机 `127.0.0.1:3000`，不会直接把 3000 暴露到公网。将 `Caddyfile.example` 复制到宿主机 Caddy 配置目录，把 `canvas.example.com` 替换为真实域名，然后校验并重载：
+
+```bash
+sudo cp Caddyfile.example /etc/caddy/Caddyfile
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+```
+
+生产 `.env` 至少核对以下边界；`CANVAS_CORS_ORIGINS` 可在同源部署留空，也可以填真实域名 Origin：
+
+```dotenv
+CANVAS_BIND_ADDRESS=127.0.0.1
+CANVAS_HTTP_PORT=3000
+CANVAS_PUBLIC_BASE_URL=https://canvas.example.com
+CANVAS_CORS_ORIGINS=https://canvas.example.com
+```
+
+宿主机或云安全组按上游服务器方案只开放 `34205/tcp`（SSH，如服务器实际使用该端口）、`80/tcp` 和 `443/tcp`。`3000/tcp`、`8080/tcp`、PostgreSQL 和 Redis 不对公网开放；仓库编排不会修改 SSH 或防火墙规则。详细配置与验收见[Caddy 反向代理部署文档](docs/content/docs/backend/caddy-deployment.mdx)。
+
+已有直接访问公网 `:3000` 的部署，先完成 Caddy 配置和域名验收，再重新创建 Web 容器；旧 `.env` 没有 `CANVAS_BIND_ADDRESS` 时，新的 Compose 默认会改为回环绑定。迁移窗口内如需临时直连，可显式设置 `CANVAS_BIND_ADDRESS=0.0.0.0`，验收完成后应恢复为 `127.0.0.1`。
 
 ### 源码构建（推荐）
 
@@ -119,7 +160,7 @@ docker compose -f docker-compose.local.yml up -d --build
 curl -fsSL https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/main/scripts/install-server.sh | sudo bash
 ```
 
-默认访问 `http://服务器IP:3000`。更新或排查：
+默认 Web 内部入口为 `http://127.0.0.1:3000`，公网访问应通过 Caddy 域名。更新或排查：
 
 ```bash
 cd /opt/open-ai-canvas
@@ -137,7 +178,7 @@ sudo docker compose --env-file .env \
 curl -fsSL https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/main/scripts/install-server-image.sh | sudo bash
 ```
 
-生产环境请在 `/opt/open-ai-canvas/.env` 中将 `CANVAS_IMAGE_TAG` 固定为具体 Release，不要使用 `latest`。更新流程、数据库迁移、备份和回退说明见[系统更新文档](docs/content/docs/backend/system-update.mdx)。
+生产环境请在 `/opt/open-ai-canvas/.env` 中将 `CANVAS_IMAGE_TAG` 固定为具体 Release，不要使用 `latest`。更新流程、数据库迁移、备份和回退说明见[系统更新文档](docs/content/docs/backend/system-update.mdx)。更新 Web 容器不会改变宿主机 Caddy 配置。
 
 ## 安全边界
 

@@ -218,11 +218,17 @@ func verifyMigrationCoverage(db *gorm.DB) error {
 
 func migrations() []tableMigration {
 	return []tableMigration{
+		migrateTable[model.Tool]("tools"),
+		migrateTable[model.ToolFavorite]("tool_favorites"),
 		migrateTable[model.User]("users"),
 		migrateTable[model.AuthSession]("auth_sessions"),
 		migrateTable[model.UserIdentity]("user_identities"),
 		migrateTable[model.OAuthState]("o_auth_states"),
 		migrateTable[model.EmailVerificationCode]("email_verification_codes"),
+		migrateTable[model.AuthVerification]("auth_verifications"),
+		migrateTable[model.NotificationQuota]("notification_quota"),
+		migrateTable[model.SMSChannel]("sms_channels"),
+		migrateTable[model.SMSRecord]("sms_records"),
 		migrateTable[model.ModelChannel]("model_channels"),
 		migrateTable[model.ChannelModel]("channel_models"),
 		migrateTable[model.ChannelModelPriceTier]("channel_model_price_tiers"),

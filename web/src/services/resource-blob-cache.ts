@@ -33,8 +33,10 @@ const TOUCH_INTERVAL_MS = 10 * 60 * 1000;
 const BUDGET_REFRESH_MS = 5 * 60 * 1000;
 const MAX_CONCURRENT_DOWNLOADS = 4;
 const DOWNLOAD_ATTEMPTS = 3;
-const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
-const PERSIST_TIMEOUT_MS = 60 * 1000;
+// Large generated videos may be throttled by the CDN for several minutes.
+// Playback uses the direct resource URL and does not wait on this cache.
+const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1000;
+const PERSIST_TIMEOUT_MS = 10 * 60 * 1000;
 
 export async function getCachedResourceObjectUrl(storageKey: string) {
     const target = await cacheTarget(storageKey);
@@ -130,14 +132,30 @@ export async function getCachedResourceBlob(storageKey: string) {
         return cached;
     }
     const pending = inFlight.get(target.key);
-    if (pending) {
-        await pending;
-    } else {
-        await cacheResourceObjectUrl(storageKey);
+    let cacheError: unknown;
+    try {
+        if (pending) await pending;
+        else await cacheResourceObjectUrl(storageKey);
+    } catch (error) {
+        cacheError = error;
     }
     assertActiveScope(target);
-    const blob = sessionBlobs.get(target.key) || (await readPersistedBlob(target));
+    const downloaded = sessionBlobs.get(target.key) || (await readPersistedBlob(target));
     assertActiveScope(target);
+    if (downloaded) return downloaded;
+    try {
+        const blob = await loadAndPersistResource(storageKey);
+        if (blob) return blob;
+    } catch (error) {
+        if (!cacheError) cacheError = error;
+    }
+    if (cacheError) throw cacheError;
+    return null;
+}
+
+async function loadAndPersistResource(storageKey: string) {
+    const blob = await getResourceBlob(storageKey);
+    if (blob) await primeResourceBlobCache(storageKey, blob).catch(() => "");
     return blob;
 }
 

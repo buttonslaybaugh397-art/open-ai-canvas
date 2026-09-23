@@ -55,6 +55,19 @@ test("editor output preserves deployment settings without embedding the password
     expect(Bun.YAML.parse(Bun.YAML.stringify(output, null, 2))).toEqual(output);
 });
 
+test("editor can add a temporary Caddy port without replacing the legacy port", () => {
+    const input = resolvedFixture();
+    const output = createEditorCompose(input, { addHttpPort: "3000" });
+
+    expect(output.services.web.ports).toHaveLength(2);
+    expect(output.services.web.ports).toContainEqual({ host_ip: "127.0.0.1", published: "3000", target: 3000, protocol: "tcp" });
+    expect(input.services.web.ports).toHaveLength(1);
+});
+
+test("editor rejects an invalid temporary Caddy port", () => {
+    expect(() => createEditorCompose(resolvedFixture(), { addHttpPort: "not-a-port" })).toThrow("1 to 65535");
+});
+
 for (const origin of ["", "*", "https://canvas.example.com/", "https://canvas.example.com/api", "https://canvas.example.com?token=test", "https://user:pass@canvas.example.com", "https://*.example.com", "null"]) {
     test(`editor rejects invalid browser origin: ${origin}`, () => {
         const input = resolvedFixture();

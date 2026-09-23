@@ -33,6 +33,9 @@ export type UserOSSSetting = {
     region: string;
     endpoint: string;
     cdnBaseUrl: string;
+    cdnAuthMode: "" | "public" | "qiniu" | string;
+    requireCDN: boolean;
+    allowPrivateProxy: boolean;
     bucket: string;
     accessKeyId: string;
     hasAccessKeySecret: boolean;
@@ -52,6 +55,9 @@ export type UserOSSSetting = {
 export type UserOSSSettingInput = Pick<UserOSSSetting, "enabled" | "provider" | "s3Preset" | "region" | "endpoint" | "cdnBaseUrl" | "bucket" | "accessKeyId" | "pathPrefix" | "pathStyle"> & {
     accessKeySecret?: string;
     sessionToken?: string;
+    cdnAuthMode?: "" | "public" | "qiniu" | string;
+    requireCDN?: boolean;
+    allowPrivateProxy?: boolean;
 };
 
 export type AccountFileStorageUsage = {
@@ -96,6 +102,24 @@ export class ResourceUploadError extends Error {
 const resourceCache = new Map<string, RemoteResource>();
 const resourceRequests = new Map<string, Promise<RemoteResource>>();
 const missingResourceIds = new Set<string>();
+export type ResourceAccessPurpose = "display" | "copy" | "download" | "browser-process" | "provider-input";
+export type ResourceAccessVariant = "original" | "playback";
+export type ResourceAccess = {
+    resourceId: string;
+    requestedVariant: ResourceAccessVariant;
+    actualVariant: ResourceAccessVariant;
+    url: string;
+    delivery: "cdn" | "origin" | "platform-local" | "platform-proxy";
+    issuedAt: string;
+    expiresAt?: string;
+    refreshAt: string;
+    revision: string;
+    fallbackReason?: string;
+};
+
+const accessCache = new Map<string, { value: ResourceAccess; expiresAt: number }>();
+const accessRequests = new Map<string, Promise<ResourceAccess>>();
+// 保留旧资源访问函数的请求合同，供旧任务/插件回放使用；新代码统一走 getResourceAccess。
 const ossUrlCache = new Map<string, { url: string; expiresAt: number }>();
 const ossUrlRequests = new Map<string, Promise<string>>();
 const OSS_URL_CACHE_TTL_MS = 4 * 60 * 1000;
@@ -321,6 +345,7 @@ export function refreshResource(id: string): Promise<RemoteResource> {
     });
 }
 
+/** @deprecated 新调用方应使用 getResourceAccess；旧任务仍依赖 /oss-url 合同。 */
 export async function getResourceOSSUrl(storageKey?: string) {
     const id = resourceIdFromStorageKey(storageKey);
     if (!id) throw new Error("当前媒体尚未上传到后端资源存储");
@@ -345,6 +370,54 @@ export async function getResourceOSSUrl(storageKey?: string) {
     })();
     ossUrlRequests.set(cacheKey, request);
     return request;
+}
+
+export async function getResourceAccess(storageKey: string | undefined, purpose: ResourceAccessPurpose = "display", variant: ResourceAccessVariant = "original") {
+    const id = resourceIdFromStorageKey(storageKey);
+    if (!id) throw new Error("当前媒体尚未上传到后端资源存储");
+    const key = `${resourceCacheKey(id)}:${purpose}:${variant}`;
+    const cached = accessCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+    const pending = accessRequests.get(key);
+    if (pending) return pending;
+    const request = (async () => {
+        try {
+            const data = await http.post<{ items: Array<{ resourceId: string; access?: ResourceAccess; error?: { msg?: string } }> }>("/resources/access", [{ resourceId: id, purpose, variant }]);
+            const item = data.items?.[0];
+            if (!item?.access?.url) throw new Error(item?.error?.msg || "后端未返回资源访问地址");
+            const value = item.access;
+            const ttl = value.expiresAt ? Math.max(10_000, new Date(value.expiresAt).getTime() - Date.now() - 15_000) : 5 * 60_000;
+            accessCache.set(key, { value, expiresAt: Date.now() + ttl });
+            return value;
+        } catch (error) {
+            if (error instanceof ApiError) throw new Error(error.message || "获取对象存储地址失败");
+            throw error;
+        } finally {
+            accessRequests.delete(key);
+        }
+    })();
+    accessRequests.set(key, request);
+    return request;
+}
+
+/** 模型上游读取资源使用更长 TTL，但仍走统一资源访问合同。 */
+export async function getResourceInputURL(storageKey?: string) {
+    return (await getResourceAccess(storageKey, "provider-input")).url;
+}
+
+/**
+ * Resolve a platform delivery URL against the configured API origin.
+ *
+ * Cloud deliveries are already absolute CDN/origin URLs. Local/proxy
+ * deliveries are intentionally returned by the backend as controlled API
+ * paths; when the frontend talks to a separate backend origin, resolving the
+ * path here prevents a Blob read from accidentally targeting the web origin.
+ */
+export function resolveResourceAccessURL(url: string) {
+    if (!url || /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(url)) return url;
+    const base = String(apiBaseURL).trim();
+    if (!/^https?:\/\//i.test(base)) return url;
+    return new URL(url, `${base.replace(/\/+$/, "")}/`).toString();
 }
 
 function resourceCacheKey(id: string) {
@@ -374,7 +447,7 @@ export function resolveResourceUrl(storageKey?: string, fallback = "") {
 // 副本就绪前由后端回退原件，调用方再按需降级。
 export function playbackVariantUrl(id: string) {
     const base = String(apiBaseURL).replace(/\/+$/, "");
-    return `${base}/resources/${encodeURIComponent(id)}/file?variant=playback&direct=1`;
+    return `${base}/resources/${encodeURIComponent(id)}/file?variant=playback`;
 }
 
 export type ResourceBlobAccess = "user" | "admin";

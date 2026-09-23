@@ -120,13 +120,17 @@ func (s *Service) OpenResourceRangeAsAdmin(actor *model.User, id string, rangeHe
 	return s.openResourceRange(resource.UserID, resource, rangeHeader)
 }
 
-func (s *Service) PrepareResourceDeliveryAsAdmin(actor *model.User, id string, options ResourceDeliveryOptions) (*ResourceDelivery, error) {
+func (s *Service) PrepareResourceDeliveryAsAdmin(actor *model.User, id string, options ResourceAccessOptions, rangeHeaders ...string) (*ResourceDelivery, error) {
 	resource, err := s.resourceForAdmin(actor, id)
 	if err != nil {
 		return nil, err
 	}
 	// Storage credentials belong to the resource owner, not the visiting administrator.
-	return s.prepareResourceDelivery(resource.UserID, resource, options)
+	rangeHeader := ""
+	if len(rangeHeaders) > 0 {
+		rangeHeader = rangeHeaders[0]
+	}
+	return s.prepareResourceDeliveryWithoutStream(resource.UserID, resource, options, rangeHeader)
 }
 
 func (s *Service) resourceForAdmin(actor *model.User, id string) (*model.Resource, error) {
@@ -155,7 +159,7 @@ func normalizeAdminResourceQuery(query AdminResourceQuery) (repository.AdminReso
 		Limit:    limit,
 		Offset:   (page - 1) * limit,
 	}
-	if filter.Kind != "" && !oneOf(filter.Kind, "image", "video", "audio", "file") {
+	if filter.Kind != "" && !oneOf(filter.Kind, "image", "video", "audio", "file", "live2d") {
 		return repository.AdminResourceFilter{}, 0, 0, BadAuthRequest("资源类型筛选无效")
 	}
 	if filter.Status != "" && !oneOf(filter.Status, string(model.ResourceStatusPending), string(model.ResourceStatusReady), string(model.ResourceStatusFailed), string(model.ResourceStatusDeleted)) {

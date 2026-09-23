@@ -47,11 +47,8 @@ const resourceRedirectProbeTTL = 2 * time.Minute
 const resourceRedirectProbeTimeout = 2 * time.Second
 
 var errInvalidGeneratedDataURL = errors.New("生成内容 data URL 无效")
-var errResourceObjectMissing = errors.New("资源对象不存在")
-var errResourceCDNTemporary = errors.New("对象存储 CDN 临时不可用")
 
 type ResourceStream = assets.ResourceStream
-type ResourceDeliveryOptions = assets.ResourceDeliveryOptions
 type ResourceDelivery = assets.ResourceDelivery
 
 func (s *Service) Resources(userID string, limit int) ([]model.Resource, error) {
@@ -100,56 +97,6 @@ func (s *Service) directResourceURL(resource *model.Resource, expiresAt time.Tim
 		return s.signedHTTPSPublicResourceURL(resource, expiresAt)
 	}
 	return signedOSSObjectURL(setting, resource.ObjectKey, expiresAt)
-}
-
-// PrepareResourceDelivery 统一决定浏览器资源出口；CDN 故障不能隐式切换到服务器媒体转发。
-func (s *Service) PrepareResourceDelivery(userID string, id string, options ResourceDeliveryOptions) (*ResourceDelivery, error) {
-	resource, err := s.repo.ResourceForUser(userID, id)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, NotFound("资源不存在")
-		}
-		return nil, err
-	}
-	return s.prepareResourceDelivery(userID, resource, options)
-}
-
-func (s *Service) prepareResourceDelivery(userID string, resource *model.Resource, options ResourceDeliveryOptions) (*ResourceDelivery, error) {
-	if resource == nil {
-		return nil, errors.New("资源不存在")
-	}
-	if resource.Status != model.ResourceStatusReady {
-		return nil, BadAuthRequest("资源尚未上传完成")
-	}
-	if resource.Provider != "local" {
-		setting, err := s.ossSettingForResource(userID, resource)
-		if err != nil {
-			return nil, err
-		}
-		if setting.CDNBaseURL != "" {
-			redirectURL, err := ossCDNObjectURL(setting.CDNBaseURL, resource.ObjectKey, options.DownloadFileName)
-			if err == nil && setting.Provider == qiniuKodoProvider {
-				// Private Qiniu buckets require a signed CDN URL, including attachment parameters.
-				redirectURL, err = signedQiniuObjectURL(setting, resource.ObjectKey, time.Now().Add(directResourceURLTTL), options.DownloadFileName)
-			}
-			if err != nil {
-				return nil, err
-			}
-			available, probeErr := s.redirectResourceAvailable(options.Context, resource, redirectURL)
-			if probeErr != nil {
-				return nil, resourceDeliveryUnavailable("媒体 CDN 暂时不可用，请稍后重试", probeErr)
-			}
-			if !available {
-				if s.localResourceObjectAvailable(resource.ObjectKey, resource.Size) {
-					s.scheduleCloudResourceRecovery(resource.ID)
-				}
-				return nil, resourceDeliveryUnavailable("CDN 暂未提供该资源，正在重试", nil)
-			}
-			return &ResourceDelivery{Resource: resource, RedirectURL: redirectURL}, nil
-		}
-		return nil, resourceDeliveryUnavailable("该存储尚未配置 CDN，无法读取云端媒体", nil)
-	}
-	return &ResourceDelivery{Resource: resource}, nil
 }
 
 func resourceRedirectProbeKey(resource *model.Resource, redirectURL string) string {
@@ -608,7 +555,7 @@ func (s *Service) openResourceRangeWithOriginPreference(userID string, resource 
 	if err != nil {
 		return nil, err
 	}
-	return &ResourceStream{Resource: resource, Body: stream.body, StatusCode: stream.statusCode, ContentLength: stream.contentLength, ContentRange: stream.contentRange, AcceptRanges: stream.acceptRanges}, nil
+	return &ResourceStream{Resource: resource, Body: stream.Body, StatusCode: stream.StatusCode, ContentLength: stream.ContentLength, ContentRange: stream.ContentRange, AcceptRanges: stream.AcceptRanges}, nil
 }
 
 func retryableResourceReadError(err error) bool {
@@ -635,6 +582,10 @@ func retryableResourceReadError(err error) bool {
 }
 
 func (s *Service) storeResource(userID string, kind string, fileName string, mimeType string, size int64, width int, height int, durationMs int64, body io.Reader, uploadKey *string, forceLocal bool) (*model.Resource, bool, error) {
+	return s.storeResourceWithWriter(userID, kind, fileName, mimeType, size, width, height, durationMs, body, uploadKey, forceLocal, s.storeResourceObject)
+}
+
+func (s *Service) storeResourceWithWriter(userID string, kind string, fileName string, mimeType string, size int64, width int, height int, durationMs int64, body io.Reader, uploadKey *string, forceLocal bool, writeObject func(*model.Resource, string, io.Reader) (string, error)) (*model.Resource, bool, error) {
 	if existing, err := s.resourceForUploadKey(userID, uploadKey); err != nil {
 		return nil, false, err
 	} else if existing != nil {
@@ -644,7 +595,10 @@ func (s *Service) storeResource(userID string, kind string, fileName string, mim
 		return nil, false, resourceUploadInProgress()
 	}
 	now := time.Now()
-	kind = normalizeResourceKind(kind, mimeType)
+	// Live2D is reserved for the administrator's validated local import path.
+	if !(forceLocal && kind == "live2d") {
+		kind = normalizeResourceKind(kind, mimeType)
+	}
 	var setting ossSettingValue
 	var storageSettingID string
 	var useOSS bool
@@ -677,7 +631,7 @@ func (s *Service) storeResource(userID string, kind string, fileName string, mim
 		return nil, false, err
 	}
 	var etag string
-	etag, err = s.storeResourceObject(&resource, fileName, body)
+	etag, err = writeObject(&resource, fileName, body)
 	resource.UpdatedAt = time.Now()
 	if err != nil {
 		resource.Status = model.ResourceStatusFailed
@@ -727,9 +681,10 @@ func writeLocalResourceObject(filePath string, body io.Reader) error {
 	return closeErr
 }
 
-// storeResourceObject 写入资源物理对象。对象存储不可用（配置错误、密钥失效、网络
-// 故障、设置被删）时自动降级为本地存储并同步改写资源记录，保证上传写路径不因外部
-// 存储故障整体失败。对象存储失败后 body 会被重新读取，须支持 Seek。
+// A cloud write is successful only after the configured origin accepts it.
+// storeResourceObject writes to the configured origin and degrades to local storage
+// when the external origin is unavailable. The resource binding is rewritten before
+// the caller persists the ready state, so later reads follow the actual object location.
 func (s *Service) storeResourceObject(resource *model.Resource, fileName string, body io.Reader) (string, error) {
 	if resource == nil {
 		return "", errors.New("资源不存在")
@@ -1159,6 +1114,10 @@ func (s *Service) ossSettingForResource(userID string, resource *model.Resource)
 			// 密钥固定在资源绑定的历史版本；只有存储位置完全一致时，才允许沿用当前 CDN。
 			if resourceStorageMatches(current, resource) {
 				setting.CDNBaseURL = current.CDNBaseURL
+				// CDN 的鉴权方式和回退策略属于分发配置，而不是资源创建时的
+				// 凭据。存储位置未变时沿用当前策略，避免历史资源因管理员
+				// 刚补齐 CDN 鉴权配置而继续回源。
+				setting.Delivery = current.Delivery
 			}
 		}
 	} else {
@@ -1174,6 +1133,7 @@ func (s *Service) ossSettingForResource(userID string, resource *model.Resource)
 	}
 	resourceProvider := strings.ToLower(strings.TrimSpace(resource.Provider))
 	resourceMatchesSetting := resourceStorageMatches(setting, resource)
+	cdnMatchesSetting := resourceMatchesSetting || resourceLegacyCDNMatchesSetting(setting, resource)
 	setting, err = ossSettingForProvider(setting, firstNonEmpty(resource.Provider, setting.Provider))
 	if err != nil {
 		return ossSettingValue{}, err
@@ -1181,8 +1141,10 @@ func (s *Service) ossSettingForResource(userID string, resource *model.Resource)
 	setting.Endpoint = firstNonEmpty(resource.Endpoint, setting.Endpoint)
 	setting.Bucket = firstNonEmpty(resource.Bucket, setting.Bucket)
 	// CDN 是具体存储位置的出口，不得在 provider/endpoint/bucket 不匹配时继续沿用，
-	// 否则切换到七牛后会把历史阿里云 objectKey 拼成七牛域名。
-	if !resourceMatchesSetting || (resourceProvider != "" && resourceProvider != setting.Provider) {
+	// 否则切换到七牛后会把历史阿里云 objectKey 拼成七牛域名。未绑定
+	// StorageSettingID 的早期资源没有完整的历史配置，只能按 provider+bucket
+	// 保留既有 CDN 约定；带绑定的资源仍必须走严格匹配。
+	if !cdnMatchesSetting || (resourceProvider != "" && resourceProvider != setting.Provider) {
 		setting.CDNBaseURL = ""
 	}
 	if setting.AccessKeyID == "" || setting.AccessKeySecret == "" {
@@ -1215,6 +1177,15 @@ func resourceStorageMatches(setting ossSettingValue, resource *model.Resource) b
 	setting = normalizeOSSSetting(setting)
 	return setting.Provider == strings.ToLower(strings.TrimSpace(resource.Provider)) &&
 		setting.Endpoint == strings.TrimRight(strings.TrimSpace(resource.Endpoint), "/") &&
+		setting.Bucket == strings.TrimSpace(resource.Bucket)
+}
+
+func resourceLegacyCDNMatchesSetting(setting ossSettingValue, resource *model.Resource) bool {
+	if resource == nil || resource.StorageSettingID != "" {
+		return false
+	}
+	setting = normalizeOSSSetting(setting)
+	return setting.Provider == strings.ToLower(strings.TrimSpace(resource.Provider)) &&
 		setting.Bucket == strings.TrimSpace(resource.Bucket)
 }
 
@@ -1311,21 +1282,16 @@ func putAliyunOSSObject(setting ossSettingValue, objectKey string, mimeType stri
 	return strings.Trim(resp.Header.Get("ETag"), `"`), nil
 }
 
-type ossObjectStream struct {
-	body          io.ReadCloser
-	statusCode    int
-	contentLength int64
-	contentRange  string
-	acceptRanges  string
-}
-
 func getOSSObjectRange(setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
 	setting = normalizeOSSSetting(setting)
+	// Keep the historical object-read entry point compatible with deployments
+	// that configured only CDNBaseURL. The policy-based resource access path
+	// still requires an explicit CDN auth mode before advertising CDN delivery.
+	if setting.CDNBaseURL != "" && (setting.Delivery.CDNAuthMode == "" || cdnEnabled(setting)) {
+		return getOSSObjectRangeViaCDN(setting, objectKey, rangeHeader)
+	}
 	if setting.Provider == s3Provider {
 		return getS3ObjectRange(setting, objectKey, rangeHeader)
-	}
-	if setting.CDNBaseURL != "" {
-		return getOSSObjectRangeViaCDN(setting, objectKey, rangeHeader)
 	}
 	if setting.Provider == tencentCOSProvider {
 		return getCOSObjectRange(setting, objectKey, rangeHeader)
@@ -1356,7 +1322,7 @@ func getAliyunOSSObjectRange(setting ossSettingValue, objectKey string, rangeHea
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("OSS 读取失败：%s %s", resp.Status, strings.TrimSpace(string(detail)))
 	}
-	return &ossObjectStream{body: resp.Body, statusCode: resp.StatusCode, contentLength: resp.ContentLength, contentRange: resp.Header.Get("Content-Range"), acceptRanges: firstNonEmpty(resp.Header.Get("Accept-Ranges"), "bytes")}, nil
+	return &ossObjectStream{Body: resp.Body, StatusCode: resp.StatusCode, ContentLength: resp.ContentLength, ContentRange: resp.Header.Get("Content-Range"), AcceptRanges: firstNonEmpty(resp.Header.Get("Accept-Ranges"), "bytes")}, nil
 }
 
 func normalizeSingleByteRange(value string) string {
@@ -1396,14 +1362,16 @@ func resourceDownloadDisposition(fileNames ...string) string {
 
 func signedOSSObjectURL(setting ossSettingValue, objectKey string, expiresAt time.Time, downloadFileName ...string) (string, error) {
 	setting = normalizeOSSSetting(setting)
-	if setting.Provider == s3Provider {
-		return signedS3ObjectURL(setting, objectKey, expiresAt, downloadFileName...)
+	// Preserve the legacy /oss-url contract for old tasks and plugins. New
+	// access-policy callers use assets.ResolveAccess and remain strict.
+	if setting.CDNBaseURL != "" && (setting.Delivery.CDNAuthMode == "" || cdnEnabled(setting)) {
+		return signCDNURL(setting, objectKey, expiresAt, downloadFileName...)
 	}
 	if setting.Provider == qiniuKodoProvider {
 		return signedQiniuObjectURL(setting, objectKey, expiresAt, downloadFileName...)
 	}
-	if setting.CDNBaseURL != "" {
-		return ossCDNObjectURL(setting.CDNBaseURL, objectKey, downloadFileName...)
+	if setting.Provider == s3Provider {
+		return signedS3ObjectURL(setting, objectKey, expiresAt, downloadFileName...)
 	}
 	if setting.Provider == tencentCOSProvider {
 		return signedCOSObjectURL(setting, objectKey, expiresAt, downloadFileName...)
@@ -1490,14 +1458,14 @@ func getCOSObjectRange(setting ossSettingValue, objectKey string, rangeHeader st
 	resp, err := client.Object.Get(context.Background(), objectKey, options)
 	if err != nil {
 		if resp != nil && resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
-			return &ossObjectStream{body: io.NopCloser(bytes.NewReader(nil)), statusCode: resp.StatusCode, contentRange: resp.Header.Get("Content-Range"), acceptRanges: firstNonEmpty(resp.Header.Get("Accept-Ranges"), "bytes")}, nil
+			return &ossObjectStream{Body: io.NopCloser(bytes.NewReader(nil)), StatusCode: resp.StatusCode, ContentRange: resp.Header.Get("Content-Range"), AcceptRanges: firstNonEmpty(resp.Header.Get("Accept-Ranges"), "bytes")}, nil
 		}
 		if resp != nil && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone) {
 			return nil, errResourceObjectMissing
 		}
 		return nil, fmt.Errorf("COS 读取失败：%w", err)
 	}
-	return &ossObjectStream{body: resp.Body, statusCode: resp.StatusCode, contentLength: resp.ContentLength, contentRange: resp.Header.Get("Content-Range"), acceptRanges: firstNonEmpty(resp.Header.Get("Accept-Ranges"), "bytes")}, nil
+	return &ossObjectStream{Body: resp.Body, StatusCode: resp.StatusCode, ContentLength: resp.ContentLength, ContentRange: resp.Header.Get("Content-Range"), AcceptRanges: firstNonEmpty(resp.Header.Get("Accept-Ranges"), "bytes")}, nil
 }
 
 func getQiniuObjectRange(setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
@@ -1525,7 +1493,7 @@ func getQiniuObjectRange(setting ossSettingValue, objectKey string, rangeHeader 
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("七牛云 Kodo 读取失败：%s %s", resp.Status, strings.TrimSpace(string(detail)))
 	}
-	return &ossObjectStream{body: resp.Body, statusCode: resp.StatusCode, contentLength: resp.ContentLength, contentRange: resp.Header.Get("Content-Range"), acceptRanges: firstNonEmpty(resp.Header.Get("Accept-Ranges"), "bytes")}, nil
+	return &ossObjectStream{Body: resp.Body, StatusCode: resp.StatusCode, ContentLength: resp.ContentLength, ContentRange: resp.Header.Get("Content-Range"), AcceptRanges: firstNonEmpty(resp.Header.Get("Accept-Ranges"), "bytes")}, nil
 }
 
 func getOSSObjectRangeViaCDN(setting ossSettingValue, objectKey string, rangeHeader string) (*ossObjectStream, error) {
@@ -1569,7 +1537,7 @@ func getOSSObjectRangeViaCDN(setting ossSettingValue, objectKey string, rangeHea
 			time.Sleep(120 * time.Millisecond)
 			continue
 		}
-		return &ossObjectStream{body: resp.Body, statusCode: resp.StatusCode, contentLength: resp.ContentLength, contentRange: resp.Header.Get("Content-Range"), acceptRanges: firstNonEmpty(resp.Header.Get("Accept-Ranges"), "bytes")}, nil
+		return &ossObjectStream{Body: resp.Body, StatusCode: resp.StatusCode, ContentLength: resp.ContentLength, ContentRange: resp.Header.Get("Content-Range"), AcceptRanges: firstNonEmpty(resp.Header.Get("Accept-Ranges"), "bytes")}, nil
 	}
 	return nil, lastErr
 }

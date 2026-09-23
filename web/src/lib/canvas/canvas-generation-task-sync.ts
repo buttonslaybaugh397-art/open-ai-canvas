@@ -119,7 +119,12 @@ export function applyGeneratedMediaResultMetadata(node: CanvasNodeData, media: C
     };
 }
 
-export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: GenerationTask, nodes: CanvasNodeData[] = [node]): Promise<CanvasNodeData> {
+type GenerationTaskNodeResultOptions = {
+    /** 已物化素材已有可复用展示地址，不要在回放时重复下载远程 Blob。 */
+    preferMaterializedMediaUrl?: boolean;
+};
+
+export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: GenerationTask, nodes: CanvasNodeData[] = [node], options: GenerationTaskNodeResultOptions = {}): Promise<CanvasNodeData> {
     const mode = generationTaskMode(task, node.type === CanvasNodeType.Text ? "text" : node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image");
     const prompt = node.metadata?.prompt || task.prompt;
     let result: ReturnType<typeof parseBackendGenerationResult> = {};
@@ -147,7 +152,7 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
         }
         const uploaded =
             image.storageKey && !emotionEdit
-                ? { url: await resolveImageUrl(image.storageKey, image.dataUrl), storageKey: image.storageKey, width: image.width || 1024, height: image.height || 1024, bytes: image.bytes || 0, mimeType: image.mimeType || "image/png" }
+                ? { url: options.preferMaterializedMediaUrl && image.dataUrl ? image.dataUrl : await resolveImageUrl(image.storageKey, image.dataUrl), storageKey: image.storageKey, width: image.width || 1024, height: image.height || 1024, bytes: image.bytes || 0, mimeType: image.mimeType || "image/png" }
                 : await uploadImage(resultDataUrl);
         const imageConfig = NODE_DEFAULT_SIZE[CanvasNodeType.Image];
         const requestedImageSize = nodeSizeFromRatio(node.metadata?.size || "auto", imageConfig.width, imageConfig.height);
@@ -257,7 +262,7 @@ export async function applyMaterializedGenerationTaskResultToNodes(nodes: Canvas
     } else {
         throw new Error("生成任务输出素材类型不支持画布节点");
     }
-    const updatedNode = await buildGenerationTaskNodeResult(node, { ...task, resultJson: JSON.stringify(result) }, nodes);
+    const updatedNode = await buildGenerationTaskNodeResult(node, { ...task, resultJson: JSON.stringify(result) }, nodes, { preferMaterializedMediaUrl: true });
     const durableNode = {
         ...updatedNode,
         metadata: applyGenerationConsumerEffect({ ...updatedNode.metadata, assetId: asset.id }, effectKey, (metadata) => metadata).value,
@@ -353,6 +358,8 @@ function completedTaskMetadata(task: GenerationTask): CanvasNodeMetadata {
         taskStatus: task.status,
         taskProgress: typeof task.progress === "number" && Number.isFinite(task.progress) ? Math.max(0, Math.min(100, Math.round(task.progress))) : 100,
         taskStage: task.stage,
+        taskMediaStage: task.mediaStage,
+        taskCanRecoverMedia: task.canRecoverMedia,
         taskStartedAt: task.startedAt,
         taskCompletedAt: task.completedAt,
         taskDurationMs: task.startedAt && task.completedAt ? Math.max(0, Date.parse(task.completedAt) - Date.parse(task.startedAt)) : undefined,

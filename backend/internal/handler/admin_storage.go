@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -79,12 +80,12 @@ func RegisterAdminStorageRoutes(r *gin.RouterGroup, svc *service.Service) {
 				downloadFileName = c.Param("id")
 			}
 		}
-		delivery, err := svc.PrepareResourceDeliveryAsAdmin(user, c.Param("id"), service.ResourceDeliveryOptions{
-			Context:          c.Request.Context(),
-			ForceDirect:      c.Query("direct") == "1",
-			ForceProxy:       c.Query("proxy") == "1",
-			DownloadFileName: downloadFileName,
-		})
+		options := resourceAccessOptions(c)
+		options.Context = c.Request.Context()
+		options.ForceDirect = c.Query("direct") == "1"
+		options.ForceProxy = c.Query("proxy") == "1"
+		options.DownloadFileName = downloadFileName
+		delivery, err := svc.PrepareResourceDeliveryAsAdmin(user, c.Param("id"), options, c.GetHeader("Range"))
 		if err != nil {
 			failService(c, err)
 			return
@@ -103,9 +104,16 @@ func RegisterAdminStorageRoutes(r *gin.RouterGroup, svc *service.Service) {
 			c.Redirect(http.StatusTemporaryRedirect, delivery.RedirectURL)
 			return
 		}
-		stream, err := svc.OpenResourceRangeAsAdmin(user, c.Param("id"), c.GetHeader("Range"))
-		if err != nil {
-			failService(c, err)
+		stream := delivery.Stream
+		if stream == nil {
+			stream, err = svc.OpenResourceRangeAsAdmin(user, c.Param("id"), c.GetHeader("Range"))
+			if err != nil {
+				failService(c, err)
+				return
+			}
+		}
+		if stream == nil || stream.Body == nil {
+			failService(c, errors.New("资源分发结果无效"))
 			return
 		}
 		defer stream.Body.Close()
@@ -126,6 +134,9 @@ func RegisterAdminStorageRoutes(r *gin.RouterGroup, svc *service.Service) {
 			c.Header("Content-Type", mimeType)
 			http.ServeContent(c.Writer, c.Request, stream.Resource.ID, stream.Resource.UpdatedAt, seeker)
 			return
+		}
+		if stream.ContentRange != "" {
+			c.Header("Content-Range", stream.ContentRange)
 		}
 		c.DataFromReader(stream.StatusCode, stream.ContentLength, mimeType, stream.Body, nil)
 	})

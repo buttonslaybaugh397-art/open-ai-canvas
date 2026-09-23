@@ -1,7 +1,6 @@
 package assets
 
 import (
-	"context"
 	"io"
 
 	"infinite-canvas/backend/internal/model"
@@ -16,15 +15,12 @@ type ResourceStream struct {
 	AcceptRanges  string
 }
 
-type ResourceDeliveryOptions struct {
-	Context          context.Context
-	ForceDirect      bool
-	ForceProxy       bool
-	DownloadFileName string
-}
+type ResourceDeliveryOptions = AccessOptions
 
 type ResourceDelivery struct {
-	Resource    *model.Resource
-	Stream      *ResourceStream
+	Resource *model.Resource
+	Stream   *ResourceStream
+	Access   *ResourceAccess
+	// RedirectURL 保留旧的应用层调用合同；新代码应读取 Access.URL。
 	RedirectURL string
 }

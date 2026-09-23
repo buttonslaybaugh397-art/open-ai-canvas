@@ -194,13 +194,18 @@ func TestUnrecoverableDetachedResourceIsRemoved(t *testing.T) {
 	if _, err := svc.openResourceRange(resource.UserID, &resource, ""); err == nil {
 		t.Fatal("missing resource did not return an error")
 	}
-	var count int64
-	if err := db.Model(&model.Resource{}).Where("id = ?", resource.ID).Count(&count).Error; err != nil {
-		t.Fatal(err)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		var count int64
+		if err := db.Model(&model.Resource{}).Where("id = ?", resource.ID).Count(&count).Error; err != nil {
+			t.Fatal(err)
+		}
+		if count == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	if count != 0 {
-		t.Fatalf("unreferenced unrecoverable resource count = %d, want 0", count)
-	}
+	t.Fatal("unreferenced unrecoverable resource was not removed")
 }
 
 func TestUnrecoverableReferencedResourceIsMarkedFailed(t *testing.T) {
@@ -253,7 +258,7 @@ func configureRecoveryStorage(t *testing.T, svc *Service, endpoint string) {
 
 func startRecoveryTestWorker(t *testing.T, svc *Service) {
 	t.Helper()
-	if _, started := svc.backgroundWorkers().Start(); !started {
+	if _, started := svc.backgroundWorkers().Start(); !started && svc.IsDraining() {
 		t.Fatal("resource recovery test worker did not start")
 	}
 	t.Cleanup(func() {

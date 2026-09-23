@@ -21,11 +21,54 @@ description: 本地增强版的镜像、持久数据和启动顺序
 
 1. 在“容器 → 编排”创建或编辑编排，整份替换为 `docker-compose.1panel.yml`。
 2. `CANVAS_CORS_ORIGINS` 在同源访问时可留空；如果网页与 API 是不同浏览器 Origin，再填写实际 Origin。`CANVAS_IMAGE_TAG` 保持默认 `latest` 即可，其余按 `1panel.env.example` 设置。不要使用通配 CORS。
-3. 默认只绑定宿主机 `127.0.0.1:6868`，通过 1Panel 网站反向代理配 HTTPS，目标为 `http://127.0.0.1:6868`。反向代理若运行在独立容器网络，容器内的 `127.0.0.1` 不是宿主机；应配置能访问宿主机的网络与目标地址。不要直接暴露后端、PostgreSQL 或 Redis 端口。
-4. 仅作直接 IP 测试时，可设置 `CANVAS_BIND_ADDRESS=0.0.0.0`、`CANVAS_HTTP_PORT=6868`，并将 CORS 设为实际 `http://服务器IP:6868`。生产使用 HTTPS，CORS 填浏览器访问域名的 Origin，不带路径或末尾斜杠。不要填写 Markdown 链接或 `*`。
+3. 默认只绑定宿主机 `127.0.0.1:3000`，由宿主机 Caddy 监听 `80/443` 并反代到 `http://127.0.0.1:3000`。可直接使用仓库根目录或 `1panel-deploy/Caddyfile.example`，两份模板内容应保持一致。不要让 Caddy 直接代理 Backend 的 `8080`；Web 容器内的 Nginx 负责静态前端、`/api`、SSE、资源 Range 和 OAuth 回调。不要直接暴露 `3000`、`8080`、PostgreSQL 或 Redis 端口。
+4. 仅作直接 IP 测试时，可设置 `CANVAS_BIND_ADDRESS=0.0.0.0`、`CANVAS_HTTP_PORT` 为实际测试端口，并将 CORS 设为实际 `http://服务器IP:端口`。生产使用 HTTPS；`CANVAS_PUBLIC_BASE_URL` 填真实 HTTPS 根地址，例如 `https://canvas.example.com`，不要填 `/api` 或容器地址。CORS 填浏览器访问域名的 Origin，不带路径、末尾斜杠或 `*`。
 5. 保存启动。`postgres` 健康后运行迁移；迁移成功且 Redis 健康后启动后端；后端就绪后启动网页。`migrate` 退出码 0 是正常完成，不需要一直运行。
 
-外层反向代理应保留 `Host`、`X-Forwarded-Proto` 和 `X-Forwarded-For`。文本事件流及明确的模型 SSE 路径需要禁用缓冲，规则参考仓库 `nginx.conf`，不要对所有 API 关闭缓存和缓冲。
+外层 Caddy 应保留 `Host`、`X-Forwarded-Proto`、`X-Forwarded-Host` 和 `X-Forwarded-For`。文本事件流及明确的模型 SSE 路径需要及时 flush，模板只对这些路径设置 `flush_interval -1`，不要对所有 API 关闭缓存和缓冲。
+
+## 旧 6868 入口迁移到 Caddy
+
+这次迁移只切换 Web 的宿主机入口，不搬迁 PostgreSQL、Redis、上传文件、`.settings-key` 或 secrets 卷。迁移期间让旧 `6868` 和新 `3000` 双入口并存，先验收 Caddy，再移除旧入口。数据卷、账号、登录态配置和应用内网链路保持不变。
+
+如果当前 1Panel 的 OpenResty 已占用宿主机 `80/443`，把网关所有权交给 Caddy 仍需要一个很短的交接窗口。没有前置负载均衡器、第二公网 IP 或备用节点时，不能承诺网关层绝对零中断；这里的无缝迁移指应用数据和服务链路不变，并把中断压缩到网关交接。
+
+### 一键迁移脚本
+
+服务器已经安装 Caddy、Docker Compose v2，并且 Caddy 由 systemd 管理时，可以直接执行：
+
+```bash
+sudo bash 1panel-deploy/migrate-to-caddy.sh \
+  --project-dir /opt/1panel/compose/open-ai-canvas \
+  --domain canvas.example.com \
+  --takeover-service openresty \
+  --yes
+```
+
+`--project-dir` 必须是当前 1Panel 编排实际使用的目录，里面应有原 `.env` 和 Compose 文件；如果当前网关是 Docker 容器，改用 `--takeover-container <容器名或ID>`。脚本会复用当前 Compose 项目和四个已有卷，备份配置到 `/var/backups/open-ai-canvas-caddy/<UTC时间>/`，临时增加 `127.0.0.1:3000`，验证 Caddy 和真实 HTTPS 健康检查后，再把 `CANVAS_HTTP_PORT` 收口为 `3000`。它不会执行 `docker compose down -v`，不会删除卷，也不会停止 Backend、PostgreSQL 或 Redis。
+
+如果 `/etc/caddy/Caddyfile` 已有其他站点内容，脚本默认拒绝覆盖；确认它是本应用专用配置后再追加 `--replace-caddyfile`。
+
+DNS 或证书尚未就绪时可加 `--skip-public-check`，但之后必须手工验证真实 HTTPS 域名。脚本失败会尝试恢复原 `.env`、Web 旧端口、Caddy 配置和旧网关；失败后仍应检查备份目录与服务状态。Caddy 未安装或不是 systemd 服务时，先完成宿主机 Caddy 安装，再执行脚本。
+
+1. 备份 PostgreSQL、后端数据目录、`.settings-key` 和 Redis AOF；从旧容器挂载信息核对四个真实卷名。保留旧私有 `.env`，不要执行 `down -v`，不要新建第二套 PostgreSQL。
+2. 旧入口继续保持 `CANVAS_HTTP_PORT=6868`，补齐真实的 `CANVAS_CORS_ORIGINS` 和 `CANVAS_PUBLIC_BASE_URL`，并固定前后端均已发布的共同镜像标签。若这次同时升级应用版本，数据库迁移仍按本页“更新与排障”执行，不要把路由切换当作数据库回滚。
+3. 在本机用当前旧配置生成临时桥接编排：
+
+   ```bash
+   bun 1panel-deploy/render-editor.mjs \
+     --env-file 1panel-deploy/.env \
+     --image-tag sha-<已发布完整提交SHA> \
+     --add-http-port 3000 \
+     --output .local/1panel-deploy/docker-compose.caddy-bridge.yml
+   ```
+
+   生成文件会保留旧的 `127.0.0.1:6868:3000`，并增加 `127.0.0.1:3000:3000`；四个已有卷会被标记为 `external: true`。在 1Panel 中整份替换 YAML，不要把它追加到旧文件末尾，也不要修改卷名、数据库名称或密码。若现有端口不是 `6868`，以服务器实际端口为准，命令中的 `--add-http-port 3000` 仍只增加 Caddy 新入口。
+4. 在宿主机准备 Caddy 配置，将站点地址替换为真实域名，先运行 `caddy validate --config /etc/caddy/Caddyfile`。确认 `curl -fsS http://127.0.0.1:3000/` 成功后，安排网关交接：停止或移除 1Panel 站点对 `80/443` 的占用，启动并 reload Caddy。不要先停止 PostgreSQL、Redis 或 Backend。
+5. 用真实 HTTPS 域名验证证书、登录与 Cookie、`/api/health/ready`、文本 SSE、资源 Range、上传访问和已有任务恢复。旧 `6868` 入口在此阶段仍可作为回退入口。
+6. 验收通过后，将私有环境中的 `CANVAS_HTTP_PORT` 改为 `3000`，重新生成**不带** `--add-http-port` 的最终编辑器编排，再整份替换 1Panel 配置并只重建 Web。确认 `6868` 不再被使用后，删除旧 1Panel 反向代理站点。
+
+如果迁移中止，先停止 Caddy 并恢复旧 1Panel 站点，再继续使用 `6868`；不要回滚数据库迁移，也不要删除任何卷。若同时发生 schema 升级，应用回退必须使用与数据库版本匹配的镜像和备份，不能只改回旧标签。
 
 ## 旧数据库与密钥
 

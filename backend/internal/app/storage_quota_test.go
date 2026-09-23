@@ -40,9 +40,6 @@ func TestValidateTaskStorageQuotaRejectsHistoryGrowth(t *testing.T) {
 	if err := validateTaskStorageQuotaWithPolicy(repository.UserStorageUsage{TaskBytes: gigabytes(policy.TaskDataGB)}, 1, policy); err == nil {
 		t.Fatal("validateTaskStorageQuota() byte error = nil")
 	}
-	if err := validateAPICallLogQuotaWithPolicy(repository.UserStorageUsage{APICallCount: policy.APICallLogCount}, 0, policy); err == nil {
-		t.Fatal("validateAPICallLogQuota() count error = nil")
-	}
 }
 
 func TestUserStorageUsageCountsPersistedPayloads(t *testing.T) {

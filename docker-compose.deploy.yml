@@ -53,6 +53,7 @@ services:
       CANVAS_ALLOW_PRIVATE_UPSTREAMS: ${CANVAS_ALLOW_PRIVATE_UPSTREAMS:-false}
       CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS: ${CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS:-}
       CANVAS_CORS_ORIGINS: ${CANVAS_CORS_ORIGINS:-}
+      CANVAS_PUBLIC_BASE_URL: ${CANVAS_PUBLIC_BASE_URL:-}
       CANVAS_UPDATER_SOCKET: /run/open-ai-canvas-updater/updater.sock
       CANVAS_UPDATER_TOKEN: ${CANVAS_UPDATER_TOKEN:-}
       GIN_MODE: release
@@ -72,7 +73,8 @@ services:
   web:
     image: ghcr.io/ddcat-ai/open-ai-canvas-web:${CANVAS_IMAGE_TAG:-latest}
     ports:
-      - "${CANVAS_HTTP_PORT:-3000}:3000"
+      # 宿主机 Caddy 负责公网 80/443；Web 只在回环地址接收反代流量。
+      - "${CANVAS_BIND_ADDRESS:-127.0.0.1}:${CANVAS_HTTP_PORT:-3000}:3000"
     depends_on:
       backend:
         condition: service_healthy

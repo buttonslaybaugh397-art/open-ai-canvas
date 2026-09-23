@@ -45,7 +45,10 @@ test("shared task observation retries a read failure and ignores a late running 
     const unsubscribe = service.subscribe([running.id], (snapshot) => observed.push(snapshot));
 
     try {
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        const deadline = Date.now() + 1000;
+        while ((queries < 2 || observed.length < 2) && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+        }
         expect(queries).toBe(2);
         expect(observed.map((snapshot) => snapshot.status)).toEqual(["running", "succeeded"]);
     } finally {

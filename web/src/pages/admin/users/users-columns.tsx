@@ -56,7 +56,7 @@ export function createUserColumns({
         },
         { key: "role", title: "角色", dataIndex: "role", width: 110, align: "center", render: (role) => <AdminStatusBadge label={role === "admin" ? "管理员" : "普通用户"} tone={role === "admin" ? "info" : "neutral"} /> },
         { key: "status", title: "状态", dataIndex: "status", width: 110, align: "center", render: (status) => <AdminStatusBadge label={status === "active" ? "已启用" : "已停用"} tone={status === "active" ? "success" : "neutral"} /> },
-        { key: "createdAt", title: "注册时间", dataIndex: "createdAt", width: 180, align: "center", render: formatTime },
+        { key: "createdAt", title: "注册时间", dataIndex: "createdAt", width: 112, align: "center", render: (value) => <span className="tabular-nums" title={formatTime(value)}>{formatCompactTime(value)}</span> },
         {
             key: "actions",
             title: "操作",
@@ -65,9 +65,8 @@ export function createUserColumns({
             render: (_, user) => (
                 <AdminRowActions
                     primary={{ label: "详情", icon: <Eye className="size-3.5" />, onClick: () => onView(user) }}
-                    visibleActionCount={2}
+                    visibleActionCount={1}
                     actions={[
-                        { key: "edit", label: "编辑用户", icon: <Pencil className="size-3.5" />, onClick: () => onEdit(user) },
                         { key: "reset-password", label: "重置密码", icon: <KeyRound className="size-3.5" />, onClick: () => onResetPassword(user) },
                         {
                             key: "toggle-status",
@@ -82,6 +81,7 @@ export function createUserColumns({
                             },
                             onClick: () => onToggleStatus(user),
                         },
+                        { key: "edit", label: "编辑用户", icon: <Pencil className="size-3.5" />, onClick: () => onEdit(user) },
                     ]}
                 />
             ),
@@ -92,4 +92,11 @@ export function createUserColumns({
 
 function formatTime(value?: string) {
     return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "--";
+}
+
+function formatCompactTime(value?: string) {
+    if (!value) return "--";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "--";
+    return date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 }

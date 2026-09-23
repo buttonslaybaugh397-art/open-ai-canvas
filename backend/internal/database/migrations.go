@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 29
+const CurrentSchemaVersion int64 = 34
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -111,6 +111,38 @@ var schemaMigrations = []migration{
 	{version: 29, name: "agent_resource_leases", checksum: "sha256:agent-resource-leases-v29-20260919", apply: func(tx *gorm.DB) error {
 		return tx.AutoMigrate(&model.CloudAgentResourceLease{})
 	}},
+	{version: 30, name: "builtin_tools", checksum: "sha256:builtin-tools-v30", apply: func(tx *gorm.DB) error {
+		return tx.AutoMigrate(&model.Tool{})
+	}},
+	{version: 31, name: "tool_favorites", checksum: "sha256:tool-favorites-v31", apply: func(tx *gorm.DB) error {
+		return tx.AutoMigrate(&model.ToolFavorite{})
+	}},
+	{version: 32, name: "channel_model_tags", checksum: "sha256:channel-model-tags-v32", apply: migrateChannelModelTags},
+	{version: 33, name: "oauth_state_accepted_terms", checksum: "sha256:oauth-state-accepted-terms-v33", apply: migrateOAuthStateAcceptedTerms},
+	{version: 34, name: "task_media_recovery", checksum: "sha256:task-media-recovery-v34", apply: func(tx *gorm.DB) error {
+		for _, field := range []string{"MediaRecoveryJSON", "MediaStage"} {
+			if !tx.Migrator().HasColumn(&model.Task{}, field) {
+				if err := tx.Migrator().AddColumn(&model.Task{}, field); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}},
+}
+
+func migrateChannelModelTags(tx *gorm.DB) error {
+	if tx.Migrator().HasColumn(&model.ChannelModel{}, "Tags") {
+		return nil
+	}
+	return tx.Migrator().AddColumn(&model.ChannelModel{}, "Tags")
+}
+
+func migrateOAuthStateAcceptedTerms(tx *gorm.DB) error {
+	if tx.Migrator().HasColumn(&model.OAuthState{}, "AcceptedTerms") {
+		return nil
+	}
+	return tx.Migrator().AddColumn(&model.OAuthState{}, "AcceptedTerms")
 }
 
 func migrateChannelCreditCost(tx *gorm.DB) error {

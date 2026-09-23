@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 
 import { applyMaterializedGenerationTaskResultToNodes, mergeGenerationTaskResultNodes } from "@/lib/canvas/canvas-generation-task-sync";
+import { sameCanvasContent } from "@/lib/canvas/canvas-content";
 import { parseCanvasStorageDocument, rebaseCanvasProjects, serializeCanvasStorageDocument } from "@/lib/canvas/canvas-storage-revision";
 import { localForageStorageForScope } from "@/lib/localforage-storage";
 import { getActiveUserScope } from "@/lib/user-scope";
@@ -521,11 +522,19 @@ export async function persistCanvasGenerationEffect(input: CanvasGenerationEffec
                 const persistedProject = rebaseCommittedCanvasGenerationOntoLiveProject(scope, input.projectId, finalDocument, memoryProject, baseRevision) ?? generationCommittedProject;
                 if (!persistedProject) throw new Error("画布项目不存在，无法确认生成副作用");
                 if (getActiveUserScope() === scope) {
-                    withCanvasStorePersistenceSuppressed(() => {
+                    const publish = () => {
                         useCanvasStore.setState((state) => ({
                             projects: state.projects.map((project) => (project.id === input.projectId ? persistedProject : project)),
                         }));
-                    });
+                    };
+                    const durableProject = finalDocument.state.projects.find((project) => project.id === input.projectId);
+                    // 只有已落盘的快照才能跳过普通保存。rebase 带回的编辑仍是脏数据，
+                    // 否则 store 已接受编辑、后续 updateProject 判定无变化，刷新就会丢失。
+                    if (sameCanvasContent(durableProject, persistedProject) && JSON.stringify(durableProject?.viewport) === JSON.stringify(persistedProject.viewport)) {
+                        withCanvasStorePersistenceSuppressed(publish);
+                    } else {
+                        publish();
+                    }
                 }
                 return persistedProject;
             } catch (error) {

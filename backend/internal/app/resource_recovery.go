@@ -250,6 +250,14 @@ type afterCloseReadSeekCloser struct {
 	afterClose func()
 }
 
+func (body *afterCloseReadSeekCloser) ReadAt(p []byte, offset int64) (int, error) {
+	reader, ok := body.ReadSeekCloser.(io.ReaderAt)
+	if !ok {
+		return 0, errors.New("底层资源不支持随机读取")
+	}
+	return reader.ReadAt(p, offset)
+}
+
 func (body *afterCloseReadSeekCloser) Close() error {
 	err := body.ReadSeekCloser.Close()
 	body.once.Do(body.afterClose)

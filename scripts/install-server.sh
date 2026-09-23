@@ -5,7 +5,9 @@ set -Eeuo pipefail
 REPOSITORY_URL="${REPOSITORY_URL:-https://github.com/ddcat-ai/open-ai-canvas.git}"
 REPOSITORY_REF="${REPOSITORY_REF:-main}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/open-ai-canvas}"
+CANVAS_BIND_ADDRESS="${CANVAS_BIND_ADDRESS:-127.0.0.1}"
 CANVAS_HTTP_PORT="${CANVAS_HTTP_PORT:-3000}"
+CANVAS_PUBLIC_BASE_URL="${CANVAS_PUBLIC_BASE_URL:-}"
 COMPOSE_FILE="docker-compose.deploy.yml"
 BUILD_COMPOSE_FILE="docker-compose.build.yml"
 
@@ -91,6 +93,16 @@ prepare_environment() {
             ((configured_http_port >= 1 && configured_http_port <= 65535)) || fail ".env 中的 CANVAS_HTTP_PORT 无效"
             CANVAS_HTTP_PORT="$configured_http_port"
         fi
+        local configured_bind_address
+        configured_bind_address="$(sed -n 's/^CANVAS_BIND_ADDRESS=//p' .env | tail -n 1)"
+        if [[ -n "$configured_bind_address" ]]; then
+            CANVAS_BIND_ADDRESS="$configured_bind_address"
+        fi
+        local configured_public_base_url
+        configured_public_base_url="$(sed -n 's/^CANVAS_PUBLIC_BASE_URL=//p' .env | tail -n 1)"
+        if [[ -n "$configured_public_base_url" ]]; then
+            CANVAS_PUBLIC_BASE_URL="$configured_public_base_url"
+        fi
         return
     fi
 
@@ -103,7 +115,9 @@ POSTGRES_DB=open_ai_canvas
 POSTGRES_USER=open_ai_canvas
 POSTGRES_PASSWORD=${database_password}
 DATABASE_URL=postgresql://open_ai_canvas:${database_password}@postgres:5432/open_ai_canvas?sslmode=disable
+CANVAS_BIND_ADDRESS=${CANVAS_BIND_ADDRESS}
 CANVAS_HTTP_PORT=${CANVAS_HTTP_PORT}
+CANVAS_PUBLIC_BASE_URL=${CANVAS_PUBLIC_BASE_URL}
 CANVAS_REGISTRATION_ENABLED=false
 CANVAS_ALLOW_PRIVATE_UPSTREAMS=false
 CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=
@@ -126,10 +140,20 @@ print_result() {
     [[ -n "$local_ip" ]] || local_ip="服务器IP"
 
     printf '\n部署完成。\n'
-    printf '访问地址：http://%s:%s\n' "$local_ip" "$CANVAS_HTTP_PORT"
+    if [[ "$CANVAS_BIND_ADDRESS" == "127.0.0.1" ]]; then
+        printf 'Web 内部入口：http://127.0.0.1:%s\n' "$CANVAS_HTTP_PORT"
+        printf 'Caddy 上游：http://127.0.0.1:%s\n' "$CANVAS_HTTP_PORT"
+    else
+        printf '直接 HTTP 入口：http://%s:%s\n' "$local_ip" "$CANVAS_HTTP_PORT"
+    fi
+    if [[ -n "$CANVAS_PUBLIC_BASE_URL" ]]; then
+        printf '公网入口：%s\n' "$CANVAS_PUBLIC_BASE_URL"
+    else
+        printf '公网入口：请配置宿主机 Caddy，将域名反代到 http://127.0.0.1:%s\n' "$CANVAS_HTTP_PORT"
+    fi
     printf '安装目录：%s\n' "$INSTALL_DIR"
     printf '查看状态：cd %q && docker compose --env-file .env -f %s -f %s ps\n' "$INSTALL_DIR" "$COMPOSE_FILE" "$BUILD_COMPOSE_FILE"
-    printf '\n首次打开后注册的第一个账号会自动成为管理员。公网长期使用前请配置 HTTPS。\n'
+    printf '\n首次打开后注册的第一个账号会自动成为管理员。公网只需开放 Caddy 的 80/443，不要开放 3000、8080、PostgreSQL 或 Redis。\n'
 }
 
 main() {

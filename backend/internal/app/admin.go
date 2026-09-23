@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"infinite-canvas/backend/internal/kernel"
 	stdlog "log"
 	"net/http"
@@ -125,6 +126,7 @@ type PublicChannelModelPrice struct {
 	Model                        string                     `json:"model"`
 	DisplayName                  string                     `json:"displayName"`
 	ChannelLabel                 string                     `json:"channelLabel"`
+	Tags                         []model.ChannelModelTag    `json:"tags"`
 	Description                  string                     `json:"description"`
 	Icon                         string                     `json:"icon"`
 	Capability                   string                     `json:"capability"`
@@ -783,7 +785,7 @@ func (s *Service) LogAPICall(log model.ApiCallLog) error {
 			stdlog.Printf("provider billing request id update failed: billing_order_id=%s provider_request_id=%s error=%v", log.BillingOrderID, log.ProviderRequestID, err)
 		}
 	}
-	if log.TaskID != "" {
+	if log.TaskID != "" && (log.RequestKind == "create" || log.RequestKind == "poll" || log.RequestKind == "cancel") {
 		stage := log.RequestKind
 		var nextPollAt *time.Time
 		if stage == "create" && log.Status == model.ApiCallStatusSucceeded && log.ProviderRequestID != "" {
@@ -819,19 +821,18 @@ func (s *Service) LogAPICall(log model.ApiCallLog) error {
 	}
 	s.storageMu.Lock()
 	defer s.storageMu.Unlock()
-	usage, err := s.repo.UserStorageUsage(log.UserID)
-	if err != nil {
-		return err
-	}
 	incomingBytes := int64(len(log.Path) + len(log.Model) + len(log.ProviderRequestID) + len(log.ErrorCode) + len(log.Error) + len(log.UpstreamURL) + len(log.RequestContentType) + len(log.RequestBody) + len(log.ResponseBody))
-	if err := validateAPICallLogQuotaWithPolicy(usage, incomingBytes, policy.Resource); err != nil {
-		return err
+	err = s.repo.CreateAPICallLogWithRetention(&log, policy.Resource.APICallLogCount, gigabytes(policy.Resource.TaskDataGB), incomingBytes)
+	if errors.Is(err, repository.ErrTaskDataQuotaExceeded) {
+		return QuotaExceeded(fmt.Sprintf("账号任务历史数据已达到 %dGB 上限，请联系管理员归档", policy.Resource.TaskDataGB))
 	}
-	return s.repo.Create(&log)
+	return err
 }
 
 func (s *Service) mergeVideoAPICallLog(log model.ApiCallLog) (bool, error) {
-	if log.Capability != "video" || (log.RequestKind != "poll" && log.RequestKind != "download") {
+	// Delivery is a separate outcome: a failed download must not rewrite a
+	// successful generation request as failed.
+	if log.Capability != "video" || log.RequestKind != "poll" {
 		return false, nil
 	}
 	if log.TaskID == "" && log.ProviderRequestID == "" {
@@ -981,7 +982,7 @@ func publicChannel(channel model.ModelChannel, admin bool, channelModels []model
 					capabilityConfig = normalized
 				}
 			}
-			modelCosts = append(modelCosts, PublicChannelModelPrice{Model: item.ModelKey, DisplayName: item.DisplayName, ChannelLabel: item.ChannelLabel, Description: item.Description, Icon: item.Icon, Capability: item.Capability, Protocol: item.Protocol, BillingMode: item.BillingMode, UnitPriceMicrocredits: item.UnitPriceMicrocredits, InputTokenPriceMicrocredits: item.InputTokenPriceMicrocredits, OutputTokenPriceMicrocredits: item.OutputTokenPriceMicrocredits, CachedTokenPriceMicrocredits: item.CachedTokenPriceMicrocredits, CapabilityConfig: capabilityConfig})
+			modelCosts = append(modelCosts, PublicChannelModelPrice{Model: item.ModelKey, DisplayName: item.DisplayName, ChannelLabel: item.ChannelLabel, Tags: item.Tags, Description: item.Description, Icon: item.Icon, Capability: item.Capability, Protocol: item.Protocol, BillingMode: item.BillingMode, UnitPriceMicrocredits: item.UnitPriceMicrocredits, InputTokenPriceMicrocredits: item.InputTokenPriceMicrocredits, OutputTokenPriceMicrocredits: item.OutputTokenPriceMicrocredits, CachedTokenPriceMicrocredits: item.CachedTokenPriceMicrocredits, CapabilityConfig: capabilityConfig})
 		}
 	}
 	if len(models) == 0 {

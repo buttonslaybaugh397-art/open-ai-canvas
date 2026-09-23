@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const read = (file) => readFileSync(new URL(`../../${file}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const compose = Bun.YAML.parse(read("docker-compose.1panel.yml"));
@@ -21,6 +22,10 @@ afterEach(() => {
 test("standalone 1Panel deployment and root templates stay identical", () => {
     expect(read("1panel-deploy/docker-compose.yml")).toBe(read("docker-compose.1panel.yml"));
     expect(read("1panel-deploy/.env.example")).toBe(read("1panel.env.example"));
+});
+
+test("1Panel and root Caddy templates stay identical", () => {
+    expect(read("1panel-deploy/Caddyfile.example")).toBe(read("Caddyfile.example"));
 });
 
 test("1Panel keeps fork images, explicit migration, readiness gates and existing volumes", () => {
@@ -42,8 +47,9 @@ test("1Panel keeps fork images, explicit migration, readiness gates and existing
     expect(web.depends_on.backend.condition).toBe("service_healthy");
     expect(backend.healthcheck.test.join(" ")).toContain("/api/health/ready");
     expect(backend.environment.CANVAS_CORS_ORIGINS).toBe("${CANVAS_CORS_ORIGINS:-}");
+    expect(backend.environment.CANVAS_PUBLIC_BASE_URL).toBe("${CANVAS_PUBLIC_BASE_URL:-}");
     expect(read("docker-compose.1panel.yml")).not.toMatch(/CANVAS_CORS_ORIGINS:\s*\$\{CANVAS_CORS_ORIGINS:\?/);
-    expect(web.ports).toEqual(["${CANVAS_BIND_ADDRESS:-127.0.0.1}:${CANVAS_HTTP_PORT:-6868}:3000"]);
+    expect(web.ports).toEqual(["${CANVAS_BIND_ADDRESS:-127.0.0.1}:${CANVAS_HTTP_PORT:-3000}:3000"]);
     for (const service of [postgres, redis, migrate, backend]) expect(service.ports).toBeUndefined();
     expect(backend.environment.CANVAS_UPDATER_SOCKET).toBeUndefined();
     expect(read("docker-compose.1panel.yml")).not.toContain("docker.sock");
@@ -53,6 +59,37 @@ test("1Panel keeps fork images, explicit migration, readiness gates and existing
         "postgres-data": { name: "${CANVAS_POSTGRES_VOLUME:-open-ai-canvas_postgres-data}" },
         "redis-data": { name: "${CANVAS_REDIS_VOLUME:-open-ai-canvas_redis-data}" },
     });
+});
+
+test("1Panel environment defaults match the Caddy cutover", () => {
+    const env = read("1panel.env.example");
+
+    expect(env).toContain("CANVAS_PUBLIC_BASE_URL=");
+    expect(env).toContain("CANVAS_HTTP_PORT=3000");
+});
+
+test("one-click Caddy migration is guarded and reuses the existing project", () => {
+    const script = read("1panel-deploy/migrate-to-caddy.sh");
+
+    expect(script).toContain("set -Eeuo pipefail");
+    expect(script).toContain("--project-dir");
+    expect(script).toContain("--takeover-service");
+    expect(script).toContain("--replace-caddyfile");
+    expect(script).toContain("docker compose --project-directory");
+    expect(script).toContain("docker compose down -v");
+    expect(script).not.toMatch(/^\s*docker compose down -v/m);
+    expect(script).not.toContain("docker volume rm");
+    expect(script).toContain("CANVAS_HTTP_PORT=");
+});
+
+test("one-click Caddy migration passes Bash syntax validation", () => {
+    const scriptPath = fileURLToPath(new URL("../../1panel-deploy/migrate-to-caddy.sh", import.meta.url));
+    const result = spawnSync(bash, ["--noprofile", "--norc", "-n", shellPath(scriptPath)], {
+        encoding: "utf8",
+        timeout: 30000,
+    });
+    if (result.error) throw result.error;
+    expect(result.status).toBe(0);
 });
 
 function runCommand(service, overrides = {}) {

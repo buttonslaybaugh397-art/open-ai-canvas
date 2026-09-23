@@ -38,6 +38,8 @@ var ErrProjectUnitShotsChanged = errors.New("project unit shots changed")
 
 var ErrCanvasRevisionConflict = errors.New("canvas revision changed")
 
+var ErrTaskDataQuotaExceeded = errors.New("task data quota exceeded")
+
 type Repository struct {
 	db *gorm.DB
 }
@@ -102,6 +104,10 @@ func (r *Repository) nextPrefixedID(db *gorm.DB, prefix string) (string, error) 
 }
 
 func (r *Repository) UserStorageUsage(userID string) (UserStorageUsage, error) {
+	return userStorageUsage(r.db, r.Dialect(), userID)
+}
+
+func userStorageUsage(db *gorm.DB, dialect string, userID string) (UserStorageUsage, error) {
 	var usage UserStorageUsage
 	query := `
 		SELECT
@@ -110,18 +116,18 @@ func (r *Repository) UserStorageUsage(userID string) (UserStorageUsage, error) {
 			(SELECT COUNT(*) FROM canvas_projects WHERE user_id = ?) AS canvas_count,
 			(SELECT COALESCE(SUM(length(CAST(COALESCE(payload_json, '') AS BLOB))), 0) FROM canvas_projects WHERE user_id = ?) AS canvas_bytes,
 			(SELECT COUNT(*) FROM tasks WHERE user_id = ?) AS task_count,
-			(SELECT COALESCE(SUM(length(CAST(COALESCE(prompt, '') AS BLOB)) + length(CAST(COALESCE(input_json, '') AS BLOB)) + length(CAST(COALESCE(result_json, '') AS BLOB)) + length(CAST(COALESCE(text_draft, '') AS BLOB)) + length(CAST(COALESCE(error, '') AS BLOB))), 0) FROM tasks WHERE user_id = ?)
+			(SELECT COALESCE(SUM(length(CAST(COALESCE(prompt, '') AS BLOB)) + length(CAST(COALESCE(input_json, '') AS BLOB)) + length(CAST(COALESCE(result_json, '') AS BLOB)) + length(CAST(COALESCE(media_recovery_json, '') AS BLOB)) + length(CAST(COALESCE(text_draft, '') AS BLOB)) + length(CAST(COALESCE(error, '') AS BLOB))), 0) FROM tasks WHERE user_id = ?)
 			+ (SELECT COALESCE(SUM(length(CAST(COALESCE(message, '') AS BLOB)) + length(CAST(COALESCE(payload, '') AS BLOB))), 0) FROM task_logs WHERE user_id = ?)
 			+ (SELECT COALESCE(SUM(length(CAST(COALESCE(url, '') AS BLOB)) + length(CAST(COALESCE(payload, '') AS BLOB))), 0) FROM results WHERE user_id = ?)
 			+ (SELECT COALESCE(SUM(byte_count), 0) FROM task_text_delta WHERE user_id = ?)
 			+ (SELECT COALESCE(SUM(length(CAST(COALESCE(path, '') AS BLOB)) + length(CAST(COALESCE(model, '') AS BLOB)) + length(CAST(COALESCE(provider_request_id, '') AS BLOB)) + length(CAST(COALESCE(error_code, '') AS BLOB)) + length(CAST(COALESCE(error, '') AS BLOB)) + length(CAST(COALESCE(upstream_url, '') AS BLOB)) + length(CAST(COALESCE(request_body, '') AS BLOB)) + length(CAST(COALESCE(response_body, '') AS BLOB))), 0) FROM api_call_logs WHERE user_id = ?) AS task_bytes,
 			(SELECT COUNT(*) FROM api_call_logs WHERE user_id = ?) AS api_call_count
 	`
-	if r.Dialect() == "postgres" {
+	if dialect == "postgres" {
 		query = strings.ReplaceAll(query, "length(CAST(COALESCE(", "octet_length(COALESCE(")
 		query = strings.ReplaceAll(query, ", '') AS BLOB))", ", ''))")
 	}
-	err := r.db.Raw(query, userID, userID, userID, userID, userID, userID, userID, userID, userID, userID, userID).Scan(&usage).Error
+	err := db.Raw(query, userID, userID, userID, userID, userID, userID, userID, userID, userID, userID, userID).Scan(&usage).Error
 	return usage, err
 }
 
@@ -547,6 +553,12 @@ func (r *Repository) UpdateTaskProviderProgress(id string, progress int) error {
 }
 
 func (r *Repository) SaveTaskCompletion(task *model.Task, expected model.TaskStatus, results []model.Result) error {
+	return r.SaveTaskCompletionWithRegistration(task, expected, results, nil)
+}
+
+// Registration and terminal success commit together; a failed asset write leaves
+// the task recoverable and never exposes a false success to the canvas.
+func (r *Repository) SaveTaskCompletionWithRegistration(task *model.Task, expected model.TaskStatus, results []model.Result, register func(*Repository) error) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		updated := taskLeaseWriter(tx.Model(&model.Task{}), task.LeaseOwner).
 			Where("id = ? AND status = ?", task.ID, expected).
@@ -561,6 +573,9 @@ func (r *Repository) SaveTaskCompletion(task *model.Task, expected model.TaskSta
 			if err := tx.Create(&results[index]).Error; err != nil {
 				return err
 			}
+		}
+		if register != nil {
+			return register(New(tx))
 		}
 		return nil
 	})
@@ -707,7 +722,7 @@ func (r *Repository) Tasks(userID string, limit int, projectID string, activeOnl
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	query := r.db.Select("id", "project_id", "type", "status", "stage", "progress", "prompt", "operation", "provider", "model", "input_json", "result_json", "billing_order_id", "provider_request_id", "provider_cancel_status", "provider_cancel_error", "provider_cancel_attempts", "provider_cancel_requested_at", "provider_cancelled_at", "provider_cancel_next_check_at", "attempts", "started_at", "completed_at", "created_at", "updated_at", "agent_run_id", "generation_id", "approval_id", "authorized_charge_microcredits", "execution_diagnostic_json", "cancellation_source", "cancellation_actor_id", "cancellation_requested_at").
+	query := r.db.Select("id", "project_id", "type", "status", "stage", "media_stage", "media_recovery_json", "progress", "prompt", "operation", "provider", "model", "input_json", "result_json", "billing_order_id", "provider_request_id", "provider_cancel_status", "provider_cancel_error", "provider_cancel_attempts", "provider_cancel_requested_at", "provider_cancelled_at", "provider_cancel_next_check_at", "attempts", "started_at", "completed_at", "created_at", "updated_at", "agent_run_id", "generation_id", "approval_id", "authorized_charge_microcredits", "execution_diagnostic_json", "cancellation_source", "cancellation_actor_id", "cancellation_requested_at").
 		Where("user_id = ?", userID)
 	if strings.TrimSpace(projectID) != "" {
 		query = query.Where("project_id = ?", strings.TrimSpace(projectID))
@@ -827,6 +842,106 @@ func (r *Repository) ApiCallLogs(userID string, admin bool, limit int) ([]model.
 	}
 	err := query.Omit("RequestBody", "ResponseBody").Find(&logs).Error
 	return logs, err
+}
+
+const apiCallLogPruneBatchSize int64 = 512
+
+// CreateAPICallLogWithRetention writes an upstream request log without turning
+// the per-user log count into a hard stop. Cleanup and insertion share one
+// transaction, so a quota or database error never leaves the user with fewer
+// historical logs than before the attempted write.
+func (r *Repository) CreateAPICallLogWithRetention(log *model.ApiCallLog, logLimit int64, taskDataLimitBytes int64, incomingBytes int64) error {
+	if log == nil {
+		return errors.New("api call log is nil")
+	}
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if strings.TrimSpace(log.UserID) != "" && logLimit > 0 {
+			if err := pruneAPICallLogsWithinLimit(tx, log.UserID, logLimit, log.ID); err != nil {
+				return err
+			}
+		}
+		if strings.TrimSpace(log.UserID) != "" && taskDataLimitBytes > 0 {
+			usage, err := userStorageUsage(tx, tx.Dialector.Name(), log.UserID)
+			if err != nil {
+				return err
+			}
+			if usage.TaskBytes+incomingBytes > taskDataLimitBytes {
+				return ErrTaskDataQuotaExceeded
+			}
+		}
+		return tx.Create(log).Error
+	})
+}
+
+func pruneAPICallLogsWithinLimit(tx *gorm.DB, userID string, limit int64, incomingID string) error {
+	var count int64
+	if err := tx.Model(&model.ApiCallLog{}).Where("user_id = ?", userID).Count(&count).Error; err != nil {
+		return err
+	}
+	remaining := count - limit + 1
+	if remaining <= 0 {
+		return nil
+	}
+
+	terminalStatuses := []model.TaskStatus{
+		model.TaskStatusSucceeded,
+		model.TaskStatusFailed,
+		model.TaskStatusCancelled,
+	}
+	pendingCancellationStatuses := []model.ProviderCancelStatus{
+		model.ProviderCancelStatusRequested,
+		model.ProviderCancelStatusUncertain,
+	}
+	pendingBillingStatuses := []model.BillingStatus{
+		model.BillingStatusReserved,
+		model.BillingStatusRunning,
+		model.BillingStatusUncertain,
+	}
+
+	for remaining > 0 {
+		batchSize := remaining
+		if batchSize > apiCallLogPruneBatchSize {
+			batchSize = apiCallLogPruneBatchSize
+		}
+		query := tx.Table("api_call_logs AS logs").
+			Select("logs.id").
+			Joins("LEFT JOIN tasks AS tasks ON tasks.id = logs.task_id").
+			Joins("LEFT JOIN billing_orders AS log_orders ON log_orders.id = logs.billing_order_id").
+			Joins("LEFT JOIN billing_orders AS task_orders ON task_orders.id = tasks.billing_order_id").
+			Where("logs.user_id = ?", userID).
+			Where(
+				"(tasks.id IS NULL OR (tasks.status IN ? AND COALESCE(tasks.provider_cancel_status, '') NOT IN ?))",
+				terminalStatuses,
+				pendingCancellationStatuses,
+			).
+			Where(
+				"(log_orders.id IS NULL OR log_orders.status NOT IN ?) AND (task_orders.id IS NULL OR task_orders.status NOT IN ?)",
+				pendingBillingStatuses,
+				pendingBillingStatuses,
+			).
+			Order("logs.created_at asc, logs.id asc").
+			Limit(int(batchSize))
+		if strings.TrimSpace(incomingID) != "" {
+			query = query.Where("logs.id <> ?", incomingID)
+		}
+
+		var ids []string
+		if err := query.Pluck("logs.id", &ids).Error; err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		deleted := tx.Where("id IN ? AND user_id = ?", ids, userID).Delete(&model.ApiCallLog{})
+		if deleted.Error != nil {
+			return deleted.Error
+		}
+		if deleted.RowsAffected == 0 {
+			return nil
+		}
+		remaining -= deleted.RowsAffected
+	}
+	return nil
 }
 
 func (r *Repository) SystemSetting(key string) (*model.SystemSetting, error) {
@@ -1167,7 +1282,7 @@ func (r *Repository) UpsertAsset(asset *model.Asset) error {
 }
 
 func (r *Repository) DeleteAsset(userID string, id string) error {
-	return r.DeleteAssetAndResources(userID, id, nil, nil)
+	return r.DeleteAssetAndResources(userID, id, nil, nil, false)
 }
 
 func (r *Repository) FindExpiredArchivedAssets(cutoff time.Time, limit int) ([]model.Asset, error) {

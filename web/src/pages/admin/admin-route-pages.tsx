@@ -19,7 +19,7 @@ const AgentLessonsPanel = lazy(() => import("./components/agent-lessons-panel"))
 export function AnalyticsPage() {
     const { references } = useAdminContext();
     return (
-        <AdminPageFrame title="积分消耗统计" description="从总量、效率、能力、用户与模型五个维度审视已结算积分消耗" scroll>
+        <AdminPageFrame title="积分消耗与运行总览" description="查看已结算积分、请求质量、任务队列与成本趋势" scroll>
             <AnalyticsPanel users={references.users} channels={references.channels} />
         </AdminPageFrame>
     );

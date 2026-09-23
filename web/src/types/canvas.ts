@@ -7,6 +7,7 @@ import type { ArtCritiqueNodeState } from "@/lib/art-critique/contracts";
 import type { CameraControlOptions } from "@/lib/canvas/camera-prompt-library";
 import type { SrtEntry, SubtitleHighlight, SubtitleStyle } from "@/types/timeline";
 import type { GenerationSpec } from "@/lib/canvas/generation-contract.generated";
+import type { GenerationTask } from "@/services/api/task-center";
 
 export type Position = {
     x: number;
@@ -129,6 +130,10 @@ export type StoryboardRow = {
     continuityOut: string;
     negativePrompt: string;
     assetBindings: StoryboardAssetBinding[];
+    /** 原视频拆解时的时间范围，用于自动抽取关键帧。 */
+    sourceStartMs?: number;
+    sourceEndMs?: number;
+    keyframeTimeMs?: number;
     imageNodeId?: string;
     videoNodeId?: string;
     status?: CanvasNodeStatus;
@@ -173,19 +178,31 @@ export type CanvasBatchRow = {
     textNodeIds?: string[];
     prompt: string;
     outputNodeId?: string;
+    /** AI-generated cell content keyed by column id (for aiGenerated tables). */
+    cells?: Record<string, string>;
 };
+export type CanvasBatchColumnType = "image" | "text";
+export type CanvasBatchTableContentKind = "content" | "storyboard";
 export type CanvasBatchReferenceColumn = {
     id: string;
     label: string;
+    type?: CanvasBatchColumnType;
 };
 export type CanvasBatchTableData = {
     operation: CanvasBatchOperation;
     concurrency: number;
+    /** AI 输出的业务结构；分镜表会保留标准 StoryboardRow，避免依赖列名猜测。 */
+    contentKind?: CanvasBatchTableContentKind;
+    storyboardRows?: StoryboardRow[];
+    storyboardTitle?: string;
+    storyboardSourceNodeIds?: string[];
     /** Optional prompt override applied to every batch row while non-empty. */
     globalPrompt?: string;
     referenceColumns?: CanvasBatchReferenceColumn[];
     textColumns?: CanvasBatchReferenceColumn[];
     rows: CanvasBatchRow[];
+    /** When true, columns are AI-generated with dynamic headers. */
+    aiGenerated?: boolean;
 };
 
 export type CanvasSkillSnapshot = {
@@ -240,6 +257,8 @@ export type CanvasNodeMetadata = {
     richText?: Record<string, unknown>;
     composerContent?: string;
     prompt?: string;
+    /** 文本节点是否处于列表模式；用于触发多模态分析并创建多维表格。 */
+    listMode?: boolean;
     promptTemplateOperation?: string;
     promptTemplateVariables?: Record<string, string>;
     status?: CanvasNodeStatus;
@@ -344,6 +363,8 @@ export type CanvasNodeMetadata = {
     taskStatus?: "queued" | "running" | "succeeded" | "failed" | "cancelled" | string;
     taskProgress?: number;
     taskStage?: string;
+    taskMediaStage?: GenerationTask["mediaStage"];
+    taskCanRecoverMedia?: boolean;
     taskProvider?: string;
     taskStartedAt?: string;
     taskCompletedAt?: string;
@@ -493,7 +514,7 @@ export type CanvasConnection = {
     toHandleId?: string;
     fromAnchorRatio?: number;
     toAnchorRatio?: number;
-    relation?: "storyboard-output" | "storyboard-asset-reference" | "batch-output";
+    relation?: "storyboard-output" | "storyboard-asset-reference" | "batch-output" | "batch-input";
     storyboardRowId?: string;
 };
 

@@ -4,6 +4,8 @@ import { App } from "antd";
 
 import { applyGenerationTaskResultToNodes, generationTaskCanReloadResource, generationTaskNodeId, mergeGenerationTaskResultNodes } from "@/lib/canvas/canvas-generation-task-sync";
 import { getActiveUserScope } from "@/lib/user-scope";
+import { reconcileImageBatchRoot } from "@/lib/canvas/canvas-image-batch-retry";
+import { markCanvasTaskRecoveryUnconfirmed } from "@/lib/canvas/canvas-task-state";
 import { applyCanvasGenerationTaskNodeEffect, isCanvasGenerationDurableAckError } from "@/services/canvas-generation-consumer";
 import { consumeGenerationTaskNode, ensureCanvasNodeAsset, retryCanvasAssetSyncAfterRateLimit } from "@/services/project-asset-sync";
 import { listGenerationTasks, listTaskLogs, queryGenerationTask, subscribeGenerationTasks, type GenerationTask, type TaskLog } from "@/services/api/task-center";
@@ -277,6 +279,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
     const saveGeneratedAsset = useCallback(
         async (node: CanvasNodeData, taskId: string, signal?: AbortSignal) => {
             const result = await retryCanvasAssetSyncAfterRateLimit(() => ensureCanvasNodeAsset({ canvasId: projectId, domainProjectId, node, source: "canvas-generation", taskId, signal }), { signal });
+            if (signal?.aborted) return;
             setNodes((current) => {
                 const target = current.find((item) => item.id === node.id);
                 if (!target || target.metadata?.assetId === result.assetId || target.metadata?.taskId !== taskId || target.metadata?.storageKey !== node.metadata?.storageKey) return current;
@@ -403,19 +406,25 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
             if (!isCurrentProject()) return;
             const recoveryNodes = nodesRef.current.filter((node) => {
                 const pendingAgentContinuation = node.metadata?.agentGenerationContinuation?.status === "pending";
-                const aggregateBatchRoot = node.metadata?.isBatchRoot && node.metadata.batchChildIds?.length && !node.metadata.taskId;
+                const aggregateBatchRoot = node.metadata?.isBatchRoot && node.metadata.batchChildIds?.length;
                 if (aggregateBatchRoot && !pendingAgentContinuation) return false;
                 return pendingAgentContinuation || node.metadata?.status === NODE_STATUS_LOADING || node.metadata?.errorDetails === "页面刷新后生成已中断，请重新生成。" || Boolean(node.metadata?.taskId && node.metadata.status !== NODE_STATUS_SUCCESS);
             });
             const needsDiscovery = recoveryNodes.some((node) => !node.metadata?.taskId && !node.metadata?.agentGenerationContinuation?.taskId);
-            const projectTasks = needsDiscovery
-                ? (
-                      await listGenerationTasks(100, { projectId: startedProjectId }, undefined, signal).catch((error) => {
-                          if (!isCurrentProject()) throw error;
-                          return [];
-                      })
-                  ).filter((task) => task.projectId === startedProjectId && task.type.startsWith("canvas_"))
-                : [];
+            let projectTasks: GenerationTask[] = [];
+            if (needsDiscovery) {
+                try {
+                    projectTasks = (await listGenerationTasks(100, { projectId: startedProjectId }, undefined, signal))
+                        .filter((task) => task.projectId === startedProjectId && task.type.startsWith("canvas_"));
+                } catch (error) {
+                    if (!isCurrentProject() || (error instanceof Error && error.name === "AbortError")) return;
+                    // 发现接口失败不影响已有 taskId 的精确恢复，也不是“查无任务”的证据。
+                    message.warning({ key: `canvas-task-recovery:${startedProjectId}`, content: "任务列表暂不可用，未绑定任务的节点状态尚未确认；已绑定任务继续恢复。", duration: 6 });
+                }
+                if (isCurrentProject() && recoveryNodes.some((node) => !node.metadata?.taskId && !node.metadata?.agentGenerationContinuation?.taskId && !projectTasks.some((task) => generationTaskNodeId(task) === node.id))) {
+                    message.warning({ key: `canvas-task-recovery:${startedProjectId}`, content: "部分节点未在最近任务中找到，已保留原状态。请到任务中心核对结果，勿重复提交。", duration: 6 });
+                }
+            }
             if (!isCurrentProject()) return;
             await Promise.all(
                 recoveryNodes.map(async (node) => {
@@ -424,7 +433,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                     if (!taskId) {
                         if (!isCurrentProject()) return;
                         setNodes((current) =>
-                            isCurrentProject() ? current.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_ERROR, errorDetails: "页面刷新后找不到对应任务，请重新生成。" } } : item)) : current,
+                            isCurrentProject() ? current.map((item) => (item.id === node.id ? markCanvasTaskRecoveryUnconfirmed(item, undefined, "最近任务中未找到对应记录，状态尚未确认；请到任务中心核对，勿重复提交。") : item)) : current,
                         );
                         return;
                     }
@@ -433,7 +442,8 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                     const continuationOnly = !node.metadata?.taskId && node.metadata?.agentGenerationContinuation?.taskId === taskId && !discoveredTask;
                     try {
                         const completed = await observeSubscribedGenerationTask(taskId, signal, (task) => {
-                            if (isCurrentProject() && !continuationOnly) bindGenerationTask(node.id, task);
+                            const live = nodesRef.current.find((item) => item.id === node.id);
+                            if (isCurrentProject() && !continuationOnly && live && (!live.metadata?.taskId || live.metadata.taskId === taskId)) bindGenerationTask(node.id, task);
                         });
                         if (!isCurrentProject()) return;
                         await recoverCanvasGenerationTaskNode({
@@ -453,13 +463,12 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                         setNodes((current) =>
                             isCurrentProject()
                                 ? current.map((item) =>
-                                      item.id === node.id
+                                      item.id === node.id && (!item.metadata?.taskId || item.metadata.taskId === taskId)
                                           ? {
                                                 ...item,
                                                 metadata: {
                                                     ...item.metadata,
-                                                    status: continuationOnly ? item.metadata?.status : NODE_STATUS_ERROR,
-                                                    ...(continuationOnly ? {} : failure),
+                                                    ...(continuationOnly ? {} : markCanvasTaskRecoveryUnconfirmed(item, item.metadata?.taskId, failure.errorDetails || "任务恢复暂不可用，请到任务中心核对。").metadata),
                                                     ...(item.metadata?.agentGenerationContinuation?.status === "pending"
                                                         ? {
                                                               agentGenerationContinuation: { ...item.metadata.agentGenerationContinuation, status: "failed" as const },
@@ -480,35 +489,12 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
             setNodes((current) =>
                 isCurrentProject()
                     ? current.map((node) => {
-                          if (!node.metadata?.isBatchRoot || !node.metadata.batchChildIds?.length || node.metadata.taskId) return node;
-                          const children = node.metadata.batchChildIds.map((id) => current.find((item) => item.id === id)).filter(Boolean) as CanvasNodeData[];
-                          const primary = children.find((item) => item.id === node.metadata?.primaryImageId && item.metadata?.content) || children.find((item) => item.metadata?.content);
-                          const loading = children.some((item) => item.metadata?.status === NODE_STATUS_LOADING);
-                          const failed = children.find((item) => item.metadata?.status === NODE_STATUS_ERROR);
-                          return {
-                              ...node,
-                              metadata: {
-                                  ...node.metadata,
-                                  ...(primary
-                                      ? {
-                                            content: primary.metadata?.content,
-                                            storageKey: primary.metadata?.storageKey,
-                                            mimeType: primary.metadata?.mimeType,
-                                            bytes: primary.metadata?.bytes,
-                                            naturalWidth: primary.metadata?.naturalWidth,
-                                            naturalHeight: primary.metadata?.naturalHeight,
-                                            primaryImageId: primary.id,
-                                        }
-                                      : {}),
-                                  status: primary ? NODE_STATUS_SUCCESS : loading ? NODE_STATUS_LOADING : NODE_STATUS_ERROR,
-                                  errorDetails: primary ? undefined : failed?.metadata?.errorDetails || "全部图片生成失败",
-                              },
-                          };
+                          return reconcileImageBatchRoot(node, current);
                       })
                     : current,
             );
         },
-        [applyGenerationTaskResult, bindGenerationTask, nodesRef, observeSubscribedGenerationTask, setNodes],
+        [applyGenerationTaskResult, bindGenerationTask, message, nodesRef, observeSubscribedGenerationTask, setNodes],
     );
 
     useEffect(() => {
@@ -524,12 +510,13 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                 await runGenerationConsumer(context.signal, async (signal) => recoverInterruptedGenerationTasks(context.projectId, signal, () => !signal.aborted && context.isCurrentProject()));
             })
             .catch((error) => {
-                if (!(error instanceof Error && error.name === "AbortError")) throw error;
+                if (error instanceof Error && error.name === "AbortError") return;
+                message.warning({ key: `canvas-task-recovery:${projectId}`, content: "任务恢复暂不可用，已保留画布状态。请检查网络后刷新，或到任务中心核对结果。", duration: 6 });
             });
         return () => {
             void coordinator.abortAndDrain();
         };
-    }, [projectId, projectLoaded, recoverInterruptedGenerationTasks]);
+    }, [message, projectId, projectLoaded, recoverInterruptedGenerationTasks]);
 
     useEffect(
         () => () => {

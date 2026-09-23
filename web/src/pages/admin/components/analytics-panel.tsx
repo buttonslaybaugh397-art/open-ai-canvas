@@ -1,7 +1,7 @@
 import { Alert, App, Button, DatePicker, Select, Tabs, Tag } from "antd";
 import { Tooltip } from "@/pages/admin/ui/controls";
 import { useCountUp } from "@/hooks/use-count-up";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
@@ -9,7 +9,7 @@ import { Activity, AlertTriangle, BarChart3, CalendarDays, CircleDollarSign, Clo
 import { Area, Bar, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
 import { useSearchParams } from "react-router";
 
-import { ListToolbar, PaginationBar, AdminDataTable, AdminExportButton, AdminFilterChip, AdminStatusBadge, AdminTableEmpty, type AdminStatusTone } from "./admin-ui";
+import { PaginationBar, AdminDataTable, AdminExportButton, AdminStatusBadge, AdminTableEmpty, type AdminStatusTone } from "./admin-ui";
 import { analyticsFinanceColumns, formatCredits as formatFinanceCredits, formatFinanceCost, formatFinanceMargin } from "./analytics-finance";
 import {
     exportAdminAnalytics,
@@ -49,6 +49,8 @@ export default function AnalyticsPanel({ users, channels }: Props) {
     const [previousData, setPreviousData] = useState<AdminAnalytics | null>(null);
     const [lastUpdatedAt, setLastUpdatedAt] = useState<Dayjs | null>(null);
     const [loading, setLoading] = useState(false);
+    const [loadError, setLoadError] = useState("");
+    const requestSequence = useRef(0);
     const [userOptions, setUserOptions] = useState(users);
     const [searchingUsers, setSearchingUsers] = useState(false);
     const [modelPage, setModelPage] = useState(1);
@@ -81,16 +83,23 @@ export default function AnalyticsPanel({ users, channels }: Props) {
     }, [filters, range]);
 
     const reload = useCallback(async () => {
+        const sequence = ++requestSequence.current;
         setLoading(true);
+        setLoadError("");
+        setData(null);
         try {
             const [analytics, previousAnalytics] = await Promise.all([getAdminAnalytics(filters), getAdminAnalytics(previousFilters)]);
+            if (sequence !== requestSequence.current) return;
             setData(analytics);
             setPreviousData(previousAnalytics);
             setLastUpdatedAt(dayjs());
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "读取统计数据失败");
+            if (sequence !== requestSequence.current) return;
+            const text = error instanceof Error ? error.message : "读取统计数据失败";
+            setLoadError(text);
+            message.error(text);
         } finally {
-            setLoading(false);
+            if (sequence === requestSequence.current) setLoading(false);
         }
     }, [filters, message, previousFilters]);
 
@@ -104,6 +113,9 @@ export default function AnalyticsPanel({ users, channels }: Props) {
         else next.delete("rangePreset");
         setSearchParams(next, { replace: true });
         void reload();
+        return () => {
+            requestSequence.current += 1;
+        };
     }, [filters, rangePreset]);
 
     useEffect(() => {
@@ -287,7 +299,7 @@ export default function AnalyticsPanel({ users, channels }: Props) {
     };
 
     return (
-        <div className="admin-analytics-panel space-y-5">
+        <div className="admin-analytics-panel space-y-5" aria-busy={loading}>
             <section className="admin-analytics-scope" aria-labelledby="admin-analytics-scope-title">
                 <div className="admin-analytics-scope-heading">
                     <div className="admin-analytics-scope-title">
@@ -341,6 +353,21 @@ export default function AnalyticsPanel({ users, channels }: Props) {
                     <AdminExportButton exportFile={() => exportAdminAnalytics(filters)} fileName={() => `usage-${filters.from}-${filters.to}.csv`} label="导出 CSV" />
                 </div>
             </section>
+
+            {financeUnavailable && <Alert type="warning" showIcon title="后端未返回完整财务统计，缺失金额显示为 --。请确认后端已更新并重启后刷新。" />}
+            {loadError && (
+                <Alert
+                    type="error"
+                    showIcon
+                    title="统计数据读取失败"
+                    description={loadError}
+                    action={
+                        <Button size="small" onClick={() => void reload()}>
+                            重试
+                        </Button>
+                    }
+                />
+            )}
 
             <section className="admin-analytics-consumption-grid" aria-label="积分消耗总览">
                 <AnalyticsConsumptionCard
@@ -458,8 +485,8 @@ export default function AnalyticsPanel({ users, channels }: Props) {
                             <span>
                                 <BarChart3 className="size-5" />
                             </span>
-                            <div className="font-medium">当前范围暂无{trendMetric === "credits" ? "积分结算" : trendMetric === "quality" ? "质量" : trendMetric === "output" ? "产出" : trendMetric === "activity" ? "活跃" : "使用"}数据</div>
-                            <p>可以调整时间范围或筛选条件后重新查看。</p>
+                            <div className="font-medium">{!data ? (loading ? "正在读取趋势…" : "趋势数据不可用") : `当前范围暂无${trendMetric === "quality" ? "质量" : trendMetric === "activity" ? "活跃" : "使用"}数据`}</div>
+                            <p>{loadError ? "请重试，无法依据缺失数据判断运行状态。" : "按自然日统计，可调整时间范围或筛选条件。"}</p>
                         </div>
                     )}
                 </section>
@@ -471,6 +498,7 @@ export default function AnalyticsPanel({ users, channels }: Props) {
                             <p>按模型能力汇总已结算积分，不受表格分页影响。</p>
                         </div>
                         <Layers3 className="size-4" />
+                        <AdminStatusBadge label={!data ? "状态未知" : failureTotal > 0 ? `${formatNumber(failureTotal)} 次异常` : "未记录异常"} tone={!data ? "neutral" : failureTotal > 0 ? "warning" : "success"} />
                     </div>
                     <div className="admin-analytics-capability-list">
                         {capabilityBreakdown.map((item) => (
@@ -482,7 +510,40 @@ export default function AnalyticsPanel({ users, channels }: Props) {
                                 <span className="admin-analytics-capability-track"><span style={{ width: `${Math.max(item.credits > 0 ? 2 : 0, (item.credits / maxCapabilityCredits) * 100)}%` }} /></span>
                                 <span className="admin-analytics-capability-meta">{formatCapabilityShare(item.credits, data?.kpi.creditsConsumedMicrocredits)} · {formatNumber(item.tasks)} 任务 · {item.users} 用户 · {item.models} 模型</span>
                             </button>
-                        ))}
+                         ))}
+                    </div>
+                    <div className="admin-analytics-attention-list">
+                        <AnalyticsAttentionItem
+                            icon={<AlertTriangle className="size-4" />}
+                            label="异常请求"
+                            value={data ? formatNumber(failureTotal) : "--"}
+                            description={!data ? "数据尚未就绪" : topFailure ? `${topFailure.type} · ${topFailure.model}` : "当前范围未记录异常"}
+                            tone={!data ? "neutral" : failureTotal > 0 ? "warning" : "success"}
+                            onClick={failureTotal > 0 ? () => openAnalysis("failures") : undefined}
+                        />
+                        <AnalyticsAttentionItem
+                            icon={<Clock3 className="size-4" />}
+                            label="当前队列"
+                            value={data ? formatNumber(data.kpi.currentQueuedTasks) : "--"}
+                            description={!data ? "数据尚未就绪" : data.kpi.currentQueuedTasks ? "存在等待执行的生成任务" : "没有排队中的生成任务"}
+                            tone={!data ? "neutral" : data.kpi.currentQueuedTasks ? "warning" : "success"}
+                        />
+                        <AnalyticsAttentionItem
+                            icon={<CircleDollarSign className="size-4" />}
+                            label="成本覆盖订单"
+                            value={finance ? `${finance.costedOrders}/${finance.settledOrders}` : "--"}
+                            description={
+                                !finance
+                                    ? "财务统计尚未返回"
+                                    : finance.settledOrders
+                                      ? finance.costedOrders === finance.settledOrders
+                                          ? "已结算订单成本完整"
+                                          : `${finance.settledOrders - finance.costedOrders} 笔缺少成本快照或有效用量`
+                                      : "当前范围暂无已结算订单"
+                            }
+                            tone={finance && finance.costedOrders < finance.settledOrders ? "warning" : "neutral"}
+                            onClick={() => openAnalysis("models")}
+                        />
                     </div>
                 </aside>
             </div>
@@ -809,6 +870,31 @@ function AnalyticsHealthCard({ icon, label, value, trend, detail, tone = "neutra
                 {detail ? <span>{detail}</span> : null}
             </div>
         </article>
+    );
+}
+
+function AnalyticsAttentionItem({ icon, label, value, description, tone = "neutral", onClick }: { icon: ReactNode; label: string; value: ReactNode; description: string; tone?: AdminStatusTone; onClick?: () => void }) {
+    const content = (
+        <>
+            <span className="admin-analytics-attention-icon" aria-hidden="true">
+                {icon}
+            </span>
+            <span className="admin-analytics-attention-copy">
+                <span className="admin-analytics-attention-label">{label}</span>
+                <span className="admin-analytics-attention-description">{description}</span>
+            </span>
+            <strong>{value}</strong>
+        </>
+    );
+
+    return onClick ? (
+        <button type="button" className="admin-analytics-attention-item is-action" data-tone={tone} onClick={onClick}>
+            {content}
+        </button>
+    ) : (
+        <div className="admin-analytics-attention-item" data-tone={tone}>
+            {content}
+        </div>
     );
 }
 
