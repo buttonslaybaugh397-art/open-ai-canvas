@@ -14,3 +14,4 @@ src/lib/canvas/generation-contract.generated.ts
 *.gif
 *.webp
 *.svg
+public/live2d/live2dcubismcore.min.js

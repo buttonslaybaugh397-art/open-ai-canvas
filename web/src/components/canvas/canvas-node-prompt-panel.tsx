@@ -30,7 +30,18 @@ import { CanvasChooseMotionPicker } from "./canvas-choose-motion-picker";
 import { CanvasPortraitTexturePopover } from "./canvas-portrait-texture-popover";
 import { CanvasPromptOptimizerDrawer } from "./canvas-prompt-optimizer-drawer";
 import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData, type CanvasNodeMetadata, type CanvasWorkspaceMode } from "@/types/canvas";
-import { applyToolMention, removeToolMentions, autoMentionCanvasResourceReferences, buildToolMentionReference, canvasResourceDisplayLabel, canvasResourceMentionToken, normalizeCanvasNodeMentionTokens, overwriteSameTypeToolMention, parseToolMentionTokens, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
+import {
+    applyToolMention,
+    removeToolMentions,
+    autoMentionCanvasResourceReferences,
+    buildToolMentionReference,
+    canvasResourceDisplayLabel,
+    canvasResourceMentionToken,
+    normalizeCanvasNodeMentionTokens,
+    overwriteSameTypeToolMention,
+    parseToolMentionTokens,
+    type CanvasResourceReference,
+} from "@/lib/canvas/canvas-resource-references";
 import { promptOptimizerPlugin, PROMPT_OPTIMIZER_PLUGIN_ID } from "@/lib/plugins/builtin/prompt-optimizer";
 import { createPluginHostContext } from "@/services/plugin-host";
 import { usePluginStore } from "@/stores/use-plugin-store";
@@ -134,7 +145,7 @@ export function CanvasNodePromptPanel({
     const [promptOptimizerOpen, setPromptOptimizerOpen] = useState(false);
     const [autoLinkEnabled, setAutoLinkEnabled] = useState(true);
     const resolvedMentionReferences = useResolvedCanvasResourceReferences(mentionReferences, { projectId });
-    const promptToolReferences = useMemo(() => parseToolMentionTokens(prompt).map(({toolId, label, type, icon}) => buildToolMentionReference(toolId, label, type, icon)), [prompt]);
+    const promptToolReferences = useMemo(() => parseToolMentionTokens(prompt).map(({ toolId, label, type, icon }) => buildToolMentionReference(toolId, label, type, icon)), [prompt]);
     const textareaReferences = useMemo(() => {
         if (!promptToolReferences.length) return resolvedMentionReferences;
         const existingIds = new Set(resolvedMentionReferences.map((r) => r.id));
@@ -143,8 +154,8 @@ export function CanvasNodePromptPanel({
     }, [resolvedMentionReferences, promptToolReferences]);
     // 当前提示词持有的九宫格工具图标，用于触发按钮回显已选工具。
     const activeNineGridIcon = useMemo(() => parseToolMentionTokens(prompt).find((tool) => tool.type === "nine_grid")?.icon ?? "Grid3x3", [prompt]);
-    const activeStyleTool = parseToolMentionTokens(prompt).find(t => t.type === "style");
-    const activeEffectTool = parseToolMentionTokens(prompt).find(t => t.type === "effect");
+    const activeStyleTool = parseToolMentionTokens(prompt).find((t) => t.type === "style");
+    const activeEffectTool = parseToolMentionTokens(prompt).find((t) => t.type === "effect");
     // 当前提示词持有的运镜工具标签（可多个），用于运镜按钮回显与菜单高亮。
     const activeMotionTools = useMemo(() => parseToolMentionTokens(prompt).filter((tool) => tool.type === "motion"), [prompt]);
     const activeMotionTool = activeMotionTools[0];
@@ -426,7 +437,9 @@ export function CanvasNodePromptPanel({
                         )}
                     </div>
                 ) : null}
-                {showPromptTemplates ? <CanvasPresetPicker mode={mode} skillReferences={skillReferences} open={expanded ? expandedPresetOpen : presetOpen} onOpenChange={expanded ? setExpandedPresetOpen : setPresetOpen} onSelect={applyPreset} dense appearance="quiet" /> : null}
+                {showPromptTemplates ? (
+                    <CanvasPresetPicker mode={mode} skillReferences={skillReferences} open={expanded ? expandedPresetOpen : presetOpen} onOpenChange={expanded ? setExpandedPresetOpen : setPresetOpen} onSelect={applyPreset} dense appearance="quiet" />
+                ) : null}
                 {canOptimizePrompt ? (
                     <Tooltip title="用 AI 润色提示词">
                         <button type="button" className="canvas-node-composer-header-action inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5" onClick={() => setPromptOptimizerOpen(true)} aria-label="润色提示词">
@@ -525,11 +538,23 @@ export function CanvasNodePromptPanel({
                     {mode === "text" ? (
                         <>
                             <div className="flex h-7 items-center overflow-hidden rounded-md border" style={{ borderColor: theme.node.stroke }}>
-                                <button type="button" aria-pressed={!node.metadata?.listMode} onClick={() => onConfigChange(node.id, { listMode: false })} className={`flex h-full items-center gap-1 px-2 text-[var(--fs-tiny)] transition-colors focus-visible:outline ${!node.metadata?.listMode ? "font-medium" : ""}`} style={!node.metadata?.listMode ? { background: theme.toolbar.activeBg, color: theme.toolbar.activeText } : { color: theme.node.muted }}>
+                                <button
+                                    type="button"
+                                    aria-pressed={!node.metadata?.listMode}
+                                    onClick={() => onConfigChange(node.id, { listMode: false })}
+                                    className={`flex h-full items-center gap-1 px-2 text-[var(--fs-tiny)] transition-colors focus-visible:outline ${!node.metadata?.listMode ? "font-medium" : ""}`}
+                                    style={!node.metadata?.listMode ? { background: theme.toolbar.activeBg, color: theme.toolbar.activeText } : { color: theme.node.muted }}
+                                >
                                     <FileText className="size-3" />
                                     文本
                                 </button>
-                                <button type="button" aria-pressed={Boolean(node.metadata?.listMode)} onClick={() => onConfigChange(node.id, { listMode: true })} className={`flex h-full items-center gap-1 px-2 text-[var(--fs-tiny)] transition-colors focus-visible:outline ${node.metadata?.listMode ? "font-medium" : ""}`} style={node.metadata?.listMode ? { background: theme.toolbar.activeBg, color: theme.toolbar.activeText } : { color: theme.node.muted }}>
+                                <button
+                                    type="button"
+                                    aria-pressed={Boolean(node.metadata?.listMode)}
+                                    onClick={() => onConfigChange(node.id, { listMode: true })}
+                                    className={`flex h-full items-center gap-1 px-2 text-[var(--fs-tiny)] transition-colors focus-visible:outline ${node.metadata?.listMode ? "font-medium" : ""}`}
+                                    style={node.metadata?.listMode ? { background: theme.toolbar.activeBg, color: theme.toolbar.activeText } : { color: theme.node.muted }}
+                                >
                                     <LayoutList className="size-3" />
                                     列表
                                 </button>
@@ -550,7 +575,11 @@ export function CanvasNodePromptPanel({
                                         className="!w-14 !h-7 [&_.ant-input-number-input]:!text-[var(--fs-tiny)]"
                                     />
                                 </Tooltip>
-                            ) : <span className="text-[10px]" style={{ color: theme.node.muted }}>行数和列结构由模型判断</span>}
+                            ) : (
+                                <span className="text-[10px]" style={{ color: theme.node.muted }}>
+                                    行数和列结构由模型判断
+                                </span>
+                            )}
                         </>
                     ) : mode === "image" ? (
                         // 图片模式下，显示相机配置与镜头配置
@@ -652,11 +681,11 @@ export function CanvasNodePromptPanel({
                         </button>
                         {paramsExpanded ? (
                             <div className="pt-1">
-                            <CanvasVideoPromptTools metadata={node.metadata} frameOptions={videoFrameOptions} onMetadataChange={(patch) => onConfigChange(node.id, patch)} />
-                        </div>
-                    ) : null}
-                </div>
-            ) : null}
+                                <CanvasVideoPromptTools metadata={node.metadata} frameOptions={videoFrameOptions} onMetadataChange={(patch) => onConfigChange(node.id, patch)} />
+                            </div>
+                        ) : null}
+                    </div>
+                ) : null}
 
                 {renderComposerControls(false)}
 

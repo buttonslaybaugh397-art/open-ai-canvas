@@ -65,7 +65,9 @@ export default function AppearanceSettingsPage() {
 
     const dirty =
         Boolean(setting) &&
-        (JSON.stringify(canvas) !== JSON.stringify(setting?.canvas || DEFAULT_CANVAS_APPEARANCE) || canvasUploading || brandName.trim() !== setting?.brandName ||
+        (JSON.stringify(canvas) !== JSON.stringify(setting?.canvas || DEFAULT_CANVAS_APPEARANCE) ||
+            canvasUploading ||
+            brandName.trim() !== setting?.brandName ||
             brandSlug.trim().toLocaleLowerCase() !== setting?.brandSlug ||
             normalizeDraftCopy(authHeroTitle) !== setting?.authHeroTitle ||
             normalizeDraftCopy(authHeroDescription) !== setting?.authHeroDescription ||

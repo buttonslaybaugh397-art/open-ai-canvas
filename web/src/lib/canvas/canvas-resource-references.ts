@@ -65,7 +65,11 @@ export function parseToolMentionTokens(text: string): { type: string; toolId: nu
         if (seen.has(identity)) continue;
         seen.add(identity);
         let label = match[3];
-        try { label = decodeURIComponent(label); } catch { /* Keep readable text for malformed imported labels. */ }
+        try {
+            label = decodeURIComponent(label);
+        } catch {
+            /* Keep readable text for malformed imported labels. */
+        }
         results.push({ type: match[1], toolId, label, icon: match[4] });
     }
     return results;

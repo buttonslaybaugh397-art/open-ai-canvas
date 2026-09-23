@@ -90,10 +90,7 @@ test("selection and quote keep the chosen channel even when another channel is c
 });
 
 function sameChannelVariants() {
-    const channels = systemChannelModelChannels([{ id: "comfy", name: "Comfy", displayName: "Comfy", models: [
-        model("高速版", 100_000, "h3-fast", "MiniMax H3"),
-        model("多图一致性", 200_000, "h3-multi", "MiniMax H3"),
-    ] }]);
+    const channels = systemChannelModelChannels([{ id: "comfy", name: "Comfy", displayName: "Comfy", models: [model("高速版", 100_000, "h3-fast", "MiniMax H3"), model("多图一致性", 200_000, "h3-multi", "MiniMax H3")] }]);
     return normalizeConfigSnapshot({ config: { ...defaultConfig, channels, model: "comfy::h3-multi", videoModel: "comfy::h3-multi" } }).config;
 }
 
@@ -104,10 +101,19 @@ test("same-channel system variants retain explicit model identity through select
     expect(groupModelsByDisplayName(config, options).map((group) => group.models)).toEqual(options.map((value) => [value]));
     for (const value of options) {
         expect(resolveCompatibleModel(config, value, { capability: "video" })).toBe(value);
-        const generation = buildGenerationConfig(config, {
-            id: "video", type: CanvasNodeType.Video, title: "Video", position: { x: 0, y: 0 }, width: 100, height: 100,
-            metadata: { model: value, generationMode: "video" },
-        }, "video");
+        const generation = buildGenerationConfig(
+            config,
+            {
+                id: "video",
+                type: CanvasNodeType.Video,
+                title: "Video",
+                position: { x: 0, y: 0 },
+                width: 100,
+                height: 100,
+                metadata: { model: value, generationMode: "video" },
+            },
+            "video",
+        );
         expect(generation.model).toBe(value);
         expect(resolveModelRequestConfig(generation, generation.model)).toMatchObject({ channelId: "comfy", model: value.split("::")[1] });
         expect(modelQuoteRequest(config, value, "video")).toMatchObject({ channelId: "comfy", modelKey: value.split("::")[1] });

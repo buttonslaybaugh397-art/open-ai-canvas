@@ -124,7 +124,6 @@
             transform 120ms ease;
     }
 
-
     .creation-model-picker-menu .canvas-model-picker-option > span:first-child {
         gap: 12px;
     }
@@ -406,7 +405,6 @@
         transition: background-color var(--motion-instant) ease-out;
         width: 100%;
     }
-
 
     .canvas-model-picker-option[aria-selected="true"] {
         background: color-mix(in srgb, var(--workspace-accent) 6%, transparent) !important;

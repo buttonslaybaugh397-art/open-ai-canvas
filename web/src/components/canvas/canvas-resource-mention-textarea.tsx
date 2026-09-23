@@ -2,7 +2,36 @@ import { forwardRef, useCallback, useLayoutEffect, useMemo, useRef, useState } f
 import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent, MouseEvent, PointerEvent, TextareaHTMLAttributes } from "react";
 import { createPortal } from "react-dom";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ArrowLeft, Brush, Camera, Clapperboard, ChevronRight, Clock, Contrast, FastForward, FileText, Folder, Globe2, Grid2x2, Grid3x3, Image as ImageIcon, Music2, Package, Pencil, Palette, PersonStanding, Rewind, ScanFace, Search, SlidersHorizontal, Sparkles, Sun, UserRound, Video, Workflow } from "lucide-react";
+import {
+    ArrowLeft,
+    Brush,
+    Camera,
+    Clapperboard,
+    ChevronRight,
+    Clock,
+    Contrast,
+    FastForward,
+    FileText,
+    Folder,
+    Globe2,
+    Grid2x2,
+    Grid3x3,
+    Image as ImageIcon,
+    Music2,
+    Package,
+    Pencil,
+    Palette,
+    PersonStanding,
+    Rewind,
+    ScanFace,
+    Search,
+    SlidersHorizontal,
+    Sparkles,
+    Sun,
+    UserRound,
+    Video,
+    Workflow,
+} from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { ASSET_CATEGORY_LABELS } from "@/lib/asset-category";
@@ -634,7 +663,23 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
 });
 
 export const TOOL_ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
-    Brush, Camera, Clapperboard, Clock, Contrast, FastForward, Globe2, Grid2x2, Grid3x3, Package, Palette, PersonStanding, Rewind, ScanFace, SlidersHorizontal, Sparkles, Sun,
+    Brush,
+    Camera,
+    Clapperboard,
+    Clock,
+    Contrast,
+    FastForward,
+    Globe2,
+    Grid2x2,
+    Grid3x3,
+    Package,
+    Palette,
+    PersonStanding,
+    Rewind,
+    ScanFace,
+    SlidersHorizontal,
+    Sparkles,
+    Sun,
 };
 
 function toolIconSvg(iconName: string): string {
