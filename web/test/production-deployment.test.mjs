@@ -24,6 +24,6 @@ test("GHCR installer downloads but does not overwrite the Caddy template", () =>
     const installer = read("scripts/install-server-image.sh");
 
     expect(installer).toContain("CADDYFILE_URL=");
-    expect(installer).toContain('if [[ -f Caddyfile.example ]]; then');
+    expect(installer).toContain("if [[ -f Caddyfile.example ]]; then");
     expect(installer).toContain("download_caddyfile");
 });
