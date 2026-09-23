@@ -1,0 +1,16 @@
+# Replace the site address with the real HTTPS domain before installing this file.
+# Caddy terminates TLS on the host and forwards the complete request to Web.
+# Web's Nginx then routes /api to the backend container.
+canvas.example.com {
+    @canvas_stream path_regexp canvas_stream ^/api/(tasks/[^/]+/text-events|agent/runs/[^/]+/events|ai/system/[^/]+/(responses|chat/completions|models/[^/]+:streamGenerateContent))$
+
+    handle @canvas_stream {
+        reverse_proxy 127.0.0.1:3000 {
+            flush_interval -1
+        }
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:3000
+    }
+}
