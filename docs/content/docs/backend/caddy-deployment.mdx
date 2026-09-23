@@ -1,0 +1,108 @@
+---
+title: Caddy 反向代理部署
+description: 宿主机 Caddy、Web 容器、Backend、PostgreSQL 与 Redis 的生产接入方式。
+---
+
+# Caddy 反向代理部署
+
+标准服务器部署将 Caddy 放在宿主机，把 HTTPS 请求转给仅监听回环地址的 Web 容器：
+
+```text
+浏览器
+  │ :80 / :443
+  ▼
+Caddy（宿主机）
+  │ 127.0.0.1:3000
+  ▼
+Web 容器 Nginx
+  ├─ 静态前端
+  └─ /api/* -> backend:8080
+
+Backend 容器
+  ├─ PostgreSQL
+  └─ Redis
+```
+
+不要让 Caddy 直接代理到 Backend 的 `8080`。Web 镜像中的 Nginx 负责保持 Host、转发协议、SSE、媒体 Range 和 OAuth 回调的一致行为；Backend、PostgreSQL 和 Redis 不需要发布宿主机端口。
+
+## Compose 配置
+
+标准生产编排 `docker-compose.deploy.yml` 的 Web 端口默认是：
+
+```yaml
+ports:
+  - "127.0.0.1:3000:3000"
+```
+
+需要改端口时只修改宿主机端口，仍保持回环绑定，例如 `127.0.0.1:6868:3000`。对应环境变量为：
+
+```dotenv
+CANVAS_BIND_ADDRESS=127.0.0.1
+CANVAS_HTTP_PORT=3000
+```
+
+`backend`、`postgres`、`redis` 和一次性 `migrate` 服务不配置 `ports`，只能通过 Compose 网络互相访问。
+
+已有直接访问公网 `:3000` 的部署，先配置并验收 Caddy，再重新创建 Web。旧 `.env` 没有 `CANVAS_BIND_ADDRESS` 时，新的 Compose 默认会改为回环绑定；如果必须保留短暂直连，显式使用 `CANVAS_BIND_ADDRESS=0.0.0.0`，迁移完成后恢复为 `127.0.0.1`。
+
+## Caddy 配置
+
+仓库根目录的 `Caddyfile.example` 已包含普通请求和项目明确的 SSE 路径。安装前将站点地址替换为真实域名：
+
+```caddyfile
+canvas.example.com {
+    @canvas_stream path_regexp canvas_stream ^/api/(tasks/[^/]+/text-events|agent/runs/[^/]+/events|ai/system/[^/]+/(responses|chat/completions|models/[^/]+:streamGenerateContent))$
+
+    handle @canvas_stream {
+        reverse_proxy 127.0.0.1:3000 {
+            flush_interval -1
+        }
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:3000
+    }
+}
+```
+
+Caddy 默认负责 80 到 HTTPS 的跳转、证书申请和转发头。不要覆盖 `Host`、`X-Forwarded-Proto`、`X-Forwarded-Host` 或 `X-Forwarded-For`；Web Nginx 会使用这些头判断公开 Origin 和协议。
+
+## 后端环境
+
+公网域名确认后，在部署目录的 `.env` 中设置：
+
+```dotenv
+CANVAS_PUBLIC_BASE_URL=https://canvas.example.com
+CANVAS_CORS_ORIGINS=https://canvas.example.com
+```
+
+`CANVAS_PUBLIC_BASE_URL` 用于生成模型上游可访问的本地资源短时链接，不要填容器地址、`/api` 路径或带尾斜杠的 URL。同源访问时 `CANVAS_CORS_ORIGINS` 可以留空；如果填写，必须是实际浏览器 Origin。
+
+修改环境变量后要重新创建 Backend 容器：
+
+```bash
+docker compose --env-file .env -f docker-compose.deploy.yml up -d --force-recreate backend web
+```
+
+## 防火墙与验收
+
+宿主机或云安全组只开放 Caddy 和实际 SSH 端口。若上游方案使用 `34205/tcp`，公网端口应为：
+
+```text
+34205/tcp  SSH
+80/tcp     Caddy HTTP / ACME
+443/tcp    Caddy HTTPS
+```
+
+不要开放 `3000/tcp`、`8080/tcp`、PostgreSQL 或 Redis。
+
+部署后按顺序检查：
+
+```bash
+docker compose --env-file .env -f docker-compose.deploy.yml config --quiet
+docker compose --env-file .env -f docker-compose.deploy.yml ps
+curl -fsS http://127.0.0.1:3000/ >/dev/null
+curl -fsS https://canvas.example.com/api/health/ready >/dev/null
+```
+
+健康检查通过后，还要使用真实域名验证登录、Cookie、资源访问、文本事件流、生成任务和刷新恢复。健康检查不能替代 Caddy 证书、SSE、Range 和大文件链路验收。

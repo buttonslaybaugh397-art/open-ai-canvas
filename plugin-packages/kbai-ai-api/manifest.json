@@ -1,0 +1,715 @@
+{
+  "apiVersion": "yingce.plugin/v2",
+  "id": "kbai-ai-api",
+  "name": "KBAI AI API",
+  "version": "1.0.0",
+  "author": "KBAI / 影策",
+  "description": "KBAI AI API 的视频异步任务与图片生成协议插件。",
+  "permissions": [
+    "generation.run",
+    "media.read"
+  ],
+  "configuration": {
+    "fields": [
+      {
+        "name": "apiKey",
+        "type": "secret",
+        "label": "API Key",
+        "required": true,
+        "description": "KBAI AI API 的 Bearer API Key。"
+      }
+    ]
+  },
+  "contributes": {
+    "providers": [
+      {
+        "id": "kbai-video",
+        "label": "KBAI AI 视频",
+        "capabilities": [
+          "video"
+        ],
+        "scopes": [
+          "admin.system-channel",
+          "user.custom-channel",
+          "canvas",
+          "creation",
+          "agent"
+        ],
+        "baseUrl": "https://api.ai.kbai.cc",
+        "requiresPublicMediaUrls": true,
+        "auth": {
+          "type": "bearer",
+          "field": "apiKey"
+        },
+        "parameters": [
+          {
+            "name": "model",
+            "type": "string",
+            "required": true,
+            "mapping": "model",
+            "description": "公开视频模型 ID，以模型列表接口返回值为准。"
+          },
+          {
+            "name": "prompt",
+            "type": "string",
+            "required": true,
+            "mapping": "prompt",
+            "description": "视频生成提示词；素材占位符按图片、视频、音频数组顺序对应。"
+          },
+          {
+            "name": "images",
+            "type": "media[]",
+            "mapping": "reference_image_urls",
+            "description": "参考图片，转换为公网 URL 数组。"
+          },
+          {
+            "name": "videos",
+            "type": "media[]",
+            "mapping": "reference_videos",
+            "description": "参考视频，转换为公网 URL 数组。"
+          },
+          {
+            "name": "audios",
+            "type": "media[]",
+            "mapping": "reference_audios",
+            "description": "参考音频，转换为公网 URL 数组。"
+          },
+          {
+            "name": "aspectRatio",
+            "type": "string",
+            "mapping": "aspect_ratio",
+            "description": "画幅比例，默认 9:16；具体可用值以模型列表 params 为准。"
+          },
+          {
+            "name": "duration",
+            "type": "integer",
+            "mapping": "seconds",
+            "description": "视频时长，单位秒；默认 5。"
+          },
+          {
+            "name": "resolution",
+            "type": "string",
+            "mapping": "resolution",
+            "description": "分辨率档位，默认 720p；具体可用值以模型列表 params 为准。"
+          }
+        ],
+        "create": {
+          "method": "POST",
+          "path": "/v1/videos",
+          "contentType": "application/json",
+          "body": {
+            "model": {
+              "$ref": "request.model"
+            },
+            "prompt": {
+              "$ref": "request.prompt"
+            },
+            "aspect_ratio": {
+              "$coalesce": [
+                {
+                  "$ref": "request.aspectRatio"
+                },
+                "9:16"
+              ]
+            },
+            "seconds": {
+              "$coalesce": [
+                {
+                  "$ref": "request.duration"
+                },
+                5
+              ]
+            },
+            "resolution": {
+              "$coalesce": [
+                {
+                  "$ref": "request.resolution"
+                },
+                "720p"
+              ]
+            },
+            "reference_image_urls": {
+              "$omitEmpty": {
+                "$map": {
+                  "from": {
+                    "$sortByOrder": {
+                      "$ref": "request.images"
+                    }
+                  },
+                  "as": "media",
+                  "in": {
+                    "$ref": "media.value"
+                  }
+                }
+              }
+            },
+            "reference_videos": {
+              "$omitEmpty": {
+                "$map": {
+                  "from": {
+                    "$sortByOrder": {
+                      "$ref": "request.videos"
+                    }
+                  },
+                  "as": "media",
+                  "in": {
+                    "$ref": "media.value"
+                  }
+                }
+              }
+            },
+            "reference_audios": {
+              "$omitEmpty": {
+                "$map": {
+                  "from": {
+                    "$sortByOrder": {
+                      "$ref": "request.audios"
+                    }
+                  },
+                  "as": "media",
+                  "in": {
+                    "$ref": "media.value"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "poll": {
+          "method": "GET",
+          "path": "/v1/videos/{{taskId}}",
+          "contentType": "application/json"
+        },
+        "response": {
+          "taskId": {
+            "$coalesce": [
+              {
+                "$ref": "response.task_id"
+              },
+              {
+                "$ref": "response.id"
+              },
+              {
+                "$ref": "response.data.task_id"
+              },
+              {
+                "$ref": "response.data.id"
+              },
+              {
+                "$ref": "taskId"
+              }
+            ]
+          },
+          "status": {
+            "$coalesce": [
+              {
+                "$ref": "response.status"
+              },
+              {
+                "$ref": "response.data.status"
+              },
+              "queued"
+            ]
+          },
+          "message": {
+            "$coalesce": [
+              {
+                "$ref": "response.error_message"
+              },
+              {
+                "$ref": "response.error.message"
+              },
+              {
+                "$ref": "response.api_error.message"
+              },
+              {
+                "$ref": "response.upstream_error.message"
+              },
+              {
+                "$ref": "response.platform_message"
+              },
+              {
+                "$ref": "response.message"
+              },
+              {
+                "$ref": "response.error"
+              }
+            ]
+          },
+          "videos": {
+            "$if": {
+              "condition": {
+                "$coalesce": [
+                  {
+                    "$ref": "response.video_url"
+                  },
+                  {
+                    "$ref": "response.download_url"
+                  },
+                  {
+                    "$ref": "response.url"
+                  },
+                  {
+                    "$ref": "response.original_video_url"
+                  },
+                  {
+                    "$ref": "response.data.video_url"
+                  },
+                  {
+                    "$ref": "response.data.download_url"
+                  },
+                  {
+                    "$ref": "response.data.url"
+                  }
+                ]
+              },
+              "then": [
+                {
+                  "url": {
+                    "$coalesce": [
+                      {
+                        "$ref": "response.video_url"
+                      },
+                      {
+                        "$ref": "response.download_url"
+                      },
+                      {
+                        "$ref": "response.url"
+                      },
+                      {
+                        "$ref": "response.original_video_url"
+                      },
+                      {
+                        "$ref": "response.data.video_url"
+                      },
+                      {
+                        "$ref": "response.data.download_url"
+                      },
+                      {
+                        "$ref": "response.data.url"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "else": null
+            }
+          },
+          "errorPaths": [
+            "error",
+            "api_error",
+            "upstream_error",
+            "platform_error_code",
+            "code"
+          ],
+          "messagePaths": [
+            "error_message",
+            "error.message",
+            "api_error.message",
+            "upstream_error.message",
+            "platform_message",
+            "message",
+            "error"
+          ],
+          "resultEphemeral": true
+        }
+      },
+      {
+        "id": "kbai-image",
+        "label": "KBAI AI 图片",
+        "capabilities": [
+          "image"
+        ],
+        "scopes": [
+          "admin.system-channel",
+          "user.custom-channel",
+          "canvas",
+          "creation",
+          "agent"
+        ],
+        "baseUrl": "https://api.ai.kbai.cc",
+        "requiresPublicMediaUrls": false,
+        "auth": {
+          "type": "bearer",
+          "field": "apiKey"
+        },
+        "parameters": [
+          {
+            "name": "model",
+            "type": "string",
+            "required": true,
+            "mapping": "model",
+            "description": "公开图片模型 ID，以模型列表接口返回值为准。"
+          },
+          {
+            "name": "prompt",
+            "type": "string",
+            "required": true,
+            "mapping": "prompt",
+            "description": "图片生成或编辑提示词。"
+          },
+          {
+            "name": "images",
+            "type": "media[]",
+            "mapping": "image multipart file",
+            "description": "可选图生图源图；当前接口示例为单文件，最多传一张。"
+          },
+          {
+            "name": "aspectRatio",
+            "type": "string",
+            "mapping": "size",
+            "description": "可填写上游尺寸如 1024x1024，也支持常用比例映射。"
+          },
+          {
+            "name": "quality",
+            "type": "string",
+            "mapping": "quality",
+            "description": "质量档位，默认 1K；具体可用值以模型列表 params 为准。"
+          },
+          {
+            "name": "imageCount",
+            "type": "integer",
+            "mapping": "n",
+            "description": "生成数量，默认 1。"
+          },
+          {
+            "name": "providerOptions",
+            "type": "object",
+            "mapping": "provider-specific fields",
+            "description": "使用 providerOptions.kbai-image.size 或 quality 覆盖图片请求字段。"
+          }
+        ],
+        "validations": [
+          {
+            "assert": {
+              "$lte": [
+                {
+                  "$len": {
+                    "$ref": "request.images"
+                  }
+                },
+                1
+              ]
+            },
+            "message": "KBAI AI 图生图当前只支持一张输入图片"
+          }
+        ],
+        "create": {
+          "method": "POST",
+          "path": "/v1/images/generations",
+          "pathTemplate": {
+            "$if": {
+              "condition": {
+                "$gt": [
+                  {
+                    "$len": {
+                      "$ref": "request.images"
+                    }
+                  },
+                  0
+                ]
+              },
+              "then": "/v1/images/edits",
+              "else": "/v1/images/generations"
+            }
+          },
+          "contentType": "application/json",
+          "contentTypeTemplate": {
+            "$if": {
+              "condition": {
+                "$gt": [
+                  {
+                    "$len": {
+                      "$ref": "request.images"
+                    }
+                  },
+                  0
+                ]
+              },
+              "then": "multipart/form-data",
+              "else": "application/json"
+            }
+          },
+          "body": {
+            "model": {
+              "$ref": "request.model"
+            },
+            "prompt": {
+              "$ref": "request.prompt"
+            },
+            "size": {
+              "$coalesce": [
+                {
+                  "$ref": "request.providerOptions.kbai-image.size"
+                },
+                {
+                  "$switch": {
+                    "cases": [
+                      {
+                        "when": {
+                          "$eq": [
+                            {
+                              "$lower": {
+                                "$trim": {
+                                  "$ref": "request.aspectRatio"
+                                }
+                              }
+                            },
+                            "1:1"
+                          ]
+                        },
+                        "then": "1024x1024"
+                      },
+                      {
+                        "when": {
+                          "$eq": [
+                            {
+                              "$lower": {
+                                "$trim": {
+                                  "$ref": "request.aspectRatio"
+                                }
+                              }
+                            },
+                            "3:4"
+                          ]
+                        },
+                        "then": "1024x1536"
+                      },
+                      {
+                        "when": {
+                          "$eq": [
+                            {
+                              "$lower": {
+                                "$trim": {
+                                  "$ref": "request.aspectRatio"
+                                }
+                              }
+                            },
+                            "4:3"
+                          ]
+                        },
+                        "then": "1536x1024"
+                      },
+                      {
+                        "when": {
+                          "$eq": [
+                            {
+                              "$lower": {
+                                "$trim": {
+                                  "$ref": "request.aspectRatio"
+                                }
+                              }
+                            },
+                            "16:9"
+                          ]
+                        },
+                        "then": "1536x864"
+                      },
+                      {
+                        "when": {
+                          "$eq": [
+                            {
+                              "$lower": {
+                                "$trim": {
+                                  "$ref": "request.aspectRatio"
+                                }
+                              }
+                            },
+                            "9:16"
+                          ]
+                        },
+                        "then": "864x1536"
+                      },
+                      {
+                        "when": {
+                          "$gt": [
+                            {
+                              "$len": {
+                                "$split": [
+                                  {
+                                    "$trim": {
+                                      "$ref": "request.aspectRatio"
+                                    }
+                                  },
+                                  "x"
+                                ]
+                              }
+                            },
+                            1
+                          ]
+                        },
+                        "then": {
+                          "$trim": {
+                            "$ref": "request.aspectRatio"
+                          }
+                        }
+                      }
+                    ],
+                    "default": "1024x1024"
+                  }
+                }
+              ]
+            },
+            "quality": {
+              "$coalesce": [
+                {
+                  "$ref": "request.providerOptions.kbai-image.quality"
+                },
+                {
+                  "$ref": "request.quality"
+                },
+                "1K"
+              ]
+            },
+            "n": {
+              "$if": {
+                "condition": {
+                  "$gt": [
+                    {
+                      "$ref": "request.imageCount"
+                    },
+                    0
+                  ]
+                },
+                "then": {
+                  "$ref": "request.imageCount"
+                },
+                "else": 1
+              }
+            }
+          },
+          "files": [
+            {
+              "name": "image",
+              "source": {
+                "$first": {
+                  "$sortByOrder": {
+                    "$ref": "request.images"
+                  }
+                }
+              },
+              "filename": "input.png"
+            }
+          ]
+        },
+        "response": {
+          "status": "succeeded",
+          "images": {
+            "$coalesce": [
+              {
+                "$map": {
+                  "from": {
+                    "$ref": "response.data"
+                  },
+                  "as": "item",
+                  "in": {
+                    "url": {
+                      "$coalesce": [
+                        {
+                          "$ref": "item.url"
+                        },
+                        {
+                          "$ref": "item.image_url"
+                        },
+                        {
+                          "$ref": "item.imageUrl"
+                        }
+                      ]
+                    },
+                    "dataUrl": {
+                      "$if": {
+                        "condition": {
+                          "$ref": "item.b64_json"
+                        },
+                        "then": {
+                          "$concat": [
+                            "data:",
+                            {
+                              "$coalesce": [
+                                {
+                                  "$ref": "item.mime_type"
+                                },
+                                "image/png"
+                              ]
+                            },
+                            ";base64,",
+                            {
+                              "$ref": "item.b64_json"
+                            }
+                          ]
+                        },
+                        "else": null
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "$if": {
+                  "condition": {
+                    "$coalesce": [
+                      {
+                        "$ref": "response.image_url"
+                      },
+                      {
+                        "$ref": "response.url"
+                      },
+                      {
+                        "$ref": "response.b64_json"
+                      }
+                    ]
+                  },
+                  "then": [
+                    {
+                      "url": {
+                        "$coalesce": [
+                          {
+                            "$ref": "response.image_url"
+                          },
+                          {
+                            "$ref": "response.url"
+                          }
+                        ]
+                      },
+                      "dataUrl": {
+                        "$if": {
+                          "condition": {
+                            "$ref": "response.b64_json"
+                          },
+                          "then": {
+                            "$concat": [
+                              "[image omitted]",
+                              {
+                                "$ref": "response.b64_json"
+                              }
+                            ]
+                          },
+                          "else": null
+                        }
+                      }
+                    }
+                  ],
+                  "else": null
+                }
+              }
+            ]
+          },
+          "errorPaths": [
+            "error",
+            "api_error",
+            "code"
+          ],
+          "messagePaths": [
+            "error_message",
+            "error.message",
+            "api_error.message",
+            "message",
+            "msg",
+            "error"
+          ]
+        }
+      }
+    ]
+  },
+  "documentation": "# KBAI AI API\n\n该目录是 KBAI AI API 的独立官方协议插件源码。插件提供视频异步任务和图片生成/编辑两个 Provider，后端通过声明式协议运行时发出请求，不依赖系统内置 `host:` 适配器。\n\n完整字段映射见 [docs/interface.md](docs/interface.md)。\n\n## 能力\n\n- `kbai-video`：`POST /v1/videos` 提交视频任务，`GET /v1/videos/{task_id}` 查询结果。\n- `kbai-image`：无参考图调用 `POST /v1/images/generations`，有参考图自动调用 `POST /v1/images/edits`。\n- 统一使用 `Authorization: Bearer YOUR_API_KEY`，API Key 只配置在渠道中，不写入插件清单。\n- 视频参考素材按 `images`、`videos`、`audios` 数组顺序对应提示词中的 `@图片1`、`@视频1`、`@音频1`。\n\n## 配置\n\n| 字段 | 类型 | 必填 | 说明 |\n| --- | --- | --- | --- |\n| `apiKey` | secret | 是 | KBAI AI API Key。 |\n\n默认 Base URL 为 `https://api.ai.kbai.cc`。如平台渠道允许覆盖 Base URL，可按部署方式配置；插件不会把 Key 拼接到 URL。\n\n## 视频\n\n视频请求默认使用 `aspect_ratio=9:16`、`seconds=5`、`resolution=720p`。模型、时长、分辨率和参考素材数量必须以 `/v1/models` 返回的模型 `params` 为准。视频下载地址是上游临时地址，插件将结果标记为临时媒体，由宿主负责下载和持久化。\n\n支持的状态包括 `queued`、`running`、`succeeded`、`failed` 和 `expired`。宿主会把 `queued` 映射为等待、`running` 映射为处理中，把 `succeeded` 映射为成功，把 `failed` 和 `expired` 映射为失败，并保留 API 返回的错误说明。\n\n## 图片\n\n文生图请求发送 JSON：\n\n```json\n{\n  \"model\": \"your-image-model\",\n  \"prompt\": \"一只橘猫躺在白色毛毯上，柔和自然光\",\n  \"size\": \"1024x1024\",\n  \"quality\": \"1K\",\n  \"n\": 1\n}\n```\n\n图生图请求发送 multipart：`model`、`prompt`、`size`、`quality`、`n` 作为表单字段，输入图片作为 `image` 文件。协议当前只接受一张输入图，因为接口示例使用单个 `image` 文件字段；多图编辑请以模型独立文档为准，未在该插件中猜测扩展字段。\n\n## 辅助接口与 Webhook\n\n模型列表、价格列表、余额、模型独立文档和批量查询属于可选辅助接口，不影响本插件的提交与轮询主流程。Webhook 也是 KBAI 平台侧的可选能力：不填写 Webhook URL 时不会回调；本插件不向任务请求体中注入未在提交示例中定义的 Webhook 字段。需要回调时，应在 KBAI 管理端配置 `task.completed`、签名校验和重试策略。\n\nWebhook 签名相关请求头为 `X-AI-Signature` 与 `X-AI-Timestamp`，签名内容为 `timestamp + \".\" + raw_body`。这属于客户回调服务的验签合同，不是工作台向 KBAI 发出的模型请求。\n\n## 错误\n\n程序应按 API 的错误分类字段判断错误类型，实际展示信息优先使用 `error.message` 或等价的 `message` 字段。常见分类包括 `unauthorized`、`invalid_api_key`、`model_not_found`、`insufficient_credits`、`task_not_found`、`rate_limited`、`video_not_ready`、`upstream_error` 和 `video_generation_failed`。\n\n插件不保存或打印 API Key，不把错误信息降级为成功，也不会把过期的媒体 URL 当作永久地址。\n\n---\n\n# KBAI AI API 接口字段\n\n## 协议身份\n\n- 插件 ID：`kbai-ai-api`。\n- Provider：`kbai-video`、`kbai-image`。\n- 默认 Base URL：`https://api.ai.kbai.cc`。\n- 鉴权：`Authorization: Bearer YOUR_API_KEY`。\n- API Key 配置字段：`apiKey`。\n\n## 视频接口\n\n### 提交任务\n\n- 方法：`POST /v1/videos`。\n- 内容类型：`application/json`。\n- `model` 和 `prompt` 必填。\n- `aspect_ratio` 默认 `9:16`。\n- `seconds` 默认 `5`。\n- `resolution` 默认 `720p`。\n- 参考图片映射到 `reference_image_urls`，参考视频映射到 `reference_videos`，参考音频映射到 `reference_audios`。\n- 参考 URL 由宿主按 `requiresPublicMediaUrls` 转换为公网可访问的短期地址。\n\n### 查询任务\n\n- 方法：`GET /v1/videos/{{taskId}}`。\n- 任务 ID 优先读取 `task_id`，其次读取 `id`、`data.task_id`、`data.id`。\n- 成功结果优先读取 `video_url`，同时兼容 `download_url`、`url`、`original_video_url` 及 `data` 中的同名字段。\n\n### 状态\n\n| KBAI 状态 | 宿主状态 | 说明 |\n| --- | --- | --- |\n| `queued` | `pending` | 等待平台提交或上游排队。 |\n| `running` | `processing` | 已提交或正在生成。 |\n| `succeeded` | `succeeded` | 返回视频下载地址。 |\n| `failed` | `failed` | 保留平台和上游失败原因。 |\n| `expired` | `failed` | 媒体已经过期，任务记录仍可保留。 |\n\n## 图片接口\n\n### 文生图\n\n- 方法：`POST /v1/images/generations`。\n- 内容类型：`application/json`。\n- 字段：`model`、`prompt`、`size`、`quality`、`n`。\n- 图片比例会转换为常用尺寸：`1:1 → 1024x1024`、`3:4 → 1024x1536`、`4:3 → 1536x1024`、`16:9 → 1536x864`、`9:16 → 864x1536`。\n- 传入 `WxH` 尺寸时原样发送；也可通过 `providerOptions.kbai-image.size` 覆盖。\n\n### 图生图\n\n- 方法：`POST /v1/images/edits`。\n- 内容类型：`multipart/form-data`。\n- 表单字段：`model`、`prompt`、`size`、`quality`、`n`。\n- 文件字段：`image`，输入源图以 `input.png` 文件名发送。\n- 当前声明式协议最多接收一张输入图片；宿主负责读取 URL 或 Data URL 并写入 multipart 文件。\n\n### 图片响应\n\n图片 URL 读取 `data[].url`、`data[].image_url` 或 `data[].imageUrl`；内联结果读取 `data[].b64_json`，并按 `mime_type` 生成 Data URL。顶层单对象响应兼容 `image_url`、`url` 和 `b64_json`。\n\n## 错误映射\n\n失败响应会读取 `error_message`、`error`、`api_error.message`、`platform_message`、`upstream_error.message`、`message` 或 `msg`。`error`、`api_error`、`upstream_error`、`platform_error_code`、`code` 为失败信号路径；宿主不会把 HTTP 或业务失败包装成成功。\n\n## 任务与下载地址\n\n视频提交成功后先获得 `task_id`，再轮询查询接口。`video_url`、`url`、`download_url`、`original_video_url` 都被视为原始视频地址，并标记为临时结果，由宿主立即下载保存。上游直链的默认寿命约为两小时，实际由 KBAI 渠道决定。\n\n模型列表、价格、余额、模型文档、批量查询和 Webhook 配置是平台侧辅助能力，不作为本插件的额外请求字段。Webhook 验签请求头和回调重试由 KBAI 回调服务处理，本插件不擅自向提交请求增加 `webhook_url`。\n\n<!-- YINGCE_MANIFEST_CONTRACT_START -->\n## Manifest 完整接口定义\n\n以下 JSON 与插件包内实际 `manifest.json` 逐字段一致，覆盖插件身份、权限、配置、鉴权、参数、校验、创建、Agent、查询、取消、结果下载、响应和 Agent 响应映射。`documentation` 字段的值就是当前完整文档；为避免文档在自身内部无限递归，JSON 中仅用等义占位文本表示正文。\n\n```json\n{\n  \"apiVersion\": \"yingce.plugin/v2\",\n  \"id\": \"kbai-ai-api\",\n  \"name\": \"KBAI AI API\",\n  \"version\": \"1.0.0\",\n  \"author\": \"KBAI / 影策\",\n  \"description\": \"KBAI AI API 的视频异步任务与图片生成协议插件。\",\n  \"permissions\": [\n    \"generation.run\",\n    \"media.read\"\n  ],\n  \"configuration\": {\n    \"fields\": [\n      {\n        \"name\": \"apiKey\",\n        \"type\": \"secret\",\n        \"label\": \"API Key\",\n        \"required\": true,\n        \"description\": \"KBAI AI API 的 Bearer API Key。\"\n      }\n    ]\n  },\n  \"contributes\": {\n    \"providers\": [\n      {\n        \"id\": \"kbai-video\",\n        \"label\": \"KBAI AI 视频\",\n        \"capabilities\": [\n          \"video\"\n        ],\n        \"scopes\": [\n          \"admin.system-channel\",\n          \"user.custom-channel\",\n          \"canvas\",\n          \"creation\",\n          \"agent\"\n        ],\n        \"baseUrl\": \"https://api.ai.kbai.cc\",\n        \"requiresPublicMediaUrls\": true,\n        \"auth\": {\n          \"type\": \"bearer\",\n          \"field\": \"apiKey\"\n        },\n        \"parameters\": [\n          {\n            \"name\": \"model\",\n            \"type\": \"string\",\n            \"required\": true,\n            \"mapping\": \"model\",\n            \"description\": \"公开视频模型 ID，以模型列表接口返回值为准。\"\n          },\n          {\n            \"name\": \"prompt\",\n            \"type\": \"string\",\n            \"required\": true,\n            \"mapping\": \"prompt\",\n            \"description\": \"视频生成提示词；素材占位符按图片、视频、音频数组顺序对应。\"\n          },\n          {\n            \"name\": \"images\",\n            \"type\": \"media[]\",\n            \"mapping\": \"reference_image_urls\",\n            \"description\": \"参考图片，转换为公网 URL 数组。\"\n          },\n          {\n            \"name\": \"videos\",\n            \"type\": \"media[]\",\n            \"mapping\": \"reference_videos\",\n            \"description\": \"参考视频，转换为公网 URL 数组。\"\n          },\n          {\n            \"name\": \"audios\",\n            \"type\": \"media[]\",\n            \"mapping\": \"reference_audios\",\n            \"description\": \"参考音频，转换为公网 URL 数组。\"\n          },\n          {\n            \"name\": \"aspectRatio\",\n            \"type\": \"string\",\n            \"mapping\": \"aspect_ratio\",\n            \"description\": \"画幅比例，默认 9:16；具体可用值以模型列表 params 为准。\"\n          },\n          {\n            \"name\": \"duration\",\n            \"type\": \"integer\",\n            \"mapping\": \"seconds\",\n            \"description\": \"视频时长，单位秒；默认 5。\"\n          },\n          {\n            \"name\": \"resolution\",\n            \"type\": \"string\",\n            \"mapping\": \"resolution\",\n            \"description\": \"分辨率档位，默认 720p；具体可用值以模型列表 params 为准。\"\n          }\n        ],\n        \"create\": {\n          \"method\": \"POST\",\n          \"path\": \"/v1/videos\",\n          \"contentType\": \"application/json\",\n          \"body\": {\n            \"model\": {\n              \"$ref\": \"request.model\"\n            },\n            \"prompt\": {\n              \"$ref\": \"request.prompt\"\n            },\n            \"aspect_ratio\": {\n              \"$coalesce\": [\n                {\n                  \"$ref\": \"request.aspectRatio\"\n                },\n                \"9:16\"\n              ]\n            },\n            \"seconds\": {\n              \"$coalesce\": [\n                {\n                  \"$ref\": \"request.duration\"\n                },\n                5\n              ]\n            },\n            \"resolution\": {\n              \"$coalesce\": [\n                {\n                  \"$ref\": \"request.resolution\"\n                },\n                \"720p\"\n              ]\n            },\n            \"reference_image_urls\": {\n              \"$omitEmpty\": {\n                \"$map\": {\n                  \"from\": {\n                    \"$sortByOrder\": {\n                      \"$ref\": \"request.images\"\n                    }\n                  },\n                  \"as\": \"media\",\n                  \"in\": {\n                    \"$ref\": \"media.value\"\n                  }\n                }\n              }\n            },\n            \"reference_videos\": {\n              \"$omitEmpty\": {\n                \"$map\": {\n                  \"from\": {\n                    \"$sortByOrder\": {\n                      \"$ref\": \"request.videos\"\n                    }\n                  },\n                  \"as\": \"media\",\n                  \"in\": {\n                    \"$ref\": \"media.value\"\n                  }\n                }\n              }\n            },\n            \"reference_audios\": {\n              \"$omitEmpty\": {\n                \"$map\": {\n                  \"from\": {\n                    \"$sortByOrder\": {\n                      \"$ref\": \"request.audios\"\n                    }\n                  },\n                  \"as\": \"media\",\n                  \"in\": {\n                    \"$ref\": \"media.value\"\n                  }\n                }\n              }\n            }\n          }\n        },\n        \"poll\": {\n          \"method\": \"GET\",\n          \"path\": \"/v1/videos/{{taskId}}\",\n          \"contentType\": \"application/json\"\n        },\n        \"response\": {\n          \"taskId\": {\n            \"$coalesce\": [\n              {\n                \"$ref\": \"response.task_id\"\n              },\n              {\n                \"$ref\": \"response.id\"\n              },\n              {\n                \"$ref\": \"response.data.task_id\"\n              },\n              {\n                \"$ref\": \"response.data.id\"\n              },\n              {\n                \"$ref\": \"taskId\"\n              }\n            ]\n          },\n          \"status\": {\n            \"$coalesce\": [\n              {\n                \"$ref\": \"response.status\"\n              },\n              {\n                \"$ref\": \"response.data.status\"\n              },\n              \"queued\"\n            ]\n          },\n          \"message\": {\n            \"$coalesce\": [\n              {\n                \"$ref\": \"response.error_message\"\n              },\n              {\n                \"$ref\": \"response.error.message\"\n              },\n              {\n                \"$ref\": \"response.api_error.message\"\n              },\n              {\n                \"$ref\": \"response.upstream_error.message\"\n              },\n              {\n                \"$ref\": \"response.platform_message\"\n              },\n              {\n                \"$ref\": \"response.message\"\n              },\n              {\n                \"$ref\": \"response.error\"\n              }\n            ]\n          },\n          \"videos\": {\n            \"$if\": {\n              \"condition\": {\n                \"$coalesce\": [\n                  {\n                    \"$ref\": \"response.video_url\"\n                  },\n                  {\n                    \"$ref\": \"response.download_url\"\n                  },\n                  {\n                    \"$ref\": \"response.url\"\n                  },\n                  {\n                    \"$ref\": \"response.original_video_url\"\n                  },\n                  {\n                    \"$ref\": \"response.data.video_url\"\n                  },\n                  {\n                    \"$ref\": \"response.data.download_url\"\n                  },\n                  {\n                    \"$ref\": \"response.data.url\"\n                  }\n                ]\n              },\n              \"then\": [\n                {\n                  \"url\": {\n                    \"$coalesce\": [\n                      {\n                        \"$ref\": \"response.video_url\"\n                      },\n                      {\n                        \"$ref\": \"response.download_url\"\n                      },\n                      {\n                        \"$ref\": \"response.url\"\n                      },\n                      {\n                        \"$ref\": \"response.original_video_url\"\n                      },\n                      {\n                        \"$ref\": \"response.data.video_url\"\n                      },\n                      {\n                        \"$ref\": \"response.data.download_url\"\n                      },\n                      {\n                        \"$ref\": \"response.data.url\"\n                      }\n                    ]\n                  }\n                }\n              ],\n              \"else\": null\n            }\n          },\n          \"errorPaths\": [\n            \"error\",\n            \"api_error\",\n            \"upstream_error\",\n            \"platform_error_code\",\n            \"code\"\n          ],\n          \"messagePaths\": [\n            \"error_message\",\n            \"error.message\",\n            \"api_error.message\",\n            \"upstream_error.message\",\n            \"platform_message\",\n            \"message\",\n            \"error\"\n          ],\n          \"resultEphemeral\": true\n        }\n      },\n      {\n        \"id\": \"kbai-image\",\n        \"label\": \"KBAI AI 图片\",\n        \"capabilities\": [\n          \"image\"\n        ],\n        \"scopes\": [\n          \"admin.system-channel\",\n          \"user.custom-channel\",\n          \"canvas\",\n          \"creation\",\n          \"agent\"\n        ],\n        \"baseUrl\": \"https://api.ai.kbai.cc\",\n        \"requiresPublicMediaUrls\": false,\n        \"auth\": {\n          \"type\": \"bearer\",\n          \"field\": \"apiKey\"\n        },\n        \"parameters\": [\n          {\n            \"name\": \"model\",\n            \"type\": \"string\",\n            \"required\": true,\n            \"mapping\": \"model\",\n            \"description\": \"公开图片模型 ID，以模型列表接口返回值为准。\"\n          },\n          {\n            \"name\": \"prompt\",\n            \"type\": \"string\",\n            \"required\": true,\n            \"mapping\": \"prompt\",\n            \"description\": \"图片生成或编辑提示词。\"\n          },\n          {\n            \"name\": \"images\",\n            \"type\": \"media[]\",\n            \"mapping\": \"image multipart file\",\n            \"description\": \"可选图生图源图；当前接口示例为单文件，最多传一张。\"\n          },\n          {\n            \"name\": \"aspectRatio\",\n            \"type\": \"string\",\n            \"mapping\": \"size\",\n            \"description\": \"可填写上游尺寸如 1024x1024，也支持常用比例映射。\"\n          },\n          {\n            \"name\": \"quality\",\n            \"type\": \"string\",\n            \"mapping\": \"quality\",\n            \"description\": \"质量档位，默认 1K；具体可用值以模型列表 params 为准。\"\n          },\n          {\n            \"name\": \"imageCount\",\n            \"type\": \"integer\",\n            \"mapping\": \"n\",\n            \"description\": \"生成数量，默认 1。\"\n          },\n          {\n            \"name\": \"providerOptions\",\n            \"type\": \"object\",\n            \"mapping\": \"provider-specific fields\",\n            \"description\": \"使用 providerOptions.kbai-image.size 或 quality 覆盖图片请求字段。\"\n          }\n        ],\n        \"validations\": [\n          {\n            \"assert\": {\n              \"$lte\": [\n                {\n                  \"$len\": {\n                    \"$ref\": \"request.images\"\n                  }\n                },\n                1\n              ]\n            },\n            \"message\": \"KBAI AI 图生图当前只支持一张输入图片\"\n          }\n        ],\n        \"create\": {\n          \"method\": \"POST\",\n          \"path\": \"/v1/images/generations\",\n          \"pathTemplate\": {\n            \"$if\": {\n              \"condition\": {\n                \"$gt\": [\n                  {\n                    \"$len\": {\n                      \"$ref\": \"request.images\"\n                    }\n                  },\n                  0\n                ]\n              },\n              \"then\": \"/v1/images/edits\",\n              \"else\": \"/v1/images/generations\"\n            }\n          },\n          \"contentType\": \"application/json\",\n          \"contentTypeTemplate\": {\n            \"$if\": {\n              \"condition\": {\n                \"$gt\": [\n                  {\n                    \"$len\": {\n                      \"$ref\": \"request.images\"\n                    }\n                  },\n                  0\n                ]\n              },\n              \"then\": \"multipart/form-data\",\n              \"else\": \"application/json\"\n            }\n          },\n          \"body\": {\n            \"model\": {\n              \"$ref\": \"request.model\"\n            },\n            \"prompt\": {\n              \"$ref\": \"request.prompt\"\n            },\n            \"size\": {\n              \"$coalesce\": [\n                {\n                  \"$ref\": \"request.providerOptions.kbai-image.size\"\n                },\n                {\n                  \"$switch\": {\n                    \"cases\": [\n                      {\n                        \"when\": {\n                          \"$eq\": [\n                            {\n                              \"$lower\": {\n                                \"$trim\": {\n                                  \"$ref\": \"request.aspectRatio\"\n                                }\n                              }\n                            },\n                            \"1:1\"\n                          ]\n                        },\n                        \"then\": \"1024x1024\"\n                      },\n                      {\n                        \"when\": {\n                          \"$eq\": [\n                            {\n                              \"$lower\": {\n                                \"$trim\": {\n                                  \"$ref\": \"request.aspectRatio\"\n                                }\n                              }\n                            },\n                            \"3:4\"\n                          ]\n                        },\n                        \"then\": \"1024x1536\"\n                      },\n                      {\n                        \"when\": {\n                          \"$eq\": [\n                            {\n                              \"$lower\": {\n                                \"$trim\": {\n                                  \"$ref\": \"request.aspectRatio\"\n                                }\n                              }\n                            },\n                            \"4:3\"\n                          ]\n                        },\n                        \"then\": \"1536x1024\"\n                      },\n                      {\n                        \"when\": {\n                          \"$eq\": [\n                            {\n                              \"$lower\": {\n                                \"$trim\": {\n                                  \"$ref\": \"request.aspectRatio\"\n                                }\n                              }\n                            },\n                            \"16:9\"\n                          ]\n                        },\n                        \"then\": \"1536x864\"\n                      },\n                      {\n                        \"when\": {\n                          \"$eq\": [\n                            {\n                              \"$lower\": {\n                                \"$trim\": {\n                                  \"$ref\": \"request.aspectRatio\"\n                                }\n                              }\n                            },\n                            \"9:16\"\n                          ]\n                        },\n                        \"then\": \"864x1536\"\n                      },\n                      {\n                        \"when\": {\n                          \"$gt\": [\n                            {\n                              \"$len\": {\n                                \"$split\": [\n                                  {\n                                    \"$trim\": {\n                                      \"$ref\": \"request.aspectRatio\"\n                                    }\n                                  },\n                                  \"x\"\n                                ]\n                              }\n                            },\n                            1\n                          ]\n                        },\n                        \"then\": {\n                          \"$trim\": {\n                            \"$ref\": \"request.aspectRatio\"\n                          }\n                        }\n                      }\n                    ],\n                    \"default\": \"1024x1024\"\n                  }\n                }\n              ]\n            },\n            \"quality\": {\n              \"$coalesce\": [\n                {\n                  \"$ref\": \"request.providerOptions.kbai-image.quality\"\n                },\n                {\n                  \"$ref\": \"request.quality\"\n                },\n                \"1K\"\n              ]\n            },\n            \"n\": {\n              \"$if\": {\n                \"condition\": {\n                  \"$gt\": [\n                    {\n                      \"$ref\": \"request.imageCount\"\n                    },\n                    0\n                  ]\n                },\n                \"then\": {\n                  \"$ref\": \"request.imageCount\"\n                },\n                \"else\": 1\n              }\n            }\n          },\n          \"files\": [\n            {\n              \"name\": \"image\",\n              \"source\": {\n                \"$first\": {\n                  \"$sortByOrder\": {\n                    \"$ref\": \"request.images\"\n                  }\n                }\n              },\n              \"filename\": \"input.png\"\n            }\n          ]\n        },\n        \"response\": {\n          \"status\": \"succeeded\",\n          \"images\": {\n            \"$coalesce\": [\n              {\n                \"$map\": {\n                  \"from\": {\n                    \"$ref\": \"response.data\"\n                  },\n                  \"as\": \"item\",\n                  \"in\": {\n                    \"url\": {\n                      \"$coalesce\": [\n                        {\n                          \"$ref\": \"item.url\"\n                        },\n                        {\n                          \"$ref\": \"item.image_url\"\n                        },\n                        {\n                          \"$ref\": \"item.imageUrl\"\n                        }\n                      ]\n                    },\n                    \"dataUrl\": {\n                      \"$if\": {\n                        \"condition\": {\n                          \"$ref\": \"item.b64_json\"\n                        },\n                        \"then\": {\n                          \"$concat\": [\n                            \"data:\",\n                            {\n                              \"$coalesce\": [\n                                {\n                                  \"$ref\": \"item.mime_type\"\n                                },\n                                \"image/png\"\n                              ]\n                            },\n                            \";base64,\",\n                            {\n                              \"$ref\": \"item.b64_json\"\n                            }\n                          ]\n                        },\n                        \"else\": null\n                      }\n                    }\n                  }\n                }\n              },\n              {\n                \"$if\": {\n                  \"condition\": {\n                    \"$coalesce\": [\n                      {\n                        \"$ref\": \"response.image_url\"\n                      },\n                      {\n                        \"$ref\": \"response.url\"\n                      },\n                      {\n                        \"$ref\": \"response.b64_json\"\n                      }\n                    ]\n                  },\n                  \"then\": [\n                    {\n                      \"url\": {\n                        \"$coalesce\": [\n                          {\n                            \"$ref\": \"response.image_url\"\n                          },\n                          {\n                            \"$ref\": \"response.url\"\n                          }\n                        ]\n                      },\n                      \"dataUrl\": {\n                        \"$if\": {\n                          \"condition\": {\n                            \"$ref\": \"response.b64_json\"\n                          },\n                          \"then\": {\n                            \"$concat\": [\n                              \"[image omitted]\",\n                              {\n                                \"$ref\": \"response.b64_json\"\n                              }\n                            ]\n                          },\n                          \"else\": null\n                        }\n                      }\n                    }\n                  ],\n                  \"else\": null\n                }\n              }\n            ]\n          },\n          \"errorPaths\": [\n            \"error\",\n            \"api_error\",\n            \"code\"\n          ],\n          \"messagePaths\": [\n            \"error_message\",\n            \"error.message\",\n            \"api_error.message\",\n            \"message\",\n            \"msg\",\n            \"error\"\n          ]\n        }\n      }\n    ]\n  },\n  \"documentation\": \"<当前插件的完整 documentation，由 README.md 与 docs/interface.md 拼接而成；为避免 JSON 递归，此处不重复展开正文。>\"\n}\n```\n<!-- YINGCE_MANIFEST_CONTRACT_END -->\n"
+}
